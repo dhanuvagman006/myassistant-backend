@@ -129,6 +129,16 @@ async function migrate(exec) {
       created_at      BIGINT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(user_id, conversation_id, id);
+
+    CREATE TABLE IF NOT EXISTS agent_messages (
+      id              BIGSERIAL PRIMARY KEY,
+      from_user_id    INTEGER NOT NULL,
+      to_phone_number TEXT NOT NULL,
+      message         TEXT NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'unread',
+      created_at      BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_messages_phone ON agent_messages(to_phone_number, status);
   `);
 }
 

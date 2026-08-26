@@ -15,6 +15,7 @@ const sttRoute = require("./routes/stt");
 const ttsRoute = require("./routes/tts");
 const regionRoute = require("./routes/region");
 const authRoute = require("./routes/auth");
+const db = require("./db");
 const { appAuth } = require("./middleware/auth");
 
 // Safety guard: never boot in production with auth switched off.
@@ -137,18 +138,10 @@ app.use("/assistant", appAuth, perUserLimit, assistantRoutes);
 // Onboarding survey + profile view (feeds users table + agent memory).
 app.use("/profile", appAuth, require("./routes/profile"));
 
-// Real-time human avatar (Tavus CVI). Media = Tavus; brain = OUR agent.
-// PUBLIC mounts first (no app auth):
-//   /avatar/room     the WebView room page (carries no auth header)
-//   /avatar/llm      Tavus persona custom-LLM callback (per-user bearer key)
-//   /avatar/webhook  Tavus event callbacks (transcripts, shutdown)
-app.use("/avatar/room", require("./avatar/room"));
-app.use("/avatar/llm", require("./avatar/llm").router);
-app.use("/avatar/webhook", require("./avatar/tavus").webhook);
-// Authenticated app-facing routes:
-app.use("/avatar/actions", appAuth, require("./avatar/actions"));
-app.use("/avatar", appAuth, require("./avatar/tavus"));
 
+
+// D-ID WebRTC Room
+app.use("/avatar/room", require("./avatar/room"));
 
 // Phase 1 / ADR-004 — the user-visible audit trail of assistant actions.
 app.use("/actions", appAuth, require("./routes/actions"));
@@ -196,7 +189,7 @@ app.get("/tools/astrology", appAuth, async (req, res) => {
     let birthday = req.query.birthday;
     let name = "Friend";
     if (uid) {
-      const u = await require("./db").findById(uid);
+      const u = await db.findById(uid);
       if (u) {
         if (!birthday && u.birthday) birthday = u.birthday;
         if (u.name) name = u.name;
@@ -233,6 +226,16 @@ app.use("/clients", appAuth, require("./routes/clients"));
 
 // Group C — nearby places search (ratings, distance, call & directions).
 app.use("/places", appAuth, require("./routes/places"));
+
+// ---------------- STOCKS API ----------------
+app.use("/stocks", appAuth, require("./routes/stocks"));
+
+// ---------------- ADMIN ANALYTICS ----------------
+app.use("/analytics", appAuth, require("./routes/analytics"));
+
+// ---------------- ADMIN WEB DASHBOARD ----------------
+// Note: no appAuth here because this is for the web browser
+app.use("/admin-panel", require("./routes/admin_web"));
 
 // Regional language from the caller's IP (no app permissions needed)
 app.use("/region", regionRoute);

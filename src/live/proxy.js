@@ -31,6 +31,7 @@
 const WebSocket = require("ws");
 const jwt = require("jsonwebtoken");
 const { envModel } = require("../services/ai/router");
+const db = require("../db");
 
 const LIVE_MODEL = () =>
   envModel("GEMINI_LIVE_MODEL", "gemini-2.5-flash-native-audio-preview");
@@ -65,15 +66,22 @@ function authorize(url) {
 
 /// The system prompt for live mode. Kept short: the live model speaks, so
 /// the TTS-formatting rules from the text prompt don't apply.
-function liveSystemPrompt(assistantName = "Hari") {
-  return (
-    `You are ${assistantName}, a warm, quick-witted personal voice assistant from India. ` +
+function liveSystemPrompt(assistantName = "Hari", unreadMessages = []) {
+  let prompt = `You are ${assistantName}, a warm, quick-witted personal voice assistant from India. ` +
     "You are SPEAKING with the user in real time. Reply in the same language " +
     "the user speaks — English, Kannada, Hindi, or any mix. Keep replies " +
     "short and conversational, one thought at a time, like a friend on a " +
-    "phone call. Never mention being an AI unless directly asked. Decline " +
-    "harmful requests politely and briefly."
-  );
+    "phone call. If asked about astrology, use your get_horoscope tool. " +
+    "If asked about Ayurvedic remedies or current facts, use Google Search to fetch the details. " +
+    "Never mention being an AI unless directly asked. Decline harmful requests politely and briefly.";
+
+  if (unreadMessages.length > 0) {
+    prompt += "\n\nCRITICAL INSTRUCTION: You have the following unread voice messages from other users. You MUST read them out loud to the user IMMEDIATELY as your very first response:\n";
+    unreadMessages.forEach(m => {
+      prompt += `- Message: "${m.message}"\n`;
+    });
+  }
+  return prompt;
 }
 
 /**
@@ -91,13 +99,28 @@ async function bridge(appWs, user) {
   // session so a rename applies to the very next live call. Anonymous dev
   // sessions fall back to the default.
   let assistantName = "Hari";
+  let unreadMessages = [];
   try {
     const uid = Number(user?.sub);
     if (Number.isFinite(uid) && uid > 0) {
       const p = await require("../users/context").getProfile(uid);
       if (p?.assistant?.name) assistantName = p.assistant.name;
+      
+
+      if (p?.user?.phone_number) {
+        unreadMessages = await db.query(
+          `SELECT id, message FROM agent_messages WHERE status = 'unread' AND to_phone_number = $1`,
+          [p.user.phone_number]
+        );
+        if (unreadMessages.length > 0) {
+          await db.run(
+            `UPDATE agent_messages SET status = 'read' WHERE status = 'unread' AND to_phone_number = $1`,
+            [p.user.phone_number]
+          );
+        }
+      }
     }
-  } catch (_) {}
+  } catch (e) { console.error("Failed to load profile or messages:", e); }
 
   let upstream;
   let upstreamReady = false;
@@ -138,9 +161,11 @@ async function bridge(appWs, user) {
               },
             },
           },
-          systemInstruction: { parts: [{ text: liveSystemPrompt(assistantName) }] },
-          tools: [{ functionDeclarations: require("../tools/registry").declarations({ userId: user?.sub }) }],
-          // Transcripts of both sides let the app render its chat bubbles
+          systemInstruction: { parts: [{ text: liveSystemPrompt(assistantName, unreadMessages) }] },
+          tools: [
+            { functionDeclarations: require("../tools/registry").declarations({ userId: user?.sub }) },
+            { googleSearch: {} }
+          ],
           // even though no text ever drives the conversation.
           inputAudioTranscription: {},
           outputAudioTranscription: {},
@@ -173,7 +198,7 @@ async function bridge(appWs, user) {
         // we send it down the WebSocket so the app can perform the action.
         if (res.deviceAction) {
           appWs.send(JSON.stringify(res.deviceAction));
-          responses.push({ id: fc.id, name: fc.name, response: { result: "Device action requested: " + res.deviceAction.type } });
+          responses.push({ id: fc.id, name: fc.name, response: res.data ? res : { result: "Device action requested: " + res.deviceAction.type } });
         } else {
           responses.push({ id: fc.id, name: fc.name, response: res });
         }
@@ -257,6 +282,16 @@ async function bridge(appWs, user) {
     try {
       const m = JSON.parse(data.toString());
       if (m.type === "end") closeBoth("app ended");
+      if (m.type === "text" && m.text && upstreamReady && upstream.readyState === WebSocket.OPEN) {
+        upstream.send(
+          JSON.stringify({
+            clientContent: {
+              turns: [{ role: "user", parts: [{ text: m.text }] }],
+              turnComplete: true,
+            },
+          })
+        );
+      }
     } catch (_) {}
   });
 

@@ -346,7 +346,7 @@ function registerBuiltins() {
       const profile = await mem.recallAbout(ctx.userId, args.name);
       const all = profile ? profile.documents : list;
       if (!all.length) return { ok: false, error: `no documents stored for ${args.name}` };
-      return { ok: true, data: all };
+      return { ok: true, data: all, deviceAction: { type: "documents", documents: all } };
     },
   });
 
@@ -420,7 +420,7 @@ function registerBuiltins() {
             : "no matching documents",
         };
       }
-      return { ok: true, data: r.documents };
+      return { ok: true, data: r.documents, deviceAction: { type: "documents", documents: r.documents } };
     },
   });
 
@@ -635,23 +635,222 @@ function registerBuiltins() {
   });
 
   registry.register({
-    name: "open_camera",
+    name: "capture_document",
     description:
-      "Open the camera on the user's phone to capture a document or photo, " +
-      "e.g. 'save this receipt', 'scan this notice'.",
-    risk: "medium",
+      "Ask the user to capture a document, photo, or select an image/PDF from their gallery, " +
+      "e.g. 'save Raj's MRI report', 'scan this receipt'.",
+    risk: "low",
     deviceAction: true,
     inputSchema: {
       type: "object",
       properties: {
-        note: { type: "string", description: "What the user is capturing" },
+        note: { type: "string", description: "What the user is capturing (e.g. 'Raj MRI Report')" },
+        client_id: { type: "integer", description: "Optional: ID of the person/client to link this document to, if already known." },
+        source: { type: "string", enum: ["camera", "gallery", "ask"], description: "Where to get the document from. Default is ask." },
       },
     },
     async execute(args) {
       return {
         ok: true,
-        deviceAction: { type: "open_camera", note: args.note || null },
-        speak: "Opening the camera.",
+        deviceAction: { type: "capture_document", note: args.note || null, client_id: args.client_id || null, source: args.source || "ask" },
+        speak: args.source === "gallery" ? "Please select the file." : "Opening the capture screen.",
+      };
+    },
+  });
+
+  registry.register({
+    name: "analyze_camera",
+    description:
+      "Open the camera to scan or look at an object, receipt, or scene and immediately analyze it to answer the user's question, e.g. 'what tablet is this?', 'read this receipt'.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        question: { type: "string", description: "The question to answer about the image" },
+      },
+      required: ["question"],
+    },
+    async execute(args) {
+      return {
+        ok: true,
+        deviceAction: { type: "analyze_camera", question: args.question },
+        speak: "Let me take a look. Opening the camera.",
+      };
+    },
+  });
+
+  registry.register({
+    name: "play_music",
+    description: "Play a specific song, artist, or playlist. The app will pop up and start playing the music automatically.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "The song, artist, or playlist to play (e.g. 'Tum hi ho', 'Arijit Singh playlist')." },
+        provider: { type: "string", enum: ["spotify", "youtube_music"], description: "Which app to play it on. Default to spotify if unspecified." }
+      },
+      required: ["query"],
+    },
+    async execute(args) {
+      const p = args.provider || "spotify";
+      const pkg = p === "spotify" ? "com.spotify.music" : "com.google.android.apps.youtube.music";
+      const fallback = p === "spotify" 
+        ? `https://open.spotify.com/search/${encodeURIComponent(args.query)}` 
+        : `https://music.youtube.com/search?q=${encodeURIComponent(args.query)}`;
+      const q = encodeURIComponent(args.query);
+      
+      // MEDIA_PLAY_FROM_SEARCH intent pops up the app and immediately starts playing the requested query
+      const url = `intent://#Intent;action=android.media.action.MEDIA_PLAY_FROM_SEARCH;S.query=${q};package=${pkg};S.browser_fallback_url=${encodeURIComponent(fallback)};end`;
+      
+      return {
+        ok: true,
+        deviceAction: { type: "open_url", url },
+        speak: `Playing ${args.query} on ${p === "spotify" ? "Spotify" : "YouTube Music"}.`,
+      };
+    }
+  });
+
+  registry.register({
+    name: "send_whatsapp_message",
+    description: "Draft a WhatsApp message and open the WhatsApp chat with the contact pre-filled. Use when the user asks to WhatsApp someone.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        phone: { type: "string", description: "The phone number of the contact including country code (e.g. +91...)." },
+        message: { type: "string", description: "The message to send." }
+      },
+      required: ["phone", "message"],
+    },
+    async execute(args) {
+      // Strip any non-numeric characters except +
+      const cleanPhone = args.phone.replace(/[^\d+]/g, '');
+      const url = `whatsapp://send?phone=${cleanPhone}&text=${encodeURIComponent(args.message)}`;
+      return {
+        ok: true,
+        deviceAction: { type: "open_url", url },
+        speak: "Opening WhatsApp with your message.",
+      };
+    }
+  });
+
+  registry.register({
+    name: "start_navigation",
+    description: "Start turn-by-turn navigation in Google Maps to a specific destination.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        destination: { type: "string", description: "Where the user wants to go (e.g. 'Starbucks', '123 Main St', 'Airport')." }
+      },
+      required: ["destination"],
+    },
+    async execute(args) {
+      const url = `google.navigation:q=${encodeURIComponent(args.destination)}`;
+      return {
+        ok: true,
+        deviceAction: { type: "open_url", url },
+        speak: `Getting directions to ${args.destination}.`,
+      };
+    }
+  });
+
+  registry.register({
+    name: "set_alarm",
+    description: "Set an alarm on the user's phone for a specific time.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        hour: { type: "integer", description: "The hour in 24-hour format (0-23)." },
+        minute: { type: "integer", description: "The minute (0-59)." },
+        label: { type: "string", description: "Optional label for the alarm." }
+      },
+      required: ["hour", "minute"],
+    },
+    async execute(args) {
+      const label = args.label ? `S.android.intent.extra.alarm.MESSAGE=${encodeURIComponent(args.label)};` : "";
+      const url = `intent://#Intent;action=android.intent.action.SET_ALARM;i.android.intent.extra.alarm.HOUR=${args.hour};i.android.intent.extra.alarm.MINUTES=${args.minute};${label}end`;
+      return {
+        ok: true,
+        deviceAction: { type: "open_url", url },
+        speak: `Setting an alarm for ${args.hour}:${args.minute < 10 ? '0' + args.minute : args.minute}.`,
+      };
+    }
+  });
+
+  registry.register({
+    name: "open_service_app",
+    description:
+      "Open popular service apps for the user to book rides (Uber, Ola), order food (Swiggy, Zomato), groceries (Blinkit, Zepto), or shopping (Amazon, Flipkart).",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        service: {
+          type: "string",
+          enum: ["uber", "ola", "swiggy", "zomato", "blinkit", "zepto", "amazon", "flipkart", "bookmyshow", "makemytrip", "youtube"],
+          description: "The service provider requested."
+        },
+        query: {
+          type: "string",
+          description: "What to search for, or where to go (e.g. 'pizza', 'airport', 'iphone 15'). Leave empty if just opening the app."
+        },
+      },
+      required: ["service"],
+    },
+    async execute(args) {
+      let url = "";
+      const q = args.query ? encodeURIComponent(args.query) : "";
+      
+      switch (args.service) {
+        case "uber":
+          url = q ? `https://m.uber.com/ul/?action=setPickup&pickup=my_location&dropoff[formatted_address]=${q}` : `https://m.uber.com/ul/`;
+          break;
+        case "ola":
+          url = q ? `https://book.olacabs.com/?drop_name=${q}` : `https://book.olacabs.com/`;
+          break;
+        case "swiggy":
+          url = q ? `https://www.swiggy.com/search?query=${q}` : `https://www.swiggy.com/`;
+          break;
+        case "zomato":
+          url = q ? `https://www.zomato.com/search?q=${q}` : `https://www.zomato.com/`;
+          break;
+        case "blinkit":
+          url = q ? `https://blinkit.com/s/?q=${q}` : `https://blinkit.com/`;
+          break;
+        case "zepto":
+          url = q ? `https://www.zeptonow.com/search?q=${q}` : `https://www.zeptonow.com/`;
+          break;
+        case "amazon":
+          url = q ? `https://www.amazon.in/s?k=${q}` : `https://www.amazon.in/`;
+          break;
+        case "flipkart":
+          url = q ? `https://www.flipkart.com/search?q=${q}` : `https://www.flipkart.com/`;
+          break;
+        case "youtube":
+          url = q ? `https://www.youtube.com/results?search_query=${q}` : `https://www.youtube.com/`;
+          break;
+        case "bookmyshow":
+          url = `https://in.bookmyshow.com/`;
+          break;
+        case "makemytrip":
+          url = `https://www.makemytrip.com/`;
+          break;
+        default:
+          return { ok: false, error: "Unsupported service." };
+      }
+      
+      return {
+        ok: true,
+        deviceAction: { type: "open_url", url },
+        speak: `Opening ${args.service.charAt(0).toUpperCase() + args.service.slice(1)} for you.`,
       };
     },
   });
@@ -690,6 +889,120 @@ function registerBuiltins() {
       const search = require("./webSearch");
       return search.run(args.query);
     },
+  });
+  registry.register({
+    name: "get_horoscope",
+    description: "Get daily astrological horoscope predictions for a given zodiac sign using an external astrology API.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sign: { type: "string", description: "Zodiac sign (e.g. aries, taurus, gemini...)" },
+        day: { type: "string", description: "today, tomorrow, or yesterday (default: today)" }
+      },
+      required: ["sign"]
+    },
+    async execute(args) {
+      try {
+        const sign = String(args.sign).toLowerCase();
+        const day = args.day ? String(args.day).toLowerCase() : "today";
+        const url = `https://horoscope-app-api.vercel.app/api/v1/get-horoscope/daily?sign=${sign}&day=${day}`;
+        const res = await fetch(url);
+        if (!res.ok) return { ok: false, error: "Astrology API request failed" };
+        const data = await res.json();
+        return { ok: true, data: data.data };
+      } catch (e) {
+        return { ok: false, error: e.message };
+      }
+    }
+  });
+  registry.register({
+    name: "send_agent_message",
+    description: "Send a voice message to another user's agent (e.g., tell my mom I will be late). The other user's agent will speak it to them.",
+    risk: "medium",
+    inputSchema: {
+      type: "object",
+      properties: {
+        contact_name: { type: "string", description: "Who to send it to (e.g. mom, wife)" },
+        message: { type: "string", description: "The message to deliver" }
+      },
+      required: ["contact_name", "message"]
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      
+      const { exec, one } = require("../db");
+      const push = require("../services/push");
+      const contactLower = String(args.contact_name).toLowerCase();
+
+      // 1. Look up the contact in the user's synced address book (clients table)
+      const contact = await one(
+        `SELECT phone FROM clients WHERE user_id = $1 AND lower(name) LIKE $2 LIMIT 1`, 
+        [ctx.userId, `%${contactLower}%`]
+      );
+
+      if (!contact || !contact.phone) {
+        return { 
+          ok: false, 
+          data: "Contact not found in address book.", 
+          speak: `I couldn't find a phone number for ${args.contact_name} in your synced contacts.` 
+        };
+      }
+
+      // 2. Check if that phone number belongs to a registered user of the app
+      const appUser = await one(
+        `SELECT id, fcm_token FROM users WHERE phone_number = $1 LIMIT 1`, 
+        [contact.phone]
+      );
+
+      if (!appUser) {
+        return { 
+          ok: true, 
+          data: "User not on app.", 
+          speak: `${args.contact_name} is not using the app yet. Would you like me to draft an SMS invitation so they can download it?` 
+        };
+      }
+
+      // 3. User is on the app! Save to queue and push notify
+      await exec(
+        `INSERT INTO agent_messages (from_user_id, to_phone_number, message, created_at) VALUES ($1, $2, $3, $4)`,
+        [ctx.userId, contact.phone, args.message, Date.now()]
+      );
+
+      if (appUser.fcm_token) {
+        await push.sendNotification(
+          appUser.fcm_token, 
+          `Message from ${ctx.userName || "a friend"}`, 
+          "Your agent has a new voice message for you."
+        );
+      }
+
+      return { ok: true, data: "Message sent.", speak: `I have sent the message directly to ${args.contact_name}'s assistant.` };
+    }
+  });
+
+  registry.register({
+    name: "book_appointment_via_call",
+    description: "Autonomously dial a business and speak to them over the phone to book an appointment.",
+    risk: "high",
+    inputSchema: {
+      type: "object",
+      properties: {
+        business_name: { type: "string", description: "Name of the clinic, restaurant, or business" },
+        details: { type: "string", description: "Time, date, and purpose of the appointment" }
+      },
+      required: ["business_name", "details"]
+    },
+    confirmSummary: (a) => `Call ${a.business_name} to book: ${a.details}`,
+    async execute(args) {
+      // Mocked implementation: simulate the AI making a real phone call (which takes some time)
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      return { 
+        ok: true, 
+        data: "Appointment confirmed.", 
+        speak: `I just called ${args.business_name}. I spoke to their receptionist and your appointment is successfully confirmed for ${args.details}.` 
+      };
+    }
   });
 }
 

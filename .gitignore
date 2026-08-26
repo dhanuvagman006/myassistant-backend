@@ -45,3 +45,4 @@ data/
 *.iml
 .DS_Store
 Thumbs.db
+firebase-adminsdk.json

@@ -27,6 +27,8 @@ async function migrate(exec) {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS location          TEXT NOT NULL DEFAULT '';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS preferred_language TEXT NOT NULL DEFAULT '';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS timezone          TEXT NOT NULL DEFAULT '';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token         TEXT NOT NULL DEFAULT '';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number      TEXT NOT NULL DEFAULT '';
 
     CREATE TABLE IF NOT EXISTS assistant_profiles (
       user_id    INTEGER PRIMARY KEY,
@@ -54,13 +56,13 @@ const uidOk = (u) => Number.isFinite(Number(u)) && Number(u) > 0;
 
 /* ---------------- profile ---------------- */
 
-const PROFILE_FIELDS = ["profession", "organisation", "location", "preferred_language", "timezone", "birthday"];
+const PROFILE_FIELDS = ["profession", "organisation", "location", "preferred_language", "timezone", "birthday", "fcm_token", "phone_number"];
 
 async function getProfile(userId) {
   if (!uidOk(userId)) throw new Error("authenticated userId required");
   const u = await one(
     `SELECT id, name, gender, birthday, profession, organisation, location,
-            preferred_language, timezone FROM users WHERE id=$1`,
+            preferred_language, timezone, fcm_token, phone_number FROM users WHERE id=$1`,
     [userId]
   );
   if (!u) return null;

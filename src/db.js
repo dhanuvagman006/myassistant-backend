@@ -74,6 +74,8 @@ async function init() {
     -- Migration for databases created before gender/birthday columns existed.
     ALTER TABLE users ADD COLUMN IF NOT EXISTS gender TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS birthday TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT UNIQUE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
 
     -- AUDIT LOG (Phase 1 / ADR-004): one row for every action the assistant
     -- performs on the user's behalf that touches the outside world or
@@ -237,7 +239,7 @@ async function init() {
 
   // Live avatar persistence: per-user personas (the brain hookup),
   // session records, and the rolling recent-conversation window.
-  await require("./avatar/schema").migrate((sql) => pool.query(sql));
+
 
   // SERIAL ids come back from pg as integers; BIGINT columns come back as
   // strings by default — parse them so Date-math keeps working.
