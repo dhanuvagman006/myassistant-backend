@@ -21,6 +21,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@livekit/rtc-node": "^0.13.34",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "bcryptjs": "^3.0.3",
     "chrono-node": "^2.10.0",
@@ -34,6 +35,9 @@
     "helmet": "^7.1.0",
     "jose": "^6.2.3",
     "jsonwebtoken": "^9.0.3",
+    "libphonenumber-js": "^1.13.12",
+    "livekit-client": "^2.22.1",
+    "livekit-server-sdk": "^2.18.0",
     "multer": "^2.2.0",
     "pg": "^8.22.0",
     "ws": "^8.21.3"

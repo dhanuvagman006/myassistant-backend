@@ -76,9 +76,15 @@ function liveSystemPrompt(assistantName = "Hari", unreadMessages = []) {
     "Never mention being an AI unless directly asked. Decline harmful requests politely and briefly.";
 
   if (unreadMessages.length > 0) {
-    prompt += "\n\nCRITICAL INSTRUCTION: You have the following unread voice messages from other users. You MUST read them out loud to the user IMMEDIATELY as your very first response:\n";
-    unreadMessages.forEach(m => {
-      prompt += `- Message: "${m.message}"\n`;
+    prompt +=
+      "\n\nCRITICAL INSTRUCTION: Another person's assistant has passed you " +
+      "the messages below for this user. Say them out loud IMMEDIATELY as " +
+      "your very first response, and ALWAYS say who each one is from — a " +
+      "message delivered without its sender is confusing and useless. " +
+      "Relay them naturally, as one person passing on word from another:\n";
+    unreadMessages.forEach((m) => {
+      const from = m.from_name || "someone";
+      prompt += `- From ${from}: "${m.message}"\n`;
     });
   }
   return prompt;
@@ -87,7 +93,7 @@ function liveSystemPrompt(assistantName = "Hari", unreadMessages = []) {
 /**
  * Bridges one app socket to one Gemini Live session.
  */
-async function bridge(appWs, user) {
+async function bridge(appWs, user, room) {
   const key = process.env.GEMINI_API_KEY;
   if (!key) {
     appWs.send(JSON.stringify({ type: "error", message: "no API key" }));
@@ -95,29 +101,70 @@ async function bridge(appWs, user) {
     return;
   }
 
+  // AVATAR MODE. When the app opened an avatar session it passes that
+  // room here, and the assistant's voice goes to the LiveKit room instead
+  // of down this socket — BEY republishes it in lockstep with the video,
+  // which is what keeps the lips on the words. If attach() returns null
+  // (unknown/expired room, or one belonging to another user) we simply
+  // stay in audio-only mode rather than failing the call.
+  const avatar = room ? require("../avatar/session").attach(room, user?.sub) : null;
+  if (room && !avatar) console.warn(`live: avatar room ${room} not attachable — audio only`);
+  // The app needs to know whether reply audio is coming down this socket
+  // or out of the avatar's track, so its own playback and "speaking"
+  // indicator stay honest as BEY comes and goes mid-call.
+  if (avatar) {
+    avatar.onReadyChange = (ready) => {
+      try {
+        appWs.send(JSON.stringify({ type: "avatar", ready }));
+      } catch (_) {}
+    };
+    // Tells the app exactly when Hari's voice is in the air, so it can hold
+    // the microphone shut for that whole stretch. The app cannot work this
+    // out for itself: the audio never reaches it, and the room's own
+    // speaker detection turned out to fire only sometimes — leaving the mic
+    // muted until a watchdog rescued it.
+    if ("onAudioActive" in avatar) {
+      avatar.onAudioActive = (speaking) => {
+        try {
+          appWs.send(JSON.stringify({ type: "avatar_speaking", speaking }));
+        } catch (_) {}
+      };
+    }
+  }
+
   // The assistant's configured name (Settings → Assistant). Resolved per
   // session so a rename applies to the very next live call. Anonymous dev
   // sessions fall back to the default.
   let assistantName = "Hari";
   let unreadMessages = [];
+  // The USER's own name, for tools that tell someone else who is calling.
+  // Without it, the push notification a recipient sees reads "Message from
+  // a friend" — which is the one detail that makes the message useful.
+  // First name only, matching the classic assistant path.
+  let userName = null;
   try {
     const uid = Number(user?.sub);
     if (Number.isFinite(uid) && uid > 0) {
       const p = await require("../users/context").getProfile(uid);
       if (p?.assistant?.name) assistantName = p.assistant.name;
+      if (p?.user?.name) userName = String(p.user.name).split(" ")[0];
       
 
+      // Only a verified number has an inbox; unverified accounts are NULL
+      // here, so this simply does not run for them.
       if (p?.user?.phone_number) {
         unreadMessages = await db.query(
-          `SELECT id, message FROM agent_messages WHERE status = 'unread' AND to_phone_number = $1`,
+          `SELECT m.id, m.message, u.name AS from_name
+             FROM agent_messages m
+             LEFT JOIN users u ON u.id = m.from_user_id
+            WHERE m.status = 'unread' AND m.to_phone_number = $1
+            ORDER BY m.created_at ASC`,
           [p.user.phone_number]
         );
-        if (unreadMessages.length > 0) {
-          await db.run(
-            `UPDATE agent_messages SET status = 'read' WHERE status = 'unread' AND to_phone_number = $1`,
-            [p.user.phone_number]
-          );
-        }
+        // NOT marked read here. These are marked only once the live session
+        // is actually established (see setupComplete): loading them is not
+        // delivering them, and a session that fails to start would otherwise
+        // consume someone's message and leave it unsaid forever.
       }
     }
   } catch (e) { console.error("Failed to load profile or messages:", e); }
@@ -146,6 +193,8 @@ async function bridge(appWs, user) {
       upstream.close();
     } catch (_) {}
     if (why) console.log(`live: session closed (${why})`);
+    // Ends BEY billing. Fired on every close path, including errors.
+    if (room) require("../avatar/session").detach(room);
   };
 
   upstream.on("open", () => {
@@ -184,6 +233,14 @@ async function bridge(appWs, user) {
 
     if (msg.setupComplete) {
       upstreamReady = true;
+      // The prompt carrying these messages has been accepted, so they are
+      // about to be spoken. Safe to retire them now — and only now.
+      if (unreadMessages.length > 0) {
+        db.run(
+          `UPDATE agent_messages SET status = 'read' WHERE id = ANY($1::bigint[])`,
+          [unreadMessages.map((m) => m.id)]
+        ).catch((e) => console.error("live: could not retire messages:", e.message));
+      }
       appWs.send(JSON.stringify({ type: "ready", model: LIVE_MODEL() }));
       for (const frame of pending.splice(0)) sendAudioUp(frame);
       return;
@@ -192,7 +249,7 @@ async function bridge(appWs, user) {
     if (msg.toolCall) {
       const responses = [];
       for (const fc of msg.toolCall.functionCalls || []) {
-        const res = await require("../tools/registry").execute(fc.name, fc.args, { userId: user?.sub, approved: true });
+        const res = await require("../tools/registry").execute(fc.name, fc.args, { userId: user?.sub, userName, approved: true });
         
         // If the tool produced a device action (like open_camera or contact_lookup),
         // we send it down the WebSocket so the app can perform the action.
@@ -211,14 +268,28 @@ async function bridge(appWs, user) {
     if (!sc) return;
 
     if (sc.interrupted) {
+      // Drop audio already queued for the avatar, or it keeps mouthing a
+      // sentence the user just talked over.
+      if (avatar && !avatar.closed) avatar.interrupt();
       appWs.send(JSON.stringify({ type: "interrupted" }));
     }
     const parts = sc.modelTurn?.parts || [];
     for (const p of parts) {
       const b64 = p.inlineData?.data;
       if (b64) {
+        const pcm = Buffer.from(b64, "base64");
+        // Exactly one destination. Sending to both would play the voice
+        // twice — once from the phone's own speaker path and once from
+        // the avatar's track, a beat apart.
+        //
+        // The test is avatarReady (BEY's video is genuinely on air), NOT
+        // merely "a room exists". A room whose avatar never rendered is a
+        // black hole: audio pushed there is heard by nobody and the user
+        // sits through a silent call. Falling back to the socket means a
+        // failed avatar costs the picture, never the conversation.
+        if (avatar && !avatar.closed && avatar.avatarReady) avatar.push(pcm);
         // Raw 24 kHz PCM straight through as binary — no re-encoding.
-        appWs.send(Buffer.from(b64, "base64"));
+        else appWs.send(pcm);
       }
     }
     if (sc.inputTranscription?.text) {
@@ -334,7 +405,8 @@ function attachWs(server) {
       socket.destroy();
       return;
     }
-    wss.handleUpgrade(req, socket, head, (ws) => bridge(ws, user));
+    const room = url.searchParams.get("room") || null;
+    wss.handleUpgrade(req, socket, head, (ws) => bridge(ws, user, room));
   });
 }
 

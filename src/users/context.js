@@ -28,7 +28,11 @@ async function migrate(exec) {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS preferred_language TEXT NOT NULL DEFAULT '';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS timezone          TEXT NOT NULL DEFAULT '';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token         TEXT NOT NULL DEFAULT '';
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number      TEXT NOT NULL DEFAULT '';
+    -- Nullable on purpose: NULL means "no verified number". A NOT NULL
+    -- default of '' would put every unverified account on one shared value,
+    -- which the uniqueness index in db.js could not tell apart from a real
+    -- collision.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number      TEXT;
 
     CREATE TABLE IF NOT EXISTS assistant_profiles (
       user_id    INTEGER PRIMARY KEY,
@@ -56,7 +60,14 @@ const uidOk = (u) => Number.isFinite(Number(u)) && Number(u) > 0;
 
 /* ---------------- profile ---------------- */
 
-const PROFILE_FIELDS = ["profession", "organisation", "location", "preferred_language", "timezone", "birthday", "fcm_token", "phone_number"];
+/// Fields the app may write directly through PUT /profile/details.
+///
+/// phone_number is deliberately NOT here. It is the address other people's
+/// agents deliver to, so it may only be set by POST /phone/verify, which
+/// reads it out of a verified Firebase OTP token. Leaving it writable here
+/// would let any signed-in client claim any number — including one already
+/// belonging to somebody else — and quietly receive that person's messages.
+const PROFILE_FIELDS = ["profession", "organisation", "location", "preferred_language", "timezone", "birthday", "fcm_token"];
 
 async function getProfile(userId) {
   if (!uidOk(userId)) throw new Error("authenticated userId required");

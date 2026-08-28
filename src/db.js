@@ -74,8 +74,36 @@ async function init() {
     -- Migration for databases created before gender/birthday columns existed.
     ALTER TABLE users ADD COLUMN IF NOT EXISTS gender TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS birthday TEXT;
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT UNIQUE;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
+
+    -- ---------------------------------------------------------------
+    -- IDENTITY: one verified phone number = one account.
+    --
+    -- This table used to carry TWO phone columns. "phone" had the UNIQUE
+    -- constraint but no code ever read or wrote it, so it was NULL for
+    -- every row; "phone_number" is the one the app writes and agent-to-
+    -- agent delivery looks up, and it had no constraint at all. The
+    -- uniqueness everyone assumed existed was sitting on a dead column,
+    -- and two accounts could claim the same number.
+    --
+    -- "phone_number" also defaulted to '' NOT NULL, so every account
+    -- without a phone shared one value — a plain unique index would have
+    -- collided on the empty string instead of enforcing anything. It is
+    -- made nullable here and blanks become NULL, because "no phone" is
+    -- absence, not a value two people can share.
+    -- ---------------------------------------------------------------
+    ALTER TABLE users ALTER COLUMN phone_number DROP DEFAULT;
+    ALTER TABLE users ALTER COLUMN phone_number DROP NOT NULL;
+    UPDATE users SET phone_number = NULL WHERE phone_number = '';
+
+    -- When was the number proven to be theirs (Firebase OTP)? NULL means
+    -- unverified, which the API treats as not having one at all.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified_at BIGINT;
+
+    -- Partial: only real numbers compete for uniqueness, so any number of
+    -- accounts may sit at NULL while none may share a number.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_number_unique
+      ON users (phone_number) WHERE phone_number IS NOT NULL;
 
     -- AUDIT LOG (Phase 1 / ADR-004): one row for every action the assistant
     -- performs on the user's behalf that touches the outside world or
@@ -328,6 +356,12 @@ function publicUser(u) {
     provider: u.provider,
     gender: u.gender || null,
     birthday: u.birthday || null,
+    // The app gates entry on this: an account without a VERIFIED number
+    // cannot be reached agent-to-agent, so it is not finished being set up.
+    // Reported as a boolean rather than the timestamp so the client never
+    // has to decide what counts as verified.
+    phone: u.phone_number || null,
+    phoneVerified: Boolean(u.phone_verified_at),
   };
 }
 

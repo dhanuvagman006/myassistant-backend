@@ -35,9 +35,9 @@ app.set("trust proxy", 1);
 app.use(helmet());
 
 // CORS — native mobile apps don't enforce it, but web-origin callers do:
-// the D-ID hosted face page's JS, any future web client, and local dev
-// tools. Permissive-by-default is safe here because real protection is
-// the auth layer (JWT / app key), not the origin.
+// any future web client, the avatar WebView page, and local dev tools.
+// Permissive-by-default is safe here because real protection is the auth
+// layer (JWT / app key), not the origin.
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", process.env.CORS_ORIGIN || "*");
   res.setHeader(
@@ -137,11 +137,8 @@ app.use("/assistant", appAuth, perUserLimit, assistantRoutes);
 
 // Onboarding survey + profile view (feeds users table + agent memory).
 app.use("/profile", appAuth, require("./routes/profile"));
-
-
-
-// D-ID WebRTC Room
-app.use("/avatar/room", require("./avatar/room"));
+app.use("/phone", appAuth, require("./routes/phone"));
+app.use("/contacts", appAuth, require("./routes/contacts"));
 
 // Phase 1 / ADR-004 — the user-visible audit trail of assistant actions.
 app.use("/actions", appAuth, require("./routes/actions"));
@@ -248,6 +245,9 @@ app.use("/region", regionRoute);
 app.use("/mcp", appAuth, require("./mcp/routes"));
 
 const live = require("./live/proxy");
+// Avatar routes mount FIRST: Express matches in order, and /live's probe
+// router would otherwise swallow /live/avatar/* before it gets here.
+app.use("/live/avatar", appAuth, require("./avatar/routes").router());
 app.use("/live", live.probeRouter());
 
 // Agent-level metrics (tool latency, job counts, agent turns). Mounted at
@@ -327,6 +327,35 @@ require("./db")
     console.log(
       `  live mode: model=${process.env.GEMINI_LIVE_MODEL || "gemini-2.5-flash-native-audio-preview"} at /live/ws (experimental)`
     );
+
+    const avatarSessions = require("./avatar/session");
+    const prov = avatarSessions.provider();
+    console.log(
+      `  avatar: ${
+        !avatarSessions.configured()
+          ? `disabled — provider=${prov}, missing ${
+              prov === "simli" ? "SIMLI_API_KEY" : "LIVEKIT_* / BEY_API_KEY"
+            }`
+          : prov === "simli"
+            ? `simli face=${require("./avatar/simli").faceId() || "(default)"}`
+            : `BEY ${require("./avatar/bey").avatarId()} via LiveKit`
+      }`
+    );
+
+    // A restart must not strand a live avatar room: nothing else would
+    // ever delete it, and BEY keeps billing an empty room until its own
+    // timeout. Deploys send SIGTERM, Ctrl-C sends SIGINT.
+    let shuttingDown = false;
+    for (const sig of ["SIGTERM", "SIGINT"]) {
+      process.on(sig, async () => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        try { await avatarSessions.stopAll(); } catch (_) {}
+        server.close(() => process.exit(0));
+        // Don't let a hung socket hold the paid room open indefinitely.
+        setTimeout(() => process.exit(0), 5000).unref();
+      });
+    }
   })
   .catch((e) => {
     console.error("FATAL: could not initialize Postgres:", e.message);

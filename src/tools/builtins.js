@@ -7,6 +7,7 @@
  * tool says so honestly rather than returning a pretend result (§28).
  */
 const registry = require("./registry");
+const { normalizePhone } = require("../users/phone");
 
 const weather = require("../services/tools/weather");
 const news = require("../services/tools/news");
@@ -935,10 +936,25 @@ function registerBuiltins() {
       const push = require("../services/push");
       const contactLower = String(args.contact_name).toLowerCase();
 
-      // 1. Look up the contact in the user's synced address book (clients table)
+      // 1. Resolve the name to a number.
+      //
+      // The synced phone address book first — that is where "mom" actually
+      // lives — then the user's curated client list. Exact matches win over
+      // partial ones so "Ann" cannot be answered with "Annabel"; among
+      // partials the shortest name is the closest fit.
       const contact = await one(
-        `SELECT phone FROM clients WHERE user_id = $1 AND lower(name) LIKE $2 LIMIT 1`, 
-        [ctx.userId, `%${contactLower}%`]
+        `SELECT phone FROM (
+           SELECT phone, (lower(name) = $2) AS exact, length(name) AS len
+             FROM contacts
+            WHERE user_id = $1 AND lower(name) LIKE $3
+           UNION ALL
+           SELECT phone, (lower(name) = $2) AS exact, length(name) AS len
+             FROM clients
+            WHERE user_id = $1 AND lower(name) LIKE $3 AND phone <> ''
+         ) m
+         ORDER BY exact DESC, len ASC
+         LIMIT 1`,
+        [ctx.userId, contactLower, `%${contactLower}%`]
       );
 
       if (!contact || !contact.phone) {
@@ -949,11 +965,26 @@ function registerBuiltins() {
         };
       }
 
-      // 2. Check if that phone number belongs to a registered user of the app
-      const appUser = await one(
-        `SELECT id, fcm_token FROM users WHERE phone_number = $1 LIMIT 1`, 
-        [contact.phone]
-      );
+      // 2. Check if that phone number belongs to a registered user of the app.
+      //
+      // Normalise first. This is an exact-string match, and the same person
+      // is "+91 98765 43210" in one address book and "9876543210" in
+      // another. Comparing raw text made real registered users look absent,
+      // and the failure was silent — the assistant simply said they were
+      // not on the app. Both sides go through E.164 so they meet.
+      //
+      // Only a VERIFIED number counts: phone_verified_at NULL means nobody
+      // proved they own it, so delivering there could hand this message to
+      // whoever typed it.
+      const toPhone = normalizePhone(contact.phone);
+      const appUser = toPhone
+        ? await one(
+            `SELECT id, fcm_token FROM users
+              WHERE phone_number = $1 AND phone_verified_at IS NOT NULL
+              LIMIT 1`,
+            [toPhone]
+          )
+        : null;
 
       if (!appUser) {
         return { 
@@ -964,17 +995,26 @@ function registerBuiltins() {
       }
 
       // 3. User is on the app! Save to queue and push notify
+      // Store the NORMALISED number: the recipient's session looks its own
+      // inbox up by the same E.164 value, so anything else never arrives.
       await exec(
         `INSERT INTO agent_messages (from_user_id, to_phone_number, message, created_at) VALUES ($1, $2, $3, $4)`,
-        [ctx.userId, contact.phone, args.message, Date.now()]
+        [ctx.userId, toPhone, args.message, Date.now()]
       );
 
+      // A nudge, not the message itself. The words are spoken by their own
+      // assistant when they open the app; putting them in the banner would
+      // also put them on a lock screen anyone can read.
       if (appUser.fcm_token) {
         await push.sendNotification(
-          appUser.fcm_token, 
-          `Message from ${ctx.userName || "a friend"}`, 
-          "Your agent has a new voice message for you."
+          appUser.fcm_token,
+          ctx.userName ? `${ctx.userName} sent you a message` : "You have a new message",
+          "Open the app and your assistant will read it to you."
         );
+      } else {
+        // Not an error: they simply have no device registered yet, so the
+        // message waits in their inbox until they next open the app.
+        console.log(`agent_message: no push token for user ${appUser.id} — will deliver on next open`);
       }
 
       return { ok: true, data: "Message sent.", speak: `I have sent the message directly to ${args.contact_name}'s assistant.` };

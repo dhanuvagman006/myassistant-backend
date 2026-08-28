@@ -6,19 +6,10 @@ let initialized = false;
 
 function init() {
   if (initialized) return;
-  const keyPath = path.join(__dirname, "../../firebase-adminsdk.json");
-  if (fs.existsSync(keyPath)) {
-    try {
-      const serviceAccount = require(keyPath);
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-      });
-      initialized = true;
-      console.log("Firebase Admin SDK initialized successfully.");
-    } catch (err) {
-      console.error("Failed to initialize Firebase Admin SDK:", err);
-    }
-  } else {
+  // Delegated so push and phone verification share ONE app: calling
+  // initializeApp twice throws, and each module used to keep its own flag.
+  initialized = require("./firebase").ensure();
+  if (!initialized) {
     console.warn("firebase-adminsdk.json not found. Push notifications will be skipped.");
   }
 }

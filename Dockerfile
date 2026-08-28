@@ -28,6 +28,16 @@ RUN npm ci --omit=dev
 # ---------- Stage 2: runtime ----------
 FROM node:20-slim
 
+# ca-certificates is REQUIRED, not cosmetic. @livekit/rtc-node's WebRTC
+# layer is native Rust and validates TLS against the SYSTEM trust store,
+# which node:20-slim ships empty. Node's own fetch bundles its CAs, so
+# HTTPS calls to BeyondPresence succeed while the LiveKit connection dies
+# with "no native root CA certificates found" — the avatar fails and
+# nothing else does. Keep this even if the image is slimmed further.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY --from=builder /app/node_modules ./node_modules
 COPY package.json ./
