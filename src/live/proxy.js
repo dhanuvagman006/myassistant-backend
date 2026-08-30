@@ -114,6 +114,10 @@ function liveSystemPrompt(assistantName = "Hari", unreadMessages = []) {
     "reminder or note. Mentioning someone's agent/assistant always means " +
     "send_agent_message. Relationship words (mom, amma, dad, appa) are " +
     "contact names — try them with the tool before asking who the person is. " +
+    "You can CREATE IMAGES: 'draw/make/design/generate a picture, poster, " +
+    "logo, card of X' means call generate_image now with a rich visual " +
+    "prompt — never say you can't make images. For video requests use " +
+    "generate_video and follow what it returns. " +
     "FACTS ABOUT PEOPLE go on that person's file, not into a reminder: " +
     "when I tell you something about someone — money owed either way, " +
     "health details, preferences, family — use add_person_note (with " +
