@@ -298,8 +298,10 @@ async function exotelPlaceCall({ to, id, token }) {
     CallType: "trans",
     TimeLimit: "240",
     CustomField: `${id}/${token}`,
+    // No StatusCallbackEvents: this account rejects every encoding of it
+    // ("Invalid 'StatusCallbackEvents' specified", live-tested) and the
+    // callback fires on terminal states by default anyway.
     StatusCallback: statusUrl,
-    "StatusCallbackEvents[0]": "terminal",
   });
   const r = await fetch(
     `https://${c.exoSub}/v1/Accounts/${encodeURIComponent(c.exoSid)}/Calls/connect.json`,
