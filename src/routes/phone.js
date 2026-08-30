@@ -95,21 +95,26 @@ router.post("/verify", async (req, res) => {
  * number) while that is being sorted out. This lets a number be claimed by
  * typing it.
  *
- * It is gated three ways because an ungated version of this endpoint is a
- * complete account-takeover primitive — anyone could claim anyone's number
- * and receive their messages:
- *   - ALLOW_DEV_PHONE_VERIFY must be explicitly "true"
- *   - NODE_ENV must not be production
- *   - the number still goes through normalisation AND the uniqueness rule,
- *     so it behaves exactly like the real thing for testing purposes
+ * GATING: an ungated version of this endpoint is a complete
+ * account-takeover primitive — anyone could claim anyone's number and
+ * receive their messages. The ALLOW_DEV_PHONE_VERIFY flag is the single
+ * gate (the old extra NODE_ENV!=production check was dropped 2026-08-30 at
+ * the owner's request so investor-demo/testing phones can register by
+ * typing a number in the production deployment); the number still goes
+ * through normalisation AND the uniqueness rule.
  *
- * Verified numbers registered this way are indistinguishable from OTP ones
- * afterwards, which is the point: the rest of the system can be exercised
- * end to end. Turn the flag off before anyone but you uses this build.
+ * ██ BEFORE MARKET RELEASE: set ALLOW_DEV_PHONE_VERIFY=false (and enable
+ * ██ Firebase Phone Auth / Blaze for real OTP). The boot warning below
+ * ██ exists so this cannot be forgotten.
  */
-const devVerifyAllowed = () =>
-  process.env.ALLOW_DEV_PHONE_VERIFY === "true" &&
-  process.env.NODE_ENV !== "production";
+const devVerifyAllowed = () => process.env.ALLOW_DEV_PHONE_VERIFY === "true";
+
+if (devVerifyAllowed()) {
+  console.warn(
+    "⚠️  ALLOW_DEV_PHONE_VERIFY is ON: phone numbers can be claimed by " +
+      "typing them (no OTP). Testing only — MUST be off for market release."
+  );
+}
 
 router.get("/dev-available", (_req, res) =>
   res.json({ available: devVerifyAllowed() })
