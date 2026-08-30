@@ -689,8 +689,12 @@ function registerBuiltins() {
   registry.register({
     name: "place_phone_call",
     description:
-      "Call one of the user's contacts from their phone. Use for 'call mom', " +
-      "'ring Ravi'. The call is dialled on the user's device.",
+      "Call one of the user's contacts. Use for 'call mom', 'ring Ravi'. " +
+      "When the user wants a message DELIVERED for them ('call Chethan and " +
+      "tell him I'll be late'), pass it as `message` — if the agent-calling " +
+      "service is configured, the assistant places the call itself and " +
+      "speaks the message so the user doesn't have to talk; otherwise the " +
+      "phone dials the contact directly for the user to speak.",
     risk: "high",
     deviceAction: true,
     inputSchema: {
@@ -699,7 +703,8 @@ function registerBuiltins() {
         name: { type: "string", description: "Contact name to call" },
         message: {
           type: "string",
-          description: "Optional message the user wants passed on",
+          description:
+            "The message to deliver or question to ask on the call, when the user asked you to pass one on",
         },
       },
       required: ["name"],
@@ -707,15 +712,25 @@ function registerBuiltins() {
     confirmSummary: (a) =>
       a.message ? `Call ${a.name} and say: ${a.message}` : `Call ${a.name}`,
     async execute(args) {
+      // The app decides HOW to act on this from agent_available: with a
+      // message and the relay configured it asks the server to place the
+      // call (Hari speaks it herself); otherwise it dials directly.
+      const agentAvailable = require("../agents/agentCall").enabled();
+      const relaying = Boolean(args.message) && agentAvailable;
       return {
         ok: true,
         deviceAction: {
           type: "resolve_and_call",
           name: args.name,
           message: args.message || null,
+          agent_available: agentAvailable,
         },
-        // Deliberately NOT "I called them" — the device hasn't dialled yet.
-        speak: `Calling ${args.name}…`,
+        // Deliberately NOT "I called them" — nothing has dialled yet.
+        speak: relaying
+          ? `Alright — I'll call ${args.name} and pass that on, then tell you how it went.`
+          : args.message
+            ? `I can't speak on calls myself on this setup, so I'm connecting you to ${args.name} directly.`
+            : `Calling ${args.name}…`,
       };
     },
   });
