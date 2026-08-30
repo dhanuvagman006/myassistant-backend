@@ -111,3 +111,29 @@ kubectl -n myassistant rollout undo deploy/myassistant-backend --to-revision=3
 
 Note: rollback reverts code, not data. If a bad release corrupted the DB,
 restore from the nightly backup as above.
+
+## Exotel agent calling ("call X and tell them Y" — Hari speaks on the call)
+
+1. Create an Exotel account (exotel.com), finish KYC, buy an ExoPhone
+   (virtual number).
+2. Dashboard → Settings → API: copy the **API key**, **API token**, and
+   your **Account SID**. Note your region's subdomain
+   (`api.in.exotel.com` for Mumbai accounts, `api.exotel.com` for
+   Singapore).
+3. Dashboard → **App Bazaar → Create App** (this is the call flow):
+   `Start → Greeting → Passthru → Hangup`
+   - **Greeting applet**: choose *Dynamic* / "text from URL" and set
+     `https://api.hariassistant.tech/agent-call/exotel/text`
+     (Exotel fetches the words to speak per call from here.)
+   - **Passthru applet**: URL
+     `https://api.hariassistant.tech/agent-call/exotel/passthru`,
+     "make async" OFF.
+   - Optional (lets Hari CAPTURE a spoken reply for "ask" tasks):
+     insert a **Record** applet between Greeting and Passthru.
+   - Save; the number in the App's URL is the **App ID**.
+4. Set env (k8s: `k3s kubectl set env deploy/myassistant-backend -n myassistant KEY=value …`):
+   `EXOTEL_API_KEY, EXOTEL_API_TOKEN, EXOTEL_SID,
+    EXOTEL_SUBDOMAIN, EXOTEL_FROM_NUMBER, EXOTEL_FLOW_APP_ID`
+   (`PUBLIC_BASE_URL` must be the public HTTPS URL — already set in prod.)
+5. Test: POST /agent-call {toNumber, contactName, task} → poll
+   GET /agent-call/:id. Exotel wins over Plivo when both are configured.

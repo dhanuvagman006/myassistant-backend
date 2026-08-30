@@ -167,4 +167,49 @@ webhooks.post("/:id/:token/hangup", (req, res) => {
   res.status(204).end();
 });
 
-module.exports = { router, webhooks };
+// ---------------- EXOTEL WEBHOOKS (mounted WITHOUT appAuth) ----------------
+// Exotel's dashboard applets call fixed URLs; each request carries
+// CustomField ("id/token") which authenticates the specific call. Applets
+// mostly use GET with query params; StatusCallback POSTs (form or JSON).
+
+const exotelWebhooks = express.Router();
+exotelWebhooks.use(express.urlencoded({ extended: false }));
+exotelWebhooks.use(express.json());
+
+const merged = (req) => ({ ...(req.query || {}), ...(req.body || {}) });
+
+// Greeting applet — returns PLAIN TEXT for Exotel's TTS to read aloud.
+exotelWebhooks.all("/text", (req, res) => {
+  try {
+    const text = agent.exotelText(merged(req));
+    if (!text) return res.status(404).send("Sorry, goodbye.");
+    res.set("Content-Type", "text/plain").send(text);
+  } catch (e) {
+    console.error("exotel text error:", e.message || e);
+    res.status(500).send("Sorry, goodbye.");
+  }
+});
+
+// Passthru applet — 200 continues the flow; carries RecordingUrl for
+// ask-mode replies.
+exotelWebhooks.all("/passthru", async (req, res) => {
+  try {
+    const ok = await agent.exotelPassthru(merged(req));
+    res.status(ok ? 200 : 404).end();
+  } catch (e) {
+    console.error("exotel passthru error:", e.message || e);
+    res.status(200).end(); // never fail the caller's flow for our error
+  }
+});
+
+// StatusCallback — terminal call state (completed / no-answer / failed).
+exotelWebhooks.all("/status", (req, res) => {
+  try {
+    agent.exotelStatus(merged(req));
+  } catch (e) {
+    console.error("exotel status error:", e.message || e);
+  }
+  res.status(200).end();
+});
+
+module.exports = { router, webhooks, exotelWebhooks };
