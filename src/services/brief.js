@@ -56,6 +56,7 @@ async function agendaOf(uid, tzOffsetMin) {
       if (Number.isFinite(due) && due > 0 && due - now > 36 * 3600_000) continue;
       out.push({
         kind: "reminder",
+        id: r.id,
         title: String(r.text || "").slice(0, 140),
         at: Number.isFinite(due) && due > 0 ? due : null,
       });
@@ -90,6 +91,7 @@ async function promisesOf(uid, tzOffsetMin) {
       limit: 6,
     });
     return rows.map((c) => ({
+      id: c.id,
       text:
         (c.owed_to ? `To ${c.owed_to}: ` : "") +
         String(c.text || "").slice(0, 140),
@@ -126,7 +128,7 @@ async function messagesOf(phoneNumber) {
 async function peopleOf(uid) {
   try {
     const rows = await db.query(
-      `SELECT c.name
+      `SELECT c.name, c.phone
          FROM contacts c
          JOIN users u ON u.phone_number = c.phone
                      AND u.phone_verified_at IS NOT NULL
@@ -134,7 +136,10 @@ async function peopleOf(uid) {
         ORDER BY c.name ASC LIMIT 24`,
       [uid]
     );
-    return rows.map((r) => ({ name: String(r.name || "").slice(0, 60) }));
+    return rows.map((r) => ({
+      name: String(r.name || "").slice(0, 60),
+      phone: String(r.phone || ""),
+    }));
   } catch (_) {
     return [];
   }
