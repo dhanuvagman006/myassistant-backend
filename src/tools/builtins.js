@@ -1247,47 +1247,52 @@ function registerBuiltins() {
         .replace(/['’]?s?\s+(agent|assistant)\s*$/i, "")
         .trim();
 
-      // 1. Resolve the name to a number.
-      //
-      // The synced phone address book first — that is where "mom" actually
-      // lives — then the user's curated client list. Exact matches win over
-      // partial ones so "Ann" cannot be answered with "Annabel"; among
-      // partials the shortest name is the closest fit.
-      const contact = await one(
-        `SELECT phone FROM (
-           SELECT phone, (lower(name) = $2) AS exact, length(name) AS len
-             FROM contacts
-            WHERE user_id = $1 AND lower(name) LIKE $3
-           UNION ALL
-           SELECT phone, (lower(name) = $2) AS exact, length(name) AS len
-             FROM clients
-            WHERE user_id = $1 AND lower(name) LIKE $3 AND phone <> ''
-         ) m
-         ORDER BY exact DESC, len ASC
-         LIMIT 1`,
-        [ctx.userId, contactLower, `%${contactLower}%`]
+      // 1. Resolve the name to a number — through the SHARED resolver,
+      // which ranks exact > whole-name nickname ("Ammmmaaa" for amma) >
+      // prefix > substring. The old inline LIKE query here picked the
+      // SHORTEST substring hit, which sent "message amma" to "Dammayathi".
+      const { resolveContact } = require("../users/resolve");
+      const { query } = require("../db");
+      const { match, candidates } = await resolveContact(
+        ctx.userId,
+        contactLower
       );
 
-      let contactPhone = contact?.phone || null;
+      let contactPhone = match?.phone || null;
+      if (!contactPhone && candidates.length) {
+        // Ambiguous by name — but THIS tool can only deliver to registered
+        // app users. If exactly one candidate is registered, they are the
+        // only possible recipient; more than one means genuinely ask.
+        const phones = candidates
+          .map((c) => normalizePhone(c.phone))
+          .filter(Boolean);
+        const regd = await query(
+          `SELECT phone_number FROM users
+            WHERE phone_number = ANY($1) AND phone_verified_at IS NOT NULL`,
+          [phones]
+        ).catch(() => []);
+        if (regd.length === 1) contactPhone = regd[0].phone_number;
+        else if (regd.length > 1) {
+          const names = candidates.map((c) => c.name).slice(0, 4).join(", ");
+          return {
+            ok: false,
+            data: `Ambiguous contact: ${names}`,
+            speak: `I found more than one match — ${names}. Who should get it?`,
+          };
+        }
+      }
       if (!contactPhone) {
         // Not in the address book — but the recipient may simply BE a
         // registered user whose name the user spoke ("Hemalatha"), saved
         // in contacts under something else entirely ("Ammmmaaa"). A single
         // unambiguous verified-user name match is safe to deliver to.
-        const users = await require("../db").query(
+        const users = await query(
           `SELECT phone_number FROM users
             WHERE phone_verified_at IS NOT NULL AND phone_number IS NOT NULL
               AND (lower(name) = $1 OR lower(name) LIKE $1 || ' %')`,
           [contactLower]
         ).catch(() => []);
         if (users.length === 1) contactPhone = users[0].phone_number;
-      }
-      if (!contactPhone) {
-        // Shared resolver last: it carries the nickname fallback (collapsed
-        // repeated letters) so "amma" finds a contact saved as "Ammmmaaa".
-        const { resolveContact } = require("../users/resolve");
-        const { match } = await resolveContact(ctx.userId, contactLower);
-        if (match?.phone) contactPhone = match.phone;
       }
       if (!contactPhone) {
         return {
