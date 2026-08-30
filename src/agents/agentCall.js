@@ -389,7 +389,15 @@ async function exotelPassthru(params) {
 /** StatusCallback: terminal state — reuses the Plivo hangup semantics. */
 function exotelStatus(params) {
   const rec = fromCustomField(params);
-  if (!rec) return false;
+  if (!rec) {
+    // A callback we cannot attribute leaves a call stuck "in_progress" —
+    // log the shape so the field mapping can be fixed from evidence.
+    console.warn(
+      "exotel status: no matching call for payload:",
+      JSON.stringify(params).slice(0, 400)
+    );
+    return false;
+  }
   onHangup(rec, params);
   return true;
 }

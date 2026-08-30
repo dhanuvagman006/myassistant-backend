@@ -175,6 +175,9 @@ webhooks.post("/:id/:token/hangup", (req, res) => {
 const exotelWebhooks = express.Router();
 exotelWebhooks.use(express.urlencoded({ extended: false }));
 exotelWebhooks.use(express.json());
+// Exotel's StatusCallback POSTs multipart/form-data (live-tested: the
+// urlencoded+json parsers both skipped it and the body arrived {}).
+exotelWebhooks.use(require("multer")().none());
 
 const merged = (req) => ({ ...(req.query || {}), ...(req.body || {}) });
 
