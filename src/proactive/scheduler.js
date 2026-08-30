@@ -145,11 +145,13 @@ async function buildBrief(userId, event) {
     if (!client) continue;
 
     if (client.summary) parts.push(`${client.name}: ${client.summary}`);
+    // Column is `text` — querying a nonexistent `note` column made this
+    // silently return null on every sweep, so "Last note" never appeared.
     const note = await one(
-      `SELECT note FROM client_notes WHERE client_id=$1 ORDER BY id DESC LIMIT 1`,
+      `SELECT text FROM client_notes WHERE client_id=$1 ORDER BY id DESC LIMIT 1`,
       [client.id]
     ).catch(() => null);
-    if (note?.note) parts.push(`Last note: ${String(note.note).slice(0, 160)}`);
+    if (note?.text) parts.push(`Last note: ${String(note.text).slice(0, 160)}`);
   }
 
   // Anything the user promised these people and hasn't done — the single

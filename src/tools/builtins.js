@@ -239,8 +239,56 @@ function registerBuiltins() {
     },
     async execute(args, ctx) {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
-      const p = await mem.upsertPerson(ctx.userId, args);
+      // The page tag (kind) follows the stated relationship, so "Riya is
+      // my friend" shows Friend on her card — not a default like Patient.
+      const p = await mem.upsertPerson(ctx.userId, {
+        ...args,
+        kind: args.relationship,
+      });
       return { ok: true, data: { id: p.id, name: p.name }, speak: "Noted." };
+    },
+  });
+
+  registry.register({
+    name: "add_person_note",
+    description:
+      "File a dated note on a PERSON's record — anything the user tells you " +
+      "about someone that is worth keeping: money owed either way ('Chetan " +
+      "owes me 15,000'), health details, preferences, family facts, things " +
+      "they said. The note lands on that person's page in the app and comes " +
+      "back whenever the user asks about them. Creates the person if they " +
+      "are not on file yet. This is the DEFAULT place for facts about a " +
+      "person — NOT create_reminder (reminders are only for 'remind me').",
+    risk: "medium",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Person's name" },
+        note: { type: "string", description: "The fact to file, in plain words, e.g. 'Owes me ₹15,000'" },
+        relationship: { type: "string", description: "friend, patient, client, colleague… when the user's words imply it" },
+      },
+      required: ["name", "note"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const p = await mem.upsertPerson(ctx.userId, {
+        name: args.name,
+        relationship: args.relationship,
+        // The page tag follows the stated relationship ("friend"), so a
+        // friend never gets filed looking like a patient.
+        kind: args.relationship,
+      });
+      const { run } = require("../db");
+      await run(
+        `INSERT INTO client_notes (user_id, client_id, text, created_at)
+         VALUES ($1,$2,$3,$4)`,
+        [ctx.userId, p.id, String(args.note).slice(0, 500), Date.now()]
+      );
+      return {
+        ok: true,
+        data: { person: p.name },
+        speak: `Noted on ${p.name}'s page.`,
+      };
     },
   });
 

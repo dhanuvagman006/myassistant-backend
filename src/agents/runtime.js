@@ -52,6 +52,13 @@ function systemPrompt(extra = "") {
     "starting it, never that it is done.\n" +
     "- If you need a detail to run a tool (a city, a date, a name), ask one " +
     "short question instead of guessing.\n" +
+    "- FACTS ABOUT PEOPLE go on that person's file, not into a reminder. " +
+    "When the user tells you something about someone — money owed either " +
+    "way ('Chetan owes me 15,000'), health details, preferences, family, " +
+    "decisions — use add_person_note (with remember_person for who they " +
+    "are). Use create_reminder ONLY when the user asks to be reminded or " +
+    "names a time to act. Use the relationship the user actually stated " +
+    "(friend, patient, client) — never assume one.\n" +
     "- NEVER end your reply promising to look something up ('one moment, " +
     "let me check') without actually calling the tool in this same turn. " +
     "Say the short line AND make the call together; the promise alone " +
