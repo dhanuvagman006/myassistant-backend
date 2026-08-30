@@ -1040,6 +1040,78 @@ function registerBuiltins() {
   });
 
   registry.register({
+    name: "get_app_usage",
+    description:
+      "The user's phone screen time, per app per day — 'how much did I use " +
+      "YouTube', 'what's my screen time', 'which apps am I wasting time " +
+      "on', 'help me reduce my phone usage'. Returns per-app minutes for " +
+      "recent days; use it to answer, compare days, and suggest realistic " +
+      "cuts (name the top offenders, suggest limits). If it reports no " +
+      "data, the Usage access permission is off — offer " +
+      "enable_usage_tracking.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        days: {
+          type: "integer",
+          description: "How many days back to include (default 7, max 30)",
+        },
+      },
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const { usageOf } = require("../routes/usage");
+      const days = Math.max(1, Math.min(30, Number(args.days) || 7));
+      const rows = await usageOf(ctx.userId, { days });
+      if (!rows.length) {
+        return {
+          ok: true,
+          data:
+            "No screen-time data yet. The phone reports it only after the " +
+            "user grants Usage access — offer to open that settings screen " +
+            "with enable_usage_tracking.",
+        };
+      }
+      // Compact per-day summary the model can reason over.
+      const byDay = {};
+      for (const r of rows) {
+        (byDay[r.day] ||= []).push(`${r.app_name}: ${r.minutes}m`);
+      }
+      const lines = Object.entries(byDay).map(([day, apps]) => {
+        const total = rows
+          .filter((r) => r.day === day)
+          .reduce((s, r) => s + r.minutes, 0);
+        return `${day} (total ${Math.floor(total / 60)}h${total % 60}m): ${apps
+          .slice(0, 8)
+          .join(", ")}`;
+      });
+      return { ok: true, data: lines.join("\n") };
+    },
+  });
+
+  registry.register({
+    name: "enable_usage_tracking",
+    description:
+      "Open the phone's Usage access settings screen so the user can grant " +
+      "screen-time permission to this app. Use when get_app_usage has no " +
+      "data and the user wants usage tracking. Tell them to find this app " +
+      "in the list and switch Usage access ON.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: { type: "object", properties: {} },
+    async execute() {
+      return {
+        ok: true,
+        deviceAction: { type: "open_usage_access" },
+        speak:
+          "Opening the Usage access settings — find me in the list and " +
+          "switch it on. From tomorrow I'll know your screen time.",
+      };
+    },
+  });
+
+  registry.register({
     name: "open_webpage",
     description:
       "Open ANY website on the user's phone — 'open the income tax filing " +

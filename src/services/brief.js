@@ -145,6 +145,25 @@ async function peopleOf(uid) {
   }
 }
 
+/// Yesterday's screen time in one line ("4h 10m yesterday · most: YouTube
+/// 2h 5m"), or null until the phone has synced any usage data.
+async function screenTimeOf(uid) {
+  try {
+    const { usageOf } = require("../routes/usage");
+    const rows = await usageOf(uid, { days: 2 });
+    const y = new Date(Date.now() - 24 * 3600_000);
+    const day = `${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, "0")}-${String(y.getDate()).padStart(2, "0")}`;
+    const yest = rows.filter((r) => r.day === day);
+    if (!yest.length) return null;
+    const total = yest.reduce((s, r) => s + r.minutes, 0);
+    const top = yest[0];
+    const fmt = (m) => (m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`);
+    return `${fmt(total)} yesterday · most: ${top.app_name} ${fmt(top.minutes)}`;
+  } catch (_) {
+    return null;
+  }
+}
+
 async function weatherLineOf({ lat, lng, city }) {
   try {
     const weather = require("./tools/weather");
@@ -190,7 +209,7 @@ async function buildBrief(uid, opts = {}) {
       ? String(profile.user.location)
       : undefined;
 
-  const [agenda, promises, messages, people, weather_line, headlines] =
+  const [agenda, promises, messages, people, weather_line, headlines, screen_time] =
     await Promise.all([
       agendaOf(uid, tz),
       promisesOf(uid, tz),
@@ -198,6 +217,7 @@ async function buildBrief(uid, opts = {}) {
       peopleOf(uid),
       weatherLineOf({ lat: opts.lat, lng: opts.lng, city }),
       headlinesOf(),
+      screenTimeOf(uid),
     ]);
 
   return {
@@ -209,6 +229,7 @@ async function buildBrief(uid, opts = {}) {
     people,
     people_count: people.length,
     headlines,
+    screen_time,
   };
 }
 
