@@ -94,5 +94,38 @@ router.get("/count", async (req, res) => {
   res.json({ count: row?.count ?? 0 });
 });
 
+
+// GET /contacts/resolve?name=… — server-side name→number resolution, used
+// by the app when the DEVICE contact lookup finds nothing (contact saved
+// under a nickname, or the caller spoke a registered user's name). Checks
+// the synced address book + clients first, then falls back to a single
+// unambiguous verified app user by name.
+router.get("/resolve", async (req, res) => {
+  const uid = Number(req.user?.sub);
+  const name = String(req.query.name || "").trim();
+  if (!Number.isInteger(uid) || uid <= 0 || !name) {
+    return res.json({ match: null, candidates: [] });
+  }
+  try {
+    const out = await require("../users/resolve").resolveContact(uid, name, { limit: 4 });
+    if (!out.match && !out.candidates.length) {
+      const users = await db.query(
+        `SELECT name, phone_number AS phone FROM users
+          WHERE phone_verified_at IS NOT NULL AND phone_number IS NOT NULL
+            AND id <> $2
+            AND (lower(name) = lower($1) OR lower(name) LIKE lower($1) || ' %')`,
+        [name, uid]
+      );
+      if (users.length === 1) {
+        return res.json({ match: { name: users[0].name, phone: users[0].phone, source: "app-user" }, candidates: [] });
+      }
+    }
+    res.json(out);
+  } catch (e) {
+    console.error("contacts resolve failed:", e.message);
+    res.json({ match: null, candidates: [] });
+  }
+});
+
 module.exports = router;
 module.exports.migrate = migrate;

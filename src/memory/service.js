@@ -82,8 +82,57 @@ async function findPerson(userId, name) {
         WHERE user_id=$1 AND archived=0 AND lower(name) LIKE lower($2)||'%'
         ORDER BY updated_at DESC LIMIT 1`,
       [uid, nm]
-    ))
+    )) ||
+    // FUZZY fallback. These names arrive from SPEECH transcription, which
+    // drops and swaps letters mid-word — "Hemalatha" came through as
+    // "Hemalata", which is neither an exact nor a prefix match, and the
+    // assistant then claimed it knew nothing about a person whose file it
+    // had saved a minute earlier. Small edit distance (≤2, scaled by
+    // length) on the full name or its first word absorbs that.
+    (await fuzzyPerson(uid, nm))
   );
+}
+
+async function fuzzyPerson(uid, nm) {
+  const rows = await query(
+    `SELECT * FROM clients WHERE user_id=$1 AND archived=0
+      ORDER BY updated_at DESC LIMIT 200`,
+    [uid]
+  ).catch(() => []);
+  const q = nm.toLowerCase();
+  let best = null;
+  let bestD = Infinity;
+  for (const r of rows) {
+    const full = String(r.name || "").toLowerCase();
+    const first = full.split(/\s+/)[0] || full;
+    const d = Math.min(editDistance(q, full), editDistance(q, first));
+    const budget = Math.max(1, Math.min(2, Math.floor(q.length / 4)));
+    if (d <= budget && d < bestD) {
+      bestD = d;
+      best = r;
+    }
+  }
+  return best;
+}
+
+/** Plain Levenshtein — names are short, the O(n·m) table is nothing. */
+function editDistance(a, b) {
+  const m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) {
+      cur[j] = Math.min(
+        prev[j] + 1,
+        cur[j - 1] + 1,
+        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+    }
+    prev = cur;
+  }
+  return prev[n];
 }
 
 /* ------------------------------------------------------------------ */

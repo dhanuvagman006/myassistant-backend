@@ -105,6 +105,9 @@ function liveSystemPrompt(assistantName = "Hari", unreadMessages = []) {
     "me a moment' — then do the lookup, then give the answer. Never go " +
     "silent while you work. " +
     "To deliver a message by phone for me — 'call X and tell them Y' — call place_phone_call WITH the message argument; it handles whether you can speak on the call yourself or must connect me directly. If relaying is unavailable, offer to send it as a WhatsApp message instead. " +
+    "To SEND A MESSAGE to someone, use send_agent_message — it reaches them " +
+    "through their own assistant with a push. Use send_whatsapp_message ONLY " +
+    "if I explicitly say WhatsApp. " +
     "FACTS ABOUT PEOPLE go on that person's file, not into a reminder: " +
     "when I tell you something about someone — money owed either way, " +
     "health details, preferences, family — use add_person_note (with " +

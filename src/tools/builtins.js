@@ -886,6 +886,9 @@ function registerBuiltins() {
   registry.register({
     name: "send_whatsapp_message",
     description:
+      "ONLY when the user EXPLICITLY says WhatsApp ('whatsapp Ravi…', 'send " +
+      "it on WhatsApp'). For a plain 'send a message to X' use " +
+      "send_agent_message instead. " +
       "Write and send a WhatsApp message for the user. Give the recipient by " +
       "NAME as the user said it ('Ravi', 'my wife', 'the project group') — " +
       "the number is looked up from their contacts. Use for 'whatsapp Ravi " +
@@ -1160,7 +1163,13 @@ function registerBuiltins() {
   });
   registry.register({
     name: "send_agent_message",
-    description: "Send a voice message to another user's agent (e.g., tell my mom I will be late). The other user's agent will speak it to them.",
+    description:
+      "THE DEFAULT way to send a message to a person — 'send a message to " +
+      "X', 'tell X that…', 'let X know…'. Delivers through the recipient's " +
+      "OWN assistant: they get a push notification and their assistant " +
+      "speaks it aloud, naming the sender. Use send_whatsapp_message ONLY " +
+      "when the user explicitly says WhatsApp. If the recipient turns out " +
+      "not to be reachable this way, this tool says so — offer WhatsApp then.",
     risk: "medium",
     inputSchema: {
       type: "object",
@@ -1200,11 +1209,25 @@ function registerBuiltins() {
         [ctx.userId, contactLower, `%${contactLower}%`]
       );
 
-      if (!contact || !contact.phone) {
-        return { 
-          ok: false, 
-          data: "Contact not found in address book.", 
-          speak: `I couldn't find a phone number for ${args.contact_name} in your synced contacts.` 
+      let contactPhone = contact?.phone || null;
+      if (!contactPhone) {
+        // Not in the address book — but the recipient may simply BE a
+        // registered user whose name the user spoke ("Hemalatha"), saved
+        // in contacts under something else entirely ("Ammmmaaa"). A single
+        // unambiguous verified-user name match is safe to deliver to.
+        const users = await require("../db").query(
+          `SELECT phone_number FROM users
+            WHERE phone_verified_at IS NOT NULL AND phone_number IS NOT NULL
+              AND (lower(name) = $1 OR lower(name) LIKE $1 || ' %')`,
+          [contactLower]
+        ).catch(() => []);
+        if (users.length === 1) contactPhone = users[0].phone_number;
+      }
+      if (!contactPhone) {
+        return {
+          ok: false,
+          data: "Contact not found in address book.",
+          speak: `I couldn't find a phone number for ${args.contact_name} in your synced contacts.`
         };
       }
 
@@ -1219,7 +1242,7 @@ function registerBuiltins() {
       // Only a VERIFIED number counts: phone_verified_at NULL means nobody
       // proved they own it, so delivering there could hand this message to
       // whoever typed it.
-      const toPhone = normalizePhone(contact.phone);
+      const toPhone = normalizePhone(contactPhone);
       const appUser = toPhone
         ? await one(
             `SELECT id, fcm_token FROM users
