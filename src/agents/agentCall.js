@@ -326,7 +326,18 @@ async function exotelPlaceCall({ to, id, token }) {
 function fromCustomField(params) {
   const cf = String(params.CustomField || params.custom_field || "").trim();
   const [id, token] = cf.split("/");
-  return get(id, token);
+  const rec = get(id, token);
+  if (rec) return rec;
+  // The StatusCallback payload does NOT carry CustomField the way applets
+  // do (live-tested: /text and /passthru have it, /status doesn't) — fall
+  // back to Exotel's own Call Sid, which we stored when placing the call.
+  const sid = String(params.CallSid || params.Sid || params.call_sid || "").trim();
+  if (sid) {
+    for (const c of calls.values()) {
+      if (c.plivoUuid === sid) return c;
+    }
+  }
+  return null;
 }
 
 /** Greeting applet's dynamic-text URL: the words Hari speaks on the call. */
