@@ -25,9 +25,12 @@ const MAX_MEMORIES = 60; // per user; oldest low-importance evicted
 /** All memories for a user, most important + newest first. */
 async function listMemories(userId) {
   if (!userId) return [];
+  // valid=1 matters: forget_memory soft-deletes by setting valid=0, and
+  // without the filter a "forgotten" fact kept coming back here — in
+  // recall_memory and in every system prompt via memoryBlock below.
   return query(
     `SELECT id, fact, importance, created_at FROM agent_memories
-      WHERE user_id=$1 ORDER BY importance DESC, id DESC LIMIT $2`,
+      WHERE user_id=$1 AND valid=1 ORDER BY importance DESC, id DESC LIMIT $2`,
     [userId, MAX_MEMORIES]
   );
 }

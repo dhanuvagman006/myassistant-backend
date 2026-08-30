@@ -6,17 +6,24 @@
  * is admin.apps — the SDK's own state — so it holds no matter which module
  * gets there first or how many more start using it later.
  */
-const admin = require("firebase-admin");
+// firebase-admin v12+ removed the old namespaced API: `admin.apps`,
+// `admin.credential.cert`, `admin.messaging()` and `admin.auth()` are gone
+// (admin.apps is undefined and everything else throws). Every push and
+// every phone-verification check was silently failing because of this —
+// the errors were caught and reported as "skipped". The modular imports
+// below are the only API v12+ supports.
+const { initializeApp, getApps, cert } = require("firebase-admin/app");
+const { getAuth } = require("firebase-admin/auth");
 const fs = require("fs");
 const path = require("path");
 
 const KEY_PATH = path.join(__dirname, "../../firebase-adminsdk.json");
 
 function ensure() {
-  if (admin.apps.length) return true;
+  if (getApps().length) return true;
   if (!fs.existsSync(KEY_PATH)) return false;
   try {
-    admin.initializeApp({ credential: admin.credential.cert(require(KEY_PATH)) });
+    initializeApp({ credential: cert(require(KEY_PATH)) });
     return true;
   } catch (e) {
     // "already exists" means another module won the race — that is success.
@@ -40,11 +47,11 @@ const configured = () => fs.existsSync(KEY_PATH);
 async function verifyIdToken(idToken) {
   if (!idToken || !ensure()) return null;
   try {
-    return await admin.auth().verifyIdToken(String(idToken), true);
+    return await getAuth().verifyIdToken(String(idToken), true);
   } catch (e) {
     console.warn("firebase: token rejected:", String(e.message).slice(0, 140));
     return null;
   }
 }
 
-module.exports = { admin, ensure, configured, verifyIdToken };
+module.exports = { ensure, configured, verifyIdToken };

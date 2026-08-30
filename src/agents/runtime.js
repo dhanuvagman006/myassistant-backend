@@ -17,7 +17,11 @@
  */
 const registry = require("../tools/registry");
 const { registerBuiltins } = require("../tools/builtins");
-const { generateWithTools } = require("../services/ai/router");
+const {
+  generateWithTools,
+  generateWithToolsStream,
+} = require("../services/ai/router");
+const { sentenceSplitter } = require("./sentences");
 
 registerBuiltins();
 
@@ -35,10 +39,30 @@ function systemPrompt(extra = "") {
     "Never guess at something a tool can tell you.\n\n" +
     "CRITICAL HONESTY RULES:\n" +
     "- If a tool fails, say plainly what failed. Never pretend it worked.\n" +
+    "- If a tool reports that an integration is not configured, do NOT " +
+    "describe it to the user as a technical error. Try another route — " +
+    "web_search, consult_knowledge — and only say you cannot help if there " +
+    "genuinely is no other way.\n" +
     "- Phone calls and camera open ON THE USER'S DEVICE. Say you are " +
     "starting it, never that it is done.\n" +
     "- If you need a detail to run a tool (a city, a date, a name), ask one " +
     "short question instead of guessing.\n" +
+    "- NEVER end your reply promising to look something up ('one moment, " +
+    "let me check') without actually calling the tool in this same turn. " +
+    "Say the short line AND make the call together; the promise alone " +
+    "leaves the user waiting for an answer that never comes.\n" +
+    "- RULES vs FACTS. consult_knowledge answers questions about RULES, " +
+    "RIGHTS, LAWS and official PROCEDURES. It must NOT be called for live " +
+    "facts — flight or train timings, prices, availability, weather, news, " +
+    "opening hours. Those are search questions. Asking it for flight times " +
+    "returns transport LAW, which is not what the user wanted.\n" +
+    "- On law, government paperwork, tax and health, never answer from your " +
+    "own memory: call consult_knowledge and answer only from what it " +
+    "returns. In particular India replaced the IPC, CrPC and " +
+    "Evidence Act with the BNS, BNSS and BSA on 1 July 2024, so your " +
+    "recollection of section numbers is out of date — 'Section 420' and " +
+    "'Section 302' no longer exist. A wrong citation is worse than saying " +
+    "you don't know.\n" +
     extra
   );
 }
@@ -78,28 +102,72 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
 
   const deviceActions = [];
   const toolResults = [];
+  // Every piece of text the model produced across rounds, in order — a
+  // spoken preamble before a tool call ("one second, let me check") is part
+  // of the reply, so the transcript must contain it too.
+  const spoken = [];
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const out = await generateWithTools({
-      contents,
-      system: systemPrompt(ctx.extraSystem || ""),
-      declarations,
-    });
+    // STREAMING (voice latency). Text deltas are split into sentences and
+    // surfaced through onEvent the moment each completes, so the app can
+    // start speaking sentence 1 while the rest of the reply — or a tool
+    // call — is still generating. This is what turns "wait five seconds,
+    // then hear everything" into a conversation.
+    const splitter = sentenceSplitter((sentence) =>
+      onEvent("sentence", { text: sentence })
+    );
+    let out;
+    try {
+      out = await generateWithToolsStream({
+        contents,
+        system: systemPrompt(ctx.extraSystem || ""),
+        declarations,
+        onDelta: (d) => splitter.push(d),
+      });
+    } catch (e) {
+      // Streaming hiccuped — the turn must survive, so fall back to the
+      // non-streaming call and deliver its text as sentences the same way.
+      out = await generateWithTools({
+        contents,
+        system: systemPrompt(ctx.extraSystem || ""),
+        declarations,
+      });
+      if (out.text) splitter.push(out.text);
+    }
+    splitter.finish();
+    if (out.text) spoken.push(out.text.trim());
 
     if (!out.functionCalls.length) {
       return {
-        text: out.text || "",
+        text: spoken.join(" ").trim(),
         deviceActions,
         toolResults,
       };
     }
 
-    // Record the model's tool calls so the follow-up request has them.
+    // Record the model's turn (any preamble text plus its tool calls) so
+    // the follow-up request has the full context. Each part carries its
+    // thoughtSignature back — Gemini 3 rejects the follow-up without it.
     contents.push({
       role: "model",
-      parts: out.functionCalls.map((c) => ({
-        functionCall: { name: c.name, args: c.args },
-      })),
+      parts: [
+        ...(out.text
+          ? [
+              {
+                text: out.text,
+                ...(out.textSignature
+                  ? { thoughtSignature: out.textSignature }
+                  : {}),
+              },
+            ]
+          : []),
+        ...out.functionCalls.map((c) => ({
+          functionCall: { name: c.name, args: c.args },
+          ...(c.thoughtSignature
+            ? { thoughtSignature: c.thoughtSignature }
+            : {}),
+        })),
+      ],
     });
 
     const responseParts = [];
@@ -138,11 +206,11 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
     contents.push({ role: "user", parts: responseParts });
   }
 
-  // Ran out of rounds — answer with whatever the tools produced rather
+  // Ran out of rounds — answer with whatever was said/produced rather
   // than looping forever.
   const last = toolResults[toolResults.length - 1];
   return {
-    text: last && last.speak ? last.speak : "",
+    text: spoken.join(" ").trim() || (last && last.speak ? last.speak : ""),
     deviceActions,
     toolResults,
   };

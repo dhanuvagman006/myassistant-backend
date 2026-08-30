@@ -71,6 +71,7 @@ function newSession(userSub, userName) {
     pendingContactName: null, // waiting for device contact matches
     pendingCallTask: null, // agent-call task ("tell her I'll be late")
     agentRetries: 0, // retries used on the current agent-call request
+    interpreter: null, // { a, b } while acting as an interpreter
   };
   sessions.set(sid, s);
   return s;
@@ -279,26 +280,83 @@ async function runViaAgent(s, req, userText) {
       lng: Number(req.query?.lng) || undefined,
       history: (s.history || []).slice(-8),
       approved: false,
+      // Fulfillment needs these: the caller's first name goes into the
+      // script Hari speaks to a business, the platform decides whether a
+      // deep link can use an Android intent:// URL, and the timezone turns
+      // "tomorrow at 8" into a real timestamp.
+      userName: s.userName ? String(s.userName).split(" ")[0] : null,
+      platform: String(req.query?.platform || req.get?.("X-Platform") || "").toLowerCase() || null,
+      tzOffsetMin: Number(req.query?.tz) || 330,
+      lang: s.lang || null,
     };
 
+    // COMMITMENT CAPTURE — deliberately NOT awaited.
+    //
+    // "I'll send Ravi the proposal by Friday" needs a model call to parse,
+    // and that must never sit in front of the spoken reply. It runs
+    // alongside the turn and files itself whenever it finishes; a promise
+    // recorded half a second late costs nothing, a reply half a second
+    // late is heard as a pause.
+    require("../commitments/service").extractAsync(ctx.userId, userText, {
+      source: "voice",
+    });
+
+    // While interpreting, the role instruction leads the system prompt for
+    // every turn — the model's default instinct is to answer questions, and
+    // an interpreter must never do that.
+    if (s.interpreter) {
+      ctx.extraSystem = `\n\n${s.interpreter.instructions}` + (ctx.extraSystem || "");
+    }
+
     state(s, "thinking");
+    // Sentences stream out the moment the model finishes each one; the app
+    // synthesizes + speaks sentence 1 while sentence 2 is still being
+    // written. This is the same latency path the conversation agent used,
+    // now applied to EVERY agent-runtime turn.
+    let streamedSentences = 0;
     const out = await runAgentTurn(userText, ctx, (ev, payload) => {
       // Surfaces "using a tool" so the UI can show real progress (§20).
+      // The event name must be the one the app listens for — it switches on
+      // "tool_started", so "tool_start" rendered nothing at all.
       if (ev === "tool_start") {
         state(s, "using_tool");
-        emit(s, { type: "tool_start", name: payload.name });
+        emit(s, { type: "tool_started", name: payload.name, tool: payload.name });
+      }
+      if (ev === "sentence" && payload.text && !s.cancelled) {
+        if (streamedSentences === 0) state(s, "speaking");
+        streamedSentences++;
+        emit(s, { type: "assistant_sentence", text: payload.text });
       }
     });
 
+    if (s.cancelled) {
+      s.busy = false;
+      return true;
+    }
+
     // High-risk action: ask before doing anything.
+    //
+    // Two bugs lived here. The event was emitted as "confirm_action" while
+    // the app only understands "confirmation_request", so the card never
+    // appeared; and the pending tool was written to s.pendingTool, which
+    // nothing ever read, so even a "yes" could not have run it. Both the
+    // name and the storage now match what the rest of the system expects.
     if (out.needsConfirmation) {
-      s.pendingTool = out.needsConfirmation;
+      s.pending = {
+        action: "tool",
+        tool: out.needsConfirmation.tool,
+        args: out.needsConfirmation.args,
+        summary: out.needsConfirmation.summary,
+        ctx,
+      };
       state(s, "speaking");
       emit(s, {
-        type: "confirm_action",
-        summary: out.needsConfirmation.summary,
+        type: "confirmation_request",
+        action: "tool",
+        question: out.needsConfirmation.summary,
+        message: out.needsConfirmation.summary,
       });
-      state(s, "completed");
+      state(s, "waiting_for_confirmation");
       s.busy = false;
       return true;
     }
@@ -308,6 +366,60 @@ async function runViaAgent(s, req, userText) {
     for (const a of out.deviceActions) {
       if (a.type === "open_camera") emit(s, { type: "open_camera", note: a.note });
       else if (a.type === "open_video") emit(s, { type: "open_video" });
+      // Deep links (food, rides, tickets, music, WhatsApp, navigation,
+      // alarms). Five tools have produced these for a while, but the loop
+      // never forwarded them, so every one of those tools silently did
+      // nothing on the voice loop.
+      else if (a.type === "open_url" && a.url) {
+        emit(s, { type: "open_url", url: a.url });
+      }
+      // INTERPRETER MODE — a role change that must OUTLAST this turn, so
+      // it is held on the session and folded into the system prompt of
+      // every following turn. Handling it as a one-off event would have
+      // translated exactly one sentence and then gone back to assisting.
+      else if (a.type === "interpreter_mode") {
+        s.interpreter = a.active ? { a: a.a, b: a.b, instructions: a.instructions } : null;
+        emit(s, {
+          type: "interpreter_mode",
+          active: Boolean(a.active),
+          languages: a.active ? [a.a, a.b] : [],
+        });
+      }
+      // Citations — currently the legal tools. The sections Hari just
+      // quoted go on screen with their source links, so the user can
+      // check the law rather than take her word for it.
+      else if (a.type === "search_results") {
+        emit(s, { type: "search_results", query: a.query, results: a.results });
+      }
+      // Hari is on the phone to a business right now. Follow the call to
+      // its real end and speak the true outcome.
+      else if (a.type === "fulfillment_call") {
+        // streamed:true when the sentences were already spoken as they
+        // arrived — display only, no second read-aloud.
+        if (out.text) {
+          emit(s, {
+            type: "assistant_message",
+            text: out.text,
+            streamed: streamedSentences > 0,
+          });
+        }
+        await followFulfillmentCall(s, a);
+        return true;
+      }
+      // Hari is on the phone agreeing a meeting time. Same shape as a
+      // fulfillment call, but the ending is different: a slot has to be
+      // interpreted and written to the calendar.
+      else if (a.type === "scheduling_call") {
+        if (out.text) {
+          emit(s, {
+            type: "assistant_message",
+            text: out.text,
+            streamed: streamedSentences > 0,
+          });
+        }
+        await followSchedulingCall(s, a);
+        return true;
+      }
       else if (a.type === "resolve_and_call") {
         s.pendingContactName = a.name;
         s.pendingCallTask = a.message || null;
@@ -316,6 +428,14 @@ async function runViaAgent(s, req, userText) {
         emit(s, { type: "contact_lookup", name: a.name });
         return true; // waits for POST /contacts
       }
+      // Anything else the phone knows how to perform — capture_document,
+      // analyze_camera, documents, … — is forwarded as-is, the same way
+      // the live proxy's fallthrough does. Without this, "scan this" said
+      // "opening the camera" on the voice loop and nothing ever opened,
+      // and recalled documents never reached the screen.
+      else if (a.type) {
+        emit(s, a);
+      }
     }
 
     const text = String(out.text || "").trim();
@@ -323,7 +443,9 @@ async function runViaAgent(s, req, userText) {
 
     if (text) {
       state(s, "speaking");
-      emit(s, { type: "assistant_message", text });
+      // streamed:true tells the app the sentences were already displayed
+      // and spoken as they arrived — settle the transcript, don't re-speak.
+      emit(s, { type: "assistant_message", text, streamed: streamedSentences > 0 });
       s.history = [
         ...(s.history || []),
         { role: "user", content: userText },
@@ -562,12 +684,19 @@ router.post("/:sid/audio", upload.single("audio"), async (req, res) => {
     // is down, their microphone is fine).
     const firstSttFailure = sttError && !s.sttFailedOnce;
     if (sttError) s.sttFailedOnce = true;
+    // A SELF-REOPENED mic (continuous loop, or the settle after a camera
+    // flow) recording nothing is NORMAL, not an error. Scolding the user —
+    // "I couldn't hear that clearly" — every time the room was simply
+    // quiet was the single most unprofessional thing the assistant said.
+    // The app marks those uploads auto=true; only a deliberate tap earns
+    // a spoken apology.
+    const autoTurn = req.body?.auto === "true";
     emit(s, {
       type: "transcript_failed",
       reason: sttError ? "stt_error" : "no_speech",
       detail: sttError ? String(sttError).slice(0, 200) : undefined,
     });
-    if (!firstSttFailure) {
+    if (!firstSttFailure && !(autoTurn && !sttError)) {
       emit(s, {
         type: "error",
         message: sttError
@@ -636,6 +765,89 @@ function askCallConfirm(s, contact) {
     question: `Call ${contact.name}?`,
   });
   state(s, "waiting_for_confirmation");
+}
+
+/**
+ * Follows a meeting-negotiation call: waits for the other party's answer,
+ * books the slot ONLY if they clearly agreed to one, and speaks the true
+ * outcome. Nothing enters the diary on an ambiguous "maybe".
+ */
+async function followSchedulingCall(s, action) {
+  const negotiator = require("../scheduling/negotiator");
+  const who = action.person || "them";
+
+  emit(s, { type: "call_status", status: "dialing", contact_name: who });
+  state(s, "in_call");
+
+  let out;
+  try {
+    out = await negotiator.awaitAndBook({
+      userId: Number(s.userSub) > 0 ? Number(s.userSub) : null,
+      taskId: action.task_id,
+      callId: action.call_id,
+      contactName: who,
+      purpose: action.purpose,
+      slots: action.slots || [],
+      tzOffsetMin: action.tz || 330,
+      onStatus: (st) => emit(s, { type: "call_status", status: st, contact_name: who }),
+      isCancelled: () => s.cancelled === true,
+    });
+  } catch (e) {
+    console.error("scheduling call follow failed:", e.message || e);
+    out = { spoken: `I couldn't finish arranging that with ${who}.`, booked: false };
+  }
+
+  if (s.cancelled) return;
+
+  emit(s, { type: "call_status", status: "completed", contact_name: who });
+  state(s, "speaking");
+  emit(s, { type: "assistant_message", text: out.spoken });
+  state(s, "completed");
+  s.busy = false;
+}
+
+/**
+ * Follows a call Hari placed to a BUSINESS (not a contact) to its real
+ * conclusion, keeping the screen honest while it rings and speaking what
+ * the business actually said when it lands.
+ *
+ * The distinction that matters: a completed CALL is not a completed
+ * BOOKING. Whatever the receptionist said is what the user hears — this
+ * function never upgrades "we're full tonight" into a confirmation.
+ */
+async function followFulfillmentCall(s, action) {
+  const fulfil = require("../fulfillment/service");
+  const venue = action.venue || "them";
+
+  emit(s, { type: "call_status", status: "dialing", contact_name: venue });
+  state(s, "in_call");
+
+  let outcome;
+  try {
+    outcome = await fulfil.awaitCallOutcome(action.task_id, action.call_id, {
+      onStatus: (st) =>
+        emit(s, { type: "call_status", status: st, contact_name: venue }),
+      isCancelled: () => s.cancelled === true,
+    });
+  } catch (e) {
+    console.error("fulfillment call follow failed:", e.message || e);
+    outcome = { state: "failed", result: null };
+  }
+
+  if (s.cancelled) return;
+
+  emit(s, { type: "call_status", status: outcome.state || "ended", contact_name: venue });
+  state(s, "speaking");
+  emit(s, {
+    type: "assistant_message",
+    text:
+      outcome.result ||
+      (outcome.state === "no_answer"
+        ? `${venue} didn't pick up, so nothing is booked. Want me to try again later?`
+        : `I couldn't get through to ${venue}, so nothing is booked yet.`),
+  });
+  state(s, "completed");
+  s.busy = false;
 }
 
 // AGENT CALL — Hari phones [contact], speaks the [task] on the call, and
@@ -812,6 +1024,73 @@ router.post("/:sid/confirm", (req, res) => {
     });
     state(s, "in_call");
     state(s, "completed");
+    return;
+  }
+
+  // A high-risk TOOL the user just approved (placing a call, booking by
+  // phone, deleting a memory). This is the branch that was missing: the
+  // approval was collected and then dropped on the floor. Re-executing
+  // with approved:true is what registry.execute expects — the same call,
+  // now past the gate.
+  if (pending.action === "tool") {
+    (async () => {
+      const registry = require("../tools/registry");
+      try {
+        state(s, "using_tool");
+        emit(s, { type: "tool_started", name: pending.tool, tool: pending.tool });
+        const res = await registry.execute(pending.tool, pending.args, {
+          ...(pending.ctx || {}),
+          approved: true,
+        });
+
+        if (res.deviceAction) {
+          const a = res.deviceAction;
+          if (a.type === "open_url" && a.url) emit(s, { type: "open_url", url: a.url });
+          else if (a.type === "open_camera") emit(s, { type: "open_camera", note: a.note });
+          else if (a.type === "open_video") emit(s, { type: "open_video" });
+          else if (a.type === "resolve_and_call") {
+            s.pendingContactName = a.name;
+            s.pendingCallTask = a.message || null;
+            s.agentRetries = 0;
+            state(s, "finding_contact");
+            emit(s, { type: "contact_lookup", name: a.name });
+            return;
+          } else if (a.type === "fulfillment_call") {
+            if (res.speak) {
+              state(s, "speaking");
+              emit(s, { type: "assistant_message", text: res.speak });
+            }
+            await followFulfillmentCall(s, a);
+            return;
+          } else if (a.type === "scheduling_call") {
+            if (res.speak) {
+              state(s, "speaking");
+              emit(s, { type: "assistant_message", text: res.speak });
+            }
+            await followSchedulingCall(s, a);
+            return;
+          }
+        }
+
+        state(s, "speaking");
+        emit(s, {
+          type: "assistant_message",
+          // A failure is reported as a failure (§28) — approving an action
+          // does not make it succeed.
+          text: res.ok
+            ? res.speak || "Done."
+            : `I couldn't do that: ${res.error || "it failed"}.`,
+        });
+        state(s, "completed");
+      } catch (e) {
+        console.error("approved tool failed:", e.message || e);
+        state(s, "speaking");
+        emit(s, { type: "assistant_message", text: "Sorry, that didn't go through." });
+        state(s, "completed");
+      } finally {
+        s.busy = false;
+      }
+    })();
     return;
   }
 

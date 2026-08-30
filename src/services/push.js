@@ -1,6 +1,6 @@
-const admin = require("firebase-admin");
-const fs = require("fs");
-const path = require("path");
+// v12+ modular API — see services/firebase.js for why the old
+// admin.messaging() namespace no longer exists.
+const { getMessaging } = require("firebase-admin/messaging");
 
 let initialized = false;
 
@@ -30,10 +30,10 @@ async function sendNotification(fcmToken, title, body) {
   };
 
   try {
-    await admin.messaging().send(message);
+    await getMessaging().send(message);
     return true;
   } catch (error) {
-    console.error("Error sending push notification:", error);
+    console.error("Error sending push notification:", error.message || error);
     return false;
   }
 }

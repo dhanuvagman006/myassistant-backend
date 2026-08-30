@@ -68,12 +68,61 @@ function authorize(url) {
 /// the TTS-formatting rules from the text prompt don't apply.
 function liveSystemPrompt(assistantName = "Hari", unreadMessages = []) {
   let prompt = `You are ${assistantName}, a warm, quick-witted personal voice assistant from India. ` +
-    "You are SPEAKING with the user in real time. Reply in the same language " +
-    "the user speaks — English, Kannada, Hindi, or any mix. Keep replies " +
-    "short and conversational, one thought at a time, like a friend on a " +
-    "phone call. If asked about astrology, use your get_horoscope tool. " +
-    "If asked about Ayurvedic remedies or current facts, use Google Search to fetch the details. " +
-    "Never mention being an AI unless directly asked. Decline harmful requests politely and briefly.";
+    "You are SPEAKING with the user in real time. Speak ENGLISH by default " +
+    "(Indian English). Only switch language if the user clearly and " +
+    "deliberately speaks another one to you, and then stay in it — never " +
+    "drift between languages mid-conversation. Keep replies short and " +
+    "conversational, one thought at a time, like a friend on a phone call. " +
+    "If you did not clearly hear something, ask them to repeat it rather " +
+    "than guessing — answering the wrong question is worse than asking. " +
+    "If asked about astrology, use your get_horoscope tool. " +
+    // Google Search is opt-in now (see the setup payload), so pointing at
+    // it unconditionally would name a tool that is not there. web_search is
+    // ours, is measurable, and reports honestly when unconfigured.
+    "For current facts you don't know — flight and train timings, prices, " +
+    "opening hours, live events — use your search tool (web_search or " +
+    "Google Search, whichever you have) and answer from what it returns. " +
+    "Never tell the user you are unable to look something up " +
+    "without trying search first. " +
+    // "There are flights tomorrow" is not an answer. If the search cannot
+    // produce specifics, saying so plainly is more useful than a vague
+    // gesture at the topic.
+    "BE SPECIFIC. For flights or trains give actual airlines/operators, " +
+    "departure times and approximate fares — a reply like 'there are " +
+    "flights tomorrow' is useless. If the search does not give you concrete " +
+    "times, say exactly that and tell them where to check, rather than " +
+    "padding with vague statements. Never invent a time or a fare. " +
+    // Silence during a lookup is indistinguishable from the app being
+    // broken. One short spoken line before the pause turns dead air into
+    // an obviously-working assistant.
+    "IMPORTANT: before you search or call any tool that takes a moment, SAY " +
+    "a short line out loud first — 'one second, let me check that', 'give " +
+    "me a moment' — then do the lookup, then give the answer. Never go " +
+    "silent while you work. " +
+    "Never mention being an AI unless directly asked. Decline harmful requests politely and briefly. " +
+    // Live mode is the app's MAIN screen, so the legal guard has to exist
+    // here too — not only in the SSE runtime. Without it the model answers
+    // Indian law from training data that predates the 2024 criminal codes
+    // and cites sections that were repealed.
+    // consult_knowledge is for RULES, not for facts that change by the
+    // hour. This distinction was missing, and the result was absurd: asked
+    // for flight timings the assistant pulled up the Motor Vehicles Act and
+    // railway refund rules and put them on screen. A personal assistant
+    // answers the question asked.
+    "Call the consult_knowledge tool ONLY when the user asks about a RULE, " +
+    "a RIGHT, a LAW or an official PROCEDURE — 'what's the punishment " +
+    "for…', 'what are my rights if…', 'how do I apply for a passport', " +
+    "'can they legally…', 'what's the deadline to file…'. " +
+    "NEVER call it for live facts: flight or train timings, prices, " +
+    "availability, weather, news, opening hours, scores. Those are Google " +
+    "Search questions. If in doubt, it is a search question, not a " +
+    "knowledge question. " +
+    "When you DO answer a legal question: never state a section number, a " +
+    "tax slab or a fee from memory. India replaced the IPC, CrPC and " +
+    "Evidence Act with the BNS, BNSS and BSA on 1 July 2024, so numbers " +
+    "like 'Section 420' and 'Section 302' no longer exist. You give " +
+    "information, never advice for the user's own case; you are not their " +
+    "lawyer, and you never diagnose or recommend medicines.";
 
   if (unreadMessages.length > 0) {
     prompt +=
@@ -92,8 +141,12 @@ function liveSystemPrompt(assistantName = "Hari", unreadMessages = []) {
 
 /**
  * Bridges one app socket to one Gemini Live session.
+ *
+ * [deviceCtx] carries what only the handset knows — timezone offset,
+ * platform, and (when the app has permission) coordinates — so tools run
+ * with the same context they get on the SSE path.
  */
-async function bridge(appWs, user, room) {
+async function bridge(appWs, user, room, deviceCtx = {}) {
   const key = process.env.GEMINI_API_KEY;
   if (!key) {
     appWs.send(JSON.stringify({ type: "error", message: "no API key" }));
@@ -171,6 +224,20 @@ async function bridge(appWs, user, room) {
 
   let upstream;
   let upstreamReady = false;
+
+  // Real user turns seen so far, and the high-risk action awaiting a spoken
+  // yes. Together these make the confirmation gate work in live mode: an
+  // approval is only honoured on a turn LATER than the one that asked for
+  // it. See the toolCall handler.
+  let userTurns = 0;
+  let pendingApproval = null;
+  // Turn-boundary timing, so latency can be measured rather than guessed.
+  let speechStartedAt = 0;
+  let activityEndAt = 0;
+  let repliedAt = 0;
+  // True while the assistant is acting as an interpreter rather than an
+  // assistant. Tracked so the app can show it and so it survives the turn.
+  let interpreting = false;
   // Mic audio that arrives before Google's setupComplete would be lost —
   // buffer a little so the first word is never clipped.
   const pending = [];
@@ -208,12 +275,99 @@ async function bridge(appWs, user, room) {
               voiceConfig: {
                 prebuiltVoiceConfig: { voiceName: LIVE_VOICE() },
               },
+              // NO languageCode HERE.
+              //
+              // The native-audio model REJECTS it: adding it closed the
+              // session immediately with WebSocket 1007 (invalid payload),
+              // so every conversation died at setup. These models pick up
+              // language from the audio themselves. The language steering
+              // that actually works lives in the system prompt below —
+              // "speak English by default, do not drift mid-conversation" —
+              // which is what stops Indian-accented English being
+              // transcribed into Devanagari.
+            },
+            // DO NOT send thinkingConfig here.
+            //
+            // It is valid on the text models (services/ai/router.js sets
+            // thinkingBudget: 0 there) but the NATIVE-AUDIO live model
+            // rejects it in a way that is almost impossible to debug: the
+            // socket stays open, input audio is still transcribed back to
+            // us, and generation simply never happens. The user says hello,
+            // sees "listening", and waits forever. Measured directly —
+            // with it, zero replies; without it, replies in ~2 seconds.
+            // Opt in only to re-test that behaviour.
+            ...(process.env.LIVE_THINKING_CONFIG === "force"
+              ? { thinkingConfig: { thinkingBudget: 0 } }
+              : {}),
+          },
+
+          // LATENCY: how long a pause means "they've finished talking".
+          //
+          // Unset, Google's default silence window is long enough to feel
+          // broken — the user sits in silence wondering if it heard them.
+          // ~600 ms is the sweet spot for conversational speech: short
+          // enough to feel instant, long enough not to cut people off
+          // mid-sentence. Tune with LIVE_SILENCE_MS if it clips anyone.
+          // VOICE ACTIVITY DETECTION.
+          //
+          // MANUAL MODE DOES NOT WORK ON THIS MODEL. It was tried: the app
+          // sent activityStart/activityEnd around real speech, the markers
+          // arrived correctly (logged, ~530ms utterances), the audio framing
+          // was right — and gemini-2.5-flash-native-audio simply never
+          // generated a reply. No error, no close, just silence. So the
+          // detector goes back to Google, which demonstrably does answer.
+          //
+          // startOfSpeechSensitivity MUST be HIGH. This was LOW to keep a
+          // fan or a TV from opening turns — but measured directly (a clean
+          // −19 dBFS spoken "hello, how can I help you today"), LOW never
+          // detected the utterance AT ALL: no transcript, no reply, the
+          // session just sat silent until it closed. That is the "I speak
+          // and it waits forever in silence" bug. HIGH detects the same
+          // clip immediately. Room noise is handled by the app's own
+          // noise-suppressed voiceCommunication mic path instead.
+          //   endOfSpeechSensitivity HIGH   — a pause SHOULD promptly count
+          //     as the user finishing.
+          //
+          // silenceDurationMs is what the user actually feels: the gap
+          // between them stopping and Hari starting.
+          realtimeInputConfig: {
+            automaticActivityDetection: {
+              disabled: false,
+              startOfSpeechSensitivity:
+                process.env.LIVE_START_SENSITIVITY || "START_SENSITIVITY_HIGH",
+              endOfSpeechSensitivity:
+                process.env.LIVE_END_SENSITIVITY || "END_SENSITIVITY_HIGH",
+              // prefixPadding is how much audio BEFORE detected onset is
+              // kept. It was 20ms, which clips the first consonant clean
+              // off every sentence — "hello" reaches the model as "ello",
+              // and a model given a truncated word guesses. 300ms keeps the
+              // whole first syllable.
+              prefixPaddingMs: Number(process.env.LIVE_PREFIX_PADDING_MS || 300),
+              // The pause that ends a turn. 400ms was too eager: people
+              // pause mid-sentence to think, and cutting there sends half a
+              // question to the model, which then answers the wrong one.
+              // 700ms survived a breath but was the largest single share of
+              // the "why is it still silent" wait; 500ms still clears a
+              // normal breath and shaves a fifth of a second off EVERY turn.
+              silenceDurationMs: Number(process.env.LIVE_SILENCE_MS || 500),
             },
           },
           systemInstruction: { parts: [{ text: liveSystemPrompt(assistantName, unreadMessages) }] },
+          // GOOGLE SEARCH — only on models that accept it.
+          //
+          // The gemini-3.x live models close the session outright (WS 1011,
+          // before setupComplete) when a googleSearch tool is present —
+          // measured directly; googleSearchRetrieval is rejected the same
+          // way. On those models live-data questions route through the
+          // registry's web_search function tool instead (which now falls
+          // back to Gemini search grounding when no search key is set).
+          // Set LIVE_GOOGLE_SEARCH=off to disable everywhere.
           tools: [
             { functionDeclarations: require("../tools/registry").declarations({ userId: user?.sub }) },
-            { googleSearch: {} }
+            ...(process.env.LIVE_GOOGLE_SEARCH === "off" ||
+            /^gemini-[3-9]/i.test(LIVE_MODEL())
+              ? []
+              : [{ googleSearch: {} }]),
           ],
           // even though no text ever drives the conversation.
           inputAudioTranscription: {},
@@ -229,6 +383,14 @@ async function bridge(appWs, user, room) {
       msg = JSON.parse(data.toString());
     } catch (_) {
       return;
+    }
+
+    // Anything that is not audio, transcription or a tool call is either a
+    // setup result or an error. Without logging it, a rejected generation
+    // looks identical to silence — which is exactly how the thinkingConfig
+    // problem hid: input was transcribed, no reply ever came, nothing logged.
+    if (msg.error || msg.goAway || msg.serverContent?.generationComplete === false) {
+      console.error("live: upstream said:", JSON.stringify(msg).slice(0, 500));
     }
 
     if (msg.setupComplete) {
@@ -249,12 +411,176 @@ async function bridge(appWs, user, room) {
     if (msg.toolCall) {
       const responses = [];
       for (const fc of msg.toolCall.functionCalls || []) {
-        const res = await require("../tools/registry").execute(fc.name, fc.args, { userId: user?.sub, userName, approved: true });
-        
+        // HIGH-RISK CONFIRMATION IN LIVE MODE (§17).
+        //
+        // This used to pass approved:true unconditionally, which meant the
+        // confirmation gate did not exist on the app's MAIN screen: the
+        // model could delete a memory, place a call, or — now that booking
+        // by phone is real rather than mocked — telephone a business, with
+        // no approval from the user at all.
+        //
+        // Live mode has no confirmation card (it is a voice call, not a
+        // form), so the approval is SPOKEN. The first attempt is refused
+        // back to the model with an instruction to ask out loud. The retry
+        // is only honoured once the user has actually said something in
+        // between — `userTurns` advances on real input transcription — so
+        // the model cannot approve on the user's behalf by immediately
+        // calling again.
+        const tool = require("../tools/registry").get(fc.name);
+        let approved = true;
+        if (tool && tool.risk === "high") {
+          const key = `${fc.name}:${JSON.stringify(fc.args || {})}`;
+          if (pendingApproval && pendingApproval.key === key && userTurns > pendingApproval.askedAtTurn) {
+            approved = true;
+            pendingApproval = null;
+          } else {
+            pendingApproval = { key, askedAtTurn: userTurns };
+            const summary = tool.confirmSummary
+              ? tool.confirmSummary(fc.args || {}, { userId: user?.sub, userName })
+              : fc.name;
+            responses.push({
+              id: fc.id,
+              name: fc.name,
+              response: {
+                ok: false,
+                needs_confirmation: true,
+                result:
+                  `Not done yet — this needs the user's permission first. ` +
+                  `Ask them out loud to confirm: "${summary}". ` +
+                  `If they agree, call this tool again with the same arguments. ` +
+                  `Do not say it is done.`,
+              },
+            });
+            continue;
+          }
+        }
+
+        // Same ctx the SSE path builds (assistant/routes.js): without
+        // tz/platform/location, weather fell back to nothing, deep links
+        // never got their Android intent:// form, and "tomorrow at 8"
+        // resolved in the wrong timezone — in live mode only.
+        const res = await require("../tools/registry").execute(fc.name, fc.args, {
+          userId: user?.sub,
+          userName,
+          approved,
+          lat: deviceCtx.lat,
+          lng: deviceCtx.lng,
+          platform: deviceCtx.platform,
+          tzOffsetMin: deviceCtx.tz,
+        });
+
         // If the tool produced a device action (like open_camera or contact_lookup),
         // we send it down the WebSocket so the app can perform the action.
         if (res.deviceAction) {
           appWs.send(JSON.stringify(res.deviceAction));
+
+          // Hari is now on the phone to a business. The call takes up to a
+          // couple of minutes, which is far too long to hold the tool
+          // response open, so we answer the model immediately with the
+          // truth ("it is ringing") and follow the call in the background.
+          // When it lands, the real outcome is injected as a new turn so
+          // she tells the user what the business actually said — without
+          // it, live mode would start a call and then go silent forever.
+          // Meeting negotiation: follow the call, then tell the user what
+          // was agreed. Same background pattern as a business booking —
+          // the call is far too long to hold the tool response open.
+          // INTERPRETER MODE — the role change is pushed to the model as
+          // an instruction turn. A live session's system instruction is
+          // fixed at setup, so the switch has to arrive in-band; the app
+          // is told too, so it can show that it is interpreting rather
+          // than assisting.
+          if (res.deviceAction.type === "interpreter_mode") {
+            const a = res.deviceAction;
+            interpreting = a.active === true;
+            if (upstream.readyState === WebSocket.OPEN) {
+              upstream.send(
+                JSON.stringify({
+                  clientContent: {
+                    turns: [{ role: "user", parts: [{ text: `[SYSTEM] ${a.instructions}` }] }],
+                    // No turnComplete: this reconfigures behaviour, it is
+                    // not a prompt that should be answered out loud.
+                    turnComplete: false,
+                  },
+                })
+              );
+            }
+          }
+
+          if (res.deviceAction.type === "scheduling_call") {
+            const a = res.deviceAction;
+            (async () => {
+              try {
+                const out = await require("../scheduling/negotiator").awaitAndBook({
+                  userId: Number(user?.sub),
+                  taskId: a.task_id,
+                  callId: a.call_id,
+                  contactName: a.person,
+                  purpose: a.purpose,
+                  slots: a.slots || [],
+                  tzOffsetMin: a.tz || 330,
+                  onStatus: (st) =>
+                    appWs.readyState === WebSocket.OPEN &&
+                    appWs.send(JSON.stringify({ type: "call_status", status: st, contact_name: a.person })),
+                });
+                if (upstream.readyState !== WebSocket.OPEN) return;
+                upstream.send(
+                  JSON.stringify({
+                    clientContent: {
+                      turns: [{ role: "user", parts: [{ text:
+                        `[SYSTEM] The call to ${a.person} about the meeting has ended. ` +
+                        `Result: ${out.spoken} Tell me this now in one short sentence, ` +
+                        `exactly as it happened. Do not claim anything was booked unless that result says so.` }] }],
+                      turnComplete: true,
+                    },
+                  })
+                );
+              } catch (e) {
+                console.error("live: scheduling call follow failed:", e.message || e);
+              }
+            })();
+          }
+
+          if (res.deviceAction.type === "fulfillment_call") {
+            const a = res.deviceAction;
+            (async () => {
+              try {
+                const outcome = await require("../fulfillment/service").awaitCallOutcome(
+                  a.task_id,
+                  a.call_id,
+                  {
+                    onStatus: (st) =>
+                      appWs.readyState === WebSocket.OPEN &&
+                      appWs.send(JSON.stringify({ type: "call_status", status: st, contact_name: a.venue })),
+                  }
+                );
+                if (upstream.readyState !== WebSocket.OPEN) return;
+                const said =
+                  outcome.result ||
+                  (outcome.state === "no_answer"
+                    ? `${a.venue} did not answer, so nothing is booked.`
+                    : `The call to ${a.venue} did not go through, so nothing is booked.`);
+                upstream.send(
+                  JSON.stringify({
+                    clientContent: {
+                      turns: [{
+                        role: "user",
+                        parts: [{
+                          text:
+                            `[SYSTEM] The call to ${a.venue} has ended. Result: ${said} ` +
+                            `Tell me this now, in one short sentence, exactly as it happened. ` +
+                            `Do not claim anything was confirmed unless that result says so.`,
+                        }],
+                      }],
+                      turnComplete: true,
+                    },
+                  })
+                );
+              } catch (e) {
+                console.error("live: fulfillment call follow failed:", e.message || e);
+              }
+            })();
+          }
+
           responses.push({ id: fc.id, name: fc.name, response: res.data ? res : { result: "Device action requested: " + res.deviceAction.type } });
         } else {
           responses.push({ id: fc.id, name: fc.name, response: res });
@@ -266,6 +592,17 @@ async function bridge(appWs, user, room) {
 
     const sc = msg.serverContent;
     if (!sc) return;
+
+    // First sign of a reply after the user stopped: this closes the loop on
+    // where the wait actually is.
+    if (activityEndAt && !repliedAt && (sc.modelTurn || sc.outputTranscription)) {
+      repliedAt = Date.now();
+      console.log(`live: FIRST REPLY ${repliedAt - activityEndAt}ms after activity_end`);
+    }
+    if (sc.turnComplete) {
+      activityEndAt = 0;
+      repliedAt = 0;
+    }
 
     if (sc.interrupted) {
       // Drop audio already queued for the avatar, or it keeps mouthing a
@@ -293,6 +630,19 @@ async function bridge(appWs, user, room) {
       }
     }
     if (sc.inputTranscription?.text) {
+      // The user has spoken. This is the signal the high-risk confirmation
+      // gate below waits on: an approval only counts if it came AFTER we
+      // asked, and a real user turn is what separates the two.
+      userTurns++;
+      // Live mode is the main screen, so commitments must be caught here
+      // too. Fire-and-forget: nothing about this may delay the audio.
+      if (Number(user?.sub) > 0) {
+        require("../commitments/service").extractAsync(
+          Number(user.sub),
+          sc.inputTranscription.text,
+          { source: "voice" }
+        );
+      }
       appWs.send(
         JSON.stringify({
           type: "input_transcript",
@@ -353,6 +703,21 @@ async function bridge(appWs, user, room) {
     try {
       const m = JSON.parse(data.toString());
       if (m.type === "end") closeBoth("app ended");
+
+      // TURN BOUNDARIES from the app's own voice detector. These are the
+      // whole reason replies feel immediate: activity_end is sent the
+      // instant the user stops talking, and Gemini begins generating on
+      // that signal rather than waiting out a silence timer of its own.
+      // Kept only as a timing probe. Forwarding these would fight Google's
+      // automatic detector, which is now the one in charge.
+      if (m.type === "activity_start") {
+        speechStartedAt = Date.now();
+      }
+      if (m.type === "activity_end") {
+        activityEndAt = Date.now();
+        const spoke = speechStartedAt ? activityEndAt - speechStartedAt : 0;
+        console.log(`live: user stopped (utterance ${spoke}ms)`);
+      }
       if (m.type === "text" && m.text && upstreamReady && upstream.readyState === WebSocket.OPEN) {
         upstream.send(
           JSON.stringify({
@@ -406,7 +771,18 @@ function attachWs(server) {
       return;
     }
     const room = url.searchParams.get("room") || null;
-    wss.handleUpgrade(req, socket, head, (ws) => bridge(ws, user, room));
+    const num = (k) => {
+      const v = Number(url.searchParams.get(k));
+      return Number.isFinite(v) ? v : undefined;
+    };
+    const deviceCtx = {
+      lat: num("lat"),
+      lng: num("lng"),
+      tz: num("tz") ?? 330,
+      platform:
+        String(url.searchParams.get("platform") || "").toLowerCase() || null,
+    };
+    wss.handleUpgrade(req, socket, head, (ws) => bridge(ws, user, room, deviceCtx));
   });
 }
 

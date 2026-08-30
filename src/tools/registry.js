@@ -81,6 +81,22 @@ function declarations({ only = null, includeDeviceActions = true, userId = null 
   const uid = userId === null || userId === undefined ? null : Number(userId);
   return list()
     .filter((t) => (only ? only.includes(t.name) : true))
+    // AVAILABILITY: never OFFER a tool that cannot run.
+    //
+    // A tool whose integration is unconfigured used to be declared anyway,
+    // so the model would pick it, get back "not configured", and then tell
+    // the user it was unable to help — when a plain search would have
+    // answered them. Asked for flight timings with no airline API key, that
+    // is exactly what happened. Hiding the tool lets the model reach for
+    // something that works instead.
+    .filter((t) => {
+      if (typeof t.available !== "function") return true;
+      try {
+        return t.available() !== false;
+      } catch (_) {
+        return false;
+      }
+    })
     .filter((t) => (includeDeviceActions ? true : !t.deviceAction))
     // TENANT BOUNDARY: an MCP tool belongs to the user who configured that
     // server. Another user must never even SEE it in their declarations,
@@ -174,12 +190,50 @@ async function execute(name, rawArgs, ctx = {}) {
   // High-risk actions need explicit approval unless it has already been
   // granted for THIS call (the confirm endpoint replays with approved:true).
   if (tool.risk === "high" && !ctx.approved) {
+    let confirmArgs = args;
+
+    // RESOLVE BEFORE ASKING.
+    //
+    // Some high-risk actions only become reviewable once we have looked
+    // something up. "Call Apollo Clinic and book me in" is not a decision
+    // the user can actually make: there are four Apollo Clinics nearby and
+    // Hari is about to phone one of them. They need the branch, the
+    // address and the number in front of them.
+    //
+    // prepare() also PINS the result. Without it the lookup would run
+    // after approval, so the business that was approved and the business
+    // that gets called could be different ones.
+    if (typeof tool.prepare === "function") {
+      try {
+        const prep = await tool.prepare(args, ctx);
+        // A tool may refuse here — "no number found" is a dead end, and
+        // asking the user to approve a call we cannot place is worse than
+        // telling them plainly.
+        if (prep && prep.error) return { ok: false, error: prep.error };
+        if (prep && prep.args) confirmArgs = { ...args, ...prep.args };
+        if (prep && prep.summary) {
+          return {
+            ok: false,
+            needsConfirmation: true,
+            tool: name,
+            args: confirmArgs,
+            summary: prep.summary,
+          };
+        }
+      } catch (e) {
+        return {
+          ok: false,
+          error: String((e && e.message) || e).slice(0, 200),
+        };
+      }
+    }
+
     return {
       ok: false,
       needsConfirmation: true,
       tool: name,
-      args,
-      summary: tool.confirmSummary ? tool.confirmSummary(args, ctx) : name,
+      args: confirmArgs,
+      summary: tool.confirmSummary ? tool.confirmSummary(confirmArgs, ctx) : name,
     };
   }
 

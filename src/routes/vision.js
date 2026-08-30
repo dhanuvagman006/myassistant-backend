@@ -131,10 +131,17 @@ router.post("/", receiveFile, async (req, res) => {
               ? [{ role: "user", parts: [{ text: question }] }]
               : []),
           ],
+          // Gemini 3 deprecated temperature (Google warns it can degrade
+          // output); only the older families still get it.
           generationConfig:
             mode === "screenshot"
-              ? { response_mime_type: "application/json", temperature: 0.2 }
-              : { temperature: 0.4 },
+              ? {
+                  response_mime_type: "application/json",
+                  ...(/^gemini-3/i.test(model) ? {} : { temperature: 0.2 }),
+                }
+              : /^gemini-3/i.test(model)
+                ? {}
+                : { temperature: 0.4 },
         }),
       }
     );

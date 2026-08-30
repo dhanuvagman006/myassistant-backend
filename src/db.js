@@ -92,6 +92,15 @@ async function init() {
     -- made nullable here and blanks become NULL, because "no phone" is
     -- absence, not a value two people can share.
     -- ---------------------------------------------------------------
+    --
+    -- The column itself must be CREATED before it can be altered. It never
+    -- was: the statements below assumed a database that already carried
+    -- phone_number from an older build, so init() worked on an existing
+    -- deployment and failed hard on a FRESH one —
+    --   column "phone_number" of relation "users" does not exist
+    -- which meant the backend could not boot on a new database at all.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT;
+
     ALTER TABLE users ALTER COLUMN phone_number DROP DEFAULT;
     ALTER TABLE users ALTER COLUMN phone_number DROP NOT NULL;
     UPDATE users SET phone_number = NULL WHERE phone_number = '';
@@ -160,6 +169,43 @@ async function init() {
     );
     CREATE INDEX IF NOT EXISTS idx_bookings_user
       ON bookings(user_id, status, when_at);
+
+    -- FULFILLMENT TASKS — real-world errands the assistant runs for the
+    -- user: order food, book a ride, buy movie tickets, make an appointment.
+    --
+    -- Every task records HOW it was executed, because the three paths carry
+    -- very different promises and the user must never be misled (§28):
+    --   path='call'     Hari phoned the business herself (Plivo). call_id
+    --                   points at the live agent-call record; outcome holds
+    --                   what the business actually said.
+    --   path='handoff'  Hari prepared the order and deep-linked the provider
+    --                   app; the USER completes payment. Never "confirmed"
+    --                   on our word alone — it ends at 'handed_off'.
+    --   path='api'      a real partner API confirmed it (none wired yet).
+    --
+    -- status: draft | awaiting_confirmation | calling | handed_off
+    --       | confirmed | failed | cancelled
+    CREATE TABLE IF NOT EXISTS fulfillment_tasks (
+      id         BIGSERIAL PRIMARY KEY,
+      user_id    INTEGER NOT NULL,
+      kind       TEXT NOT NULL,                 -- food|ride|movie|appointment|table
+      provider   TEXT NOT NULL DEFAULT '',      -- swiggy|uber|bookmyshow|phone|…
+      path       TEXT NOT NULL DEFAULT 'handoff',
+      title      TEXT NOT NULL,
+      venue      TEXT,                          -- restaurant/clinic/cinema name
+      phone      TEXT,                          -- resolved business number, if any
+      when_at    BIGINT,                        -- epoch ms; NULL = as soon as possible
+      party_size INTEGER,
+      details    TEXT NOT NULL DEFAULT '{}',    -- JSON: slots the user gave us
+      deep_link  TEXT,                          -- what the app opened, if handoff
+      call_id    TEXT,                          -- agent-call id, if path='call'
+      outcome    TEXT,                          -- the TRUE result, in the user's words
+      status     TEXT NOT NULL DEFAULT 'draft',
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_fulfillment_user
+      ON fulfillment_tasks(user_id, status, id DESC);
 
     CREATE TABLE IF NOT EXISTS google_tokens (
       user_id       INTEGER PRIMARY KEY,
@@ -264,6 +310,26 @@ async function init() {
 
   // User context: widened profile, assistant identity, standing rules.
   await require("./users/context").migrate((sql) => pool.query(sql));
+
+  // Reference knowledge packs (law, govt, money, health, travel). Public,
+  // not tenant-scoped — see knowledge/schema.js.
+  await require("./knowledge/schema").migrate((sql) => pool.query(sql));
+
+  // Inbound calling: the numbers Hari answers, per-user screening rules,
+  // and the call log she files.
+  await require("./inbound/schema").migrate((sql) => pool.query(sql));
+
+  // Commitments the user makes ("I'll send it by Friday"), tracked to done.
+  await require("./commitments/service").migrate((sql) => pool.query(sql));
+
+  // Meetings: transcript, decisions, action items and the drafted follow-up.
+  await require("./meetings/service").migrate((sql) => pool.query(sql));
+
+  // Payment collection requests (money IN only — see payments/service.js).
+  await require("./payments/service").migrate((sql) => pool.query(sql));
+
+  // Fare watches: re-priced by the proactive sweep, alert on a real drop.
+  await require("./travel/fares").migrate((sql) => pool.query(sql));
 
   // Live avatar persistence: per-user personas (the brain hookup),
   // session records, and the rolling recent-conversation window.

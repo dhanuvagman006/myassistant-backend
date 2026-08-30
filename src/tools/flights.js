@@ -11,6 +11,19 @@
  */
 const TIMEOUT_MS = 12_000;
 
+/**
+ * Amadeus runs two entirely separate environments with different hosts AND
+ * different credentials. This was pinned to the test host, so a production
+ * key would have authenticated against the sandbox and returned sandbox
+ * inventory — plausible-looking flights that cannot be booked.
+ * Set AMADEUS_ENV=production once you have live credentials.
+ */
+function amadeusHost() {
+  return String(process.env.AMADEUS_ENV || "test").toLowerCase() === "production"
+    ? "https://api.amadeus.com"
+    : "https://test.api.amadeus.com";
+}
+
 function provider() {
   if (process.env.AMADEUS_CLIENT_ID && process.env.AMADEUS_CLIENT_SECRET) return "amadeus";
   if (process.env.DUFFEL_API_TOKEN) return "duffel";
@@ -44,7 +57,7 @@ let amadeusToken = { value: null, expires: 0 };
 
 async function amadeusAuth() {
   if (amadeusToken.value && Date.now() < amadeusToken.expires) return amadeusToken.value;
-  const r = await fetch("https://test.api.amadeus.com/v1/security/oauth2/token", {
+  const r = await fetch(`${amadeusHost()}/v1/security/oauth2/token`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -66,7 +79,7 @@ async function amadeusAuth() {
 const BACKENDS = {
   async amadeus({ from, to, date, adults }) {
     const token = await amadeusAuth();
-    const u = new URL("https://test.api.amadeus.com/v2/shopping/flight-offers");
+    const u = new URL(`${amadeusHost()}/v2/shopping/flight-offers`);
     u.searchParams.set("originLocationCode", from);
     u.searchParams.set("destinationLocationCode", to);
     u.searchParams.set("departureDate", date);
@@ -131,11 +144,20 @@ const BACKENDS = {
 async function search({ from, to, date, adults = 1 }) {
   const p = provider();
   if (!p) {
+    // No airline API key. That is NOT a dead end, and it must not be
+    // reported to the user as a technical failure — they asked a question
+    // that a search can answer perfectly well. The message is addressed to
+    // the MODEL, telling it what to do next, because "I'm unable to check
+    // due to a technical issue" is the worst possible reply to "what are
+    // the flight timings?".
     return {
       ok: false,
       error:
-        "flight search is not configured on this server (set AMADEUS_CLIENT_ID + " +
-        "AMADEUS_CLIENT_SECRET, or DUFFEL_API_TOKEN)",
+        "no airline booking API is configured, so I have no live fare data. " +
+        "DO NOT tell the user this failed or mention a technical issue. " +
+        "Instead, look the flight schedule up with Google Search (or " +
+        "web_search) and answer from that, making clear the times are " +
+        "indicative and should be confirmed on the airline's site.",
     };
   }
   const o = resolveAirport(from);
@@ -146,9 +168,25 @@ async function search({ from, to, date, adults = 1 }) {
   if (!d) missing.push("destination airport (a city I know or a 3-letter code)");
   if (missing.length) return { ok: false, needsArgs: missing };
 
-  const day = /^\d{4}-\d{2}-\d{2}$/.test(String(date || ""))
-    ? date
-    : new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  // DATE. An ISO date is used as given. Anything else is parsed properly:
+  // this used to fall through to "tomorrow" for any unrecognised string, so
+  // "next Friday" quietly returned tomorrow's flights and the user would
+  // only find out at the airport. An unparseable date is now a question.
+  let day;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(date || ""))) {
+    day = date;
+  } else if (date) {
+    let parsed = null;
+    try {
+      parsed = require("chrono-node").parseDate(String(date), new Date(), { forwardDate: true });
+    } catch (_) {}
+    if (!parsed) {
+      return { ok: false, needsArgs: [`a clearer travel date (I couldn't read "${date}")`] };
+    }
+    day = parsed.toISOString().slice(0, 10);
+  } else {
+    day = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  }
 
   try {
     const flights = await BACKENDS[p]({ from: o, to: d, date: day, adults });
@@ -172,4 +210,4 @@ async function search({ from, to, date, adults = 1 }) {
   }
 }
 
-module.exports = { search, provider, resolveAirport, CITY_IATA };
+module.exports = { search, provider, resolveAirport, CITY_IATA, amadeusHost };

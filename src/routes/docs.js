@@ -129,6 +129,23 @@ router.post(
     console.warn("docs client-link skipped:", e.message);
   }
 
+  // MEMORY-PEOPLE link. The voice tools (lookup_person, find_document,
+  // list_person_documents) read the memory 'people' store, which is a
+  // DIFFERENT store from clients — a doc filed only under a client was
+  // invisible to "show me Prasant's records" by voice. When the capture
+  // flow names the person, link there too; associate() upserts the person
+  // so this works even before any "Prasant is my patient" turn.
+  let linkedPerson = null;
+  try {
+    const person = String(req.body.person || "").trim();
+    if (person) {
+      const out = await intelligence.associate(id, row.id, { person });
+      linkedPerson = out.person || null;
+    }
+  } catch (e) {
+    console.warn("docs person-link skipped:", e.message);
+  }
+
   // Respond the moment the file is safely on disk — a voice "save this
   // receipt" must not hold the conversation hostage to a slow AI call.
   // Analysis (title/summary/tags + the memory fact) completes in the
@@ -139,6 +156,7 @@ router.post(
     analyzed: false,
     // Filing confirmation for the app ("Saved to Ramesh's file").
     client: linkedClient ? { id: linkedClient.id, name: linkedClient.name } : null,
+    person: linkedPerson,
   });
   audit.record(
     id,

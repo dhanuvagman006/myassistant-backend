@@ -17,6 +17,11 @@ services:
     volumes:
       # User DOCUMENT FILES (photos/PDFs) — the DB itself lives in Postgres.
       - backend-data:/app/data
+      # Firebase service account for push + phone verification. Mounted
+      # read-only rather than COPYed so the secret never lands in an image
+      # layer — without this the container had no credential at all and
+      # every push was silently "skipped".
+      - ./firebase-adminsdk.json:/app/firebase-adminsdk.json:ro
 
   postgres:
     image: postgres:16-alpine

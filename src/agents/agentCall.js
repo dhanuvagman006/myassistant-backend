@@ -303,11 +303,18 @@ async function start({ userId, userName, toNumber, contactName, task, lang }) {
   return { id };
 }
 
-/** Poll status for the app. */
+/**
+ * Poll status for the app.
+ *
+ * `answer` is the RAW transcript of what the other party said, alongside
+ * the prose `result` written for the user. Callers that must act on the
+ * reply — the meeting negotiator has to work out which slot was agreed —
+ * need the actual words, not a summary of them.
+ */
 function status(id) {
   const rec = calls.get(id);
   if (!rec) return null;
-  return { state: rec.state, result: rec.result };
+  return { state: rec.state, result: rec.result, answer: rec.answer || null };
 }
 
 // ---------------- WEBHOOK HANDLERS (called by Plivo) ----------------

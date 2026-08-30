@@ -104,6 +104,13 @@ function envModel(name, fallback) {
 
 const chatModel = () => envModel("GEMINI_MODEL", DEFAULT_MODEL);
 
+// QUOTA FALLBACK. Free-tier Gemini keys have PER-MODEL daily caps that vary
+// wildly by model (gemini-3.5-flash: 20/day, measured 2026-08-29 — one
+// conversation exhausts it). When the primary chat model 429s, each entry
+// point retries ONCE on this model instead of failing the user's turn.
+// Keep it a model with a generous free allowance.
+const fallbackModel = () => envModel("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash");
+
 /// generationConfig additions that control per-model-family behaviour.
 ///
 /// THINKING IS THE MAIN LATENCY LEVER. Both families reason before
@@ -160,10 +167,10 @@ const TTS_TIMEOUT_MS = Math.min(
 
 // ---------------- GEMINI ----------------
 
-async function callGemini(messages, system = SYSTEM_PROMPT, _retry = false) {
+async function callGemini(messages, system = SYSTEM_PROMPT, _retry = false, _model = null) {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("gemini: key missing");
-  const model = chatModel();
+  const model = _model || chatModel();
 
   const generationConfig = tuning(model);
 
@@ -197,7 +204,13 @@ async function callGemini(messages, system = SYSTEM_PROMPT, _retry = false) {
         `gemini: thinkingLevel "${THINKING_LEVEL}" rejected — continuing ` +
           `without it (responses will be slower). Set GEMINI_THINKING_LEVEL.`
       );
-      return callGemini(messages, system, true);
+      return callGemini(messages, system, true, _model);
+    }
+    // Out of free-tier quota on THIS model — the other family usually
+    // still has allowance; never fail the turn without trying it.
+    if (r.status === 429 && !_model && fallbackModel() !== model) {
+      console.warn(`gemini: ${model} out of quota — retrying on ${fallbackModel()}`);
+      return callGemini(messages, system, _retry, fallbackModel());
     }
     throw new Error(
       `gemini ${r.status} [model=${model}] ${body.slice(0, 300) || "(empty body)"}`
@@ -249,7 +262,7 @@ async function generateReply(messages, opts = {}) {
 async function* generateReplyStream(messages, opts = {}) {
   const key = requireKey();
   const system = opts.system || SYSTEM_PROMPT + (opts.extraSystem || "");
-  const model = chatModel();
+  const model = opts._model || chatModel();
 
   // The streaming path is what the user actually waits on before hearing
   // Hari speak, so low thinking matters most here.
@@ -284,6 +297,11 @@ async function* generateReplyStream(messages, opts = {}) {
           `continuing without it. Set GEMINI_THINKING_LEVEL.`
       );
       yield* generateReplyStream(messages, opts);
+      return;
+    }
+    if (r.status === 429 && !opts._model && fallbackModel() !== model) {
+      console.warn(`gemini stream: ${model} out of quota — retrying on ${fallbackModel()}`);
+      yield* generateReplyStream(messages, { ...opts, _model: fallbackModel() });
       return;
     }
     throw new Error(
@@ -735,9 +753,9 @@ async function synthesizeSpeech(text, opts = {}) {
  * The caller (agents/runtime) executes the tools, appends the results and
  * calls again — that loop is what replaces the old regex dispatch.
  */
-async function generateWithTools({ contents, system, declarations = [] }) {
+async function generateWithTools({ contents, system, declarations = [], _model = null }) {
   const key = requireKey();
-  const model = chatModel();
+  const model = _model || chatModel();
   const body = {
     system_instruction: { parts: [{ text: system }] },
     contents,
@@ -759,25 +777,147 @@ async function generateWithTools({ contents, system, declarations = [] }) {
   );
   if (!r.ok) {
     const errBody = await r.text().catch(() => "");
+    if (r.status === 429 && !_model && fallbackModel() !== model) {
+      console.warn(`gemini tools: ${model} out of quota — retrying on ${fallbackModel()}`);
+      return generateWithTools({ contents, system, declarations, _model: fallbackModel() });
+    }
     throw new Error(
       `gemini tools ${r.status} [model=${model}] ${errBody.slice(0, 300) || "(empty body)"}`
     );
   }
   const data = await r.json();
   const parts = data.candidates?.[0]?.content?.parts || [];
+  // thoughtSignature MUST be captured and echoed back with each part when
+  // the tool results are returned (Gemini 3 rejects the follow-up request
+  // outright without it: "Function call is missing a thought_signature").
   const calls = parts
     .filter((p) => p.functionCall)
-    .map((p) => ({ name: p.functionCall.name, args: p.functionCall.args || {} }));
+    .map((p) => ({
+      name: p.functionCall.name,
+      args: p.functionCall.args || {},
+      thoughtSignature: p.thoughtSignature,
+    }));
   const text = parts
     .filter((p) => typeof p.text === "string")
     .map((p) => p.text)
     .join("\n")
     .trim();
-  return { functionCalls: calls, text };
+  const textSignature = parts.find(
+    (p) => typeof p.text === "string" && p.thoughtSignature
+  )?.thoughtSignature;
+  return { functionCalls: calls, text, textSignature };
+}
+
+/**
+ * STREAMING variant of generateWithTools — the voice-latency path.
+ *
+ * Same contract as generateWithTools (returns { functionCalls, text }), but
+ * text is ALSO delivered incrementally through [onDelta] as it generates, so
+ * the caller can start speaking the first sentence while the rest of the
+ * reply — or a tool call — is still being produced. Function-call parts are
+ * collected from the stream and returned at the end exactly like the
+ * non-streaming call, so the tool loop in agents/runtime is unchanged.
+ */
+async function generateWithToolsStream(
+  { contents, system, declarations = [], onDelta = () => {}, _model = null },
+  _retry = false
+) {
+  const key = requireKey();
+  const model = _model || chatModel();
+  const body = {
+    system_instruction: { parts: [{ text: system }] },
+    contents,
+    ...(declarations.length
+      ? { tools: [{ functionDeclarations: declarations }] }
+      : {}),
+  };
+  const gen = tuning(model);
+  if (Object.keys(gen).length) body.generationConfig = gen;
+
+  const r = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": key },
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+      body: JSON.stringify(body),
+    }
+  );
+  if (!r.ok || !r.body) {
+    const errBody = r.ok ? "" : await r.text().catch(() => "");
+    // A rejected tuning field must never take the turn down: drop it and
+    // retry once, same as every other entry point.
+    if (!_retry && gen.thinkingConfig && rejectsField(r.status, errBody, "thinking")) {
+      UNSUPPORTED_FIELDS.add("thinkingConfig");
+      console.error(
+        `gemini tools stream: thinkingLevel "${THINKING_LEVEL}" rejected — ` +
+          `continuing without it. Set GEMINI_THINKING_LEVEL.`
+      );
+      return generateWithToolsStream({ contents, system, declarations, onDelta, _model }, true);
+    }
+    if (r.status === 429 && !_model && fallbackModel() !== model) {
+      console.warn(`gemini tools stream: ${model} out of quota — retrying on ${fallbackModel()}`);
+      return generateWithToolsStream(
+        { contents, system, declarations, onDelta, _model: fallbackModel() },
+        _retry
+      );
+    }
+    throw new Error(
+      `gemini tools stream ${r.status} [model=${model}] ${errBody.slice(0, 300) || "(empty body)"}`
+    );
+  }
+
+  const calls = [];
+  let text = "";
+  let textSignature;
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (!data || data === "[DONE]") continue;
+        try {
+          const parts = JSON.parse(data).candidates?.[0]?.content?.parts || [];
+          for (const p of parts) {
+            if (p.functionCall) {
+              // thoughtSignature must ride along — Gemini 3 refuses the
+              // tool-result follow-up without it (see generateWithTools).
+              calls.push({
+                name: p.functionCall.name,
+                args: p.functionCall.args || {},
+                thoughtSignature: p.thoughtSignature,
+              });
+            } else if (typeof p.text === "string" && p.text) {
+              text += p.text;
+              if (p.thoughtSignature && !textSignature) {
+                textSignature = p.thoughtSignature;
+              }
+              try {
+                onDelta(p.text);
+              } catch (_) {}
+            }
+          }
+        } catch (_) {}
+      }
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+  return { functionCalls: calls, text: text.trim(), textSignature };
 }
 
 module.exports = {
   generateWithTools,
+  generateWithToolsStream,
   envModel,
   generateReply,
   generateReplyStream,

@@ -82,13 +82,26 @@ app.use(
   express.json({
     limit: "2mb",
     // Razorpay signs the RAW bytes — keep them for webhook verification.
+    //
+    // This was an empty stub: the comment said the bytes were kept but
+    // nothing kept them, so any signature check would have compared
+    // against undefined and rejected every legitimate webhook. Only the
+    // payment webhook path needs it, so nothing else pays the memory.
     verify: (req, _res, buf) => {
+      if (req.originalUrl && req.originalUrl.startsWith("/payments/webhook")) {
+        req.rawBody = buf;
+      }
     },
   })
 );
 
-// Basic abuse protection: 60 requests/minute per IP
-app.use(rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true }));
+// Basic abuse protection, per IP. A voice turn costs several requests
+// (audio upload + one /tts per spoken sentence + session traffic), so a
+// lively continuous conversation legitimately reaches ~10-15 req/min —
+// 60 was close enough that a fast talker hit 429s and the app silently
+// dropped to the robotic on-device voice. 240 keeps abuse out without
+// throttling real use.
+app.use(rateLimit({ windowMs: 60_000, max: 240, standardHeaders: true }));
 
 app.get("/health", (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
@@ -122,6 +135,16 @@ const agentCall = require("./routes/agentCall");
 app.use("/agent-call/plivo", agentCall.webhooks);
 app.use("/agent-call", appAuth, perUserLimit, agentCall.router);
 
+// INBOUND CALLING — Hari answers the user's own number: screens callers,
+// forwards the ones who matter, takes a message from the rest.
+// Plivo's webhooks are PUBLIC (it cannot send our app key) and so must be
+// mounted before appAuth; the follow-up hooks carry a per-call token in the
+// path. Number assignment is an ADMIN action, guarded by ADMIN_KEY.
+const inbound = require("./inbound/routes");
+app.use("/inbound/plivo", inbound.webhooks);
+app.use("/inbound/admin", inbound.adminRouter);
+app.use("/inbound", appAuth, inbound.router);
+
 // Chat requires the app key so strangers can't burn your AI credits.
 // Order: authenticate → per-user throttle → plan allowance → handler.
 app.use("/chat", appAuth, perUserLimit, chatRoute);
@@ -150,8 +173,24 @@ app.use("/privacy", appAuth, require("./routes/privacy"));
 app.use("/google", appAuth, require("./google/routes"));
 
 
+// PAYMENTS — collection requests. Razorpay's webhook is PUBLIC (it cannot
+// carry our app key) and is verified by HMAC over the raw body instead, so
+// it must be mounted before appAuth.
+const paymentRoutes = require("./payments/routes");
+app.use("/payments", paymentRoutes.webhooks);
+app.use("/payments", appAuth, paymentRoutes.router);
+
+// MEETINGS — record or upload, get back decisions, action items and a
+// drafted follow-up. The user's own action items enter the commitment
+// tracker so they are nudged before they slip.
+app.use("/meetings", appAuth, require("./meetings/routes"));
+
 // Reminders (voice-created via /chat intents + Today screen CRUD).
 app.use("/reminders", appAuth, require("./reminders/routes"));
+
+// TODAY BRIEF — one aggregate fetch for the home dashboard (agenda,
+// promises, unread agent messages, circle, weather, headlines).
+app.use("/brief", appAuth, require("./routes/brief"));
 
 // ADMIN — read-only ops stats behind a static key (set ADMIN_KEY).
 app.use("/admin", require("./routes/admin"));
@@ -244,6 +283,20 @@ app.use("/region", regionRoute);
 // same auth as the rest of the API.
 app.use("/mcp", appAuth, require("./mcp/routes"));
 
+// TOOL REGISTRY — must be populated at BOOT, not on first use.
+//
+// registerBuiltins() runs as a side effect of loading agents/runtime, and the
+// only thing that used to load it was a lazy require inside the classic
+// /assistant turn handler. A process where the user only ever spoke through
+// LIVE mode therefore declared ZERO tools to the model: no camera, no
+// agent-to-agent messages, no reminders. The assistant did not fail loudly —
+// it simply said it was unable to do those things, because as far as it knew
+// it was. Registering here makes the tool set identical on both paths.
+require("./agents/runtime");
+console.log(
+  `  tools: ${require("./tools/registry").declarations().length} registered`
+);
+
 const live = require("./live/proxy");
 // Avatar routes mount FIRST: Express matches in order, and /live's probe
 // router would otherwise swallow /live/avatar/* before it gets here.
@@ -280,6 +333,31 @@ const port = process.env.PORT || 3000;
 require("./db")
   .init()
   .then(() => {
+    // KNOWLEDGE PACKS — seed the reference corpus, embed anything new,
+    // and load it into memory.
+    //
+    // Deliberately NOT awaited: seeding is idempotent and the embedding
+    // pass costs a few seconds on the first boot after a pack changes.
+    // Blocking the listener on it would delay every restart. Once loaded,
+    // retrieval is in-process — no database round-trip on a spoken turn.
+    require("./knowledge/engine")
+      .seed()
+      .then((r) =>
+        console.log(
+          `  knowledge: ${r.total} entries (${r.inserted} new, ${r.updated} updated, ` +
+            `${r.embedded} embedded, ${r.entries} in memory)`
+        )
+      )
+      .catch((e) => console.error("  knowledge seed failed:", e.message));
+
+    // PROACTIVE — commitment nudges and pre-meeting briefs.
+    // Background only; a failure here never affects a request.
+    try {
+      require("./proactive/scheduler").start();
+    } catch (e) {
+      console.error("  proactive scheduler failed to start:", e.message);
+    }
+
     const server = app.listen(port, () => {
       console.log(`MYASSISTANT backend on :${port} (postgres ready)`);
       // A key defined TWICE in .env silently keeps the LAST value, which is
