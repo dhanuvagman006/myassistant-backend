@@ -28,6 +28,12 @@ function provider() {
   return null;
 }
 
+// Successful searches are cached briefly: the same question asked twice in
+// a conversation ("who is the PM of India?" ×3 in one minute, observed)
+// must not burn a second unit of the tiny free-tier quota.
+const RESULT_TTL = 10 * 60_000;
+const resultCache = new Map(); // normalized query -> { ts, out }
+
 async function run(query) {
   const p = provider();
   if (!p) {
@@ -41,10 +47,14 @@ async function run(query) {
   const q = String(query || "").trim().slice(0, 300);
   if (!q) return { ok: false, error: "empty query" };
 
+  const cacheKey = q.toLowerCase();
+  const hit = resultCache.get(cacheKey);
+  if (hit && Date.now() - hit.ts < RESULT_TTL) return hit.out;
+
   try {
     const results = await BACKENDS[p](q);
     if (!results.length) return { ok: false, error: "no results" };
-    return {
+    const out = {
       ok: true,
       data: results,
       // Compact digest for the model to summarise from.
@@ -53,8 +63,13 @@ async function run(query) {
         .map((r, i) => `${i + 1}. ${r.title} — ${r.snippet}`)
         .join("\n"),
     };
+    resultCache.set(cacheKey, { ts: Date.now(), out });
+    if (resultCache.size > 200) {
+      resultCache.delete(resultCache.keys().next().value);
+    }
+    return out;
   } catch (e) {
-    return { ok: false, error: `search failed: ${String(e.message).slice(0, 160)}` };
+    return { ok: false, error: `search failed: ${String(e.message).slice(0, 300)}` };
   }
 }
 
@@ -109,8 +124,15 @@ const BACKENDS = {
     // family retires (2026-10-16) set GEMINI_SEARCH_MODEL, or the main
     // model takes over automatically below.
     const { envModel } = require("../services/ai/router");
-    const primary = envModel("GEMINI_SEARCH_MODEL", "gemini-2.5-flash");
-    const fallback = envModel("GEMINI_MODEL", "gemini-3.5-flash");
+    // Every model has its OWN tiny free-tier daily bucket (~20/day on the
+    // flash models, measured), so grounding walks a CHAIN of buckets
+    // instead of dying with the first.
+    const chain = [
+      envModel("GEMINI_SEARCH_MODEL", "gemini-2.5-flash"),
+      envModel("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+      "gemini-flash-lite-latest",
+      "gemini-3.6-flash",
+    ].filter((m, i, a) => a.indexOf(m) === i);
     const attempt = async (model) => {
       const r = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -147,16 +169,25 @@ const BACKENDS = {
       );
       return r;
     };
-    let r = await attempt(primary);
-    // 404 = search model retired; 429 = that family's grounding quota is
-    // spent. Either way the OTHER family may still have allowance.
-    if ((r.status === 429 || r.status === 404) && fallback !== primary) {
-      r = await attempt(fallback);
+    let r;
+    for (const model of chain) {
+      r = await attempt(model);
+      // 404 = model retired; 429 = that model's bucket is spent for now.
+      // Either way the next bucket may still have allowance.
+      if (r.status !== 429 && r.status !== 404) break;
     }
     if (r.status === 429) {
-      // Grounding quota is separate and small on free tiers — be honest
-      // about WHY instead of a bare number.
-      throw new Error("today's free web-search allowance is used up — it resets daily");
+      // Every bucket is momentarily dry. This text is READ BY THE MODEL as
+      // the tool result — make it an instruction, not a shrug, so the
+      // assistant answers instead of refusing ("who is the PM of India"
+      // must never die because a rate limiter coughed).
+      throw new Error(
+        "web search is rate-limited for a few minutes. Do NOT refuse the " +
+          "user's question: answer it from your own knowledge if you know " +
+          "it, and briefly mention you couldn't double-check it live just " +
+          "now. Only if you genuinely do not know the answer, say so and " +
+          "suggest trying again in a few minutes."
+      );
     }
     if (!r.ok) throw new Error(`gemini grounding ${r.status}`);
     const d = await r.json();

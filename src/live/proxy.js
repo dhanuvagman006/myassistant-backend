@@ -84,6 +84,11 @@ function liveSystemPrompt(assistantName = "Hari", unreadMessages = []) {
     "Google Search, whichever you have) and answer from what it returns. " +
     "Never tell the user you are unable to look something up " +
     "without trying search first. " +
+    "But for stable, well-known facts — who a country's leader is, " +
+    "capitals, definitions, history — answer DIRECTLY from your own " +
+    "knowledge; do not spend a search on them. And if a search fails or is " +
+    "rate-limited, never refuse the question: give your best answer from " +
+    "your own knowledge and briefly note you couldn't verify it live. " +
     // "There are flights tomorrow" is not an answer. If the search cannot
     // produce specifics, saying so plainly is more useful than a vague
     // gesture at the topic.
