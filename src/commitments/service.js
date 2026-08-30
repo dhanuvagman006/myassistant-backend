@@ -72,7 +72,6 @@ const EXTRACT_PROMPT = [
   "A commitment is FIRST PERSON, SPECIFIC and FUTURE: something the user",
   "said THEY would do. Examples that qualify:",
   '  "I\'ll send Ravi the proposal by Friday"',
-  '  "Tell her I\'ll call back tomorrow morning"',
   '  "I need to file the GST return before the 20th"',
   "",
   "These DO NOT qualify — return an empty list for them:",
@@ -80,6 +79,10 @@ const EXTRACT_PROMPT = [
   "  things SOMEONE ELSE promised (\"he said he'd send it\")",
   "  vague intentions with no object (\"I'll try to be better\")",
   "  anything already done (\"I sent it yesterday\")",
+  "  INSTRUCTIONS TO THE ASSISTANT to deliver something — \"tell mom I'll",
+  "  be late\", \"call Ravi and inform him…\", \"message her that…\". The",
+  "  assistant performs those immediately; filing them as promises would",
+  "  make it look like nothing happened.",
   "",
   "Return STRICT JSON only, no markdown:",
   '{"commitments":[{"text":"<imperative task, e.g. Send Ravi the proposal>",',
@@ -93,8 +96,16 @@ const EXTRACT_PROMPT = [
 /**
  * Fire-and-forget extraction. Never awaited by a turn, never throws.
  */
+// Utterances that are delivery instructions for the assistant itself
+// ("tell amma I'll be late", "call Ravi and inform him…") are executed in
+// the same turn — filing them as promises double-books the work and makes
+// the user think nothing happened. "Remind me to call mom" still passes.
+const DELIVERY_RX =
+  /^\s*(please\s+|can you\s+|hey\s+\w+[,\s]+)*(tell|say|inform|message|text|send|call|ask|let)\b/i;
+
 function extractAsync(userId, text, { source = "voice" } = {}) {
   if (!userId || !text) return;
+  if (DELIVERY_RX.test(text) && !/\bremind me\b/i.test(text)) return;
   if (!PROMISE_RX.test(text)) return; // no model call for an ordinary sentence
   extract(userId, text, { source }).catch(() => {});
 }

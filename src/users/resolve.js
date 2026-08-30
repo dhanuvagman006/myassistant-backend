@@ -56,7 +56,30 @@ async function resolveContact(userId, name, { limit = 5 } = {}) {
   } catch (_) {
     return { match: null, candidates: [] };
   }
-  if (!rows.length) return { match: null, candidates: [] };
+  if (!rows.length) {
+    // Nickname fallback: contacts saved with stretched letters — "Ammmmaaa"
+    // for amma — never match SQL LIKE. Collapsing repeated letters makes
+    // both sides "ama", which is exactly how such pet names are formed.
+    const collapsed = collapseRuns(q);
+    if (collapsed.length >= 3) {
+      try {
+        const all = await query(
+          `SELECT name, phone, 'contacts' AS source FROM contacts WHERE user_id = $1
+           UNION ALL
+           SELECT name, phone, 'clients' AS source FROM clients
+            WHERE user_id = $1 AND COALESCE(phone,'') <> ''`,
+          [userId]
+        );
+        const hits = dedupe(
+          all.filter((r) => collapseRuns(String(r.name).toLowerCase()) === collapsed ||
+            collapseRuns(String(r.name).toLowerCase().split(/\s+/)[0]) === collapsed)
+        );
+        if (hits.length === 1) return { match: hits[0], candidates: [] };
+        if (hits.length > 1) return { match: null, candidates: hits.slice(0, limit) };
+      } catch (_) {}
+    }
+    return { match: null, candidates: [] };
+  }
 
   // An exact match is decisive even when other names contain the query.
   const exact = rows.filter((r) => r.exact);
@@ -68,6 +91,11 @@ async function resolveContact(userId, name, { limit = 5 } = {}) {
   const byPerson = dedupe(rows);
   if (byPerson.length === 1) return { match: byPerson[0], candidates: [] };
   return { match: null, candidates: byPerson };
+}
+
+/** "ammmmaaa" → "ama"; strips non-letters so "am ma" collapses too. */
+function collapseRuns(s) {
+  return String(s).replace(/[^a-z]/g, "").replace(/(.)\1+/g, "$1");
 }
 
 function clean(r) {

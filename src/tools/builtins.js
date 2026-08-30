@@ -1224,6 +1224,13 @@ function registerBuiltins() {
         if (users.length === 1) contactPhone = users[0].phone_number;
       }
       if (!contactPhone) {
+        // Shared resolver last: it carries the nickname fallback (collapsed
+        // repeated letters) so "amma" finds a contact saved as "Ammmmaaa".
+        const { resolveContact } = require("../users/resolve");
+        const { match } = await resolveContact(ctx.userId, args.contact_name);
+        if (match?.phone) contactPhone = match.phone;
+      }
+      if (!contactPhone) {
         return {
           ok: false,
           data: "Contact not found in address book.",

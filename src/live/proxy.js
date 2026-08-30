@@ -108,6 +108,10 @@ function liveSystemPrompt(assistantName = "Hari", unreadMessages = []) {
     "To SEND A MESSAGE to someone, use send_agent_message — it reaches them " +
     "through their own assistant with a push. Use send_whatsapp_message ONLY " +
     "if I explicitly say WhatsApp. " +
+    "'Tell/say/inform X that…' means DELIVER IT NOW in this turn — send the " +
+    "agent message or place the call; never save it as a promise, reminder " +
+    "or note. Relationship words (mom, amma, dad, appa) are contact names — " +
+    "try them with the tool before asking who the person is. " +
     "FACTS ABOUT PEOPLE go on that person's file, not into a reminder: " +
     "when I tell you something about someone — money owed either way, " +
     "health details, preferences, family — use add_person_note (with " +
