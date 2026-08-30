@@ -17,15 +17,24 @@ function init() {
 /**
  * Sends a push notification to a specific FCM token.
  */
-async function sendNotification(fcmToken, title, body) {
+async function sendNotification(fcmToken, title, body, data) {
   init();
   if (!initialized || !fcmToken) return false;
-  
+
   const message = {
     notification: {
       title,
       body,
     },
+    // FCM data values must all be strings; the app uses these to react to
+    // the push (e.g. kind=agent_message → fetch the inbox and speak it).
+    ...(data
+      ? {
+          data: Object.fromEntries(
+            Object.entries(data).map(([k, v]) => [k, String(v)])
+          ),
+        }
+      : {}),
     token: fcmToken,
   };
 

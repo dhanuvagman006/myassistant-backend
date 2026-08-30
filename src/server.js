@@ -189,6 +189,7 @@ app.use("/meetings", appAuth, require("./meetings/routes"));
 // Reminders (voice-created via /chat intents + Today screen CRUD).
 app.use("/reminders", appAuth, require("./reminders/routes"));
 app.use("/commitments", appAuth, require("./routes/commitments"));
+app.use("/messages", appAuth, require("./routes/messages"));
 
 // TODAY BRIEF — one aggregate fetch for the home dashboard (agenda,
 // promises, unread agent messages, circle, weather, headlines).

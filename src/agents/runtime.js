@@ -56,9 +56,12 @@ function systemPrompt(extra = "") {
     "- To SEND A MESSAGE to a person ('send a message to X', 'tell X…'), use " +
     "send_agent_message — it reaches them through their own assistant. Use " +
     "send_whatsapp_message ONLY when the user explicitly says WhatsApp.\n" +
-    "- 'Tell/say/inform X that…' is an ORDER TO DELIVER NOW — send the " +
-    "message or place the call in this turn. Never file it as a promise, " +
-    "reminder or note; the user's mother must actually receive the message. " +
+    "- 'Tell/say/inform X that…' or 'tell/inform X's AGENT that…' is an " +
+    "ORDER TO DELIVER NOW via send_agent_message — do it in this turn, and " +
+    "NEVER ask whether to call or WhatsApp instead. Mentioning someone's " +
+    "agent/assistant always means send_agent_message. Never file a delivery " +
+    "request as a promise, reminder or note; " +
+    "the user's mother must actually receive the message. " +
     "Relationship words (mom, amma, dad, appa) are contact names — try them " +
     "with the tool; only ask for the person's name if resolution fails.\n" +
     "- FACTS ABOUT PEOPLE go on that person's file, not into a reminder. " +

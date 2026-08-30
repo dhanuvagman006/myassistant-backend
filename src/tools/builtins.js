@@ -1216,11 +1216,14 @@ function registerBuiltins() {
     name: "send_agent_message",
     description:
       "THE DEFAULT way to send a message to a person — 'send a message to " +
-      "X', 'tell X that…', 'let X know…'. Delivers through the recipient's " +
-      "OWN assistant: they get a push notification and their assistant " +
-      "speaks it aloud, naming the sender. Use send_whatsapp_message ONLY " +
-      "when the user explicitly says WhatsApp. If the recipient turns out " +
-      "not to be reachable this way, this tool says so — offer WhatsApp then.",
+      "X', 'tell X that…', 'let X know…', 'inform X…', 'tell X's agent…', " +
+      "'inform X's agent that…'. Delivers through the recipient's OWN " +
+      "assistant: they get a push notification and their assistant speaks " +
+      "it aloud, naming the sender. Call this IMMEDIATELY — never ask the " +
+      "user to choose between WhatsApp and a call first. Use " +
+      "send_whatsapp_message ONLY when the user explicitly says WhatsApp. " +
+      "If the recipient turns out not to be reachable this way, this tool " +
+      "says so — offer WhatsApp then.",
     risk: "medium",
     inputSchema: {
       type: "object",
@@ -1237,7 +1240,12 @@ function registerBuiltins() {
       // threw exactly on the success path (recipient IS an app user).
       const { run, one } = require("../db");
       const push = require("../services/push");
-      const contactLower = String(args.contact_name).toLowerCase();
+      // "Inform Hemalatha's agent" names the PERSON, not a contact called
+      // "Hemalatha's agent" — strip the agent suffix before resolving.
+      const contactLower = String(args.contact_name)
+        .toLowerCase()
+        .replace(/['’]?s?\s+(agent|assistant)\s*$/i, "")
+        .trim();
 
       // 1. Resolve the name to a number.
       //
@@ -1278,7 +1286,7 @@ function registerBuiltins() {
         // Shared resolver last: it carries the nickname fallback (collapsed
         // repeated letters) so "amma" finds a contact saved as "Ammmmaaa".
         const { resolveContact } = require("../users/resolve");
-        const { match } = await resolveContact(ctx.userId, args.contact_name);
+        const { match } = await resolveContact(ctx.userId, contactLower);
         if (match?.phone) contactPhone = match.phone;
       }
       if (!contactPhone) {
@@ -1333,7 +1341,10 @@ function registerBuiltins() {
         await push.sendNotification(
           appUser.fcm_token,
           ctx.userName ? `${ctx.userName} sent you a message` : "You have a new message",
-          "Open the app and your assistant will read it to you."
+          "Open the app and your assistant will read it to you.",
+          // Lets the recipient's app react: fetch the inbox and have their
+          // assistant SPEAK the message the moment the app is open/opened.
+          { kind: "agent_message" }
         );
       } else {
         // Not an error: they simply have no device registered yet, so the

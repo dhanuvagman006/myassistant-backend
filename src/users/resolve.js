@@ -80,6 +80,28 @@ async function resolveContact(userId, name, { limit = 5 } = {}) {
       );
       if (hits.length === 1) return { match: hits[0], candidates: [] };
       if (hits.length > 1) return { match: null, candidates: hits.slice(0, limit) };
+
+      // Speech-to-text drops and swaps single letters ("Amba" for "Amma").
+      // When nothing else matched at all, a UNIQUE contact within edit
+      // distance 1 of the collapsed query is who they meant; two such
+      // contacts are returned for the caller to disambiguate.
+      if (!rows.length) {
+        const near = dedupe(
+          all.filter((r) => {
+            const c = collapseRuns(String(r.name).toLowerCase());
+            return (
+              editDistance(c, collapsed) <= 1 ||
+              editDistance(
+                collapseRuns(String(r.name).toLowerCase().split(/\s+/)[0]),
+                collapsed
+              ) <= 1
+            );
+          })
+        );
+        if (near.length === 1) return { match: near[0], candidates: [] };
+        if (near.length > 1)
+          return { match: null, candidates: near.slice(0, limit) };
+      }
     } catch (_) {}
   }
   if (!rows.length) return { match: null, candidates: [] };
@@ -94,6 +116,26 @@ async function resolveContact(userId, name, { limit = 5 } = {}) {
 /** "ammmmaaa" → "ama"; strips non-letters so "am ma" collapses too. */
 function collapseRuns(s) {
   return String(s).replace(/[^a-z]/g, "").replace(/(.)\1+/g, "$1");
+}
+
+/** Plain Levenshtein, early-out when the length gap alone exceeds 1. */
+function editDistance(a, b) {
+  if (Math.abs(a.length - b.length) > 1) return 2;
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => i);
+  for (let j = 1; j <= b.length; j++) {
+    let prev = dp[0];
+    dp[0] = j;
+    for (let i = 1; i <= a.length; i++) {
+      const cur = dp[i];
+      dp[i] = Math.min(
+        dp[i] + 1,
+        dp[i - 1] + 1,
+        prev + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+      prev = cur;
+    }
+  }
+  return dp[a.length];
 }
 
 function clean(r) {
