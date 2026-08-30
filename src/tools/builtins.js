@@ -1040,6 +1040,57 @@ function registerBuiltins() {
   });
 
   registry.register({
+    name: "open_webpage",
+    description:
+      "Open ANY website on the user's phone — 'open the income tax filing " +
+      "site', 'open irctc', 'open github.com'. YOU supply the URL: for a " +
+      "named service use its well-known OFFICIAL domain (income tax India " +
+      "e-filing → https://eportal.incometax.gov.in, IRCTC → " +
+      "https://www.irctc.co.in, DigiLocker → https://www.digilocker.gov.in). " +
+      "Prefer the dedicated tools for YouTube, shopping, food, cabs and " +
+      "movies; this one is for everything else on the web.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description:
+            "Full URL of the page to open. https:// is assumed if missing.",
+        },
+        label: {
+          type: "string",
+          description:
+            "Short human name of the site ('the income tax portal') for the spoken confirmation.",
+        },
+      },
+      required: ["url"],
+    },
+    async execute(args) {
+      let url = String(args.url || "").trim();
+      if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+      let parsed;
+      try {
+        parsed = new URL(url);
+      } catch (_) {
+        return { ok: false, error: "That doesn't look like a valid web address." };
+      }
+      // Only the web: this tool must not become a way to fire arbitrary
+      // intent schemes on the handset.
+      if (!/^https?:$/.test(parsed.protocol) || !parsed.hostname.includes(".")) {
+        return { ok: false, error: "That doesn't look like a valid web address." };
+      }
+      const label = String(args.label || parsed.hostname).slice(0, 80);
+      return {
+        ok: true,
+        deviceAction: { type: "open_url", url: parsed.href },
+        speak: `Opening ${label} on your screen.`,
+      };
+    },
+  });
+
+  registry.register({
     name: "open_service_app",
     description:
       "Open a shopping or grocery app for the user — Blinkit, Zepto, Amazon, " +
