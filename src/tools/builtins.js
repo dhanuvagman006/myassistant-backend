@@ -1167,6 +1167,46 @@ function registerBuiltins() {
   });
 
   registry.register({
+    name: "present_text",
+    description:
+      "Put a WRITTEN piece on the user's screen — a speech, meeting script, " +
+      "talking points, email draft, plan, list, or a decision breakdown. " +
+      "YOU write the full content; the phone shows it in a reader the user " +
+      "can scroll, copy and share. Use whenever the user asks you to " +
+      "write/draft/generate/prepare something meant to be READ or REUSED " +
+      "('generate a script for my speech today', 'draft a reply', 'help me " +
+      "decide — lay it out'). Plain text only: short paragraphs, blank " +
+      "lines between sections, CAPITALISED or numbered headings — no " +
+      "markdown symbols like ** or #.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: {
+          type: "string",
+          description: "Short title ('Speech — Team Meeting').",
+        },
+        content: {
+          type: "string",
+          description: "The complete written piece, ready to read out or send.",
+        },
+      },
+      required: ["title", "content"],
+    },
+    async execute(args) {
+      const title = String(args.title || "").trim().slice(0, 120);
+      const content = String(args.content || "").trim().slice(0, 20000);
+      if (!content) return { ok: false, error: "nothing to show" };
+      return {
+        ok: true,
+        deviceAction: { type: "show_text", title, content },
+        speak: "It's on your screen — tell me if you want any part changed.",
+      };
+    },
+  });
+
+  registry.register({
     name: "generate_image",
     description:
       "CREATE an image from a description — 'draw a poster for my café', " +
