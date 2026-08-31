@@ -34,12 +34,18 @@ jobs:
           cache: npm
       - run: npm ci
       # Every route module must at least LOAD (catches typos/bad requires).
+      # Globs src/routes/ so the list can never go stale again — a stale
+      # hardcoded list is exactly what kept CI red for days.
       - name: Module load check
         run: |
           JWT_SECRET=$(head -c 48 /dev/urandom | base64) DATABASE_URL=$DATABASE_URL node -e "
-            for (const m of ['./src/routes/chat','./src/routes/auth','./src/routes/memory',
-                             './src/reminders/routes','./src/google/routes','./src/routes/stt',
-                             './src/services/intents','./src/memory/extractor']) require(m);
+            const fs = require('fs');
+            for (const f of fs.readdirSync('./src/routes'))
+              if (f.endsWith('.js')) require('./src/routes/' + f);
+            for (const m of ['./src/agents/runtime','./src/live/proxy',
+                             './src/services/brief','./src/tools/builtins',
+                             './src/commitments/service','./src/services/intents',
+                             './src/reminders/routes','./src/google/routes']) require(m);
             console.log('all modules load');"
       # Boot the real server and exercise auth/memory/reminders/google.
       - name: Smoke test
