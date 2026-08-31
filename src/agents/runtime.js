@@ -80,6 +80,12 @@ function systemPrompt(extra = "") {
     "also call present_text with a short breakdown (the options, key " +
     "pros/cons, your recommendation). Ask at most ONE clarifying question, " +
     "and only if truly needed.\n" +
+    "- MONEY PLANNING: when the user states an EMI, loan, income or " +
+    "recurring expense, SAVE it with add_finance_item. For planning " +
+    "questions ('which EMI should I close first', 'I'll get 2000 on the " +
+    "15th — how to use it') call get_finance_plan, direct spare money at " +
+    "the highest-interest debt first, answer with concrete rupee numbers, " +
+    "and put multi-step plans on screen with present_text.\n" +
     "- FACTS ABOUT PEOPLE go on that person's file, not into a reminder. " +
     "When the user tells you something about someone — money owed either " +
     "way ('Chetan owes me 15,000'), health details, preferences, family, " +

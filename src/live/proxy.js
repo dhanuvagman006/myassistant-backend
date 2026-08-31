@@ -126,6 +126,11 @@ function liveSystemPrompt(assistantName = "Hari", unreadMessages = [], personalC
     "— a clear recommendation with the 2-3 reasons that matter and the " +
     "main risk, never 'it depends'; for consequential decisions also put a " +
     "short breakdown on screen with present_text. " +
+    "MONEY PLANNING: when I state an EMI, loan, income or recurring " +
+    "expense, SAVE it with add_finance_item; for planning questions call " +
+    "get_finance_plan, direct spare money at the highest-interest debt " +
+    "first, answer with concrete rupee numbers, and put multi-step plans " +
+    "on screen with present_text. " +
     "FACTS ABOUT PEOPLE go on that person's file, not into a reminder: " +
     "when I tell you something about someone — money owed either way, " +
     "health details, preferences, family — use add_person_note (with " +

@@ -1167,6 +1167,152 @@ function registerBuiltins() {
   });
 
   registry.register({
+    name: "add_finance_item",
+    description:
+      "Record a money item in the user's finance section — an EMI ('I " +
+      "have a bike EMI of 3500 at 11 percent'), an expected income ('I " +
+      "get 2000 on the 15th'), or a recurring expense (rent, fees). " +
+      "Amounts are monthly rupees. Use whenever the user states an EMI, " +
+      "loan, income or recurring expense they want tracked.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", enum: ["income", "emi", "expense"] },
+        name: { type: "string", description: "Short label ('Bike EMI', 'Salary')" },
+        amount: { type: "number", description: "Monthly amount in rupees" },
+        interest_rate: {
+          type: "number",
+          description: "Annual interest % (EMIs only)",
+        },
+        due_day: {
+          type: "integer",
+          description: "Day of month it hits (1-31), if stated",
+        },
+        outstanding: {
+          type: "number",
+          description: "Remaining loan principal in rupees (EMIs), if known",
+        },
+      },
+      required: ["kind", "name", "amount"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      try {
+        const db = require("../db");
+        // listItems owns the CREATE TABLE — run it first so a voice-add
+        // works even if the Finance screen was never opened.
+        await require("../routes/finance").listItems(ctx.userId);
+        const kind = ["income", "emi", "expense"].includes(args.kind)
+          ? args.kind : "expense";
+        const amount = Number(args.amount);
+        if (!Number.isFinite(amount) || amount <= 0) {
+          return { ok: false, error: "a positive amount is needed" };
+        }
+        await db.run(
+          `INSERT INTO finance_items
+             (user_id, kind, name, amount, interest_rate, due_day, outstanding, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [
+            ctx.userId, kind,
+            String(args.name || kind).trim().slice(0, 80),
+            amount,
+            Number(args.interest_rate) || 0,
+            Number.isInteger(args.due_day) ? args.due_day : 0,
+            Number(args.outstanding) || 0,
+            Date.now(),
+          ]
+        );
+        return {
+          ok: true,
+          data: { saved: true },
+          speak: `Noted — ${args.name}, ₹${amount} monthly${kind === "emi" && args.interest_rate ? ` at ${args.interest_rate} percent` : ""}. It's in your finance section.`,
+        };
+      } catch (e) {
+        console.error("add_finance_item:", e.message);
+        return { ok: false, error: "couldn't save that — try once more" };
+      }
+    },
+  });
+
+  registry.register({
+    name: "get_finance_plan",
+    description:
+      "The user's full finance picture — incomes, EMIs (with interest " +
+      "rates and outstanding principal), expenses, monthly surplus. Use " +
+      "for ANY money-planning question: 'which EMI should I close first', " +
+      "'can I afford X', 'plan my finances', 'I'm getting 2000 on the " +
+      "15th, how should I use it'. Rule of thumb to apply: put spare money " +
+      "against the HIGHEST-INTEREST debt first (after keeping a small " +
+      "buffer). Give concrete numbers and put a structured plan on screen " +
+      "with present_text for anything beyond a one-liner.",
+    risk: "low",
+    inputSchema: { type: "object", properties: {} },
+    async execute(_args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const { listItems, summarize } = require("../routes/finance");
+      const items = await listItems(ctx.userId);
+      if (!items.length) {
+        return {
+          ok: true,
+          data: {
+            result:
+              "No finance items recorded yet. Offer to note their EMIs, " +
+              "incomes and expenses (add_finance_item) — or they can add " +
+              "them in the Finance section of the app.",
+          },
+        };
+      }
+      const s = summarize(items);
+      const lines = items.map((i) => {
+        if (i.kind === "emi") {
+          return `EMI: ${i.name} — ₹${i.amount}/mo at ${i.interest_rate}%` +
+            (i.outstanding ? `, ₹${i.outstanding} outstanding` : "") +
+            (i.due_day ? `, due day ${i.due_day}` : "");
+        }
+        return `${i.kind}: ${i.name} — ₹${i.amount}/mo` +
+          (i.due_day ? `, day ${i.due_day}` : "");
+      });
+      return {
+        ok: true,
+        data: {
+          result:
+            lines.join("\n") +
+            `\nTotals: income ₹${s.monthly_income}/mo, EMIs ₹${s.monthly_emi}/mo, ` +
+            `expenses ₹${s.monthly_expense}/mo, surplus ₹${s.surplus}/mo, ` +
+            `total debt outstanding ₹${s.total_debt}.`,
+        },
+      };
+    },
+  });
+
+  registry.register({
+    name: "remove_finance_item",
+    description:
+      "Delete a finance item by its name ('remove the bike EMI', 'my rent " +
+      "changed — delete it'). Exact-ish name match on the user's items.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: { name: { type: "string" } },
+      required: ["name"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const db = require("../db");
+      const { listItems } = require("../routes/finance");
+      const items = await listItems(ctx.userId);
+      const q = String(args.name || "").toLowerCase().trim();
+      const hit = items.find((i) => i.name.toLowerCase() === q) ||
+        items.find((i) => i.name.toLowerCase().includes(q) && q.length >= 3);
+      if (!hit) return { ok: false, error: `no finance item matching "${args.name}"` };
+      await db.run(`DELETE FROM finance_items WHERE id=$1 AND user_id=$2`,
+        [hit.id, ctx.userId]);
+      return { ok: true, speak: `Removed ${hit.name} from your finance section.` };
+    },
+  });
+
+  registry.register({
     name: "present_text",
     description:
       "Put a WRITTEN piece on the user's screen — a speech, meeting script, " +

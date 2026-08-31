@@ -191,6 +191,7 @@ app.use("/reminders", appAuth, require("./reminders/routes"));
 app.use("/commitments", appAuth, require("./routes/commitments"));
 app.use("/messages", appAuth, require("./routes/messages"));
 app.use("/usage", appAuth, require("./routes/usage").router);
+app.use("/finance", appAuth, require("./routes/finance").router);
 
 // TODAY BRIEF — one aggregate fetch for the home dashboard (agenda,
 // promises, unread agent messages, circle, weather, headlines).
