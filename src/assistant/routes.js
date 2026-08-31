@@ -746,8 +746,13 @@ router.post("/:sid/contacts", (req, res) => {
   }
   if (matches.length === 1) {
     // An agent-call task pending? Hari places the call itself and reports
-    // back. Otherwise it's a plain direct-dial confirmation.
-    if (s.pendingCallTask) return startAgentCall(s, matches[0], s.pendingCallTask, req);
+    // back. Otherwise it's a plain direct-dial confirmation. EMERGENCY
+    // short codes (112/108/…) are never relayed through the call service —
+    // the handset must dial them itself.
+    const digits = String(matches[0].phone || "").replace(/\D/g, "");
+    if (s.pendingCallTask && digits.length > 5)
+      return startAgentCall(s, matches[0], s.pendingCallTask, req);
+    s.pendingCallTask = null;
     return askCallConfirm(s, matches[0]);
   }
   s.ambiguous = matches.slice(0, 6);

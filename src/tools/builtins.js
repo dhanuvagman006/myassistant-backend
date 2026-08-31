@@ -690,6 +690,10 @@ function registerBuiltins() {
     name: "place_phone_call",
     description:
       "Call one of the user's contacts. Use for 'call mom', 'ring Ravi'. " +
+      "EMERGENCIES work too: 'call an ambulance / the police / fire " +
+      "brigade / emergency / 112' — pass that service word or code as the " +
+      "name and the phone dials India's emergency short code directly. " +
+      "Act IMMEDIATELY on emergency requests, never ask follow-ups. " +
       "When the user wants a message DELIVERED for them ('call Chethan and " +
       "tell him I'll be late'), pass it as `message` — if the agent-calling " +
       "service is configured, the assistant places the call itself and " +
