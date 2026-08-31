@@ -121,8 +121,19 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   // sit in front of every decision — this is the judgment layer (§13/§14).
   if (ctx.userId && ctx.extraSystem === undefined) {
     try {
-      const block = await require("../users/context").contextBlock(ctx.userId);
-      if (block) ctx = { ...ctx, extraSystem: "\n\n" + block };
+      const [block, mem] = await Promise.all([
+        require("../users/context").contextBlock(ctx.userId),
+        require("../agents/memory").memoryBlock(ctx.userId),
+      ]);
+      const joined = [block, mem].filter(Boolean).join("\n");
+      if (joined) ctx = { ...ctx, extraSystem: "\n\n" + joined };
+    } catch (_) {}
+  }
+  // Learn durable personal facts from this turn (regex-gated, async) —
+  // the same account-level memory every device sees after login.
+  if (ctx.userId) {
+    try {
+      require("../agents/memory").extractAndStore(ctx.userId, userText);
     } catch (_) {}
   }
   // Built-ins plus ONLY this user's MCP tools (§6). One selection path for

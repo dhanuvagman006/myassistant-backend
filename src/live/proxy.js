@@ -66,7 +66,7 @@ function authorize(url) {
 
 /// The system prompt for live mode. Kept short: the live model speaks, so
 /// the TTS-formatting rules from the text prompt don't apply.
-function liveSystemPrompt(assistantName = "Hari", unreadMessages = []) {
+function liveSystemPrompt(assistantName = "Hari", unreadMessages = [], personalContext = "") {
   let prompt = `You are ${assistantName}, a warm, quick-witted personal voice assistant from India. ` +
     "You are SPEAKING with the user in real time. Speak ENGLISH by default " +
     "(Indian English). Only switch language if the user clearly and " +
@@ -169,6 +169,10 @@ function liveSystemPrompt(assistantName = "Hari", unreadMessages = []) {
       prompt += `- From ${from}: "${m.message}"\n`;
     });
   }
+  // WHO the user is + WHAT is remembered about them — same personal layer
+  // the classic path gets. Without this, live mode (the MAIN screen) was
+  // the one place Hari didn't know her own user.
+  if (personalContext) prompt += "\n\n" + personalContext;
   return prompt;
 }
 
@@ -228,12 +232,23 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   // a friend" — which is the one detail that makes the message useful.
   // First name only, matching the classic assistant path.
   let userName = null;
+  let personalContext = "";
   try {
     const uid = Number(user?.sub);
     if (Number.isFinite(uid) && uid > 0) {
       const p = await require("../users/context").getProfile(uid);
       if (p?.assistant?.name) assistantName = p.assistant.name;
       if (p?.user?.name) userName = String(p.user.name).split(" ")[0];
+
+      // Profile + standing rules + remembered facts — account-level, so
+      // logging in on a new phone brings the same memory with it.
+      try {
+        const [ctxBlock, memBlock] = await Promise.all([
+          require("../users/context").contextBlock(uid),
+          require("../agents/memory").memoryBlock(uid),
+        ]);
+        personalContext = [ctxBlock, memBlock].filter(Boolean).join("\n");
+      } catch (_) {}
       
 
       // Only a verified number has an inbox; unverified accounts are NULL
@@ -385,7 +400,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
               silenceDurationMs: Number(process.env.LIVE_SILENCE_MS || 500),
             },
           },
-          systemInstruction: { parts: [{ text: liveSystemPrompt(assistantName, unreadMessages) }] },
+          systemInstruction: { parts: [{ text: liveSystemPrompt(assistantName, unreadMessages, personalContext) }] },
           // GOOGLE SEARCH — only on models that accept it.
           //
           // The gemini-3.x live models close the session outright (WS 1011,
@@ -674,6 +689,12 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           Number(user.sub),
           sc.inputTranscription.text,
           { source: "voice" }
+        );
+        // Personal facts too ("I'm vegetarian", "my exam is on the 20th")
+        // — regex-gated + fire-and-forget, so ordinary turns cost nothing.
+        require("../agents/memory").extractAndStore(
+          Number(user.sub),
+          sc.inputTranscription.text
         );
       }
       appWs.send(
