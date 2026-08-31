@@ -277,6 +277,8 @@ app.use("/analytics", appAuth, require("./routes/analytics"));
 // ---------------- ADMIN WEB DASHBOARD ----------------
 // Note: no appAuth here because this is for the web browser
 app.use("/admin-panel", require("./routes/admin_web"));
+// Public legal pages — the Play Store listing links to /legal/privacy.
+app.use("/legal", require("./routes/legal"));
 
 // Regional language from the caller's IP (no app permissions needed)
 app.use("/region", regionRoute);

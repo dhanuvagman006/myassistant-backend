@@ -163,8 +163,10 @@ router.get("/", async (req, res) => {
          FROM users ORDER BY created_at DESC LIMIT 200`);
 
     const weekAgo = Date.now() - 7 * 86400_000;
+    const dayAgo = Date.now() - 86400_000;
     const [verified, newWeek, docs, reminders, commitsOpen, clients, notes,
-           agentMsgs, memories, convMsgs] = await Promise.all([
+           agentMsgs, memories, convMsgs, dau, wau, actions24, financeItems] =
+      await Promise.all([
       safeCount("SELECT COUNT(*) AS count FROM users WHERE phone_verified_at IS NOT NULL"),
       safeCount("SELECT COUNT(*) AS count FROM users WHERE created_at > $1", [weekAgo]),
       safeCount("SELECT COUNT(*) AS count FROM documents"),
@@ -175,6 +177,11 @@ router.get("/", async (req, res) => {
       safeCount("SELECT COUNT(*) AS count FROM agent_messages"),
       safeCount("SELECT COUNT(*) AS count FROM agent_memories WHERE valid=1"),
       safeCount("SELECT COUNT(*) AS count FROM messages"),
+      // Engagement — the numbers a company actually watches daily.
+      safeCount("SELECT COUNT(DISTINCT user_id) AS count FROM actions_log WHERE created_at > $1", [dayAgo]),
+      safeCount("SELECT COUNT(DISTINCT user_id) AS count FROM actions_log WHERE created_at > $1", [weekAgo]),
+      safeCount("SELECT COUNT(*) AS count FROM actions_log WHERE created_at > $1", [dayAgo]),
+      safeCount("SELECT COUNT(*) AS count FROM finance_items"),
     ]);
 
     // 14-day signup sparkline (created_at is epoch ms).
@@ -298,6 +305,11 @@ router.get("/", async (req, res) => {
         <div>
           <p class="text-slate-500 text-xs font-semibold uppercase tracking-widest mb-1">Hari · Admin</p>
           <h1 class="text-3xl font-bold neon">Command Center</h1>
+          <p class="text-xs mt-2">
+            <a class="text-slate-500 hover:text-cyan-300 underline" href="/legal/privacy" target="_blank">Privacy Policy</a>
+            <span class="text-slate-700 mx-1">·</span>
+            <a class="text-slate-500 hover:text-cyan-300 underline" href="/legal/terms" target="_blank">Terms</a>
+          </p>
         </div>
         <div class="flex items-center gap-4">
           <div class="glass px-4 py-2 rounded-full flex items-center gap-2">
@@ -311,15 +323,23 @@ router.get("/", async (req, res) => {
         </div>
       </header>
       ${err}
-      <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-8">
-        ${kpi("Users", users.length, "#00F0FF")}
-        ${kpi("Verified", verified, "#35C48D")}
-        ${kpi("New / 7d", newWeek, "#B265FF")}
+      <p class="text-slate-500 text-[11px] font-bold uppercase tracking-widest mb-2">Engagement</p>
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+        ${kpi("Active today", dau, "#00F0FF")}
+        ${kpi("Active / 7d", wau, "#35C48D")}
+        ${kpi("Actions / 24h", actions24, "#B265FF")}
+        ${kpi("Users", users.length, "#f59e0b")}
+        ${kpi("New / 7d", newWeek, "#ec4899")}
+      </div>
+      <p class="text-slate-500 text-[11px] font-bold uppercase tracking-widest mb-2">Feature adoption</p>
+      <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-8">
+        ${kpi("Verified phones", verified, "#35C48D")}
         ${kpi("Documents", docs, "#f59e0b")}
         ${kpi("Reminders", reminders, "#ec4899")}
         ${kpi("Promises", commitsOpen, "#f97316")}
         ${kpi("Client files", clients, "#22d3ee")}
         ${kpi("Msgs relayed", agentMsgs, "#a3e635")}
+        ${kpi("Finance items", financeItems, "#B265FF")}
       </div>
       <div class="grid lg:grid-cols-3 gap-6">
         <div class="glass rounded-2xl overflow-hidden lg:col-span-2">
