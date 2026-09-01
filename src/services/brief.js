@@ -186,6 +186,7 @@ async function headlinesOf() {
     return (items || []).map((h) => ({
       title: String(h.title || "").slice(0, 140),
       source: String(h.source || "").slice(0, 40),
+      url: String(h.link || "").slice(0, 500),
     }));
   } catch (_) {
     return [];
