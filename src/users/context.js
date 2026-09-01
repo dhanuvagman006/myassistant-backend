@@ -42,6 +42,8 @@ async function migrate(exec) {
       style      TEXT NOT NULL DEFAULT '',      -- concise|friendly|formal|''
       updated_at BIGINT NOT NULL
     );
+    -- Video-avatar face chosen in Settings; '' = the deployment default.
+    ALTER TABLE assistant_profiles ADD COLUMN IF NOT EXISTS avatar_id TEXT NOT NULL DEFAULT '';
 
     CREATE TABLE IF NOT EXISTS user_instructions (
       id          BIGSERIAL PRIMARY KEY,
@@ -81,8 +83,9 @@ async function getProfile(userId) {
   return {
     user: u,
     assistant: a
-      ? { name: a.name, gender: a.gender, voice: a.voice, style: a.style }
-      : { name: "Hari", gender: "", voice: "", style: "" },
+      ? { name: a.name, gender: a.gender, voice: a.voice, style: a.style,
+          avatar_id: a.avatar_id || "" }
+      : { name: "Hari", gender: "", voice: "", style: "", avatar_id: "" },
   };
 }
 
@@ -112,19 +115,26 @@ async function updateProfile(userId, fields = {}) {
   return getProfile(userId);
 }
 
-async function setAssistantProfile(userId, { name, gender, voice, style } = {}) {
+async function setAssistantProfile(userId, { name, gender, voice, style, avatar_id } = {}) {
   if (!uidOk(userId)) throw new Error("authenticated userId required");
+  // avatar_id: undefined/'' keeps the current face; the literal 'default'
+  // clears the choice back to the deployment default.
+  const face =
+    avatar_id === "default" ? "" : String(avatar_id || "").slice(0, 80);
+  const faceKeep = avatar_id === undefined || avatar_id === "";
   await run(
-    `INSERT INTO assistant_profiles (user_id,name,gender,voice,style,updated_at)
-     VALUES ($1, COALESCE(NULLIF($2,''),'Hari'), $3, $4, $5, $6)
+    `INSERT INTO assistant_profiles (user_id,name,gender,voice,style,avatar_id,updated_at)
+     VALUES ($1, COALESCE(NULLIF($2,''),'Hari'), $3, $4, $5, $7, $6)
      ON CONFLICT (user_id) DO UPDATE SET
        name  = COALESCE(NULLIF($2,''), assistant_profiles.name),
        gender= COALESCE(NULLIF($3,''), assistant_profiles.gender),
        voice = COALESCE(NULLIF($4,''), assistant_profiles.voice),
        style = COALESCE(NULLIF($5,''), assistant_profiles.style),
+       avatar_id = CASE WHEN $8 THEN assistant_profiles.avatar_id ELSE $7 END,
        updated_at = $6`,
     [userId, String(name || "").slice(0, 40), String(gender || "").toLowerCase(),
-     String(voice || "").slice(0, 40), String(style || "").slice(0, 30), Date.now()]
+     String(voice || "").slice(0, 40), String(style || "").slice(0, 30), Date.now(),
+     face, faceKeep]
   );
   return (await getProfile(userId)).assistant;
 }

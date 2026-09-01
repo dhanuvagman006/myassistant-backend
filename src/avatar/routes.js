@@ -15,6 +15,30 @@ const bey = require("./bey");
 function router() {
   const r = require("express").Router();
 
+  // Faces the user may pick in Settings. Cached an hour — the account's
+  // avatar list changes rarely and BEY shouldn't be polled per open.
+  let facesCache = null;
+  r.get("/faces", async (_req, res) => {
+    if (session.provider() !== "bey" || !bey.configured()) {
+      return res.json({ faces: [] });
+    }
+    try {
+      if (!facesCache || Date.now() - facesCache.ts > 3600_000) {
+        const out = await bey.listAvatars();
+        facesCache = {
+          ts: Date.now(),
+          data: (out?.data || [])
+            .filter((a) => a.status === "available")
+            .map((a) => ({ id: a.id, name: a.name })),
+        };
+      }
+      res.json({ faces: facesCache.data, default_id: bey.avatarId() });
+    } catch (e) {
+      console.error("avatar faces:", e.message);
+      res.status(502).json({ error: "avatar list unavailable" });
+    }
+  });
+
   r.get("/", async (_req, res) => {
     if (!session.configured()) {
       return res.json({ available: false, reason: "not configured" });

@@ -67,12 +67,16 @@ async function beyFetch(path, { method = "GET", body, timeoutMs = 20000 } = {}) 
  * moment to actually appear in the room, which the app waits for by
  * watching for the remote video track.
  */
-async function createLivekitSession({ url, token }) {
+async function createLivekitSession({ url, token, avatarId: face }) {
   return beyFetch("/sessions", {
     method: "POST",
-    body: { transport: "livekit", avatar_id: avatarId(), url, token },
+    // Per-user face from Settings wins; deployment default otherwise.
+    body: { transport: "livekit", avatar_id: face || avatarId(), url, token },
   });
 }
+
+/// All avatars this account may use — drives the Settings face picker.
+const listAvatars = () => beyFetch("/avatars");
 
 const getSession = (id) => beyFetch(`/sessions/${id}`);
 
@@ -82,4 +86,4 @@ async function describeAvatar() {
   return beyFetch(`/avatars/${avatarId()}`);
 }
 
-module.exports = { createLivekitSession, getSession, describeAvatar, avatarId, configured };
+module.exports = { createLivekitSession, getSession, describeAvatar, listAvatars, avatarId, configured };

@@ -143,7 +143,17 @@ async function startBey({ userId }) {
       canPublish: true,
       canSubscribe: true,
     });
-    const session = await bey.createLivekitSession({ url: lk.wsUrl(), token: beyToken });
+    // The face the user picked in Settings (empty → deployment default).
+    let face = "";
+    try {
+      const p = await require("../users/context").getProfile(Number(userId));
+      face = p?.assistant?.avatar_id || "";
+    } catch (_) {}
+    const session = await bey.createLivekitSession({
+      url: lk.wsUrl(),
+      token: beyToken,
+      avatarId: face,
+    });
     rec.beySessionId = session?.id || null;
   } catch (e) {
     // Never leave a half-built room behind — it would bill silently.
