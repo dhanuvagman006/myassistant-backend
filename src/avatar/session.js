@@ -143,7 +143,7 @@ async function startBey({ userId }) {
   const agentToken = await lk.mintToken({
     room,
     identity: `agent-${room}`,
-    name: "Hari",
+    name: "Assistant",
     canPublish: true,
     canSubscribe: false,
   });

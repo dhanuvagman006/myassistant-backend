@@ -66,7 +66,7 @@ function authorize(url) {
 
 /// The system prompt for live mode. Kept short: the live model speaks, so
 /// the TTS-formatting rules from the text prompt don't apply.
-function liveSystemPrompt(assistantName = "Hari", unreadMessages = [], personalContext = "") {
+function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], personalContext = "") {
   let prompt = `You are ${assistantName}, a warm, quick-witted personal voice assistant from India. ` +
     "You are SPEAKING with the user in real time. Speak ENGLISH by default " +
     "(Indian English). Only switch language if the user clearly and " +
@@ -230,7 +230,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   // The assistant's configured name (Settings → Assistant). Resolved per
   // session so a rename applies to the very next live call. Anonymous dev
   // sessions fall back to the default.
-  let assistantName = "Hari";
+  let assistantName = "Assistant";
   let unreadMessages = [];
   // The USER's own name, for tools that tell someone else who is calling.
   // Without it, the push notification a recipient sees reads "Message from

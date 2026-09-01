@@ -150,11 +150,11 @@ router.post("/greeting", async (req, res) => {
           "spoken sentences.",
       }
     );
-    res.json({ greeting: reply || "Hi! I'm Hari. What should I call you?" });
+    res.json({ greeting: reply || "Hi! How can I help you today?" });
   } catch (e) {
     // Never block the app on a greeting — fall back to a static one.
     const name = req.user?.name ? `, ${String(req.user.name).split(" ")[0]}` : "";
-    res.json({ greeting: `Hi${name}! I'm Hari — how can I help you today?` });
+    res.json({ greeting: `Hi${name}! How can I help you today?` });
   }
 });
 

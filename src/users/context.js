@@ -36,7 +36,7 @@ async function migrate(exec) {
 
     CREATE TABLE IF NOT EXISTS assistant_profiles (
       user_id    INTEGER PRIMARY KEY,
-      name       TEXT NOT NULL DEFAULT 'Hari',
+      name       TEXT NOT NULL DEFAULT 'Assistant',
       gender     TEXT NOT NULL DEFAULT '',      -- female|male|neutral|'' (auto)
       voice      TEXT NOT NULL DEFAULT '',      -- TTS voice override
       style      TEXT NOT NULL DEFAULT '',      -- concise|friendly|formal|''
@@ -85,7 +85,7 @@ async function getProfile(userId) {
     assistant: a
       ? { name: a.name, gender: a.gender, voice: a.voice, style: a.style,
           avatar_id: a.avatar_id || "" }
-      : { name: "Hari", gender: "", voice: "", style: "", avatar_id: "" },
+      : { name: "Assistant", gender: "", voice: "", style: "", avatar_id: "" },
   };
 }
 
@@ -124,7 +124,7 @@ async function setAssistantProfile(userId, { name, gender, voice, style, avatar_
   const faceKeep = avatar_id === undefined || avatar_id === "";
   await run(
     `INSERT INTO assistant_profiles (user_id,name,gender,voice,style,avatar_id,updated_at)
-     VALUES ($1, COALESCE(NULLIF($2,''),'Hari'), $3, $4, $5, $7, $6)
+     VALUES ($1, COALESCE(NULLIF($2,''),'Assistant'), $3, $4, $5, $7, $6)
      ON CONFLICT (user_id) DO UPDATE SET
        name  = COALESCE(NULLIF($2,''), assistant_profiles.name),
        gender= COALESCE(NULLIF($3,''), assistant_profiles.gender),

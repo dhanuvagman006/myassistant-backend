@@ -35,7 +35,7 @@ function route(text) {
       if (a.mod.matches(text)) return a;
     } catch (_) {}
   }
-  return { name: "conversation", label: "Hari", mod: conversationAgent };
+  return { name: "conversation", label: "Assistant", mod: conversationAgent };
 }
 
 /**
