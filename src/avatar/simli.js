@@ -283,14 +283,44 @@ class SimliConnection {
  *     IDs are pasted from it once and served from config).
  *   • plus the account's own custom faces from GET /faces.
  */
+// Portrait for each preset face, from Simli's public docs site — lets the
+// picker show real faces instead of a wall of names.
+const THUMBS = {
+  "cace3ef7-a4c4-425d-a8cf-a5358eb0c427": "asian_woman",
+  "b9e5fba3-071a-4e35-896e-211c4d6eaa7b": "indian_woman_2",
+  "d2a5c7c6-fed9-4f55-bcb3-062f7cd20103": "white_woman",
+  "7e74d6e7-d559-4394-bd56-4923a3ab75ad": "indian_man",
+  "1c6aa65c-d858-4721-a4d9-bda9fde03141": "black_man",
+  "5fc23ea5-8175-4a82-aaaf-cdd8c88543dc": "madison",
+  "804c347a-26c9-4dcf-bb49-13df4bed61e8": "black_programmer",
+  "afdb6a3e-3939-40aa-92df-01604c23101c": "zahra",
+  "9d0ba12e-ebad-4bfa-b1fb-c6c5be21abca": "teenager",
+  "dd10cb5a-d31d-4f12-b69f-6db3383c006e": "hank",
+  "c65af549-9105-442a-92a3-dc6c89e34149": "dj_real",
+  "f0ba4efe-7946-45de-9955-c04a04c367b9": "doctor",
+  "b1f6ad8f-ed78-430b-85ef-2ec672728104": "Charlotte",
+  "c295e3a2-ed11-48d5-a1bd-ff42ac7eac73": "einstein_2",
+  "4cce0ca0-550f-42d8-b500-834ffb35e0af": "catgirl",
+  "c7451e55-ea04-41c8-ab47-bdca3e4a03d8": "Cleo_2",
+  "14de6eb1-0ea6-4fde-9522-8552ce691cb6": "baby",
+  "6926a39d-638b-49c5-9328-79efa034e9a4": "big_foot",
+  "c2f1d5d7-074b-405d-be4c-df52cd52166a": "nonna",
+  "121cd5ae-7df7-4ea3-a389-401a9463db52": "edna",
+  "f1abe833-b44c-4650-a01c-191b9c3c43b8": "tony",
+};
+const thumbOf = (id) =>
+  THUMBS[id] ? `https://docs.simli.com/images/${THUMBS[id]}.png` : null;
+
 async function listFaces() {
   const out = [];
   for (const pair of String(process.env.SIMLI_FACES || "").split(",")) {
     const i = pair.indexOf(":");
     if (i > 0) {
+      const id = pair.slice(0, i).trim();
       out.push({
-        id: pair.slice(0, i).trim(),
+        id,
         name: pair.slice(i + 1).trim() || "Face",
+        thumb: thumbOf(id),
       });
     }
   }
