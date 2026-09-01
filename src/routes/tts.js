@@ -40,7 +40,10 @@ router.post("/", async (req, res) => {
     if (!voice && Number.isFinite(uid) && uid > 0) {
       try {
         const p = await require("../users/context").getProfile(uid);
-        voice = p?.assistant?.voice || undefined;
+        voice =
+          p?.assistant?.voice ||
+          require("../avatar/simli").voiceForFace(p?.assistant?.avatar_id) ||
+          undefined;
       } catch (_) {}
     }
     const { wav } = await synthesizeSpeech(text, {

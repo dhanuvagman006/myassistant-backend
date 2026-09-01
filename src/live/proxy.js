@@ -238,12 +238,20 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   // First name only, matching the classic assistant path.
   let userName = null;
   let personalContext = "";
+  let liveVoice = null; // per-user override of the LIVE_VOICE() default
   try {
     const uid = Number(user?.sub);
     if (Number.isFinite(uid) && uid > 0) {
       const p = await require("../users/context").getProfile(uid);
       if (p?.assistant?.name) assistantName = p.assistant.name;
       if (p?.user?.name) userName = String(p.user.name).split(" ")[0];
+      // Voice: the user's explicit Settings choice wins; otherwise the
+      // voice matched to their chosen avatar face (Mark must not speak
+      // with Kore's female voice); otherwise the deployment default.
+      liveVoice =
+        p?.assistant?.voice ||
+        require("../avatar/simli").voiceForFace(p?.assistant?.avatar_id) ||
+        null;
 
       // Profile + standing rules + remembered facts — account-level, so
       // logging in on a new phone brings the same memory with it.
@@ -326,7 +334,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
             responseModalities: ["AUDIO"],
             speechConfig: {
               voiceConfig: {
-                prebuiltVoiceConfig: { voiceName: LIVE_VOICE() },
+                prebuiltVoiceConfig: { voiceName: liveVoice || LIVE_VOICE() },
               },
               // NO languageCode HERE.
               //
