@@ -57,8 +57,30 @@ function clearTimers(s) {
  * Create a room, put our publisher in it, and ask BEY to send the avatar.
  * Returns what the app needs to join as a subscriber.
  */
+// One avatar per user, and no machine-gunning: rapid open/close cycles
+// (observed during app reconnect storms) trip Simli's RATE LIMIT and then
+// the face "randomly" refuses to appear for everyone.
+const lastStartByUser = new Map();
+
 async function start({ userId }) {
   if (!configured()) throw new Error("avatar not configured");
+  const key = String(userId ?? ""); // matches rec.userId below
+
+  // Close any session this user already has BEFORE opening a new one —
+  // Simli counts them concurrently and rate-limits the account.
+  for (const [room, rec] of sessions) {
+    if (rec.userId === key) {
+      await stop(room, "superseded by a new session").catch(() => {});
+    }
+  }
+
+  const last = lastStartByUser.get(key) || 0;
+  const since = Date.now() - last;
+  if (since < 3000) {
+    await new Promise((r) => setTimeout(r, 3000 - since));
+  }
+  lastStartByUser.set(key, Date.now());
+
   return provider() === "simli" ? startSimli({ userId }) : startBey({ userId });
 }
 
