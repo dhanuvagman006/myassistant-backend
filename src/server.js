@@ -219,7 +219,12 @@ app.get("/tools/weather", appAuth, async (req, res) => {
 });
 app.get("/tools/news", appAuth, async (req, res) => {
   try {
-    res.json({ headlines: await newsTool.getHeadlines({ topic: req.query.topic }) });
+    res.json({
+      headlines: await newsTool.getHeadlines({
+        topic: req.query.topic,
+        max: Math.min(Number(req.query.max) || 6, 30),
+      }),
+    });
   } catch (e) {
     res.status(502).json({ error: "news unavailable" });
   }
