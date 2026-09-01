@@ -19,20 +19,25 @@ function router() {
   // avatar list changes rarely and BEY shouldn't be polled per open.
   let facesCache = null;
   r.get("/faces", async (_req, res) => {
-    if (session.provider() !== "bey" || !bey.configured()) {
-      return res.json({ faces: [] });
-    }
+    if (!session.configured()) return res.json({ faces: [] });
     try {
       if (!facesCache || Date.now() - facesCache.ts > 3600_000) {
-        const out = await bey.listAvatars();
-        facesCache = {
-          ts: Date.now(),
-          data: (out?.data || [])
+        let data = [];
+        if (session.provider() === "simli") {
+          data = await require("./simli").listFaces();
+        } else {
+          const out = await bey.listAvatars();
+          data = (out?.data || [])
             .filter((a) => a.status === "available")
-            .map((a) => ({ id: a.id, name: a.name })),
-        };
+            .map((a) => ({ id: a.id, name: a.name }));
+        }
+        facesCache = { ts: Date.now(), data };
       }
-      res.json({ faces: facesCache.data, default_id: bey.avatarId() });
+      const def =
+        session.provider() === "simli"
+          ? require("./simli").faceId()
+          : bey.avatarId();
+      res.json({ faces: facesCache.data, default_id: def });
     } catch (e) {
       console.error("avatar faces:", e.message);
       res.status(502).json({ error: "avatar list unavailable" });

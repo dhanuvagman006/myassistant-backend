@@ -42,7 +42,7 @@ const faceId = () => process.env.SIMLI_FACE_ID || "";
 
 /// Simli's session token. Short-lived and scoped to one conversation, which
 /// is why it is safe to hand the room token to the app afterwards.
-async function createSessionToken() {
+async function createSessionToken({ faceId: faceOverride } = {}) {
   const res = await fetch(`${API}/compose/token`, {
     method: "POST",
     headers: {
@@ -50,7 +50,8 @@ async function createSessionToken() {
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      faceId: faceId(),
+      // The face the user picked in Settings wins; env default otherwise.
+      faceId: faceOverride || faceId(),
       audioInputFormat: "pcm16",
       handleSilence: true,
       // Ceilings, not targets. Simli bills per minute, so an abandoned
@@ -275,4 +276,40 @@ class SimliConnection {
   }
 }
 
-module.exports = { createSessionToken, SimliConnection, configured, faceId, IN_RATE, OUT_RATE };
+/**
+ * Faces the Settings picker offers on the Simli provider:
+ *   • SIMLI_FACES env — curated public-gallery faces as "id:Name" pairs,
+ *     comma-separated (Simli has no API for the public gallery, so the
+ *     IDs are pasted from it once and served from config).
+ *   • plus the account's own custom faces from GET /faces.
+ */
+async function listFaces() {
+  const out = [];
+  for (const pair of String(process.env.SIMLI_FACES || "").split(",")) {
+    const i = pair.indexOf(":");
+    if (i > 0) {
+      out.push({
+        id: pair.slice(0, i).trim(),
+        name: pair.slice(i + 1).trim() || "Face",
+      });
+    }
+  }
+  try {
+    const res = await fetch(`${API}/faces`, {
+      headers: { "x-simli-api-key": process.env.SIMLI_API_KEY },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.ok) {
+      const custom = await res.json();
+      for (const f of Array.isArray(custom) ? custom : []) {
+        const id = f.faceId || f.id;
+        if (id && !out.some((o) => o.id === id)) {
+          out.push({ id, name: f.faceName || f.name || "Custom face" });
+        }
+      }
+    }
+  } catch (_) {}
+  return out;
+}
+
+module.exports = { createSessionToken, SimliConnection, configured, faceId, listFaces, IN_RATE, OUT_RATE };

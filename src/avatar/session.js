@@ -85,7 +85,13 @@ async function startSimli({ userId }) {
 
   let lkInfo;
   try {
-    const token = await simli.createSessionToken();
+    // The face the user picked in Settings (empty → deployment default).
+    let face = "";
+    try {
+      const p = await require("../users/context").getProfile(Number(userId));
+      face = p?.assistant?.avatar_id || "";
+    } catch (_) {}
+    const token = await simli.createSessionToken({ faceId: face });
     lkInfo = await conn.connect(token);
   } catch (e) {
     await stop(room, `simli start failed: ${e.message}`);
