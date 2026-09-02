@@ -131,7 +131,18 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
         require("../users/context").contextBlock(ctx.userId),
         require("../agents/memory").memoryBlock(ctx.userId),
       ]);
-      const joined = [block, mem].filter(Boolean).join("\n");
+      // The user's clock, so "tomorrow 5 pm" resolves in THEIR zone and
+      // tool datetimes carry the right offset (bare ones read as UTC).
+      const tz = Number.isFinite(ctx.tzOffsetMin) ? ctx.tzOffsetMin : 330;
+      const sign = tz < 0 ? "-" : "+";
+      const abs = Math.abs(tz);
+      const off = `${sign}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`;
+      const nowLine =
+        `Current date and time for the user: ` +
+        `${new Date(Date.now() + tz * 60_000).toISOString().replace("T", " ").slice(0, 16)} (UTC${off}). ` +
+        `When passing any datetime to a tool, use the user's LOCAL time with ` +
+        `this offset written explicitly, e.g. 2026-09-04T17:00:00${off}.`;
+      const joined = [nowLine, block, mem].filter(Boolean).join("\n");
       if (joined) ctx = { ...ctx, extraSystem: "\n\n" + joined };
     } catch (_) {}
   }

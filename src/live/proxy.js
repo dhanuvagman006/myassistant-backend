@@ -66,8 +66,26 @@ function authorize(url) {
 
 /// The system prompt for live mode. Kept short: the live model speaks, so
 /// the TTS-formatting rules from the text prompt don't apply.
-function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], personalContext = "") {
+/// "Sept 4th at 5 pm" must mean 5 pm WHERE THE USER IS. The model only
+/// knows that if the prompt says what time it is for them and which offset
+/// to stamp on tool datetimes — without this it emitted bare/UTC datetimes
+/// and reminders landed 5½ hours late.
+function nowLine(tzOffsetMin = 330) {
+  const tz = Number.isFinite(tzOffsetMin) ? tzOffsetMin : 330;
+  const sign = tz < 0 ? "-" : "+";
+  const abs = Math.abs(tz);
+  const off = `${sign}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`;
+  const local = new Date(Date.now() + tz * 60_000).toISOString().replace("T", " ").slice(0, 16);
+  return (
+    `Current date and time for the user: ${local} (UTC${off}). ` +
+    `When passing any datetime to a tool, write the user's LOCAL time and ` +
+    `include this offset explicitly, e.g. 2026-09-04T17:00:00${off}.`
+  );
+}
+
+function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], personalContext = "", tzOffsetMin = 330) {
   let prompt = `You are ${assistantName}, a warm, quick-witted personal voice assistant from India. ` +
+    nowLine(tzOffsetMin) + " " +
     "You are SPEAKING with the user in real time. Speak ENGLISH by default " +
     "(Indian English). Only switch language if the user clearly and " +
     "deliberately speaks another one to you, and then stay in it — never " +
@@ -413,7 +431,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
               silenceDurationMs: Number(process.env.LIVE_SILENCE_MS || 500),
             },
           },
-          systemInstruction: { parts: [{ text: liveSystemPrompt(assistantName, unreadMessages, personalContext) }] },
+          systemInstruction: { parts: [{ text: liveSystemPrompt(assistantName, unreadMessages, personalContext, deviceCtx.tz) }] },
           // GOOGLE SEARCH — only on models that accept it.
           //
           // The gemini-3.x live models close the session outright (WS 1011,

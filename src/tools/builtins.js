@@ -9,6 +9,22 @@
 const registry = require("./registry");
 const { normalizePhone } = require("../users/phone");
 
+/// Parses a model-supplied datetime as the USER's wall-clock time.
+/// Models routinely emit bare ISO strings ("2026-09-04T17:00:00"); the old
+/// `new Date(s)` read those in the SERVER's zone (UTC in the container),
+/// so "5 pm" became 10:30 pm IST. A string carrying its own offset/Z is
+/// trusted as-is; a bare one is shifted by ctx.tzOffsetMin.
+function parseUserTime(s, tzOffsetMin) {
+  if (!s) return null;
+  const str = String(s).trim();
+  if (!str) return null;
+  const hasOffset = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(str);
+  const ms = Date.parse(hasOffset ? str : `${str}Z`);
+  if (!Number.isFinite(ms)) return null;
+  const tz = Number.isFinite(tzOffsetMin) ? tzOffsetMin : 330;
+  return hasOffset ? ms : ms - tz * 60_000;
+}
+
 const weather = require("../services/tools/weather");
 const news = require("../services/tools/news");
 const places = require("../services/tools/places");
@@ -345,10 +361,10 @@ function registerBuiltins() {
         const p = await mem.upsertPerson(ctx.userId, { name: args.person });
         subjectType = "person"; subjectId = p.id;
       }
-      const when = args.when ? Date.parse(args.when) : NaN;
+      const when = parseUserTime(args.when, ctx.tzOffsetMin);
       const e = await mem.addEvent(ctx.userId, {
         title: args.title,
-        whenAt: Number.isFinite(when) ? when : null,
+        whenAt: when,
         subjectType, subjectId,
       });
       // Also store as a retrievable fact so plain recall finds it.
@@ -566,12 +582,8 @@ function registerBuiltins() {
     },
     async execute(args, ctx) {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
-      const due = args.due_at ? new Date(args.due_at) : null;
-      const r = await reminders.create(
-        ctx.userId,
-        args.text,
-        due && !isNaN(due.getTime()) ? due.getTime() : null
-      );
+      const due = parseUserTime(args.due_at, ctx.tzOffsetMin);
+      const r = await reminders.create(ctx.userId, args.text, due);
       if (!r) return { ok: false, error: "could not save the reminder" };
       return { ok: true, data: r, speak: "Saved." };
     },
@@ -676,6 +688,11 @@ function registerBuiltins() {
       return {
         ok: true,
         data: a,
+        // The app renames itself on the spot — settings has no name field;
+        // the conversation IS how the assistant is named.
+        deviceAction: args.name
+          ? { type: "assistant_renamed", name: a.name }
+          : undefined,
         speak: args.name ? `From now on I'm ${a.name}.` : "Done.",
       };
     },

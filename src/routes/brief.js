@@ -45,10 +45,17 @@ router.get("/calendar", async (req, res) => {
   }
   const tz = Number(req.get("X-TZ-Offset")) || 330;
 
-  const days = {}; // "17" -> [{kind, title}]
-  const add = (day, kind, title) => {
+  const days = {}; // "17" -> [{kind, title, id?, del?}]
+  // [del] names the REST collection a DELETE /:id goes to, so the app can
+  // remove items straight from the calendar popup. Google meetings carry
+  // no del — they belong to Google Calendar, not us.
+  const add = (day, kind, title, extra = {}) => {
     if (!Number.isInteger(day) || day < 1 || day > 31) return;
-    (days[day] ||= []).push({ kind, title: String(title || "").slice(0, 90) });
+    (days[day] ||= []).push({
+      kind,
+      title: String(title || "").slice(0, 90),
+      ...extra,
+    });
   };
   /// Day-of-month in the user's timezone, or null if outside this month.
   const dayOf = (ms) => {
@@ -64,7 +71,7 @@ router.get("/calendar", async (req, res) => {
       if (r.done) continue;
       const due = Number(r.due_at);
       const d = Number.isFinite(due) && due > 0 ? dayOf(due) : null;
-      if (d) add(d, "reminder", r.text);
+      if (d) add(d, "reminder", r.text, { id: r.id, del: "reminders" });
     }
   } catch (_) {}
 
@@ -76,7 +83,12 @@ router.get("/calendar", async (req, res) => {
     for (const c of rows) {
       const due = Number(c.due_at);
       const d = Number.isFinite(due) && due > 0 ? dayOf(due) : null;
-      if (d) add(d, "promise", (c.owed_to ? `To ${c.owed_to}: ` : "") + c.text);
+      if (d) {
+        add(d, "promise", (c.owed_to ? `To ${c.owed_to}: ` : "") + c.text, {
+          id: c.id,
+          del: "commitments",
+        });
+      }
     }
   } catch (_) {}
 
@@ -88,8 +100,10 @@ router.get("/calendar", async (req, res) => {
       if (!Number.isInteger(dd) || dd < 1 || dd > 31) continue;
       const label =
         it.name + (Number.isFinite(it.amount) ? ` · ₹${Math.round(it.amount)}` : "");
-      if (it.kind === "income") add(dd, "income", label);
-      else add(dd, "payment", label);
+      add(dd, it.kind === "income" ? "income" : "payment", label, {
+        id: it.id,
+        del: "finance",
+      });
     }
   } catch (_) {}
 

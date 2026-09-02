@@ -128,8 +128,11 @@ async function setAssistantProfile(userId, { name, gender, voice, style, avatar_
      ON CONFLICT (user_id) DO UPDATE SET
        name  = COALESCE(NULLIF($2,''), assistant_profiles.name),
        gender= COALESCE(NULLIF($3,''), assistant_profiles.gender),
-       voice = COALESCE(NULLIF($4,''), assistant_profiles.voice),
-       style = COALESCE(NULLIF($5,''), assistant_profiles.style),
+       -- '' means "keep"; the literal 'default' CLEARS back to automatic.
+       voice = CASE WHEN $4 = 'default' THEN ''
+                    ELSE COALESCE(NULLIF($4,''), assistant_profiles.voice) END,
+       style = CASE WHEN $5 = 'default' THEN ''
+                    ELSE COALESCE(NULLIF($5,''), assistant_profiles.style) END,
        avatar_id = CASE WHEN $8 THEN assistant_profiles.avatar_id ELSE $7 END,
        updated_at = $6`,
     [userId, String(name || "").slice(0, 40), String(gender || "").toLowerCase(),
