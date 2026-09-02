@@ -527,6 +527,45 @@ function registerBuiltins() {
   });
 
   registry.register({
+    name: "get_last_document",
+    description:
+      "Read the user's MOST RECENTLY saved document or scan — its title, " +
+      "summary and full extracted text — and show it on their screen. Use " +
+      "whenever they ask about 'the image/photo/document I just scanned', " +
+      "'what does it say', 'tell me about that picture I saved'. Answer " +
+      "their questions FROM the returned text.",
+    risk: "low",
+    inputSchema: { type: "object", properties: {} },
+    async execute(_args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const { one } = require("../db");
+      const d = await one(
+        `SELECT * FROM documents WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,
+        [ctx.userId]
+      );
+      if (!d) return { ok: false, error: "no documents saved yet" };
+      const client = docs.toClient(d);
+      const fullText = String(d.full_text || "").trim();
+      return {
+        ok: true,
+        data: {
+          ...client,
+          full_text: fullText.slice(0, 4000),
+          // The vision pass runs seconds after upload; be honest if the
+          // user asks before it lands instead of hallucinating contents.
+          ...(fullText
+            ? {}
+            : {
+                status:
+                  "still being analyzed — the text will be readable in a few seconds; say so and offer to check again",
+              }),
+        },
+        deviceAction: { type: "documents", documents: [client] },
+      };
+    },
+  });
+
+  registry.register({
     name: "associate_document",
     description:
       "Link the most recent (or a named) document to a person and/or case — " +
@@ -1190,7 +1229,11 @@ function registerBuiltins() {
       "have a bike EMI of 3500 at 11 percent'), an expected income ('I " +
       "get 2000 on the 15th'), or a recurring expense (rent, fees). " +
       "Amounts are monthly rupees. Use whenever the user states an EMI, " +
-      "loan, income or recurring expense they want tracked.",
+      "loan, income or recurring expense they want tracked. ALWAYS pass " +
+      "due_day when the user gives ANY timing — 'tomorrow', 'on the 15th', " +
+      "'every 3rd' — converted to the day of month; due_day is what places " +
+      "the item on their calendar every month. Do NOT also create a " +
+      "reminder for it: the calendar shows finance items by itself.",
     risk: "low",
     inputSchema: {
       type: "object",
@@ -1204,7 +1247,9 @@ function registerBuiltins() {
         },
         due_day: {
           type: "integer",
-          description: "Day of month it hits (1-31), if stated",
+          description:
+            "Day of month it hits (1-31). Convert any stated timing " +
+            "('tomorrow', 'the 15th') to this — required for the calendar.",
         },
         outstanding: {
           type: "number",
@@ -1326,6 +1371,66 @@ function registerBuiltins() {
       await db.run(`DELETE FROM finance_items WHERE id=$1 AND user_id=$2`,
         [hit.id, ctx.userId]);
       return { ok: true, speak: `Removed ${hit.name} from your finance section.` };
+    },
+  });
+
+  registry.register({
+    name: "update_finance_item",
+    description:
+      "Change an existing finance item by name — its due day ('my bike EMI " +
+      "hits on the 3rd'), amount, interest rate, or outstanding principal. " +
+      "Use this instead of deleting and re-adding. Setting due_day places " +
+      "the item on the user's calendar every month.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Which item ('bike EMI')" },
+        due_day: { type: "integer", description: "Day of month (1-31)" },
+        amount: { type: "number", description: "New monthly rupees" },
+        interest_rate: { type: "number", description: "Annual interest %" },
+        outstanding: { type: "number", description: "Remaining principal ₹" },
+      },
+      required: ["name"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const db = require("../db");
+      const { listItems } = require("../routes/finance");
+      const items = await listItems(ctx.userId);
+      const q = String(args.name || "").toLowerCase().trim();
+      const hit = items.find((i) => i.name.toLowerCase() === q) ||
+        items.find((i) => i.name.toLowerCase().includes(q) && q.length >= 3);
+      if (!hit) return { ok: false, error: `no finance item matching "${args.name}"` };
+      const sets = [];
+      const vals = [];
+      let i = 1;
+      const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+      if (num(args.due_day) !== null && args.due_day >= 1 && args.due_day <= 31) {
+        sets.push(`due_day = $${i++}`); vals.push(Math.round(args.due_day));
+      }
+      if (num(args.amount) !== null && args.amount > 0) {
+        sets.push(`amount = $${i++}`); vals.push(args.amount);
+      }
+      if (num(args.interest_rate) !== null && args.interest_rate >= 0) {
+        sets.push(`interest_rate = $${i++}`); vals.push(args.interest_rate);
+      }
+      if (num(args.outstanding) !== null && args.outstanding >= 0) {
+        sets.push(`outstanding = $${i++}`); vals.push(args.outstanding);
+      }
+      if (!sets.length) return { ok: false, error: "nothing to change" };
+      vals.push(hit.id, ctx.userId);
+      await db.run(
+        `UPDATE finance_items SET ${sets.join(", ")} WHERE id=$${i++} AND user_id=$${i}`,
+        vals
+      );
+      const bits = [];
+      if (args.due_day) bits.push(`due on the ${args.due_day}`);
+      if (args.amount) bits.push(`₹${args.amount} a month`);
+      return {
+        ok: true,
+        speak: `Updated ${hit.name}${bits.length ? " — " + bits.join(", ") : ""}.`,
+      };
     },
   });
 

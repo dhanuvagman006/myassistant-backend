@@ -47,13 +47,21 @@ async function agendaOf(uid, tzOffsetMin) {
   const out = [];
   const now = Date.now();
 
+  // "Today's agenda" means TODAY: overdue, due before the user's local
+  // midnight, or undated. The old 36-hour window pulled tomorrow's items
+  // in ("EMI tomorrow" sat under today) — tomorrow belongs to the
+  // calendar, not the agenda.
+  const local = new Date(now + tzOffsetMin * 60_000);
+  const endOfToday =
+    Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + 1) -
+    tzOffsetMin * 60_000;
+
   try {
     const rows = await reminders.list(uid);
     for (const r of rows) {
       if (r.done) continue;
       const due = Number(r.due_at);
-      // Show what needs attention NOW: overdue, next 36 hours, or undated.
-      if (Number.isFinite(due) && due > 0 && due - now > 36 * 3600_000) continue;
+      if (Number.isFinite(due) && due > 0 && due >= endOfToday) continue;
       out.push({
         kind: "reminder",
         id: r.id,
