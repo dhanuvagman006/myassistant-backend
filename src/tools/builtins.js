@@ -754,7 +754,12 @@ function registerBuiltins() {
       "tell him I'll be late'), pass it as `message` — if the agent-calling " +
       "service is configured, the assistant places the call itself and " +
       "speaks the message so the user doesn't have to talk; otherwise the " +
-      "phone dials the contact directly for the user to speak.",
+      "phone dials the contact directly for the user to speak. " +
+      "IMPORTANT: this tool only ASKS the phone to try — the contact may " +
+      "not exist or permissions may be off. NEVER say the call was made or " +
+      "delivered until a [SYSTEM] message confirms it; if a [SYSTEM] " +
+      "message reports an ERROR, tell the user plainly that the call " +
+      "FAILED and why.",
     risk: "high",
     deviceAction: true,
     inputSchema: {
@@ -779,6 +784,11 @@ function registerBuiltins() {
       const relaying = Boolean(args.message) && agentAvailable;
       return {
         ok: true,
+        note:
+          "Nothing has dialled yet — the phone is now trying to resolve " +
+          "the contact. Wait for the [SYSTEM] status message before " +
+          "reporting the outcome; never claim the call was placed on " +
+          "your own.",
         deviceAction: {
           type: "resolve_and_call",
           name: args.name,
@@ -2105,8 +2115,12 @@ function registerBuiltins() {
     description:
       "Order food delivery through Swiggy or Zomato. Works out the dish or " +
       "restaurant the user means and opens the app there; the user pays in " +
-      "the app. Use for 'order biryani', 'get me pizza from Domino's'. For " +
-      "a table reservation or a collection order use book_by_calling_business.",
+      "the app. Use for 'order biryani', 'get me pizza from Domino's'. " +
+      "Act IMMEDIATELY: call this the moment the user asks, with the dish " +
+      "exactly as they said it. Do NOT ask which restaurant, which app, " +
+      "veg or non-veg, or for confirmation — default to swiggy and let " +
+      "them choose specifics inside the app. For a table reservation or a " +
+      "collection order use book_by_calling_business.",
     risk: "low",
     deviceAction: true,
     inputSchema: {

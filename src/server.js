@@ -419,16 +419,13 @@ require("./db")
     );
 
     const avatarSessions = require("./avatar/session");
-    const prov = avatarSessions.provider();
     console.log(
       `  avatar: ${
         !avatarSessions.configured()
-          ? `disabled — provider=${prov}, missing ${
-              prov === "simli" ? "SIMLI_API_KEY" : "LIVEKIT_* / BEY_API_KEY"
+          ? "disabled — missing HEYGEN_API_KEY"
+          : `heygen ${require("./avatar/heygen").avatarId()}${
+              require("./avatar/heygen").sandbox() ? " (SANDBOX — free, ~1 min sessions)" : ""
             }`
-          : prov === "simli"
-            ? `simli face=${require("./avatar/simli").faceId() || "(default)"}`
-            : `BEY ${require("./avatar/bey").avatarId()} via LiveKit`
       }`
     );
 

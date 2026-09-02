@@ -218,15 +218,25 @@ async function buildBrief(uid, opts = {}) {
       ? String(profile.user.location)
       : undefined;
 
+  // Every source is time-boxed: the brief is a dashboard, and a dashboard
+  // that waits 6s on a cold weather API is worse than one missing a line
+  // for a single refresh. Slow sources fall back to their empty shape and
+  // the next refresh (the app polls every 5 min) fills them in.
+  const boxed = (p, ms, fallback) =>
+    Promise.race([
+      p.catch(() => fallback),
+      new Promise((r) => setTimeout(() => r(fallback), ms).unref?.()),
+    ]);
+
   const [agenda, promises, messages, people, weather_line, headlines, screen_time] =
     await Promise.all([
-      agendaOf(uid, tz),
-      promisesOf(uid, tz),
-      messagesOf(profile?.user?.phone_number || null),
-      peopleOf(uid),
-      weatherLineOf({ lat: opts.lat, lng: opts.lng, city }),
-      headlinesOf(),
-      screenTimeOf(uid),
+      boxed(agendaOf(uid, tz), 3000, []),
+      boxed(promisesOf(uid, tz), 2500, []),
+      boxed(messagesOf(profile?.user?.phone_number || null), 2500, []),
+      boxed(peopleOf(uid), 2500, []),
+      boxed(weatherLineOf({ lat: opts.lat, lng: opts.lng, city }), 2000, null),
+      boxed(headlinesOf(), 2000, []),
+      boxed(screenTimeOf(uid), 2000, null),
     ]);
 
   return {

@@ -42,7 +42,7 @@ router.post("/", async (req, res) => {
         const p = await require("../users/context").getProfile(uid);
         voice =
           p?.assistant?.voice ||
-          require("../avatar/simli").voiceForFace(p?.assistant?.avatar_id) ||
+          require("../avatar/heygen").voiceForFace(p?.assistant?.avatar_id) ||
           undefined;
       } catch (_) {}
     }

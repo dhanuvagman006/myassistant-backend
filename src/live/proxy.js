@@ -268,7 +268,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       // with Kore's female voice); otherwise the deployment default.
       liveVoice =
         p?.assistant?.voice ||
-        require("../avatar/simli").voiceForFace(p?.assistant?.avatar_id) ||
+        require("../avatar/heygen").voiceForFace(p?.assistant?.avatar_id) ||
         null;
 
       // Profile + standing rules + remembered facts — account-level, so
@@ -681,6 +681,10 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     if (sc.turnComplete) {
       activityEndAt = 0;
       repliedAt = 0;
+      // HeyGen renders with lookahead; the end-of-turn signal lets it
+      // flush the tail instead of waiting for audio that never comes.
+      // Simli/BEY have no such method — optional chaining keeps them as-is.
+      if (avatar && !avatar.closed) avatar.speakEnd?.();
     }
 
     if (sc.interrupted) {
