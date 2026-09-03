@@ -328,17 +328,21 @@ router.post("/api/users/:id/push", async (req, res) => {
   const rows = await sq("SELECT fcm_token FROM users WHERE id=$1", [id]);
   const token = rows[0]?.fcm_token;
   if (!token) return res.status(400).json({ error: "User has no registered device." });
-  try {
-    await push.sendNotification(
-      token,
-      String(req.body?.title || "Test notification"),
-      String(req.body?.body || "Hello from the admin panel."),
-      { type: "admin_test" }
-    );
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(502).json({ error: e.message });
+  const r = await push.send(
+    token,
+    String(req.body?.title || "Test notification"),
+    String(req.body?.body || "Hello from the admin panel."),
+    { type: "admin_test" }
+  );
+  if (r.ok) return res.json({ ok: true });
+  if (r.stale) {
+    return res.status(410).json({
+      error:
+        "That device's token was stale (app uninstalled or reinstalled) — " +
+        "it has been cleared. Ask the user to open the app once, then try again.",
+    });
   }
+  res.status(502).json({ error: "Push failed: " + r.error });
 });
 
 router.post("/api/users/:id/clear-device", async (req, res) => {
@@ -466,17 +470,21 @@ router.post("/api/broadcast", async (req, res) => {
   const rows = await sq(
     "SELECT id, fcm_token FROM users WHERE fcm_token IS NOT NULL AND fcm_token <> '' LIMIT 500"
   );
-  let sent = 0;
-  const failed = [];
+  // One send per physical device: two accounts on one phone share a token,
+  // and a pruned-stale token must not be retried for the second row.
+  const seen = new Set();
+  let sent = 0, stale = 0, failed = 0;
   for (const r of rows) {
-    try {
-      await push.sendNotification(r.fcm_token, title, body, { type: "announcement" });
-      sent++;
-    } catch (_) {
-      failed.push(r.id);
-    }
+    if (seen.has(r.fcm_token)) continue;
+    seen.add(r.fcm_token);
+    const out = await push.send(r.fcm_token, title, body, { type: "announcement" });
+    if (out.ok) sent++;
+    else if (out.stale) stale++;
+    else if (out.skipped) {
+      return res.status(503).json({ error: "Push is not configured on this server." });
+    } else failed++;
   }
-  res.json({ ok: true, sent, failedCount: failed.length, devices: rows.length });
+  res.json({ ok: true, sent, stale, failed, devices: seen.size });
 });
 
 /* ------------------------------------------------------------------ */

@@ -635,8 +635,11 @@ async function viewBroadcast() {
       send.disabled = true;
       try {
         const r = await api("/broadcast", { method: "POST", body: { title: title.value, body: msg.value } });
-        result.textContent = `Sent to ${r.sent} of ${r.devices} devices` + (r.failedCount ? ` (${r.failedCount} failed).` : ".");
-        toast("Broadcast sent.");
+        const bits = [`Delivered to ${r.sent} of ${r.devices} device${r.devices === 1 ? "" : "s"}`];
+        if (r.stale) bits.push(`${r.stale} stale device${r.stale === 1 ? "" : "s"} cleared (re-register on next app open)`);
+        if (r.failed) bits.push(`${r.failed} failed`);
+        result.textContent = bits.join(" · ") + ".";
+        toast(r.sent ? "Broadcast delivered." : "No deliveries — see the result line.", !r.sent);
       } catch (e) { toast(e.message, true); }
       send.disabled = false;
     },

@@ -14,12 +14,27 @@ function init() {
   }
 }
 
+// FCM error codes that mean the token is DEAD, not that the send glitched:
+// the app was uninstalled/reinstalled or the token was rotated away. FCM
+// will never deliver to it again, so keeping it stored just makes every
+// future push fail silently.
+const STALE_CODES = new Set([
+  "messaging/registration-token-not-registered",
+  "messaging/invalid-registration-token",
+]);
+
 /**
- * Sends a push notification to a specific FCM token.
+ * Full-fidelity send. Returns
+ *   { ok, stale, skipped, error }
+ * — ok:true only when FCM ACCEPTED the message. A stale (dead) token is
+ * additionally PRUNED from every users row holding it, so the device is
+ * cleanly re-registered the next time the app opens (PushService.syncToken
+ * re-sends the current token on every launch after sign-in).
  */
-async function sendNotification(fcmToken, title, body, data) {
+async function send(fcmToken, title, body, data) {
   init();
-  if (!initialized || !fcmToken) return false;
+  if (!initialized) return { ok: false, stale: false, skipped: true, error: "push not configured on this server" };
+  if (!fcmToken) return { ok: false, stale: false, skipped: true, error: "no device token" };
 
   const message = {
     notification: {
@@ -40,11 +55,39 @@ async function sendNotification(fcmToken, title, body, data) {
 
   try {
     await getMessaging().send(message);
-    return true;
+    return { ok: true, stale: false, skipped: false, error: null };
   } catch (error) {
-    console.error("Error sending push notification:", error.message || error);
-    return false;
+    const code = error?.errorInfo?.code || error?.code || "";
+    const stale =
+      STALE_CODES.has(code) || /not.?registered/i.test(String(error?.message || ""));
+    if (stale) {
+      try {
+        const db = require("../db");
+        const cleared = await db.query(
+          "UPDATE users SET fcm_token='' WHERE fcm_token=$1 RETURNING id",
+          [fcmToken]
+        );
+        console.warn(
+          `push: stale token (${code || "NotRegistered"}) cleared from user(s) ` +
+            `${cleared.map((r) => r.id).join(",") || "?"} — device re-registers on next app open`
+        );
+      } catch (e) {
+        console.warn("push: failed to clear stale token:", e.message);
+      }
+    } else {
+      console.error("Error sending push notification:", code || error.message || error);
+    }
+    return { ok: false, stale, skipped: false, error: code || error.message || String(error) };
   }
 }
 
-module.exports = { sendNotification };
+/**
+ * Boolean wrapper kept for existing callers (scheduler, receptionist,
+ * payments, fares, builtins): true only when FCM accepted the message.
+ * Stale-token pruning happens inside send() either way.
+ */
+async function sendNotification(fcmToken, title, body, data) {
+  return (await send(fcmToken, title, body, data)).ok;
+}
+
+module.exports = { sendNotification, send };
