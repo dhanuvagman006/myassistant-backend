@@ -46,3 +46,4 @@ data/
 .DS_Store
 Thumbs.db
 firebase-adminsdk.json
+docker-compose.override.yml

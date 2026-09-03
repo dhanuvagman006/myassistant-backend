@@ -1,387 +1,581 @@
 /**
- * ADMIN PANEL — server-rendered dashboard at /admin-panel.
+ * ADMIN PANEL — session login + JSON API + static single-page app.
  *
- * Rewritten 2026-08-30: the previous version queried a `phone` column that
- * does not exist (the real column is phone_number), so the page returned
- * 500 on every load in production — and its guard read ADMIN_SECRET, which
- * no deployment sets, leaving it OPEN wherever it did render.
+ * Rewritten 2026-09-03 (v2). The old panel took the key as ?key=… in the
+ * URL (which leaks into logs/history) and served one server-rendered page.
+ * Now:
+ *   - GET  /admin-panel            → the SPA shell (login screen included)
+ *   - POST /admin-panel/api/login  → verifies ADMIN_KEY, sets an HttpOnly
+ *     signed session cookie (12 h). The key never appears in a URL again.
+ *   - /admin-panel/api/*           → JSON endpoints behind that cookie.
  *
- * Guard: ADMIN_KEY (the same env the /admin API uses). Provide it as
- * ?key=… on the first request; every form carries it forward as a hidden
- * field. Without ADMIN_KEY set, the panel refuses to serve at all — an
- * open admin panel is worse than none.
+ * Powers: full user management (search, detail, edit profile fields,
+ * attach+verify phone, pause/resume, clear device, test push, cascade
+ * delete via the same table list as /privacy/account), analytics series,
+ * audit-trail explorer, live feature-flag overrides (kv-backed, read by
+ * /config), push broadcast, and a debug page with DB/integration probes.
  *
- * Everything is real data: users (verified-phone badge, provider, status),
- * platform KPIs across the feature tables, a 14-day signup sparkline, and
- * the audit-trail activity feed. Admin actions: pause/resume/delete a
- * user, and attach+verify a phone number (the testing-phase equivalent of
- * OTP — see routes/phone.js dev-verify).
+ * Guard notes: login is rate-limited per IP; the session token is
+ * HMAC(ADMIN_KEY)-signed with an expiry, so rotating ADMIN_KEY invalidates
+ * every session. With ADMIN_KEY unset the panel refuses to serve.
  */
 const router = require("express").Router();
-const db = require("../db");
 const express = require("express");
+const crypto = require("crypto");
+const path = require("path");
+const db = require("../db");
 const { normalizePhone } = require("../users/phone");
+const appUpdate = require("./appUpdate");
+const push = require("../services/push");
+const remoteConfig = require("../config/remoteConfig");
+const privacy = require("./privacy");
 
 router.use(express.json());
-router.use(express.urlencoded({ extended: false }));
 
 /* ------------------------------------------------------------------ */
-/* Guard                                                               */
+/* Session auth                                                        */
 /* ------------------------------------------------------------------ */
 
-function adminGuard(req, res, next) {
-  const key = process.env.ADMIN_KEY || "";
-  if (!key) {
-    return res.status(503).send(page("Admin panel disabled",
-      `<p class="text-slate-400">Set <code>ADMIN_KEY</code> in the environment to enable the panel.</p>`));
-  }
-  const provided =
-    req.query.key || req.headers["x-admin-key"] || req.body?.key || "";
-  if (provided === key) return next();
-  return res.status(401).send(page("Unauthorized",
-    `<p class="text-slate-400">Open the panel as
-     <code>/admin-panel?key=&lt;ADMIN_KEY&gt;</code>.</p>`));
+const COOKIE = "admin_session";
+const SESSION_MS = 12 * 3600_000;
+const KEY = () => process.env.ADMIN_KEY || "";
+
+const sign = (exp) =>
+  crypto.createHmac("sha256", KEY()).update(`admin:${exp}`).digest("hex");
+
+function makeToken() {
+  const exp = Date.now() + SESSION_MS;
+  return `${exp}.${sign(exp)}`;
 }
-router.use(adminGuard);
+
+function validToken(tok) {
+  const [expS, sig] = String(tok || "").split(".");
+  const exp = parseInt(expS, 10);
+  if (!Number.isFinite(exp) || exp < Date.now() || !sig) return false;
+  const want = sign(exp);
+  return (
+    sig.length === want.length &&
+    crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(want))
+  );
+}
+
+function cookieOf(req) {
+  const raw = req.headers.cookie || "";
+  for (const part of raw.split(";")) {
+    const [k, ...v] = part.trim().split("=");
+    if (k === COOKIE) return decodeURIComponent(v.join("="));
+  }
+  return "";
+}
+
+function setSession(req, res, value, maxAgeS) {
+  const secure =
+    req.secure || req.get("x-forwarded-proto") === "https" ? "; Secure" : "";
+  res.setHeader(
+    "Set-Cookie",
+    `${COOKIE}=${encodeURIComponent(value)}; Path=/admin-panel; HttpOnly; SameSite=Lax; Max-Age=${maxAgeS}${secure}`
+  );
+}
+
+// Login attempts: 8 per 10 minutes per IP.
+const attempts = new Map();
+function throttled(ip) {
+  const now = Date.now();
+  const list = (attempts.get(ip) || []).filter((t) => now - t < 600_000);
+  attempts.set(ip, list);
+  return list.length >= 8;
+}
+
+router.post("/api/login", (req, res) => {
+  const key = KEY();
+  if (key.length < 16) return res.status(503).json({ error: "panel disabled" });
+  const ip = req.ip || "?";
+  if (throttled(ip)) {
+    return res.status(429).json({ error: "Too many attempts — wait 10 minutes." });
+  }
+  const got = String(req.body?.key || "");
+  const ok =
+    got.length === key.length &&
+    crypto.timingSafeEqual(Buffer.from(got), Buffer.from(key));
+  if (!ok) {
+    attempts.set(ip, [...(attempts.get(ip) || []), Date.now()]);
+    return res.status(401).json({ error: "Wrong admin key." });
+  }
+  setSession(req, res, makeToken(), SESSION_MS / 1000);
+  res.json({ ok: true });
+});
+
+router.post("/api/logout", (req, res) => {
+  setSession(req, res, "", 0);
+  res.json({ ok: true });
+});
+
+router.use("/api", (req, res, next) => {
+  if (KEY().length < 16) return res.status(503).json({ error: "panel disabled" });
+  if (!validToken(cookieOf(req))) return res.status(401).json({ error: "sign in" });
+  next();
+});
+
+router.get("/api/session", (_req, res) => res.json({ ok: true }));
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-const esc = (s) =>
-  String(s ?? "")
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-
-const n = (rows) => parseInt(rows?.[0]?.count ?? 0, 10) || 0;
-
-const fmtDate = (ms) => {
-  const t = parseInt(ms, 10);
-  if (!Number.isFinite(t) || !t) return "—";
-  return new Date(t).toLocaleDateString("en-IN", {
-    day: "2-digit", month: "short", year: "numeric",
-  });
-};
-
-const timeAgo = (ms) => {
-  const d = Date.now() - parseInt(ms, 10);
-  if (!Number.isFinite(d) || d < 0) return "";
-  const m = Math.floor(d / 60000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-};
-
-/** Base page shell (used for both the dashboard and error pages). */
-function page(title, body) {
-  return `<!DOCTYPE html>
-<html lang="en"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${esc(title)} — Hari Admin</title>
-<script src="https://cdn.tailwindcss.com"></script>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<style>
-  * { font-family:'Inter',sans-serif; }
-  body { background:#060810; }
-  .glass { background:rgba(255,255,255,0.03); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.07); }
-  .neon { color:#00F0FF; text-shadow:0 0 20px rgba(0,240,255,0.4); }
-  ::-webkit-scrollbar { width:4px; height:4px; }
-  ::-webkit-scrollbar-thumb { background:rgba(0,240,255,0.2); border-radius:4px; }
-  input:focus { outline:none; border-color:rgba(0,240,255,0.5)!important; }
-</style></head>
-<body class="min-h-screen text-slate-200">
-<div style="position:fixed;inset:0;pointer-events:none;z-index:0;">
-  <div style="position:absolute;top:-200px;left:-100px;width:600px;height:600px;background:radial-gradient(circle,rgba(0,240,255,0.07) 0%,transparent 70%);border-radius:50%;"></div>
-  <div style="position:absolute;bottom:-200px;right:-100px;width:700px;height:700px;background:radial-gradient(circle,rgba(123,95,255,0.06) 0%,transparent 70%);border-radius:50%;"></div>
-</div>
-<div class="relative z-10 max-w-7xl mx-auto px-6 py-10">${body}</div>
-</body></html>`;
-}
-
-/** Count a table, returning 0 when it does not exist yet. */
-async function safeCount(sql, params = []) {
+/** Query that returns [] instead of throwing (schema drift tolerant). */
+async function sq(sql, params = []) {
   try {
-    return n(await db.query(sql, params));
+    return await db.query(sql, params);
   } catch (_) {
-    return 0;
+    return [];
   }
 }
+const cnt = async (sql, params) =>
+  parseInt((await sq(sql, params))?.[0]?.count ?? 0, 10) || 0;
+
+/** Per-day counts for the last `days`, zero-filled. col is epoch-ms. */
+async function perDay(table, col, days, extraWhere = "") {
+  const rows = await sq(
+    `SELECT to_char(to_timestamp(${col}/1000.0),'YYYY-MM-DD') AS d, COUNT(*) AS count
+       FROM ${table} WHERE ${col} > $1 ${extraWhere} GROUP BY d`,
+    [Date.now() - days * 86400_000]
+  );
+  const byDay = Object.fromEntries(rows.map((r) => [r.d, parseInt(r.count, 10)]));
+  return [...Array(days)].map((_, i) => {
+    const d = new Date(Date.now() - (days - 1 - i) * 86400_000)
+      .toISOString()
+      .slice(0, 10);
+    return { d, count: byDay[d] || 0 };
+  });
+}
+
+async function distinctPerDay(days) {
+  const rows = await sq(
+    `SELECT to_char(to_timestamp(created_at/1000.0),'YYYY-MM-DD') AS d,
+            COUNT(DISTINCT user_id) AS count
+       FROM actions_log WHERE created_at > $1 GROUP BY d`,
+    [Date.now() - days * 86400_000]
+  );
+  const byDay = Object.fromEntries(rows.map((r) => [r.d, parseInt(r.count, 10)]));
+  return [...Array(days)].map((_, i) => {
+    const d = new Date(Date.now() - (days - 1 - i) * 86400_000)
+      .toISOString()
+      .slice(0, 10);
+    return { d, count: byDay[d] || 0 };
+  });
+}
+
+const USER_COLS = `id, name, email, provider, created_at, status, gender,
+  birthday, profession, organisation, location, preferred_language,
+  phone_number, phone_verified_at,
+  fcm_token IS NOT NULL AND fcm_token <> '' AS has_device`;
 
 /* ------------------------------------------------------------------ */
-/* Actions                                                             */
+/* Overview                                                            */
 /* ------------------------------------------------------------------ */
 
-router.post("/action", async (req, res) => {
-  const { action, id, phone, key } = req.body;
-  const back = `/admin-panel?key=${encodeURIComponent(key || "")}`;
+router.get("/api/overview", async (_req, res) => {
+  const dayAgo = Date.now() - 86400_000;
+  const weekAgo = Date.now() - 7 * 86400_000;
+  const t0 = Date.now();
+  await sq("SELECT 1");
+  const dbMs = Date.now() - t0;
+
+  const [
+    users, verified, paused, devices, newWeek,
+    dau, wau, actions24,
+    docs, reminders, commitsOpen, clients, agentMsgs, memories, financeItems,
+  ] = await Promise.all([
+    cnt("SELECT COUNT(*) AS count FROM users"),
+    cnt("SELECT COUNT(*) AS count FROM users WHERE phone_verified_at IS NOT NULL"),
+    cnt("SELECT COUNT(*) AS count FROM users WHERE status='paused'"),
+    cnt("SELECT COUNT(*) AS count FROM users WHERE fcm_token IS NOT NULL AND fcm_token <> ''"),
+    cnt("SELECT COUNT(*) AS count FROM users WHERE created_at > $1", [weekAgo]),
+    cnt("SELECT COUNT(DISTINCT user_id) AS count FROM actions_log WHERE created_at > $1", [dayAgo]),
+    cnt("SELECT COUNT(DISTINCT user_id) AS count FROM actions_log WHERE created_at > $1", [weekAgo]),
+    cnt("SELECT COUNT(*) AS count FROM actions_log WHERE created_at > $1", [dayAgo]),
+    cnt("SELECT COUNT(*) AS count FROM documents"),
+    cnt("SELECT COUNT(*) AS count FROM reminders WHERE done=0"),
+    cnt("SELECT COUNT(*) AS count FROM commitments WHERE status='open'"),
+    cnt("SELECT COUNT(*) AS count FROM clients WHERE archived=0"),
+    cnt("SELECT COUNT(*) AS count FROM agent_messages"),
+    cnt("SELECT COUNT(*) AS count FROM agent_memories WHERE valid=1"),
+    cnt("SELECT COUNT(*) AS count FROM finance_items"),
+  ]);
+
+  const [signups14, actions14, activity] = await Promise.all([
+    perDay("users", "created_at", 14),
+    perDay("actions_log", "created_at", 14),
+    sq(`SELECT a.action, a.detail, a.created_at, a.user_id, u.name
+          FROM actions_log a LEFT JOIN users u ON u.id = a.user_id
+         ORDER BY a.created_at DESC LIMIT 15`),
+  ]);
+
+  res.json({
+    kpis: { users, verified, paused, devices, newWeek, dau, wau, actions24 },
+    adoption: { docs, reminders, commitsOpen, clients, agentMsgs, memories, financeItems },
+    signups14, actions14, activity,
+    health: {
+      dbMs,
+      uptimeS: Math.floor(process.uptime()),
+      rssMb: Math.round(process.memoryUsage().rss / 1048576),
+      node: process.version,
+    },
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Users                                                               */
+/* ------------------------------------------------------------------ */
+
+router.get("/api/users", async (req, res) => {
+  const q = String(req.query.q || "").trim();
+  const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+  let where = "";
+  let params = [];
+  if (q) {
+    where = `WHERE name ILIKE $1 OR email ILIKE $1 OR phone_number LIKE $1 OR id::text = $2`;
+    params = [`%${q}%`, q];
+  }
+  const rows = await sq(
+    `SELECT ${USER_COLS} FROM users ${where}
+      ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`,
+    params
+  );
+  const total = await cnt(`SELECT COUNT(*) AS count FROM users ${where}`, params);
+  res.json({ users: rows, total });
+});
+
+router.get("/api/users/:id", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const rows = await sq(`SELECT ${USER_COLS} FROM users WHERE id=$1`, [id]);
+  if (!rows.length) return res.status(404).json({ error: "no such user" });
+
+  const [assistant, instructions, google, counts, recent] = await Promise.all([
+    sq("SELECT name, gender, voice, style, avatar_id FROM assistant_profiles WHERE user_id=$1", [id]),
+    sq("SELECT id, instruction FROM user_instructions WHERE user_id=$1 ORDER BY id", [id]),
+    sq("SELECT 1 AS ok FROM google_tokens WHERE user_id=$1", [String(id)]),
+    Promise.all([
+      cnt("SELECT COUNT(*) AS count FROM reminders WHERE user_id=$1", [id]),
+      cnt("SELECT COUNT(*) AS count FROM reminders WHERE user_id=$1 AND done=0", [id]),
+      cnt("SELECT COUNT(*) AS count FROM commitments WHERE user_id=$1 AND status='open'", [id]),
+      cnt("SELECT COUNT(*) AS count FROM documents WHERE user_id=$1", [id]),
+      cnt("SELECT COUNT(*) AS count FROM agent_memories WHERE user_id=$1 AND valid=1", [id]),
+      cnt("SELECT COUNT(*) AS count FROM clients WHERE user_id=$1", [id]),
+      cnt("SELECT COUNT(*) AS count FROM finance_items WHERE user_id=$1", [id]),
+      cnt("SELECT COUNT(*) AS count FROM contacts WHERE user_id=$1", [id]),
+      cnt("SELECT COUNT(*) AS count FROM agent_messages WHERE to_user_id=$1 OR from_user_id=$1", [id]),
+      cnt("SELECT COUNT(*) AS count FROM actions_log WHERE user_id=$1", [id]),
+    ]),
+    sq(`SELECT action, detail, created_at FROM actions_log
+         WHERE user_id=$1 ORDER BY created_at DESC LIMIT 20`, [id]),
+  ]);
+
+  const [remindersAll, remindersOpen, commitsOpen, docs, memories, clients,
+         finance, contacts, msgs, actionsTotal] = counts;
+  res.json({
+    user: rows[0],
+    assistant: assistant[0] || null,
+    instructions,
+    googleLinked: google.length > 0,
+    counts: { remindersAll, remindersOpen, commitsOpen, docs, memories,
+              clients, finance, contacts, msgs, actionsTotal },
+    recent,
+  });
+});
+
+const EDITABLE = new Set(["name", "email", "gender", "birthday", "status",
+  "profession", "organisation", "location", "preferred_language"]);
+
+router.patch("/api/users/:id", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const sets = [];
+  const params = [];
+  for (const [k, v] of Object.entries(req.body || {})) {
+    if (!EDITABLE.has(k)) continue;
+    if (k === "status" && !["active", "paused"].includes(v)) continue;
+    params.push(v === "" ? null : v);
+    sets.push(`${k}=$${params.length}`);
+  }
+  if (!sets.length) return res.status(400).json({ error: "nothing to update" });
+  params.push(id);
   try {
-    if (action === "delete") {
-      await db.query("DELETE FROM users WHERE id=$1", [id]);
-    } else if (action === "pause") {
-      await db.query("UPDATE users SET status='paused' WHERE id=$1", [id]);
-    } else if (action === "resume") {
-      await db.query("UPDATE users SET status='active' WHERE id=$1", [id]);
-    } else if (action === "set_phone") {
-      // Attach AND verify a number — the admin equivalent of OTP during
-      // the testing phase. Same normalisation + uniqueness as the real
-      // flow, so nothing filed under this number ever goes astray.
-      const e164 = normalizePhone(phone);
-      if (!e164) return res.redirect(back + "&error=" + encodeURIComponent("Invalid phone number"));
-      const clash = await db.query(
-        "SELECT id FROM users WHERE phone_number=$1 AND id<>$2", [e164, id]);
-      if (clash.length) {
-        return res.redirect(back + "&error=" + encodeURIComponent(
-          `${e164} already belongs to user #${clash[0].id}`));
+    await db.query(`UPDATE users SET ${sets.join(", ")} WHERE id=$${params.length}`, params);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: /unique/i.test(e.message) ? "That email is already taken." : e.message });
+  }
+});
+
+router.post("/api/users/:id/phone", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const e164 = normalizePhone(req.body?.phone);
+  if (!e164) return res.status(400).json({ error: "Invalid phone number" });
+  const clash = await sq("SELECT id FROM users WHERE phone_number=$1 AND id<>$2", [e164, id]);
+  if (clash.length) {
+    return res.status(409).json({ error: `${e164} already belongs to user #${clash[0].id}` });
+  }
+  await db.query(
+    "UPDATE users SET phone_number=$1, phone_verified_at=$2 WHERE id=$3",
+    [e164, Date.now(), id]
+  );
+  res.json({ ok: true, phone: e164 });
+});
+
+router.post("/api/users/:id/push", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const rows = await sq("SELECT fcm_token FROM users WHERE id=$1", [id]);
+  const token = rows[0]?.fcm_token;
+  if (!token) return res.status(400).json({ error: "User has no registered device." });
+  try {
+    await push.sendNotification(
+      token,
+      String(req.body?.title || "Test notification"),
+      String(req.body?.body || "Hello from the admin panel."),
+      { type: "admin_test" }
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+router.post("/api/users/:id/clear-device", async (req, res) => {
+  await db.query("UPDATE users SET fcm_token='' WHERE id=$1", [parseInt(req.params.id, 10)]);
+  res.json({ ok: true });
+});
+
+router.delete("/api/users/:id", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  try {
+    const tables = await privacy.existingUserTables();
+    await db.tx(async (client) => {
+      for (const [table, col] of tables) {
+        await client.query(`DELETE FROM ${table} WHERE ${col} = $1`, [String(id)]);
       }
-      await db.query(
-        "UPDATE users SET phone_number=$1, phone_verified_at=$2 WHERE id=$3",
-        [e164, Date.now(), id]);
-    }
-    res.redirect(back);
+      await client.query("DELETE FROM users WHERE id = $1", [id]);
+    });
+    res.json({ ok: true });
   } catch (e) {
-    res.redirect(back + "&error=" + encodeURIComponent(e.message));
+    res.status(500).json({ error: e.message });
   }
 });
 
 /* ------------------------------------------------------------------ */
-/* Dashboard                                                           */
+/* Analytics                                                           */
 /* ------------------------------------------------------------------ */
 
-router.get("/", async (req, res) => {
-  const key = String(req.query.key || "");
-  // Helmet's default CSP blocks the Tailwind CDN this page uses.
-  res.setHeader("Content-Security-Policy",
-    "default-src 'self'; script-src 'self' https://cdn.tailwindcss.com 'unsafe-inline'; " +
-    "style-src 'self' https: 'unsafe-inline'; font-src 'self' https: data:; img-src 'self' data:;");
-  try {
-    const users = await db.query(
-      `SELECT id, name, email, provider, created_at, status,
-              phone_number, phone_verified_at,
-              fcm_token IS NOT NULL AND fcm_token <> '' AS has_device
-         FROM users ORDER BY created_at DESC LIMIT 200`);
-
-    const weekAgo = Date.now() - 7 * 86400_000;
-    const dayAgo = Date.now() - 86400_000;
-    const [verified, newWeek, docs, reminders, commitsOpen, clients, notes,
-           agentMsgs, memories, convMsgs, dau, wau, actions24, financeItems] =
-      await Promise.all([
-      safeCount("SELECT COUNT(*) AS count FROM users WHERE phone_verified_at IS NOT NULL"),
-      safeCount("SELECT COUNT(*) AS count FROM users WHERE created_at > $1", [weekAgo]),
-      safeCount("SELECT COUNT(*) AS count FROM documents"),
-      safeCount("SELECT COUNT(*) AS count FROM reminders WHERE done=0"),
-      safeCount("SELECT COUNT(*) AS count FROM commitments WHERE status='open'"),
-      safeCount("SELECT COUNT(*) AS count FROM clients WHERE archived=0"),
-      safeCount("SELECT COUNT(*) AS count FROM client_notes"),
-      safeCount("SELECT COUNT(*) AS count FROM agent_messages"),
-      safeCount("SELECT COUNT(*) AS count FROM agent_memories WHERE valid=1"),
-      safeCount("SELECT COUNT(*) AS count FROM messages"),
-      // Engagement — the numbers a company actually watches daily.
-      safeCount("SELECT COUNT(DISTINCT user_id) AS count FROM actions_log WHERE created_at > $1", [dayAgo]),
-      safeCount("SELECT COUNT(DISTINCT user_id) AS count FROM actions_log WHERE created_at > $1", [weekAgo]),
-      safeCount("SELECT COUNT(*) AS count FROM actions_log WHERE created_at > $1", [dayAgo]),
-      safeCount("SELECT COUNT(*) AS count FROM finance_items"),
+router.get("/api/analytics", async (_req, res) => {
+  const monthAgo = Date.now() - 30 * 86400_000;
+  const [signups30, dau14, actions14, msgs14, topActions, topUsers] =
+    await Promise.all([
+      perDay("users", "created_at", 30),
+      distinctPerDay(14),
+      perDay("actions_log", "created_at", 14),
+      perDay("agent_messages", "created_at", 14),
+      sq(`SELECT action, COUNT(*) AS count FROM actions_log
+           WHERE created_at > $1 GROUP BY action
+           ORDER BY count DESC LIMIT 12`, [monthAgo]),
+      sq(`SELECT a.user_id, COALESCE(u.name, u.email, '#' || a.user_id) AS name,
+                 COUNT(*) AS count
+            FROM actions_log a LEFT JOIN users u ON u.id = a.user_id
+           WHERE a.created_at > $1 GROUP BY a.user_id, u.name, u.email
+           ORDER BY count DESC LIMIT 10`, [monthAgo]),
     ]);
-
-    // 14-day signup sparkline (created_at is epoch ms).
-    let spark = "";
-    try {
-      const rows = await db.query(
-        `SELECT to_char(to_timestamp(created_at/1000.0),'YYYY-MM-DD') AS d,
-                COUNT(*) AS count
-           FROM users WHERE created_at > $1 GROUP BY d`,
-        [Date.now() - 14 * 86400_000]);
-      const byDay = Object.fromEntries(rows.map((r) => [r.d, parseInt(r.count, 10)]));
-      const days = [...Array(14)].map((_, i) => {
-        const d = new Date(Date.now() - (13 - i) * 86400_000)
-          .toISOString().slice(0, 10);
-        return byDay[d] || 0;
-      });
-      const max = Math.max(1, ...days);
-      const bars = days.map((v, i) =>
-        `<rect x="${i * 16}" y="${36 - (v / max) * 32}" width="11" height="${(v / max) * 32 + 2}"
-           rx="2" fill="${v ? "#00F0FF" : "rgba(255,255,255,0.08)"}" opacity="${v ? 0.85 : 1}"/>`
-      ).join("");
-      spark = `<svg width="224" height="40" viewBox="0 0 224 40">${bars}</svg>`;
-    } catch (_) {}
-
-    // Live activity feed from the audit trail.
-    let activity = [];
-    try {
-      activity = await db.query(
-        `SELECT a.action, a.detail, a.created_at, u.name
-           FROM actions_log a LEFT JOIN users u ON u.id = a.user_id
-          ORDER BY a.created_at DESC LIMIT 12`);
-    } catch (_) {}
-
-    const kpi = (label, value, color) => `
-      <div class="glass p-5 rounded-2xl" style="border-left:3px solid ${color}">
-        <p class="text-slate-500 text-[11px] font-semibold uppercase tracking-wider mb-2">${label}</p>
-        <p class="text-3xl font-bold text-white">${value}</p>
-      </div>`;
-
-    const providerBadge = (p) => {
-      const c = {
-        google: "bg-blue-500/20 text-blue-300 border-blue-500/30",
-        apple: "bg-slate-500/20 text-slate-300 border-slate-500/30",
-        email: "bg-violet-500/20 text-violet-300 border-violet-500/30",
-      }[p] || "bg-white/10 text-white/60 border-white/10";
-      return `<span class="px-2 py-0.5 text-[10px] uppercase font-bold rounded-full border ${c}">${esc(p || "?")}</span>`;
-    };
-
-    const rowsHtml = users.map((u) => {
-      const paused = u.status === "paused";
-      const phone = u.phone_number
-        ? `<span class="font-mono text-slate-300">${esc(u.phone_number)}</span>
-           ${u.phone_verified_at
-             ? `<span class="text-emerald-400 text-[10px] font-bold ml-1">✓ verified</span>`
-             : `<span class="text-orange-400 text-[10px] font-bold ml-1">unverified</span>`}`
-        : `<form method="POST" action="/admin-panel/action" class="flex items-center gap-1">
-             <input type="hidden" name="action" value="set_phone">
-             <input type="hidden" name="id" value="${u.id}">
-             <input type="hidden" name="key" value="${esc(key)}">
-             <input type="tel" name="phone" placeholder="attach number…"
-               class="bg-white/5 border border-white/10 text-slate-200 placeholder-slate-600 text-xs rounded-lg px-2 py-1 w-32">
-             <button class="text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/10 text-[10px] font-bold px-2 py-1 rounded-lg">SET</button>
-           </form>`;
-      const initials = (u.name || u.email || "?")
-        .split(/\s+/).map((x) => x[0]).join("").toUpperCase().slice(0, 2);
-      const colors = ["bg-violet-600","bg-cyan-600","bg-pink-600","bg-emerald-600","bg-amber-600"];
-      return `
-        <tr class="border-b border-white/5 hover:bg-white/[0.03]">
-          <td class="px-5 py-3">
-            <div class="flex items-center gap-3">
-              <div class="w-9 h-9 rounded-full ${colors[u.id % colors.length]} flex items-center justify-center text-white text-xs font-bold">${esc(initials)}</div>
-              <div>
-                <p class="text-white font-semibold text-sm">${esc(u.name) || '<span class="text-slate-500 italic font-normal">No name</span>'}</p>
-                <p class="text-slate-500 text-xs">#${u.id} · ${esc(u.email || "")}</p>
-              </div>
-            </div>
-          </td>
-          <td class="px-5 py-3 text-sm">${phone}</td>
-          <td class="px-5 py-3">${providerBadge(u.provider)}</td>
-          <td class="px-5 py-3">${u.has_device
-            ? '<span class="text-emerald-400 text-xs font-semibold">📱 push ok</span>'
-            : '<span class="text-slate-600 text-xs">no device</span>'}</td>
-          <td class="px-5 py-3">${paused
-            ? '<span class="text-orange-400 text-xs font-semibold">⏸ Paused</span>'
-            : '<span class="text-emerald-400 text-xs font-semibold">● Active</span>'}</td>
-          <td class="px-5 py-3 text-slate-500 text-xs">${fmtDate(u.created_at)}</td>
-          <td class="px-5 py-3 text-right whitespace-nowrap">
-            <form method="POST" action="/admin-panel/action" class="inline-flex gap-2">
-              <input type="hidden" name="id" value="${u.id}">
-              <input type="hidden" name="key" value="${esc(key)}">
-              <button name="action" value="${paused ? "resume" : "pause"}"
-                class="${paused ? "text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/10" : "text-orange-400 border-orange-500/30 hover:bg-orange-500/10"} text-xs font-semibold border px-3 py-1.5 rounded-lg">${paused ? "▶ Resume" : "⏸ Pause"}</button>
-              <button name="action" value="delete"
-                onclick="return confirm('Permanently delete user #${u.id}? This cannot be undone.')"
-                class="text-red-500 border border-red-500/30 hover:bg-red-500/10 text-xs font-semibold px-3 py-1.5 rounded-lg">🗑</button>
-            </form>
-          </td>
-        </tr>`;
-    }).join("");
-
-    const feedHtml = activity.length
-      ? activity.map((a) => `
-          <div class="flex items-start gap-3 px-5 py-3 border-b border-white/5">
-            <span class="w-1.5 h-1.5 mt-2 rounded-full bg-cyan-400 flex-shrink-0"></span>
-            <div class="min-w-0">
-              <p class="text-sm text-slate-200 truncate">
-                <span class="text-cyan-300 font-semibold">${esc(a.name || "someone")}</span>
-                <span class="text-slate-500">·</span> ${esc(a.action)}
-              </p>
-              <p class="text-xs text-slate-500 truncate">${esc(a.detail || "")} <span class="text-slate-600">— ${timeAgo(a.created_at)}</span></p>
-            </div>
-          </div>`).join("")
-      : `<p class="px-5 py-8 text-slate-500 text-sm text-center">No activity recorded yet.</p>`;
-
-    const err = req.query.error
-      ? `<div class="mb-6 px-5 py-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-sm font-semibold">⚠ ${esc(req.query.error)}</div>`
-      : "";
-
-    res.send(page("Command Center", `
-      <header class="flex items-center justify-between mb-8 flex-wrap gap-4">
-        <div>
-          <p class="text-slate-500 text-xs font-semibold uppercase tracking-widest mb-1">Hari · Admin</p>
-          <h1 class="text-3xl font-bold neon">Command Center</h1>
-          <p class="text-xs mt-2">
-            <a class="text-slate-500 hover:text-cyan-300 underline" href="/legal/privacy" target="_blank">Privacy Policy</a>
-            <span class="text-slate-700 mx-1">·</span>
-            <a class="text-slate-500 hover:text-cyan-300 underline" href="/legal/terms" target="_blank">Terms</a>
-          </p>
-        </div>
-        <div class="flex items-center gap-4">
-          <div class="glass px-4 py-2 rounded-full flex items-center gap-2">
-            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span class="text-emerald-400 text-xs font-bold uppercase tracking-wider">Live</span>
-          </div>
-          <div class="glass px-4 py-2 rounded-2xl">
-            <p class="text-slate-500 text-[10px] uppercase font-semibold tracking-wider mb-1">Signups · last 14 days</p>
-            ${spark}
-          </div>
-        </div>
-      </header>
-      ${err}
-      <p class="text-slate-500 text-[11px] font-bold uppercase tracking-widest mb-2">Engagement</p>
-      <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
-        ${kpi("Active today", dau, "#00F0FF")}
-        ${kpi("Active / 7d", wau, "#35C48D")}
-        ${kpi("Actions / 24h", actions24, "#B265FF")}
-        ${kpi("Users", users.length, "#f59e0b")}
-        ${kpi("New / 7d", newWeek, "#ec4899")}
-      </div>
-      <p class="text-slate-500 text-[11px] font-bold uppercase tracking-widest mb-2">Feature adoption</p>
-      <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-8">
-        ${kpi("Verified phones", verified, "#35C48D")}
-        ${kpi("Documents", docs, "#f59e0b")}
-        ${kpi("Reminders", reminders, "#ec4899")}
-        ${kpi("Promises", commitsOpen, "#f97316")}
-        ${kpi("Client files", clients, "#22d3ee")}
-        ${kpi("Msgs relayed", agentMsgs, "#a3e635")}
-        ${kpi("Finance items", financeItems, "#B265FF")}
-      </div>
-      <div class="grid lg:grid-cols-3 gap-6">
-        <div class="glass rounded-2xl overflow-hidden lg:col-span-2">
-          <div class="flex items-center justify-between px-6 py-4 border-b border-white/5">
-            <div>
-              <h2 class="text-white font-bold">Users</h2>
-              <p class="text-slate-500 text-xs mt-0.5">${users.length} accounts · ${memories} memories · ${convMsgs} chat messages</p>
-            </div>
-            <input id="q" type="text" placeholder="Search…" onkeyup="
-              const v=this.value.toLowerCase();
-              document.querySelectorAll('#ut tbody tr').forEach(r=>r.style.display=r.textContent.toLowerCase().includes(v)?'':'none');"
-              class="bg-white/5 border border-white/10 text-slate-200 placeholder-slate-600 text-sm rounded-xl px-4 py-2 w-48">
-          </div>
-          <div class="overflow-x-auto">
-            <table id="ut" class="w-full text-sm">
-              <thead><tr class="text-[10px] uppercase tracking-widest text-slate-500 border-b border-white/5">
-                <th class="px-5 py-3 text-left font-semibold">User</th>
-                <th class="px-5 py-3 text-left font-semibold">Phone</th>
-                <th class="px-5 py-3 text-left font-semibold">Provider</th>
-                <th class="px-5 py-3 text-left font-semibold">Device</th>
-                <th class="px-5 py-3 text-left font-semibold">Status</th>
-                <th class="px-5 py-3 text-left font-semibold">Joined</th>
-                <th class="px-5 py-3 text-right font-semibold">Actions</th>
-              </tr></thead>
-              <tbody>${rowsHtml || '<tr><td colspan="7" class="px-5 py-16 text-center text-slate-500">No users yet.</td></tr>'}</tbody>
-            </table>
-          </div>
-        </div>
-        <div class="glass rounded-2xl overflow-hidden">
-          <div class="px-6 py-4 border-b border-white/5">
-            <h2 class="text-white font-bold">Live activity</h2>
-            <p class="text-slate-500 text-xs mt-0.5">Audit trail, newest first</p>
-          </div>
-          <div class="max-h-[560px] overflow-y-auto">${feedHtml}</div>
-        </div>
-      </div>`));
-  } catch (e) {
-    console.error("admin panel error:", e.message);
-    res.status(500).send(page("Error",
-      `<p class="text-red-400 font-semibold">The panel hit a database error.</p>
-       <p class="text-slate-500 text-sm mt-2"><code>${esc(e.message)}</code></p>`));
-  }
+  res.json({ signups30, dau14, actions14, msgs14, topActions, topUsers });
 });
+
+/* ------------------------------------------------------------------ */
+/* Activity (audit trail explorer)                                     */
+/* ------------------------------------------------------------------ */
+
+router.get("/api/activity", async (req, res) => {
+  const q = String(req.query.q || "").trim();
+  const userId = parseInt(req.query.user_id, 10);
+  const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+  const where = [];
+  const params = [];
+  if (q) {
+    params.push(`%${q}%`);
+    where.push(`(a.action ILIKE $${params.length} OR a.detail ILIKE $${params.length})`);
+  }
+  if (Number.isFinite(userId)) {
+    params.push(userId);
+    where.push(`a.user_id = $${params.length}`);
+  }
+  const rows = await sq(
+    `SELECT a.action, a.detail, a.created_at, a.user_id, u.name
+       FROM actions_log a LEFT JOIN users u ON u.id = a.user_id
+      ${where.length ? "WHERE " + where.join(" AND ") : ""}
+      ORDER BY a.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
+    params
+  );
+  res.json({ activity: rows });
+});
+
+/* ------------------------------------------------------------------ */
+/* Feature flags (live overrides, read by /config)                     */
+/* ------------------------------------------------------------------ */
+
+const configRoute = require("./config");
+
+router.get("/api/flags", async (_req, res) => {
+  const o = await configRoute.overrides();
+  res.json({
+    defaults: remoteConfig.features,
+    overrides: o.features || {},
+    announcement: o.announcement !== undefined ? o.announcement : remoteConfig.announcement,
+    forceUpdateBelow: o.forceUpdateBelow !== undefined ? o.forceUpdateBelow : remoteConfig.forceUpdateBelow,
+    apk: appUpdate.readMeta(),
+  });
+});
+
+router.put("/api/flags", async (req, res) => {
+  const body = req.body || {};
+  const clean = {};
+  if (body.features && typeof body.features === "object") {
+    clean.features = {};
+    for (const k of Object.keys(remoteConfig.features)) {
+      if (typeof body.features[k] === "boolean") clean.features[k] = body.features[k];
+    }
+  }
+  if (body.announcement !== undefined) {
+    clean.announcement = body.announcement ? String(body.announcement) : null;
+  }
+  if (body.forceUpdateBelow !== undefined) {
+    clean.forceUpdateBelow = parseInt(body.forceUpdateBelow, 10) || 0;
+  }
+  await db.query(
+    `INSERT INTO kv (k, v) VALUES ('remote_config_overrides', $1)
+     ON CONFLICT (k) DO UPDATE SET v = $1`,
+    [JSON.stringify(clean)]
+  );
+  res.json({ ok: true, saved: clean });
+});
+
+/* ------------------------------------------------------------------ */
+/* Broadcast push                                                      */
+/* ------------------------------------------------------------------ */
+
+router.post("/api/broadcast", async (req, res) => {
+  const title = String(req.body?.title || "").trim();
+  const body = String(req.body?.body || "").trim();
+  if (!title || !body) return res.status(400).json({ error: "Title and message required." });
+  const rows = await sq(
+    "SELECT id, fcm_token FROM users WHERE fcm_token IS NOT NULL AND fcm_token <> '' LIMIT 500"
+  );
+  let sent = 0;
+  const failed = [];
+  for (const r of rows) {
+    try {
+      await push.sendNotification(r.fcm_token, title, body, { type: "announcement" });
+      sent++;
+    } catch (_) {
+      failed.push(r.id);
+    }
+  }
+  res.json({ ok: true, sent, failedCount: failed.length, devices: rows.length });
+});
+
+/* ------------------------------------------------------------------ */
+/* Debug / system                                                      */
+/* ------------------------------------------------------------------ */
+
+const TABLES = ["users", "actions_log", "reminders", "commitments", "documents",
+  "agent_memories", "agent_messages", "clients", "client_notes", "contacts",
+  "finance_items", "meetings", "payment_requests", "fulfillment_tasks",
+  "fare_watches", "conversations", "messages", "mcp_servers"];
+
+router.get("/api/debug", async (req, res) => {
+  const t0 = Date.now();
+  await sq("SELECT 1");
+  const dbMs = Date.now() - t0;
+
+  const tables = {};
+  await Promise.all(
+    TABLES.map(async (t) => {
+      tables[t] = await cnt(`SELECT COUNT(*) AS count FROM ${t}`);
+    })
+  );
+
+  const fulfillment = await sq(
+    "SELECT status, COUNT(*) AS count FROM fulfillment_tasks GROUP BY status"
+  );
+
+  const env = (k) => Boolean(process.env[k] && process.env[k].length > 2);
+  const integrations = {
+    gemini: env("GEMINI_API_KEY"),
+    heygen_avatar: env("HEYGEN_API_KEY"),
+    exotel_telephony: env("EXOTEL_API_KEY") && env("EXOTEL_SID"),
+    razorpay_payments: env("RAZORPAY_KEY_ID"),
+    google_places: env("GOOGLE_PLACES_API_KEY"),
+    youtube: env("YOUTUBE_API_KEY"),
+    google_signin: env("GOOGLE_WEB_CLIENT_ID"),
+    dev_otp_bypass: String(process.env.ALLOW_DEV_PHONE_VERIFY) === "true",
+  };
+
+  const probes = {};
+  if (String(req.query.probe) === "1") {
+    // Gemini: model list is a free metadata call.
+    try {
+      const r = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models?pageSize=1&key=${process.env.GEMINI_API_KEY}`,
+        { signal: AbortSignal.timeout(8000) }
+      );
+      probes.gemini = r.ok ? "ok" : `HTTP ${r.status}`;
+    } catch (e) { probes.gemini = e.message; }
+    // HeyGen: public avatar catalog.
+    try {
+      const heygen = require("../avatar/heygen");
+      const faces = await heygen.listFaces();
+      probes.heygen = faces.length ? `ok (${faces.length} faces)` : "empty catalog";
+    } catch (e) { probes.heygen = e.message; }
+    // Exotel: account status.
+    try {
+      const sub = (process.env.EXOTEL_SUBDOMAIN || "api.exotel.com").replace(/^https?:\/\//, "");
+      const auth = Buffer.from(
+        `${process.env.EXOTEL_API_KEY}:${process.env.EXOTEL_API_TOKEN}`
+      ).toString("base64");
+      const r = await fetch(
+        `https://${sub}/v1/Accounts/${process.env.EXOTEL_SID}.json`,
+        { headers: { authorization: `Basic ${auth}` }, signal: AbortSignal.timeout(8000) }
+      );
+      const j = await r.json().catch(() => ({}));
+      probes.exotel = r.ok ? `ok (${j?.Account?.Status || "?"})` : `HTTP ${r.status}`;
+    } catch (e) { probes.exotel = e.message; }
+  }
+
+  res.json({
+    server: {
+      node: process.version,
+      uptimeS: Math.floor(process.uptime()),
+      rssMb: Math.round(process.memoryUsage().rss / 1048576),
+      heapMb: Math.round(process.memoryUsage().heapUsed / 1048576),
+      env: process.env.NODE_ENV || "development",
+      dbMs,
+    },
+    tables,
+    fulfillment,
+    integrations,
+    probes,
+    apk: appUpdate.readMeta(),
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Static SPA                                                          */
+/* ------------------------------------------------------------------ */
+
+router.get("/", (_req, res) => {
+  if (KEY().length < 16) {
+    return res
+      .status(503)
+      .send("Admin panel disabled — set ADMIN_KEY (16+ chars) in the environment.");
+  }
+  res.sendFile(path.join(__dirname, "admin_panel", "index.html"));
+});
+router.use(express.static(path.join(__dirname, "admin_panel")));
 
 module.exports = router;

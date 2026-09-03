@@ -129,3 +129,6 @@ router.delete("/account", async (req, res) => {
 });
 
 module.exports = router;
+// The admin panel reuses the same cascade so an admin delete removes the
+// same rows a self-service delete would — no orphaned user data either way.
+module.exports.existingUserTables = existingUserTables;
