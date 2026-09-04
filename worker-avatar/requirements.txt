@@ -1,0 +1,7 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pyyaml>=6
+# Engines — installed in the Dockerfile against the CUDA torch build:
+#   chatterbox-tts        (MIT, Resemble AI zero-shot voice cloning)
+#   MuseTalk checkout     (MIT/commercial-OK, cloned into /opt/MuseTalk)

@@ -190,6 +190,11 @@ app.use("/meetings", appAuth, require("./meetings/routes"));
 app.use("/reminders", appAuth, require("./reminders/routes"));
 app.use("/commitments", appAuth, require("./routes/commitments"));
 app.use("/messages", appAuth, require("./routes/messages"));
+
+// Personalized avatar messages: the sender's OWN face/voice identity
+// (consent, reference photo, voice sample, preferences). Renders always
+// use the sender's profile — see src/avatarmsg/.
+app.use("/avatar-profile", appAuth, require("./avatarmsg/routes").router());
 app.use("/usage", appAuth, require("./routes/usage").router);
 app.use("/finance", appAuth, require("./routes/finance").router);
 

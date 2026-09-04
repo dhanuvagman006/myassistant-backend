@@ -1774,8 +1774,7 @@ function registerBuiltins() {
       
       // db exports run/one/query — `exec` does not exist, and calling it
       // threw exactly on the success path (recipient IS an app user).
-      const { run, one } = require("../db");
-      const push = require("../services/push");
+      const { one } = require("../db");
       // "Inform Hemalatha's agent" names the PERSON, not a contact called
       // "Hemalatha's agent" — strip the agent suffix before resolving.
       const contactLower = String(args.contact_name)
@@ -1870,28 +1869,35 @@ function registerBuiltins() {
       // 3. User is on the app! Save to queue and push notify
       // Store the NORMALISED number: the recipient's session looks its own
       // inbox up by the same E.164 value, so anything else never arrives.
-      await run(
-        `INSERT INTO agent_messages (from_user_id, to_phone_number, message, created_at) VALUES ($1, $2, $3, $4)`,
+      const inserted = await query(
+        `INSERT INTO agent_messages (from_user_id, to_phone_number, message, created_at) VALUES ($1, $2, $3, $4) RETURNING id`,
         [ctx.userId, toPhone, args.message, Date.now()]
       );
 
-      // A nudge, not the message itself. The words are spoken by their own
-      // assistant when they open the app; putting them in the banner would
-      // also put them on a lock screen anyone can read.
-      if (appUser.fcm_token) {
-        await push.sendNotification(
-          appUser.fcm_token,
-          ctx.userName ? `${ctx.userName} sent you a message` : "You have a new message",
-          "Open the app and your assistant will read it to you.",
-          // Lets the recipient's app react: fetch the inbox and have their
-          // assistant SPEAK the message the moment the app is open/opened.
-          { kind: "agent_message" }
-        );
-      } else {
-        // Not an error: they simply have no device registered yet, so the
-        // message waits in their inbox until they next open the app.
+      // The push is a nudge, not the message itself — the words never land
+      // on a lock screen. Delivery is handed to the avatar orchestrator:
+      // when the sender has a consented face/voice identity it renders
+      // their AI avatar speaking the words and THEN pushes; in every other
+      // case (no profile, no engines, render failure) it sends the same
+      // plain nudge this code always sent. Fire-and-forget: the tool
+      // answers the sender immediately, the GPU works in the background,
+      // and exactly one push reaches the recipient either way.
+      if (!appUser.fcm_token) {
+        // Not an error: no device registered yet — the message (and any
+        // media rendered for it) waits in the inbox until they next open
+        // the app.
         console.log(`agent_message: no push token for user ${appUser.id} — will deliver on next open`);
       }
+      require("../avatarmsg/service")
+        .generateForMessage({
+          messageId: inserted[0]?.id,
+          fromUserId: ctx.userId,
+          fromUserName: ctx.userName,
+          toPhone,
+          text: args.message,
+          fcmToken: appUser.fcm_token || "",
+        })
+        .catch((e) => console.error("avatarmsg orchestrator:", e.message));
 
       return { ok: true, data: "Message sent.", speak: `I have sent the message directly to ${args.contact_name}'s assistant.` };
     }

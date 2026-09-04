@@ -331,6 +331,10 @@ async function init() {
   // Fare watches: re-priced by the proactive sweep, alert on a real drop.
   await require("./travel/fares").migrate((sql) => pool.query(sql));
 
+  // Personalized avatar messages: per-user face/voice identity (consented)
+  // and the render audit trail. See src/avatarmsg/.
+  await require("./avatarmsg/schema").migrate((sql) => pool.query(sql));
+
   // Live avatar persistence: per-user personas (the brain hookup),
   // session records, and the rolling recent-conversation window.
 

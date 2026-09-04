@@ -16,6 +16,8 @@
     "test:knowledge": "node scripts/knowledge-test.js",
     "test:professional": "node scripts/professional-test.js",
     "test:integrations": "node scripts/integrations-test.js",
+    "test:avatarmsg": "node scripts/avatarmsg-test.js",
+    "bench:avatarmsg": "node scripts/avatarmsg-bench.js",
     "test:all": "npm run test && npm run test:e2e && npm run test:mcp && npm run test:docs && npm run test:infra && npm run test:context && npm run test:avatar",
     "test:docs": "node tests/documents.e2e.test.js",
     "test:infra": "node tests/infra.e2e.test.js",
