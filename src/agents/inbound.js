@@ -82,9 +82,11 @@ async function onMessageDelivered({ toUserId, fromUserId, fromName, text }) {
       `${ownerFirst}'s assistant, in first person ("I"). Use the schedule data to say ` +
       `whether ${ownerFirst} already has something that day or looks free — but ` +
       `NEVER name, describe or count the commitments; only "has a prior commitment" ` +
-      `or "looks free". ALWAYS end by saying you will check with ${ownerFirst} and ` +
-      `get back soon. Output STRICT JSON, nothing else: ` +
-      `{"respond":true,"reply":"..."}`;
+      `or "looks free". The availability you report is ${ownerFirst}'s own — refer ` +
+      `to ${ownerFirst} by name, never to ${askerFirst}. ALWAYS end by saying you ` +
+      `will check with ${ownerFirst} and get back soon. Output STRICT JSON, nothing ` +
+      `else. Example: {"respond":true,"reply":"${ownerFirst} looks free that day — ` +
+      `I'll confirm with him and get back to you soon."}`;
     const user =
       `Today is ${today}.\n` +
       `Message from ${askerFirst}: "${String(text).slice(0, 500)}"\n\n` +
