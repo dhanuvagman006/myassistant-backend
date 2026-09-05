@@ -257,6 +257,13 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   let userName = null;
   let personalContext = "";
   let liveVoice = null; // per-user override of the LIVE_VOICE() default
+  // Loaded CONCURRENTLY with the Google WS handshake below. This used to
+  // run to completion first, which put three DB round trips (profile,
+  // context+memory, unread messages) serially in front of every session
+  // start. The setup message is the only thing that needs these, and it
+  // can't be sent before the socket is open anyway — so the two waits now
+  // overlap and session start pays only the slower of them.
+  const profileLoaded = (async () => {
   try {
     const uid = Number(user?.sub);
     if (Number.isFinite(uid) && uid > 0) {
@@ -300,6 +307,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       }
     }
   } catch (e) { console.error("Failed to load profile or messages:", e); }
+  })();
 
   let upstream;
   let upstreamReady = false;
@@ -343,7 +351,11 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     if (room) require("../avatar/session").detach(room);
   };
 
-  upstream.on("open", () => {
+  upstream.on("open", async () => {
+    // The setup payload needs the profile (name, voice, personal context,
+    // unread messages); by now its load has been running for the whole
+    // TLS+WS handshake, so this await is usually already resolved.
+    await profileLoaded;
     upstream.send(
       JSON.stringify({
         setup: {
