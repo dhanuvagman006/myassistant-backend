@@ -28,6 +28,11 @@ async function migrate(exec) {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS preferred_language TEXT NOT NULL DEFAULT '';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS timezone          TEXT NOT NULL DEFAULT '';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token         TEXT NOT NULL DEFAULT '';
+    -- When fcm_token was last written. Newly-minted FCM tokens take a few
+    -- minutes to propagate to the send backend, during which sends return
+    -- "registration-token-not-registered"; this timestamp lets push.js
+    -- tell that transient state apart from a genuinely dead token.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token_at      BIGINT NOT NULL DEFAULT 0;
     -- Nullable on purpose: NULL means "no verified number". A NOT NULL
     -- default of '' would put every unverified account on one shared value,
     -- which the uniqueness index in db.js could not tell apart from a real
@@ -105,6 +110,10 @@ async function updateProfile(userId, fields = {}) {
       // is why push notifications never worked for ANY user — the console
       // campaign path (no DB) delivered fine while every server send died.
       vals.push(f === "fcm_token" ? v.slice(0, 512) : v.slice(0, 120));
+      if (f === "fcm_token") {
+        sets.push(`fcm_token_at = $${i++}`);
+        vals.push(Date.now());
+      }
     }
   }
   if (fields.name && String(fields.name).trim()) {

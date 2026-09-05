@@ -71,6 +71,32 @@ async function send(fcmToken, title, body, data) {
     if (stale) {
       try {
         const db = require("../db");
+        // GRACE PERIOD. A newly-minted token takes a few minutes to
+        // propagate to FCM's send backend, and until then sends return
+        // "registration-token-not-registered" — the SAME code as a
+        // genuinely dead token. Pruning on that answer turned every
+        // send-right-after-registering into a permanently deleted token
+        // (measured: a send 60s after mint failed; sends to the same
+        // kind of token at 7 minutes old were accepted). So a token
+        // younger than 15 minutes is KEPT and the caller told to retry.
+        const rows = await db.query(
+          "SELECT id, fcm_token_at FROM users WHERE fcm_token=$1",
+          [fcmToken]
+        );
+        const newestAt = Math.max(0, ...rows.map((r) => Number(r.fcm_token_at) || 0));
+        if (rows.length && Date.now() - newestAt < 15 * 60_000) {
+          console.warn(
+            `push: token for user(s) ${rows.map((r) => r.id).join(",")} not yet ` +
+              `active at FCM (registered ${Math.round((Date.now() - newestAt) / 1000)}s ago) — kept, retry shortly`
+          );
+          return {
+            ok: false,
+            stale: false,
+            skipped: false,
+            error:
+              "device registered moments ago and its token is still activating at Google — try again in a few minutes",
+          };
+        }
         const cleared = await db.query(
           "UPDATE users SET fcm_token='' WHERE fcm_token=$1 RETURNING id",
           [fcmToken]

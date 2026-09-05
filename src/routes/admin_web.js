@@ -505,7 +505,7 @@ router.post("/api/broadcast", async (req, res) => {
     else if (out.stale) { stale++; results.push({ ...who, outcome: "stale" }); }
     else if (out.skipped) {
       return res.status(503).json({ error: "Push is not configured on this server." });
-    } else { failed++; results.push({ ...who, outcome: "failed" }); }
+    } else { failed++; results.push({ ...who, outcome: "failed", error: out.error || "" }); }
   }
   res.json({
     ok: true, sent, stale, failed, devices: seen.size,

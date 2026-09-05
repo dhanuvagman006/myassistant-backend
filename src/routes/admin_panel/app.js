@@ -672,7 +672,7 @@ async function viewBroadcast() {
         if (r.results) {
           result.replaceChildren(...r.results.map((u) =>
             h("div", { class: u.outcome === "sent" ? "" : "warn-text" },
-              `${u.name}: ${OUTCOME_TEXT[u.outcome] || u.outcome}`)));
+              `${u.name}: ${u.error || OUTCOME_TEXT[u.outcome] || u.outcome}`)));
         } else {
           const bits = [`Delivered to ${r.sent} of ${r.devices} device${r.devices === 1 ? "" : "s"}`];
           if (r.stale) bits.push(`${r.stale} stale device${r.stale === 1 ? "" : "s"} cleared (re-register on next app open)`);
