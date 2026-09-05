@@ -27,15 +27,47 @@ const filesRoot = path.join(
 );
 
 /** tables that key rows by a user column → [table, column] */
+// EVERY user-keyed table in the schema. This list drives BOTH the privacy
+// export and account deletion (including the admin panel's Delete user), so
+// a table missing here means orphaned rows surviving a "complete" delete —
+// which is exactly what happened as the schema grew past the original
+// eight entries. existingUserTables() filters against information_schema
+// at runtime, so entries for tables a deployment doesn't have are no-ops;
+// when adding a table to the schema, add it here in the same change.
 const USER_TABLES = [
   ["actions_log", "user_id"],
   ["reminders", "user_id"],
   ["documents", "user_id"],
+  ["document_chunks", "user_id"], // per-document search index
+  ["document_links", "user_id"],
   ["google_tokens", "user_id"],
+  ["swiggy_tokens", "user_id"],
   ["agent_memories", "user_id"], // everything the assistant remembers
   ["bookings", "user_id"], // the booking agent's ledger
   ["clients", "user_id"], // professional mode: patient/client cards
   ["client_notes", "user_id"], // …and their dated case notes
+  ["commitments", "user_id"], // promises the assistant tracks
+  ["contacts", "user_id"], // mirrored address book
+  ["finance_items", "user_id"],
+  ["meetings", "user_id"],
+  ["payment_requests", "user_id"],
+  ["fulfillment_tasks", "user_id"],
+  ["fare_watches", "user_id"],
+  ["conversations", "user_id"],
+  ["messages", "user_id"], // conversation turns
+  ["events", "user_id"],
+  ["cases", "user_id"],
+  ["case_people", "user_id"],
+  ["agent_messages", "from_user_id"], // messages they sent to other agents
+  ["mcp_servers", "user_id"],
+  ["assistant_profiles", "user_id"], // assistant name/voice/face choices
+  ["user_instructions", "user_id"], // standing rules
+  ["inbound_calls", "user_id"],
+  ["inbound_numbers", "user_id"],
+  ["inbound_settings", "user_id"],
+  ["app_usage_daily", "user_id"],
+  ["avatar_profiles", "user_id"], // future: consented face/voice identity
+  ["avatar_renders", "user_id"],
 ];
 
 async function existingUserTables() {
