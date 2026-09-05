@@ -139,6 +139,11 @@ async function migrate(exec) {
       created_at      BIGINT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_agent_messages_phone ON agent_messages(to_phone_number, status);
+    -- 1 = sent automatically by the recipient's assistant (interim
+    -- scheduling acknowledgement). Kept OUT of the auto-responder's own
+    -- triggers so two assistants can never chat in a loop, and phrased
+    -- differently when spoken ("their assistant replied" vs "X said").
+    ALTER TABLE agent_messages ADD COLUMN IF NOT EXISTS auto INTEGER NOT NULL DEFAULT 0;
   `);
 }
 

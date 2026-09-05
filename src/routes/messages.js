@@ -26,7 +26,7 @@ router.get("/unread", async (req, res) => {
   if (!phone) return res.json({ messages: [] });
   const rows = await db
     .query(
-      `SELECT m.id, m.message, m.created_at, u.name AS from_name
+      `SELECT m.id, m.message, m.created_at, m.auto, u.name AS from_name
          FROM agent_messages m
          LEFT JOIN users u ON u.id = m.from_user_id
         WHERE m.status = 'unread' AND m.to_phone_number = $1
@@ -40,6 +40,9 @@ router.get("/unread", async (req, res) => {
       from: r.from_name || "Someone",
       message: String(r.message || ""),
       at: Number(r.created_at) || null,
+      // Sent by the other person's ASSISTANT, not typed by them — the app
+      // phrases these "X's assistant said" instead of "X said".
+      auto: Number(r.auto) === 1,
     })),
   });
 });

@@ -1893,6 +1893,21 @@ function registerBuiltins() {
         console.log(`agent_message: no push token for user ${appUser.id} — will deliver on next open`);
       }
 
+      // The recipient's own assistant may be able to acknowledge this
+      // immediately (scheduling questions answered from their calendar,
+      // privacy-preserving). Fire-and-forget: delivery above already
+      // happened, and this must never slow the sender's turn. Runs only
+      // for human-initiated sends (this tool), so an automatic reply can
+      // never trigger another automatic reply.
+      require("../agents/inbound")
+        .onMessageDelivered({
+          toUserId: appUser.id,
+          fromUserId: ctx.userId,
+          fromName: ctx.userName,
+          text: args.message,
+        })
+        .catch((e) => console.warn("inbound hook:", e.message));
+
       return { ok: true, data: "Message sent.", speak: `I have sent the message directly to ${args.contact_name}'s assistant.` };
     }
   });

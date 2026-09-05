@@ -189,7 +189,12 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
       "Relay them naturally, as one person passing on word from another:\n";
     unreadMessages.forEach((m) => {
       const from = m.from_name || "someone";
-      prompt += `- From ${from}: "${m.message}"\n`;
+      // auto=1 was composed by the sender's ASSISTANT (an interim
+      // scheduling acknowledgement) — say so, or the user hears words
+      // their friend never typed attributed to the friend directly.
+      prompt += Number(m.auto) === 1
+        ? `- From ${from}'s assistant (an automatic reply): "${m.message}"\n`
+        : `- From ${from}: "${m.message}"\n`;
     });
   }
   // WHO the user is + WHAT is remembered about them — same personal layer
@@ -293,7 +298,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       // here, so this simply does not run for them.
       if (p?.user?.phone_number) {
         unreadMessages = await db.query(
-          `SELECT m.id, m.message, u.name AS from_name
+          `SELECT m.id, m.message, m.auto, u.name AS from_name
              FROM agent_messages m
              LEFT JOIN users u ON u.id = m.from_user_id
             WHERE m.status = 'unread' AND m.to_phone_number = $1
