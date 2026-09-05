@@ -41,6 +41,14 @@ async function send(fcmToken, title, body, data) {
       title,
       body,
     },
+    // HIGH priority, explicitly. The default is "normal", which Android
+    // (Samsung especially) defers in doze and app-standby — measured on
+    // the SM-E156B: normal-priority sends were ACCEPTED by FCM and never
+    // displayed, while the Firebase console's high-priority campaign
+    // arrived instantly on the same device. Everything this server sends
+    // is user-facing (a message, a reminder, an admin notice), so
+    // immediate display is the correct default.
+    android: { priority: "high" },
     // FCM data values must all be strings; the app uses these to react to
     // the push (e.g. kind=agent_message → fetch the inbox and speak it).
     ...(data
