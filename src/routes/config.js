@@ -29,12 +29,15 @@ router.get("/", async (_req, res) => {
     ...remoteConfig,
     ...(o.announcement !== undefined && { announcement: o.announcement }),
     ...(o.forceUpdateBelow !== undefined && { forceUpdateBelow: o.forceUpdateBelow }),
-    // agent_calls is available whenever telephony is actually configured,
-    // regardless of the static default — no redeploy needed to switch it on.
+    // agent_calls: an explicit admin-panel override wins (kill switch —
+    // configured creds don't prove the call flow actually converses);
+    // otherwise auto-detect from telephony config.
     features: {
       ...remoteConfig.features,
       ...(o.features || {}),
-      agent_calls: agentCall.enabled(),
+      ...(typeof (o.features || {}).agent_calls !== "boolean" && {
+        agent_calls: agentCall.enabled(),
+      }),
     },
     ...(apk && {
       latestVersionCode: apk.versionCode,

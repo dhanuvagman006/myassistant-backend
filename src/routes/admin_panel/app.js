@@ -665,7 +665,7 @@ const FLAG_DESC = {
   video_briefing: "Video versions of the daily brief.",
   photo_questions: "Photo & receipt questions via the camera.",
   live_info_cards: "Live info cards during conversation.",
-  agent_calls: "Assistant-placed phone calls (auto-on when telephony works).",
+  agent_calls: "Assistant-placed phone calls. Auto-detects telephony creds; an override set here wins (use as kill switch — creds alone don't prove two-way calling).",
 };
 
 async function viewFlags() {
@@ -733,7 +733,8 @@ async function viewDebug(probe) {
       h("span", { class: "k" }, k.replace(/_/g, " ")),
       h("span", {},
         probeVal ? h("span", { class: "badge " + (String(probeVal).startsWith("ok") ? "good" : "danger"), style: "margin-right:6px;" }, String(probeVal)) : null,
-        ok ? h("span", { class: "badge good" }, "configured") : h("span", { class: "badge neutral" }, "not set")));
+        ok ? h("span", { class: "badge good" }, typeof ok === "string" ? ok : "configured")
+           : h("span", { class: "badge neutral" }, "not set")));
   });
 
   const tableRows = Object.entries(d.tables).map(([t, n]) =>
