@@ -90,13 +90,23 @@ async function onMessageDelivered({ toUserId, fromUserId, fromName, text }) {
       `Message from ${askerFirst}: "${String(text).slice(0, 500)}"\n\n` +
       `${ownerFirst}'s scheduled items (next 3 weeks):\n${busy}`;
 
+    console.log(`inbound: evaluating message from ${askerFirst} (${fid}) to ${ownerFirst} (${uid})`);
     const out = await generateReply([{ role: "user", content: user }], { system });
     const raw = String(out?.reply || "").replace(/```json|```/g, "").trim();
     const m = raw.match(/\{[\s\S]*\}/);
-    if (!m) return;
+    if (!m) {
+      console.warn(`inbound: model returned no JSON: ${raw.slice(0, 160)}`);
+      return;
+    }
     let parsed;
-    try { parsed = JSON.parse(m[0]); } catch (_) { return; }
-    if (parsed.respond !== true || !parsed.reply || typeof parsed.reply !== "string") return;
+    try { parsed = JSON.parse(m[0]); } catch (_) {
+      console.warn(`inbound: unparseable JSON: ${m[0].slice(0, 160)}`);
+      return;
+    }
+    if (parsed.respond !== true || !parsed.reply || typeof parsed.reply !== "string") {
+      console.log(`inbound: decided not to auto-reply (respond=${parsed.respond})`);
+      return;
+    }
     const reply = parsed.reply.trim().slice(0, 500);
     if (!reply) return;
 
