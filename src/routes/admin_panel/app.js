@@ -213,7 +213,7 @@ const NAV = [
   ["#/users", "Users"],
   ["#/analytics", "Analytics"],
   ["#/activity", "Activity"],
-  ["#/broadcast", "Broadcast"],
+  ["#/broadcast", "Notifications"],
   ["#/flags", "Feature flags"],
   ["#/debug", "System & debug"],
 ];
@@ -625,31 +625,75 @@ async function viewActivity() {
 /* ------------------------------------------------------------------ */
 
 async function viewBroadcast() {
+  shell("#/broadcast", loading());
+  const d = await api("/users?limit=100");
+
   const title = h("input", { class: "input", placeholder: "e.g. New feature: video calls" });
-  const msg = h("textarea", { class: "input", rows: 4, placeholder: "The notification text every user's phone will show." });
+  const msg = h("textarea", { class: "input", rows: 4, placeholder: "The notification text the phone will show." });
   const result = h("div", { class: "muted", style: "margin-top:12px;" });
+
+  // Recipients: everyone, or hand-picked. Ticking any user flips the mode
+  // to "selected" so the choice is always visible, never implicit.
+  const allRadio = h("input", { type: "radio", name: "notify-target", checked: true });
+  const someRadio = h("input", { type: "radio", name: "notify-target" });
+  const boxes = new Map(); // user id -> checkbox
+  const userRows = d.users.map((u) => {
+    const cb = h("input", { type: "checkbox", onchange: () => { someRadio.checked = true; } });
+    boxes.set(u.id, cb);
+    return h("label", { class: "notify-user" }, cb,
+      h("span", {}, `${u.name || "Unnamed"} (#${u.id})`),
+      u.has_device ? null : h("span", { class: "muted" }, " — no device registered"));
+  });
+
+  const OUTCOME_TEXT = {
+    sent: "delivered",
+    no_device: "no device registered — will not receive pushes",
+    stale: "device token was stale (cleared; re-registers on next app open)",
+    shared_device: "shares a phone with another recipient — delivered once",
+    failed: "send failed",
+  };
+
   const send = h("button", {
-    class: "btn primary", onclick: async () => {
+    class: "btn primary", style: "margin-top:14px;", onclick: async () => {
       if (!title.value.trim() || !msg.value.trim()) return toast("Title and message required.", true);
-      if (!confirm(`Send this notification to EVERY registered device?\n\n${title.value}\n${msg.value}`)) return;
+      const targeted = someRadio.checked;
+      const ids = targeted
+        ? [...boxes.entries()].filter(([, cb]) => cb.checked).map(([id]) => id)
+        : null;
+      if (targeted && !ids.length) return toast("Pick at least one user, or choose All users.", true);
+      const who = targeted ? `${ids.length} selected user${ids.length === 1 ? "" : "s"}` : "EVERY registered device";
+      if (!confirm(`Send this notification to ${who}?\n\n${title.value}\n${msg.value}`)) return;
       send.disabled = true;
       try {
-        const r = await api("/broadcast", { method: "POST", body: { title: title.value, body: msg.value } });
-        const bits = [`Delivered to ${r.sent} of ${r.devices} device${r.devices === 1 ? "" : "s"}`];
-        if (r.stale) bits.push(`${r.stale} stale device${r.stale === 1 ? "" : "s"} cleared (re-register on next app open)`);
-        if (r.failed) bits.push(`${r.failed} failed`);
-        result.textContent = bits.join(" · ") + ".";
-        toast(r.sent ? "Broadcast delivered." : "No deliveries — see the result line.", !r.sent);
+        const r = await api("/broadcast", {
+          method: "POST",
+          body: { title: title.value, body: msg.value, ...(targeted && { userIds: ids }) },
+        });
+        if (r.results) {
+          result.replaceChildren(...r.results.map((u) =>
+            h("div", { class: u.outcome === "sent" ? "" : "warn-text" },
+              `${u.name}: ${OUTCOME_TEXT[u.outcome] || u.outcome}`)));
+        } else {
+          const bits = [`Delivered to ${r.sent} of ${r.devices} device${r.devices === 1 ? "" : "s"}`];
+          if (r.stale) bits.push(`${r.stale} stale device${r.stale === 1 ? "" : "s"} cleared (re-register on next app open)`);
+          if (r.failed) bits.push(`${r.failed} failed`);
+          result.textContent = bits.join(" · ") + ".";
+        }
+        toast(r.sent ? "Notification sent." : "No deliveries — see the result lines.", !r.sent);
       } catch (e) { toast(e.message, true); }
       send.disabled = false;
     },
-  }, "Send to all devices");
+  }, "Send notification");
 
   shell("#/broadcast", h("div", {},
-    pageHead("Broadcast", "Push a notification to every user with the app installed."),
+    pageHead("Notifications", "Send a custom push notification to all users or just the ones you pick."),
     h("div", { class: "card", style: "max-width:560px;" },
       h("div", { class: "field" }, h("label", {}, "Title"), title),
       h("div", { class: "field" }, h("label", {}, "Message"), msg),
+      h("div", { class: "field" }, h("label", {}, "Recipients"),
+        h("label", { class: "notify-mode" }, allRadio, h("span", {}, `All users (${d.total})`)),
+        h("label", { class: "notify-mode" }, someRadio, h("span", {}, "Selected users:")),
+        h("div", { class: "notify-user-list" }, userRows)),
       send, result)));
 }
 

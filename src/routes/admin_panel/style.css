@@ -198,3 +198,10 @@ td .sub { color: var(--faint); font-size: 12px; }
 .inline-form { display: flex; gap: 8px; }
 .muted { color: var(--muted); }
 .faint { color: var(--faint); }
+
+/* Notifications composer */
+.notify-mode { display: flex; align-items: center; gap: 8px; font-size: 13.5px; padding: 4px 0; cursor: pointer; }
+.notify-user-list { max-height: 240px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; margin: 6px 0 0 22px; }
+.notify-user { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 5px 0; cursor: pointer; border-bottom: 1px solid var(--border); }
+.notify-user:last-child { border-bottom: 0; }
+.warn-text { color: var(--warn); font-size: 13px; padding: 2px 0; }

@@ -467,24 +467,50 @@ router.post("/api/broadcast", async (req, res) => {
   const title = String(req.body?.title || "").trim();
   const body = String(req.body?.body || "").trim();
   if (!title || !body) return res.status(400).json({ error: "Title and message required." });
-  const rows = await sq(
-    "SELECT id, fcm_token FROM users WHERE fcm_token IS NOT NULL AND fcm_token <> '' LIMIT 500"
-  );
+
+  // Optional targeting: a userIds array narrows the send to those accounts
+  // (and then the response carries a per-user outcome, because the admin
+  // picked people by name and deserves to know exactly who got it). No
+  // userIds keeps the original everyone-with-a-device broadcast.
+  const ids = Array.isArray(req.body?.userIds)
+    ? [...new Set(req.body.userIds.map((v) => parseInt(v, 10)).filter((n) => Number.isFinite(n) && n > 0))].slice(0, 500)
+    : null;
+  const targeted = ids !== null;
+  if (targeted && !ids.length) return res.status(400).json({ error: "No recipients selected." });
+
+  const rows = targeted
+    ? await sq("SELECT id, name, fcm_token FROM users WHERE id = ANY($1) ORDER BY id", [ids])
+    : await sq(
+        "SELECT id, name, fcm_token FROM users WHERE fcm_token IS NOT NULL AND fcm_token <> '' LIMIT 500"
+      );
+
   // One send per physical device: two accounts on one phone share a token,
   // and a pruned-stale token must not be retried for the second row.
   const seen = new Set();
   let sent = 0, stale = 0, failed = 0;
+  const results = [];
   for (const r of rows) {
-    if (seen.has(r.fcm_token)) continue;
+    const who = { id: r.id, name: r.name || `#${r.id}` };
+    if (!r.fcm_token) {
+      results.push({ ...who, outcome: "no_device" });
+      continue;
+    }
+    if (seen.has(r.fcm_token)) {
+      results.push({ ...who, outcome: "shared_device" });
+      continue;
+    }
     seen.add(r.fcm_token);
     const out = await push.send(r.fcm_token, title, body, { type: "announcement" });
-    if (out.ok) sent++;
-    else if (out.stale) stale++;
+    if (out.ok) { sent++; results.push({ ...who, outcome: "sent" }); }
+    else if (out.stale) { stale++; results.push({ ...who, outcome: "stale" }); }
     else if (out.skipped) {
       return res.status(503).json({ error: "Push is not configured on this server." });
-    } else failed++;
+    } else { failed++; results.push({ ...who, outcome: "failed" }); }
   }
-  res.json({ ok: true, sent, stale, failed, devices: seen.size });
+  res.json({
+    ok: true, sent, stale, failed, devices: seen.size,
+    ...(targeted && { results }),
+  });
 });
 
 /* ------------------------------------------------------------------ */
