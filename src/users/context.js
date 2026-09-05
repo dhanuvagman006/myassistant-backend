@@ -99,7 +99,12 @@ async function updateProfile(userId, fields = {}) {
     const v = String(fields[f] ?? "").trim();
     if (v) {
       sets.push(`${f} = $${i++}`);
-      vals.push(v.slice(0, 120));
+      // fcm_token must NEVER be truncated: real FCM tokens are ~142-163
+      // chars, and slicing them to 120 stored a plausible-looking prefix
+      // that FCM rejects as "not registered" on every send. This one line
+      // is why push notifications never worked for ANY user — the console
+      // campaign path (no DB) delivered fine while every server send died.
+      vals.push(f === "fcm_token" ? v.slice(0, 512) : v.slice(0, 120));
     }
   }
   if (fields.name && String(fields.name).trim()) {
