@@ -84,6 +84,10 @@ async function deleteClient(userId, id) {
   if (!row) return false;
   await run("DELETE FROM client_notes WHERE client_id = $1 AND user_id = $2", [Number(id), userId]);
   await run("UPDATE documents SET client_id = NULL WHERE client_id = $1 AND user_id = $2", [Number(id), userId]);
+  await run(
+    "DELETE FROM document_links WHERE user_id = $1 AND entity_type = 'person' AND entity_id = $2",
+    [userId, Number(id)]
+  );
   await run("DELETE FROM clients WHERE id = $1 AND user_id = $2", [Number(id), userId]);
   return true;
 }
@@ -140,9 +144,17 @@ async function linkDocument(userId, docId, clientId) {
 }
 
 async function listClientDocuments(userId, clientId, limit = 50) {
+  // The voice tool associate_document links via document_links (person =
+  // same clients row), not the legacy client_id column — the case file
+  // must show both, like memory/service.js documentsFor does.
   return query(
-    `SELECT * FROM documents WHERE user_id = $1 AND client_id = $2
-     ORDER BY COALESCE(NULLIF(doc_date,''), '0') DESC, created_at DESC LIMIT $3`,
+    `SELECT DISTINCT d.* FROM documents d
+       LEFT JOIN document_links l
+         ON l.document_id = d.id AND l.user_id = d.user_id
+      WHERE d.user_id = $1
+        AND (d.client_id = $2 OR (l.entity_type = 'person' AND l.entity_id = $2))
+      ORDER BY COALESCE(NULLIF(d.doc_date,''), '0') DESC, d.created_at DESC
+      LIMIT $3`,
     [userId, Number(clientId), Math.min(Number(limit) || 50, 100)]
   );
 }
