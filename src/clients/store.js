@@ -148,11 +148,12 @@ async function listClientDocuments(userId, clientId, limit = 50) {
   // same clients row), not the legacy client_id column — the case file
   // must show both, like memory/service.js documentsFor does.
   return query(
-    `SELECT DISTINCT d.* FROM documents d
-       LEFT JOIN document_links l
-         ON l.document_id = d.id AND l.user_id = d.user_id
+    `SELECT d.* FROM documents d
       WHERE d.user_id = $1
-        AND (d.client_id = $2 OR (l.entity_type = 'person' AND l.entity_id = $2))
+        AND (d.client_id = $2 OR EXISTS (
+              SELECT 1 FROM document_links l
+               WHERE l.document_id = d.id AND l.user_id = d.user_id
+                 AND l.entity_type = 'person' AND l.entity_id = $2))
       ORDER BY COALESCE(NULLIF(d.doc_date,''), '0') DESC, d.created_at DESC
       LIMIT $3`,
     [userId, Number(clientId), Math.min(Number(limit) || 50, 100)]
