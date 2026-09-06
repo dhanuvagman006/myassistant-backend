@@ -370,6 +370,16 @@ require("./db")
       console.error("  proactive scheduler failed to start:", e.message);
     }
 
+    // The durable job queue: document indexing and user-scheduled tasks
+    // ("order biryani at 11"). Handlers first, then the poller — a queue
+    // with no worker is silently write-only.
+    try {
+      require("./infra/handlers").install();
+      require("./infra/jobs").start();
+    } catch (e) {
+      console.error("  job worker failed to start:", e.message);
+    }
+
     const server = app.listen(port, () => {
       console.log(`MYASSISTANT backend on :${port} (postgres ready)`);
       // A key defined TWICE in .env silently keeps the LAST value, which is

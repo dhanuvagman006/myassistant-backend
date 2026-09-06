@@ -653,6 +653,124 @@ function registerBuiltins() {
     },
   });
 
+  // ---------------- SCHEDULED TASKS (do X at time Y) ----------------
+  const jobsQ = require("../infra/jobs");
+
+  registry.register({
+    name: "schedule_task",
+    description:
+      "Schedule ANY task to run automatically at a later time — 'order " +
+      "biryani from Swiggy at 11', 'call Allen at 11 pm and tell him to " +
+      "bring my laptop', 'send a message to Manish tomorrow morning'. " +
+      "When the user wants something DONE later (not just a reminder), " +
+      "use this instead of doing it now or refusing. Pass the task " +
+      "self-contained with every detail needed to execute it with no one " +
+      "present. For 'remind me' use create_reminder instead.",
+    risk: "medium",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task: {
+          type: "string",
+          description:
+            "The full task, self-contained, e.g. 'Order one chicken biryani from Swiggy from my usual restaurant'",
+        },
+        when: {
+          type: "string",
+          description: "When to run it — ISO-8601 datetime in the user's local time",
+        },
+      },
+      required: ["task", "when"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const at = parseUserTime(args.when, ctx.tzOffsetMin);
+      if (!at) return { ok: false, error: "could not understand the time — ask which exact time" };
+      const delayMs = at - Date.now();
+      if (delayMs < 15_000) {
+        return { ok: false, error: "that time is in the past or seconds away — just do the task now instead" };
+      }
+      if (delayMs > 60 * 24 * 3600_000) {
+        return { ok: false, error: "that is more than 60 days away — too far to schedule" };
+      }
+      const { one } = require("../db");
+      const pending = await one(
+        `SELECT COUNT(*)::int AS n FROM jobs
+          WHERE user_id=$1 AND kind='scheduled_task' AND status='pending'`,
+        [ctx.userId]
+      );
+      if (pending.n >= 25) {
+        return { ok: false, error: "25 tasks already scheduled — cancel one first" };
+      }
+      const id = await jobsQ.enqueue(
+        "scheduled_task",
+        { task: String(args.task).slice(0, 800), tzOffsetMin: ctx.tzOffsetMin },
+        { userId: ctx.userId, delayMs }
+      );
+      return {
+        ok: true,
+        data: { id, runAt: new Date(at).toISOString() },
+        speak: "Scheduled — I'll do it then and send you the outcome.",
+      };
+    },
+  });
+
+  registry.register({
+    name: "list_scheduled_tasks",
+    description:
+      "List the user's scheduled tasks — upcoming ones and recent " +
+      "outcomes. Use for 'what have I scheduled', 'did my 11 pm order go " +
+      "through'.",
+    risk: "low",
+    inputSchema: { type: "object", properties: {} },
+    async execute(_args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const { query } = require("../db");
+      const rows = await query(
+        `SELECT id, payload, status, run_after, last_error FROM jobs
+          WHERE user_id=$1 AND kind='scheduled_task'
+          ORDER BY run_after DESC LIMIT 20`,
+        [ctx.userId]
+      );
+      if (!rows.length) return { ok: true, data: [], speak: "Nothing scheduled." };
+      return {
+        ok: true,
+        data: rows.map((r) => ({
+          id: Number(r.id),
+          task: r.payload?.task || "",
+          status: r.status,
+          runAt: new Date(Number(r.run_after)).toISOString(),
+          outcome: r.last_error || null,
+        })),
+      };
+    },
+  });
+
+  registry.register({
+    name: "cancel_scheduled_task",
+    description:
+      "Cancel a scheduled task before it runs — 'cancel the biryani " +
+      "order', 'don't call Allen tonight'. List first if the id is unknown.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "integer", description: "Task id from list_scheduled_tasks" } },
+      required: ["id"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const { run } = require("../db");
+      const n = await run(
+        `UPDATE jobs SET status='cancelled', updated_at=$3
+          WHERE id=$1 AND user_id=$2 AND kind='scheduled_task' AND status='pending'`,
+        [Number(args.id), ctx.userId, Date.now()]
+      );
+      return n > 0
+        ? { ok: true, speak: "Cancelled." }
+        : { ok: false, error: "no pending scheduled task with that id" };
+    },
+  });
+
   registry.register({
     name: "list_reminders",
     description: "List the user's upcoming reminders and tasks.",
