@@ -26,6 +26,20 @@ const MAX_CHUNK_CHARS = 1200;
 const CHUNK_OVERLAP = 150;
 const MAX_CHUNKS_PER_DOC = 80; // a 100-page scan must not blow up the DB
 
+// Words that mean "the documents themselves" rather than what's in them.
+// A query made ONLY of these (plus filler) is a listing request.
+const GENERIC_DOC_WORDS = new Set([
+  "evidence", "evidences", "proof", "proofs", "document", "documents",
+  "doc", "docs", "file", "files", "record", "records", "photo", "photos",
+  "image", "images", "picture", "pictures", "pic", "pics", "scan",
+  "scans", "paper", "papers", "everything", "stuff", "attachment",
+  "attachments", "upload", "uploads",
+  // filler that rides along in spoken queries
+  "all", "any", "every", "the", "a", "an", "his", "her", "their", "my",
+  "show", "me", "see", "list", "give", "get", "of", "for", "and", "related",
+  "linked", "saved", "stored", "about", "to", "on", "with",
+]);
+
 async function migrate(exec) {
   await exec(`
     CREATE TABLE IF NOT EXISTS document_chunks (
@@ -144,6 +158,23 @@ async function findDocuments(userId, q, { person = null, limit = 5 } = {}) {
         [uid]
       );
   if (!docs.length) return { scope: scopeLabel, found: false, documents: [] };
+
+  // A GENERIC ask scoped to a person — "show me all the evidence related
+  // to Chetan", "Ravi's documents" — is a listing, not a search: every
+  // query word is a synonym for "documents", so ranking against document
+  // text finds nothing ("evidence" appears in no scan) and the assistant
+  // wrongly reported an empty file. Return the person's whole set.
+  if (scoped) {
+    const words = text.toLowerCase().split(/\s+/).filter(Boolean);
+    if (words.every((w) => GENERIC_DOC_WORDS.has(w))) {
+      const all = docs
+        .slice()
+        .sort((a, b) => Number(b.created_at) - Number(a.created_at))
+        .slice(0, 50)
+        .map((d) => require("./store").toClient(d));
+      return { scope: scopeLabel, found: true, all: true, documents: all };
+    }
+  }
 
   // 3. Rank: semantic over chunks when embeddings exist, lexical otherwise.
   const qvec = await embeddings.embedOne(text);

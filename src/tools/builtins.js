@@ -442,10 +442,19 @@ function registerBuiltins() {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
       const found = await mem.findPerson(ctx.userId, args.name);
       if (!found) return { ok: false, error: `no person named ${args.name}` };
-      const list = await mem.documentsFor(ctx.userId, "person", found.id);
-      const profile = await mem.recallAbout(ctx.userId, args.name);
-      const all = profile ? profile.documents : list;
-      if (!all.length) return { ok: false, error: `no documents stored for ${args.name}` };
+      // recallAbout gathers the full set (person + their cases) but only
+      // compact rows; re-fetch those ids so the app gets the real document
+      // shape (mime, filename, dates) its cards and gallery render from.
+      const profile = await mem.recallAbout(ctx.userId, found.name);
+      const ids = (profile ? profile.documents : []).map((d) => d.id);
+      if (!ids.length) return { ok: false, error: `no documents stored for ${found.name}` };
+      const { query } = require("../db");
+      const rows = await query(
+        `SELECT * FROM documents WHERE user_id=$1 AND id = ANY($2::bigint[])
+          ORDER BY created_at DESC LIMIT 50`,
+        [ctx.userId, ids]
+      );
+      const all = rows.map(docs.toClient);
       return { ok: true, data: all, deviceAction: { type: "documents", documents: all } };
     },
   });
@@ -515,6 +524,22 @@ function registerBuiltins() {
       const intel = require("../docs/intelligence");
       const r = await intel.findDocuments(ctx.userId, args.query, { person: args.person });
       if (!r.found) {
+        // A person who HAS documents, just none matching this query: say
+        // so and point at the listing tool, instead of a bare "nothing"
+        // that reads as an empty file.
+        if (args.person) {
+          const p = await mem.findPerson(ctx.userId, args.person);
+          const prof = p && (await mem.recallAbout(ctx.userId, p.name));
+          const n = prof ? prof.documents.length : 0;
+          if (n > 0) {
+            return {
+              ok: false,
+              error:
+                `nothing matching "${args.query}" among ${p.name}'s ${n} saved ` +
+                `document(s) — call list_person_documents to show them all`,
+            };
+          }
+        }
         return {
           ok: false,
           error: r.scope
