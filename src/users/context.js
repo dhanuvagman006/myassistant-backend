@@ -38,6 +38,9 @@ async function migrate(exec) {
     -- which the uniqueness index in db.js could not tell apart from a real
     -- collision.
     ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number      TEXT;
+    -- Morning-brief push preferences: NULL hour = deployment default.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS brief_hour        INTEGER;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS brief_push        INTEGER NOT NULL DEFAULT 1;
 
     CREATE TABLE IF NOT EXISTS assistant_profiles (
       user_id    INTEGER PRIMARY KEY,

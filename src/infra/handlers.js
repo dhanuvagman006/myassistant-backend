@@ -36,11 +36,16 @@ async function scheduledTask(payload, job) {
   const tz = Number.isFinite(payload?.tzOffsetMin) ? payload.tzOffsetMin : 330;
 
   // Fired long after its time (server was down at the scheduled moment):
-  // executing a food order hours late is worse than skipping it.
+  // executing a food order hours late is worse than skipping it. A
+  // recurring task skips THIS occurrence but keeps its future ones.
   if (Date.now() - Number(job.run_after) > STALE_AFTER_MS) {
     await notify(userId, "Missed scheduled task",
         `I couldn't run "${short(task)}" at its scheduled time (the server ` +
-        `was unreachable). Ask me again if you still want it.`);
+        `was unreachable). ` +
+        (payload?.repeat
+          ? "The next scheduled run is unaffected."
+          : "Ask me again if you still want it."));
+    await reenqueueIfRecurring(job);
     return;
   }
 
@@ -74,6 +79,48 @@ async function scheduledTask(payload, job) {
   await run(`UPDATE jobs SET last_error=$2, updated_at=$3 WHERE id=$1`, [
     job.id, (failed ? "FAILED: " : "OK: ") + outcome.slice(0, 280), Date.now(),
   ]);
+  // A failed occurrence does not end the series — tomorrow gets its chance.
+  await reenqueueIfRecurring(job);
+}
+
+/**
+ * Recurring tasks live as a CHAIN of one-shot rows: each completed (or
+ * skipped-stale) occurrence enqueues the next, so exactly one pending row
+ * exists per series and cancel_scheduled_task ends the whole thing.
+ */
+async function reenqueueIfRecurring(job) {
+  const p = job.payload || {};
+  if (!["daily", "weekly", "monthly"].includes(p.repeat)) return;
+  try {
+    let next = nextOccurrence(Number(job.run_after), p.repeat, p);
+    // Catch up past a long outage without queueing a backlog of stale runs.
+    while (next <= Date.now()) next = nextOccurrence(next, p.repeat, p);
+    await jobs.enqueue("scheduled_task", p, {
+      userId: job.user_id,
+      delayMs: next - Date.now(),
+    });
+  } catch (e) {
+    console.error("recurring re-enqueue failed:", e.message);
+  }
+}
+
+function nextOccurrence(fromMs, repeat, payload) {
+  if (repeat === "daily") return fromMs + 86_400_000;
+  if (repeat === "weekly") return fromMs + 7 * 86_400_000;
+  // monthly: same LOCAL day-of-month and time. The anchor day survives
+  // clamping (scheduled for the 31st → 28 Feb → back to 31 Mar).
+  const tz = Number.isFinite(payload?.tzOffsetMin) ? payload.tzOffsetMin : 330;
+  const local = new Date(fromMs + tz * 60_000);
+  const anchor = Number(payload?.anchorDay) || local.getUTCDate();
+  const m = local.getUTCMonth() + 1;
+  const target = new Date(local);
+  target.setUTCDate(1); // avoid rollover while changing the month
+  target.setUTCMonth(m);
+  const daysInMonth = new Date(
+    Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)
+  ).getUTCDate();
+  target.setUTCDate(Math.min(anchor, daysInMonth));
+  return target.getTime() - tz * 60_000;
 }
 
 function short(task) {

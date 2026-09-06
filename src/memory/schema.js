@@ -58,6 +58,21 @@ async function migrate(exec) {
       role      TEXT    NOT NULL DEFAULT '',
       PRIMARY KEY (case_id, person_id)
     );
+
+    -- Important dates for a person ("Chetan's birthday is 14 September").
+    -- year is NULL when unknown; the proactive sweep nudges the day before.
+    CREATE TABLE IF NOT EXISTS person_dates (
+      id         BIGSERIAL PRIMARY KEY,
+      user_id    INTEGER NOT NULL,
+      person_id  BIGINT  NOT NULL,
+      label      TEXT    NOT NULL DEFAULT 'birthday',
+      month      INTEGER NOT NULL,
+      day        INTEGER NOT NULL,
+      year       INTEGER,
+      created_at BIGINT  NOT NULL,
+      UNIQUE (user_id, person_id, label)
+    );
+    CREATE INDEX IF NOT EXISTS idx_person_dates_md ON person_dates(month, day);
     CREATE INDEX IF NOT EXISTS idx_case_people_user
       ON case_people(user_id, person_id);
 

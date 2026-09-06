@@ -377,7 +377,7 @@ async function recallAbout(userId, name) {
   const person = await findPerson(uid, name);
   if (!person) return null;
 
-  const [cases, docs, evts, notes, mems] = await Promise.all([
+  const [cases, docs, evts, notes, mems, dates] = await Promise.all([
     casesForPerson(uid, person.id),
     documentsFor(uid, "person", person.id),
     eventsFor(uid, "person", person.id),
@@ -390,6 +390,11 @@ async function recallAbout(userId, name) {
       `SELECT fact, kind, confidence, created_at FROM agent_memories
         WHERE user_id=$1 AND valid=1 AND subject_type='person' AND subject_id=$2
         ORDER BY importance DESC, id DESC LIMIT 30`,
+      [uid, person.id]
+    ),
+    query(
+      `SELECT label, month, day, year FROM person_dates
+        WHERE user_id=$1 AND person_id=$2 ORDER BY month, day`,
       [uid, person.id]
     ),
   ]);
@@ -416,6 +421,9 @@ async function recallAbout(userId, name) {
       description: c.description, location: c.location,
     })),
     documents: allDocs.map((d) => ({ id: d.id, title: d.title || d.filename, category: d.category })),
+    dates: dates.map((d) => ({
+      label: d.label, month: d.month, day: d.day, year: d.year || null,
+    })),
     events: [...evts, ...caseEvents].map((e) => ({ title: e.title, when_at: e.when_at, notes: e.notes })),
     notes: notes.map((n) => n.text),
     facts: mems.map((m) => m.fact),

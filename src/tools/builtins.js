@@ -653,6 +653,109 @@ function registerBuiltins() {
     },
   });
 
+  registry.register({
+    name: "remember_person_date",
+    description:
+      "Save an important DATE for a person — birthday, anniversary, due " +
+      "date: 'Chetan's birthday is 14 September', 'mom's anniversary is " +
+      "May 2nd'. The user gets a reminder push the day before, every year.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        person: { type: "string", description: "Person's name" },
+        date: {
+          type: "string",
+          description:
+            "The date as YYYY-MM-DD, or MM-DD when the year is unknown",
+        },
+        label: {
+          type: "string",
+          description: "What the date is: birthday (default), anniversary, …",
+        },
+      },
+      required: ["person", "date"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const m = /^(?:(\d{4})-)?(\d{1,2})-(\d{1,2})$/.exec(
+        String(args.date).trim().replace(/^--/, "")
+      );
+      const month = m ? Number(m[2]) : 0;
+      const day = m ? Number(m[3]) : 0;
+      if (!m || month < 1 || month > 12 || day < 1 || day > 31) {
+        return { ok: false, error: "date must be YYYY-MM-DD or MM-DD" };
+      }
+      const year = m[1] ? Number(m[1]) : null;
+      const label =
+        String(args.label || "birthday").trim().slice(0, 40).toLowerCase() ||
+        "birthday";
+      const p = await mem.upsertPerson(ctx.userId, { name: args.person });
+      const { run } = require("../db");
+      await run(
+        `INSERT INTO person_dates (user_id,person_id,label,month,day,year,created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (user_id,person_id,label)
+         DO UPDATE SET month=$4, day=$5, year=$6`,
+        [ctx.userId, p.id, label, month, day, year, Date.now()]
+      );
+      return {
+        ok: true,
+        data: { person: p.name, label, month, day, year },
+        speak: `Saved — I'll remind you the day before ${p.name}'s ${label}.`,
+      };
+    },
+  });
+
+  registry.register({
+    name: "set_morning_brief",
+    description:
+      "Control the user's morning brief push — 'send my brief at 7', " +
+      "'stop the morning notifications', 'start my daily summary again'. " +
+      "The brief is one push at the start of the day with their agenda, " +
+      "waiting messages and open promises.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        enabled: { type: "boolean", description: "false turns the daily push off" },
+        hour: {
+          type: "integer",
+          description: "Local hour 0-23 to deliver it (e.g. 7 for 7 am)",
+        },
+      },
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const { run, one } = require("../db");
+      if (typeof args.enabled === "boolean") {
+        await run(`UPDATE users SET brief_push=$2 WHERE id=$1`, [
+          ctx.userId, args.enabled ? 1 : 0,
+        ]);
+      }
+      if (Number.isInteger(args.hour) && args.hour >= 0 && args.hour <= 23) {
+        await run(`UPDATE users SET brief_hour=$2 WHERE id=$1`, [
+          ctx.userId, args.hour,
+        ]);
+      }
+      const u = await one(
+        `SELECT brief_push, brief_hour FROM users WHERE id=$1`,
+        [ctx.userId]
+      );
+      const on = u.brief_push !== 0;
+      const hr = Number.isFinite(Number(u.brief_hour)) && u.brief_hour !== null
+        ? Number(u.brief_hour)
+        : 8;
+      return {
+        ok: true,
+        data: { enabled: on, hour: hr },
+        speak: on
+          ? `Morning brief is on, around ${hr === 0 ? 12 : hr % 12 || 12} ${hr < 12 ? "am" : "pm"}.`
+          : "Morning brief is off.",
+      };
+    },
+  });
+
   // ---------------- SCHEDULED TASKS (do X at time Y) ----------------
   const jobsQ = require("../infra/jobs");
 
@@ -679,6 +782,13 @@ function registerBuiltins() {
           type: "string",
           description: "When to run it — ISO-8601 datetime in the user's local time",
         },
+        repeat: {
+          type: "string",
+          enum: ["daily", "weekly", "monthly"],
+          description:
+            "Repeat the task on this cadence starting from `when` — for " +
+            "'every day at 9', 'every Sunday'. Omit for a one-time task.",
+        },
       },
       required: ["task", "when"],
     },
@@ -702,15 +812,30 @@ function registerBuiltins() {
       if (pending.n >= 25) {
         return { ok: false, error: "25 tasks already scheduled — cancel one first" };
       }
-      const id = await jobsQ.enqueue(
-        "scheduled_task",
-        { task: String(args.task).slice(0, 800), tzOffsetMin: ctx.tzOffsetMin },
-        { userId: ctx.userId, delayMs }
-      );
+      const repeat = ["daily", "weekly", "monthly"].includes(args.repeat)
+        ? args.repeat
+        : null;
+      const tz = Number.isFinite(ctx.tzOffsetMin) ? ctx.tzOffsetMin : 330;
+      const payload = {
+        task: String(args.task).slice(0, 800),
+        tzOffsetMin: tz,
+      };
+      if (repeat) {
+        payload.repeat = repeat;
+        // Monthly recurrence keeps the ORIGINAL day-of-month ("the 31st")
+        // even after passing through a short month that clamped it.
+        payload.anchorDay = new Date(at + tz * 60_000).getUTCDate();
+      }
+      const id = await jobsQ.enqueue("scheduled_task", payload, {
+        userId: ctx.userId,
+        delayMs,
+      });
       return {
         ok: true,
-        data: { id, runAt: new Date(at).toISOString() },
-        speak: "Scheduled — I'll do it then and send you the outcome.",
+        data: { id, runAt: new Date(at).toISOString(), repeat },
+        speak: repeat
+          ? `Scheduled ${repeat} — I'll do it each time and send you the outcome.`
+          : "Scheduled — I'll do it then and send you the outcome.",
       };
     },
   });
@@ -740,6 +865,7 @@ function registerBuiltins() {
           task: r.payload?.task || "",
           status: r.status,
           runAt: new Date(Number(r.run_after)).toISOString(),
+          repeat: r.payload?.repeat || null,
           outcome: r.last_error || null,
         })),
       };

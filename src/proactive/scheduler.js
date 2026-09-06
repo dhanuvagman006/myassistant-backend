@@ -276,7 +276,7 @@ async function sweepMorningBriefs() {
   if (process.env.MORNING_BRIEF === "off") return 0;
 
   const users = await query(
-    `SELECT id, name, fcm_token, timezone FROM users
+    `SELECT id, name, fcm_token, timezone, brief_hour, brief_push FROM users
       WHERE fcm_token IS NOT NULL AND fcm_token <> '' LIMIT 500`
   ).catch(() => []);
   if (!users.length) return 0;
@@ -285,9 +285,16 @@ async function sweepMorningBriefs() {
   let sent = 0;
 
   for (const u of users) {
+    if (Number(u.brief_push) === 0) continue; // turned off by voice
     const tz = tzOffsetOf(u);
     const h = localHour(tz);
-    if (h < MORNING_HOUR || h >= MORNING_HOUR + MORNING_WINDOW_H) continue;
+    // The user's chosen hour (set_morning_brief) beats the deployment
+    // default; the delivery window still applies after it.
+    const wantHour =
+      u.brief_hour !== null && Number.isFinite(Number(u.brief_hour))
+        ? Number(u.brief_hour)
+        : MORNING_HOUR;
+    if (h < wantHour || h >= wantHour + MORNING_WINDOW_H) continue;
     if (inQuietHours(tz)) continue;
 
     const k = `morning:${u.id}:${localDateKey(tz)}`;
@@ -324,6 +331,62 @@ async function sweepMorningBriefs() {
   return sent;
 }
 
+/* ------------------------------------------------------------------ *
+ * SWEEP 5 — IMPORTANT DATES (birthdays, anniversaries)
+ * ------------------------------------------------------------------ */
+// The day BEFORE a saved person date, one push: "Tomorrow is Chetan's
+// birthday". Day-before is the useful nudge — time enough to buy, book,
+// or schedule a call. Once per date per year (kv), daytime only.
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+async function sweepPersonDates() {
+  const users = await query(
+    `SELECT id, fcm_token, timezone FROM users
+      WHERE fcm_token IS NOT NULL AND fcm_token <> '' LIMIT 500`
+  ).catch(() => []);
+  let sent = 0;
+
+  for (const u of users) {
+    const tz = tzOffsetOf(u);
+    const h = localHour(tz);
+    if (h < 8 || h >= 21 || inQuietHours(tz)) continue;
+
+    const tomorrow = new Date(Date.now() + tz * 60_000 + 86_400_000);
+    const rows = await query(
+      `SELECT pd.id, pd.label, pd.month, pd.day, pd.year, c.name
+         FROM person_dates pd JOIN clients c ON c.id = pd.person_id
+        WHERE pd.user_id=$1 AND pd.month=$2 AND pd.day=$3`,
+      [u.id, tomorrow.getUTCMonth() + 1, tomorrow.getUTCDate()]
+    ).catch(() => []);
+
+    for (const d of rows) {
+      const k = `pdate:${u.id}:${d.id}:${tomorrow.getUTCFullYear()}`;
+      const seen = await one(`SELECT v FROM kv WHERE k=$1`, [k]).catch(() => null);
+      if (seen) continue;
+      await run(
+        `INSERT INTO kv (k, v) VALUES ($1,$2) ON CONFLICT (k) DO NOTHING`,
+        [k, String(Date.now())]
+      ).catch(() => {});
+      const when = `${d.day} ${MONTHS[d.month - 1]}`;
+      // Turning years into ages invites off-by-one embarrassment when the
+      // stored year was a guess — state the date, not the number.
+      try {
+        const ok = await push.sendNotification(
+          u.fcm_token,
+          `🎂 Tomorrow: ${d.name}'s ${d.label}`,
+          `${d.name}'s ${d.label} is tomorrow (${when}). Want me to ` +
+            `schedule a call or a message?`,
+          { type: "person_date" }
+        );
+        if (ok) sent++;
+      } catch (_) {}
+    }
+  }
+  return sent;
+}
+
 /* ------------------------------------------------------------------ */
 
 /** SWEEP 3 — fare watches. Re-prices routes the user is waiting on. */
@@ -342,6 +405,7 @@ async function sweep() {
     sweepMeetings(),
     sweepFares(),
     sweepMorningBriefs(),
+    sweepPersonDates(),
   ]);
   const [nudges, briefs, fares, mornings] = results.map((r) =>
     r.status === "fulfilled" ? r.value : 0
@@ -373,6 +437,7 @@ function stop() {
 module.exports = {
   start, stop, sweep,
   sweepCommitments, sweepMeetings, sweepFares, sweepMorningBriefs,
+  sweepPersonDates,
   buildBrief, morningBody,
   inQuietHours, localHour,
 };

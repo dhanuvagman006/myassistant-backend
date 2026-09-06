@@ -58,6 +58,8 @@ const USER_TABLES = [
   ["events", "user_id"],
   ["cases", "user_id"],
   ["case_people", "user_id"],
+  ["person_dates", "user_id"], // birthdays/anniversaries per person
+  ["jobs", "user_id"], // queued and recurring scheduled tasks
   ["agent_messages", "from_user_id"], // messages they sent to other agents
   ["mcp_servers", "user_id"],
   ["assistant_profiles", "user_id"], // assistant name/voice/face choices
