@@ -831,6 +831,46 @@ function registerBuiltins() {
   });
 
   registry.register({
+    name: "translator_mode",
+    description:
+      "Turn LIVE TRANSLATOR (interpreter) mode ON or OFF. Use when the " +
+      "user asks to translate a conversation with someone present — 'be my " +
+      "translator', 'translate between Kannada and English', 'help me talk " +
+      "to him in Hindi' — and OFF for 'stop translating'. While ON, the " +
+      "device listens to EVERYONE nearby (not only the owner's voice) and " +
+      "each utterance heard is spoken back in the other language. Always " +
+      "pass both languages when turning it on; infer them from the request " +
+      "and the user's own language.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        on: { type: "boolean", description: "true = start translating, false = stop" },
+        language_a: { type: "string", description: "The user's language, e.g. 'Kannada'" },
+        language_b: { type: "string", description: "The other person's language, e.g. 'English'" },
+      },
+      required: ["on"],
+    },
+    async execute(args) {
+      const on = Boolean(args.on);
+      const a = String(args.language_a || "").trim();
+      const b = String(args.language_b || "").trim();
+      if (on && (!a || !b)) {
+        return { ok: false, error: "need both languages — ask the user which two languages to translate between" };
+      }
+      return {
+        ok: true,
+        data: { on, language_a: a, language_b: b },
+        deviceAction: { type: "translator", on, from: a, to: b },
+        speak: on
+          ? `Translator on — I'll interpret between ${a} and ${b}. Everyone near the phone can talk now.`
+          : "Translator off — back to just you and me.",
+      };
+    },
+  });
+
+  registry.register({
     name: "capture_document",
     description:
       "Ask the user to capture a document, photo, or select an image/PDF from their gallery, " +
