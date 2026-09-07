@@ -83,13 +83,25 @@ function nowLine(tzOffsetMin = 330) {
   );
 }
 
-function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], personalContext = "", tzOffsetMin = 330) {
+function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], personalContext = "", tzOffsetMin = 330, preferredLanguage = "") {
+  // The user's chosen language (asked at registration) pins EVERY reply,
+  // greeting included; without one, Indian English with speak-what-they-
+  // speak switching.
+  const languageRule = preferredLanguage
+    ? `The user's preferred language is ${preferredLanguage}. Speak ` +
+      `${preferredLanguage} in EVERY reply — the greeting included — even ` +
+      `if they mix in English words, until they EXPLICITLY ask you to ` +
+      `switch languages. If they do ask, switch immediately and call ` +
+      `update_my_profile to save the new preferred language. `
+    : "Speak ENGLISH by default (Indian English). Only switch language " +
+      "if the user clearly and deliberately speaks another one to you, " +
+      "and then stay in it — never drift between languages " +
+      "mid-conversation. ";
   let prompt = `You are ${assistantName}, a warm, quick-witted personal voice assistant from India. ` +
     nowLine(tzOffsetMin) + " " +
-    "You are SPEAKING with the user in real time. Speak ENGLISH by default " +
-    "(Indian English). Only switch language if the user clearly and " +
-    "deliberately speaks another one to you, and then stay in it — never " +
-    "drift between languages mid-conversation. Keep replies short and " +
+    "You are SPEAKING with the user in real time. " +
+    languageRule +
+    "Keep replies short and " +
     "conversational, one thought at a time, like a friend on a phone call. " +
     "If you did not clearly hear something, ask them to repeat it rather " +
     "than guessing — answering the wrong question is worse than asking. " +
@@ -200,6 +212,19 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
   // WHO the user is + WHAT is remembered about them — same personal layer
   // the classic path gets. Without this, live mode (the MAIN screen) was
   // the one place Hari didn't know her own user.
+  prompt +=
+    "\n\nJUDGMENT — act like sharp personal staff, not a form: read the " +
+    "situation (time of day, what they're mid-way through, what was said " +
+    "earlier this conversation) and use the profile, rules and memories " +
+    "below BEFORE asking anything. When a request implies steps, chain " +
+    "your tools and finish the job — don't narrate each step or ask " +
+    "permission for the obvious next one; ask at most ONE question and " +
+    "only when truly blocked. Fill small gaps with the sensible default " +
+    "and say what you assumed so one word can correct it. Double-check " +
+    "only what is hard to undo: payments, messages and calls to other " +
+    "people, cancellations. Notice implications and act on them — a 6 am " +
+    "flight deserves an offer to set the alarm.";
+
   if (personalContext) prompt += "\n\n" + personalContext;
   return prompt;
 }
@@ -261,6 +286,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   // First name only, matching the classic assistant path.
   let userName = null;
   let personalContext = "";
+  let preferredLanguage = "";
   let liveVoice = null; // per-user override of the LIVE_VOICE() default
   // Loaded CONCURRENTLY with the Google WS handshake below. This used to
   // run to completion first, which put three DB round trips (profile,
@@ -275,6 +301,9 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       const p = await require("../users/context").getProfile(uid);
       if (p?.assistant?.name) assistantName = p.assistant.name;
       if (p?.user?.name) userName = String(p.user.name).split(" ")[0];
+      if (p?.user?.preferred_language) {
+        preferredLanguage = String(p.user.preferred_language).slice(0, 40);
+      }
       // Voice: the user's explicit Settings choice wins; otherwise the
       // voice matched to their chosen avatar face (Mark must not speak
       // with Kore's female voice); otherwise the deployment default.
@@ -448,7 +477,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
               silenceDurationMs: Number(process.env.LIVE_SILENCE_MS || 500),
             },
           },
-          systemInstruction: { parts: [{ text: liveSystemPrompt(assistantName, unreadMessages, personalContext, deviceCtx.tz) }] },
+          systemInstruction: { parts: [{ text: liveSystemPrompt(assistantName, unreadMessages, personalContext, deviceCtx.tz, preferredLanguage) }] },
           // GOOGLE SEARCH — only on models that accept it.
           //
           // The gemini-3.x live models close the session outright (WS 1011,
