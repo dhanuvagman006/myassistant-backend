@@ -436,7 +436,16 @@ function registerBuiltins() {
     risk: "low",
     inputSchema: {
       type: "object",
-      properties: { name: { type: "string", description: "Person's name" } },
+      properties: {
+        name: { type: "string", description: "Person's name" },
+        show: {
+          type: "boolean",
+          description:
+            "Default true: the documents POP UP full-screen. Pass false " +
+            "when only locating them as a step toward another action — " +
+            "nothing should open unless the user asked to SEE them.",
+        },
+      },
       required: ["name"],
     },
     async execute(args, ctx) {
@@ -456,7 +465,11 @@ function registerBuiltins() {
         [ctx.userId, ids]
       );
       const all = rows.map(docs.toClient);
-      return { ok: true, data: all, deviceAction: { type: "documents", documents: all } };
+      const out = { ok: true, data: all };
+      if (args.show !== false) {
+        out.deviceAction = { type: "documents", documents: all };
+      }
+      return out;
     },
   });
 
@@ -521,6 +534,14 @@ function registerBuiltins() {
       properties: {
         query: { type: "string", description: "What the document is, e.g. 'court notice'" },
         person: { type: "string", description: "Whose document, if the user named someone" },
+        show: {
+          type: "boolean",
+          description:
+            "Default true: the matches POP UP full-screen on the user's " +
+            "phone. Pass false when you are only locating a document as a " +
+            "step toward something else (sending it, answering a question " +
+            "about it) — nothing should open unless the user asked to SEE it.",
+        },
       },
       required: ["query"],
     },
@@ -552,7 +573,11 @@ function registerBuiltins() {
             : "no matching documents",
         };
       }
-      return { ok: true, data: r.documents, deviceAction: { type: "documents", documents: r.documents } };
+      const out = { ok: true, data: r.documents };
+      if (args.show !== false) {
+        out.deviceAction = { type: "documents", documents: r.documents };
+      }
+      return out;
     },
   });
 
@@ -2235,17 +2260,25 @@ function registerBuiltins() {
     name: "send_document",
     description:
       "Send one of the USER'S OWN saved documents to another person who " +
-      "uses this app — 'send my driving license to Allen'. The document is " +
-      "copied into the recipient's documents and their assistant tells " +
-      "them it arrived. Works only for registered app users; for anyone " +
-      "else, tell the user to open the document and use its Send button " +
-      "(WhatsApp, email…).",
+      "uses this app — 'send my driving license to Allen', 'send Chetan's " +
+      "receipt to Allen'. Call this DIRECTLY — never find_document or " +
+      "list_person_documents first, which would pop the file on screen " +
+      "mid-send; when the document belongs to a person's case file, pass " +
+      "`person`. The document is copied into the recipient's documents and " +
+      "their assistant tells them it arrived. Works only for registered " +
+      "app users; for anyone else, tell the user to open the document and " +
+      "use its Send button (WhatsApp, email…).",
     risk: "medium",
     inputSchema: {
       type: "object",
       properties: {
         contact_name: { type: "string", description: "Who should receive it" },
-        document: { type: "string", description: "Which document, e.g. 'driving license'" },
+        document: { type: "string", description: "Which document, e.g. 'driving license', 'receipt'" },
+        person: {
+          type: "string",
+          description:
+            "Whose case file the document is in, when the user said one — 'send CHETAN'S receipt'",
+        },
         note: { type: "string", description: "Optional short message to send along" },
       },
       required: ["contact_name", "document"],
@@ -2255,28 +2288,52 @@ function registerBuiltins() {
       const { one, query } = require("../db");
       const fs = require("fs");
 
-      // 1. Which document? Search the sender's own library. Only an EXACT
-      // text match may be sent — the fallback "recent saves" list is fine
-      // for showing, but silently mailing a guessed document to another
+      // 1. Which document? A person scope ("CHETAN'S receipt") resolves
+      // through their case file; otherwise full-library text search. Only
+      // a confident match may be sent — the recency fallback is fine for
+      // showing, but silently mailing a guessed document to another
       // person is not.
-      const found = await docs.searchDocuments(ctx.userId, args.document);
-      const hit = found && found.exact && found.hits && found.hits[0];
-      if (!hit) {
-        const recent = ((found && found.hits) || [])
-          .map((x) => x.title || x.filename)
-          .filter(Boolean)
-          .slice(0, 3)
-          .join("; ");
-        return {
-          ok: false,
-          error:
-            `no saved document clearly matching "${args.document}"` +
-            (recent ? ` — recent saves: ${recent}. Ask which one to send.` : ""),
-        };
+      let docId = null;
+      if (args.person) {
+        const intel = require("../docs/intelligence");
+        const r = await intel.findDocuments(ctx.userId, args.document, {
+          person: args.person,
+        });
+        if (r.found && r.documents.length === 1) {
+          docId = r.documents[0].id;
+        } else if (r.found && r.documents.length > 1) {
+          const titles = r.documents.map((x) => x.title).slice(0, 4).join("; ");
+          return {
+            ok: false,
+            error: `${args.person} has several matches — ${titles}. Ask which one to send.`,
+          };
+        } else {
+          return {
+            ok: false,
+            error: `no document matching "${args.document}" in ${args.person}'s file`,
+          };
+        }
+      } else {
+        const found = await docs.searchDocuments(ctx.userId, args.document);
+        const hit = found && found.exact && found.hits && found.hits[0];
+        if (!hit) {
+          const recent = ((found && found.hits) || [])
+            .map((x) => x.title || x.filename)
+            .filter(Boolean)
+            .slice(0, 3)
+            .join("; ");
+          return {
+            ok: false,
+            error:
+              `no saved document clearly matching "${args.document}"` +
+              (recent ? ` — recent saves: ${recent}. Ask which one to send.` : ""),
+          };
+        }
+        docId = hit.id;
       }
       const d = await one(
         `SELECT * FROM documents WHERE user_id=$1 AND id=$2`,
-        [ctx.userId, hit.id]
+        [ctx.userId, docId]
       );
       if (!d || !d.path || !fs.existsSync(d.path)) {
         return { ok: false, error: "that document's file is missing on the server" };
