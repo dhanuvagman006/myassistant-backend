@@ -580,6 +580,13 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           }
         }
 
+        // Tool work is invisible from the handset — a 4-second web search
+        // reads as the app hanging. Mirror the SSE path's activity events
+        // so the screen can show "Searching…" while it runs.
+        try {
+          appWs.send(JSON.stringify({ type: "tool_started", tool: fc.name }));
+        } catch (_) {}
+
         // Same ctx the SSE path builds (assistant/routes.js): without
         // tz/platform/location, weather fell back to nothing, deep links
         // never got their Android intent:// form, and "tomorrow at 8"
@@ -593,6 +600,9 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           platform: deviceCtx.platform,
           tzOffsetMin: deviceCtx.tz,
         });
+        try {
+          appWs.send(JSON.stringify({ type: "tool_completed", tool: fc.name }));
+        } catch (_) {}
 
         // If the tool produced a device action (like open_camera or contact_lookup),
         // we send it down the WebSocket so the app can perform the action.
