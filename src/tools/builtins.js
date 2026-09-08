@@ -871,12 +871,18 @@ function registerBuiltins() {
         userId: ctx.userId,
         delayMs,
       });
+      // A call-task confirmation must promise the RIGHT thing: the user's
+      // own phone dials the contact at that time. "I've scheduled a call
+      // with Allen" sounds like a meeting was arranged — it wasn't.
+      const isCall = /\b(call|dial|ring)\b/i.test(payload.task);
       return {
         ok: true,
         data: { id, runAt: new Date(at).toISOString(), repeat },
-        speak: repeat
-          ? `Scheduled ${repeat} — I'll do it each time and send you the outcome.`
-          : "Scheduled — I'll do it then and send you the outcome.",
+        speak: isCall
+          ? `Done — at that time your phone will place the call itself${repeat ? `, ${repeat}` : ""}.`
+          : repeat
+            ? `Scheduled ${repeat} — I'll do it each time and send you the outcome.`
+            : "Scheduled — I'll do it then and send you the outcome.",
       };
     },
   });
