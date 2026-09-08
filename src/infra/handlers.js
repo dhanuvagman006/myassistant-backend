@@ -185,7 +185,12 @@ async function placeScheduledCall(userId, action) {
     });
     return `I'm calling ${name} now to pass on your message.`;
   } catch (e) {
-    return `The call to ${name} failed: ${String(e.code || e.message || "unknown error")}.`;
+    // Surface the PROVIDER's words when there are any — "Insufficient
+    // balance to make a call" beats a bare code:"failed" in the push.
+    const detail = String(e.detail || e.message || "");
+    const m = /"Message"\s*:\s*"([^"]+)"/.exec(detail);
+    const why = m ? m[1] : String(e.code || detail || "unknown error").slice(0, 120);
+    return `The call to ${name} failed: ${why}`;
   }
 }
 
