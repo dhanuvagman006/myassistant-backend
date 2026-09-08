@@ -474,8 +474,12 @@ function registerBuiltins() {
     },
     async execute(args, ctx) {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
-      const list = await docs.searchDocuments(ctx.userId, args.query);
-      if (!list || !list.length) return { ok: false, error: "no matching documents" };
+      // searchDocuments returns {hits, exact}, not a bare array — the old
+      // .length check on the object made this tool report "no matching
+      // documents" for EVERY query.
+      const r = await docs.searchDocuments(ctx.userId, args.query);
+      const list = (r && r.hits) || [];
+      if (!list.length) return { ok: false, error: "no matching documents" };
       return { ok: true, data: list.map(docs.toClient) };
     },
   });
@@ -2251,13 +2255,23 @@ function registerBuiltins() {
       const { one } = require("../db");
       const fs = require("fs");
 
-      // 1. Which document? Search the sender's own library.
+      // 1. Which document? Search the sender's own library. Only an EXACT
+      // text match may be sent — the fallback "recent saves" list is fine
+      // for showing, but silently mailing a guessed document to another
+      // person is not.
       const found = await docs.searchDocuments(ctx.userId, args.document);
-      const hit = found && found[0];
+      const hit = found && found.exact && found.hits && found.hits[0];
       if (!hit) {
+        const recent = ((found && found.hits) || [])
+          .map((x) => x.title || x.filename)
+          .filter(Boolean)
+          .slice(0, 3)
+          .join("; ");
         return {
           ok: false,
-          error: `no saved document matching "${args.document}" — use find_document or list their documents first`,
+          error:
+            `no saved document clearly matching "${args.document}"` +
+            (recent ? ` — recent saves: ${recent}. Ask which one to send.` : ""),
         };
       }
       const d = await one(
