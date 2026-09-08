@@ -22,7 +22,9 @@ const path = require("path");
 const crypto = require("crypto");
 const router = require("express").Router();
 
-const APK_DIR = path.join(
+// Absolute on purpose: res.sendFile refuses relative paths, and DATA_DIR
+// is "./data" in production — every download 500'd until this resolve.
+const APK_DIR = path.resolve(
   process.env.DATA_DIR || path.join(__dirname, "..", "..", "data"),
   "apk"
 );
