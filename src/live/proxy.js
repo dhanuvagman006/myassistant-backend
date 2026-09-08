@@ -908,7 +908,8 @@ function attachWs(server) {
       socket.destroy();
       return;
     }
-    if (url.pathname !== "/live/ws") return; // not ours
+    if (url.pathname !== "/live/ws") { socket.destroy(); return; } // not ours — and with an
+    // upgrade listener registered, Node no longer closes these for us
     const user = authorize(url);
     if (!user) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");

@@ -189,6 +189,23 @@ async function execute(name, rawArgs, ctx = {}) {
 
   // High-risk actions need explicit approval unless it has already been
   // granted for THIS call (the confirm endpoint replays with approved:true).
+  // A background (scheduled) run carries approved:true because the user
+  // consented when they scheduled it — but that consent covers the TASK,
+  // not open-ended access to every dangerous tool. Money, third-party
+  // business calls and memory deletion stay human-attended, always.
+  const UNATTENDED_BLOCKED = new Set([
+    "collect_payment", "book_by_calling_business", "forget_memory",
+    "arrange_meeting_with",
+  ]);
+  if (ctx.background && UNATTENDED_BLOCKED.has(name)) {
+    return {
+      ok: false,
+      error:
+        "this action cannot run unattended in a scheduled task — tell the " +
+        "user to do it live in a conversation",
+    };
+  }
+
   if (tool.risk === "high" && !ctx.approved) {
     let confirmArgs = args;
 

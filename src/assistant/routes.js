@@ -91,7 +91,10 @@ setInterval(() => {
 
 function getSession(req, res) {
   const s = sessions.get(req.params.sid);
-  if (!s) {
+  // Ownership, not id secrecy: without this, any signed-in user who
+  // learned another's session id could post turns into it or approve
+  // their pending high-risk action.
+  if (!s || (s.userSub && req.user?.sub && String(s.userSub) !== String(req.user.sub))) {
     res.status(404).json({ error: "unknown assistant session" });
     return null;
   }

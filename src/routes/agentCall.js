@@ -110,6 +110,11 @@ router.post("/", async (req, res) => {
 });
 
 router.get("/:id", (req, res) => {
+  const rec = agent.get(String(req.params.id));
+  // Transcripts and outcomes are the caller's own business only.
+  if (!rec || (rec.userId && String(rec.userId) !== String(req.user?.sub))) {
+    return res.status(404).json({ error: "unknown call" });
+  }
   const s = agent.status(String(req.params.id));
   if (!s) return res.status(404).json({ error: "unknown call" });
   res.json(s);

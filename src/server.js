@@ -1,5 +1,31 @@
 require("dotenv").config();
 const express = require("express");
+// Express 4 never routes an ASYNC handler's rejection to the error
+// middleware — the rejection went unhandled and Node killed the whole
+// pod (one malformed /docs/:id/file dropped every live session). Patch
+// the router layer once (the express-async-errors technique) so every
+// async route funnels into the JSON error handler below.
+{
+  const Layer = require("express/lib/router/layer");
+  const copy = Layer.prototype.handle_request;
+  Layer.prototype.handle_request = function (req, res, next) {
+    const fn = this.handle;
+    if (fn.length <= 3) {
+      const out = (() => { try { return fn(req, res, next); } catch (e) { return next(e); } })();
+      if (out && typeof out.catch === "function") out.catch(next);
+      return;
+    }
+    return copy.call(this, req, res, next);
+  };
+}
+// Belt for everything that is not a request (timers, sockets): log loudly,
+// never exit — an assistant mid-conversation must survive a stray bug.
+process.on("unhandledRejection", (e) => {
+  console.error("UNHANDLED REJECTION (kept alive):", e && (e.stack || e.message || e));
+});
+process.on("uncaughtException", (e) => {
+  console.error("UNCAUGHT EXCEPTION (kept alive):", e && (e.stack || e.message || e));
+});
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 

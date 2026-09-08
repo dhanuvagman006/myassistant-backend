@@ -27,13 +27,25 @@ const pool = new Pool({
 
 pool.on("error", (e) => console.error("pg pool error:", e.message));
 
+// pg serialises NaN/Infinity as the literal strings "NaN"/"Infinity",
+// which Postgres rejects with a confusing error far from the real bug
+// (usually Number(<garbage id>)). Fail fast, by name.
+function checkParams(params) {
+  for (const p of params) {
+    if (typeof p === "number" && !Number.isFinite(p)) {
+      throw new Error("non-finite number in SQL params (malformed id?)");
+    }
+  }
+  return params;
+}
+
 /** All rows. */
 async function query(text, params = []) {
-  return (await pool.query(text, params)).rows;
+  return (await pool.query(text, checkParams(params))).rows;
 }
 /** First row or null. */
 async function one(text, params = []) {
-  const r = await pool.query(text, params);
+  const r = await pool.query(text, checkParams(params));
   return r.rows[0] || null;
 }
 /** Row count of an INSERT/UPDATE/DELETE. */

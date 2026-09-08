@@ -128,6 +128,17 @@ async function drain(max = 50) {
 
 function start() {
   if (timer) return;
+  // A rollout mid-job leaves rows stuck in 'running' forever — invisible
+  // to claim(), never retried, never reported. Mark them failed at boot
+  // (single-replica deployment; with replicas this needs a heartbeat).
+  run(
+    `UPDATE jobs SET status='failed',
+            last_error='interrupted by a server restart mid-run',
+            updated_at=$1
+      WHERE status='running'`,
+    [Date.now()]
+  ).then((n) => { if (n) logger.warn("jobs_reaped_stranded", { count: n }); })
+   .catch((e) => logger.error("jobs_reap_failed", { error: e.message }));
   timer = setInterval(async () => {
     if (running) return; // never overlap polls
     running = true;

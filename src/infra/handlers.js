@@ -72,7 +72,7 @@ async function scheduledTask(payload, job) {
       // this it silently swallowed the whole action: place_phone_call
       // returned needsConfirmation, the turn ended with empty text, and
       // the outcome push said "Done." over a call that never happened.
-      { userId, tzOffsetMin: tz, approved: true }
+      { userId, tzOffsetMin: tz, approved: true, background: true }
     );
     if (res?.needsConfirmation) {
       // Defensive: should be impossible with approved:true, but a lied
@@ -118,9 +118,17 @@ async function scheduledTask(payload, job) {
   );
   // Keep the outcome on the job row so "what happened to my 11 pm order?"
   // has an answer (list tool reads it).
-  await run(`UPDATE jobs SET last_error=$2, updated_at=$3 WHERE id=$1`, [
-    job.id, (failed ? "FAILED: " : "OK: ") + outcome.slice(0, 280), Date.now(),
-  ]);
+  // OUTSIDE the failure path on purpose, and swallowed on purpose: if
+  // this bookkeeping write throws, the queue would flip a COMPLETED job
+  // back to pending and re-run it — the double-biryani bug. Losing the
+  // outcome note is the lesser evil; the push above already went out.
+  try {
+    await run(`UPDATE jobs SET last_error=$2, updated_at=$3 WHERE id=$1`, [
+      job.id, (failed ? "FAILED: " : "OK: ") + outcome.slice(0, 280), Date.now(),
+    ]);
+  } catch (e) {
+    console.error("scheduled_task outcome write failed (not retried):", e.message);
+  }
   // A failed occurrence does not end the series — tomorrow gets its chance.
   await reenqueueIfRecurring(job);
 }
