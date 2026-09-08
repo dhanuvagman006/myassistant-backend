@@ -55,16 +55,41 @@ async function scheduledTask(payload, job) {
     const res = await require("../agents/runtime").runAgentTurn(
       `[SCHEDULED TASK] It is now the scheduled time. Execute this task I ` +
         `scheduled earlier, exactly as stated: "${task}". You are running ` +
-        `in the background on the server — I am not in a conversation and ` +
-        `my phone screen is unavailable, so do not use tools that need the ` +
-        `device (camera, translator, opening screens); everything else ` +
-        `(ordering, agent messages, calls, reminders, search) works ` +
-        `normally. I already authorized this when I scheduled it — do NOT ` +
-        `ask for confirmation, just do it. Then state the outcome in one ` +
-        `or two short sentences; they will reach me as a notification.`,
+        `in the background on the server WITHOUT my phone in hand: any ` +
+        `tool that only OPENS something on the device (camera, WhatsApp, ` +
+        `apps, screens, direct dialing) will NOT actually happen — never ` +
+        `claim it did. To make a phone call, use place_phone_call WITH ` +
+        `the message to deliver — the server places that call itself. ` +
+        `Ordering, agent messages, reminders and search work normally. I ` +
+        `already authorized this when I scheduled it — do NOT ask for ` +
+        `confirmation, just do it. Then state the outcome in one or two ` +
+        `short sentences; they will reach me as a notification.`,
       { userId, tzOffsetMin: tz }
     );
     outcome = String(res?.text || "").trim() || "Done.";
+
+    // Device actions have no device here. Calls the server CAN place
+    // itself (the Exotel relay); anything else that reached this point
+    // did NOT happen, whatever the model just said — say so.
+    const HARMLESS = new Set(["documents", "translator", "search_results"]);
+    let neededPhone = false;
+    for (const a of res?.deviceActions || []) {
+      const t = String(a?.type || "");
+      if (t === "resolve_and_call") {
+        const line = await placeScheduledCall(userId, a);
+        outcome = `${outcome} ${line}`.trim();
+        if (!/calling .* now/i.test(line)) failed = true;
+      } else if (!HARMLESS.has(t)) {
+        neededPhone = true;
+      }
+    }
+    if (neededPhone) {
+      failed = true;
+      outcome =
+        `${outcome} — but part of this needed your phone in hand (an app ` +
+        `or screen on the device) and could not actually run in the ` +
+        `background.`.trim();
+    }
   } catch (e) {
     failed = true;
     outcome = `I couldn't complete it: ${String(e.message).slice(0, 160)}`;
@@ -121,6 +146,47 @@ function nextOccurrence(fromMs, repeat, payload) {
   ).getUTCDate();
   target.setUTCDate(Math.min(anchor, daysInMonth));
   return target.getTime() - tz * 60_000;
+}
+
+/**
+ * Places a scheduled call SERVER-SIDE through the agent-call relay: the
+ * assistant dials the contact and speaks the message itself — the only
+ * way a call can happen with no handset in the loop. Returns one plain
+ * sentence for the outcome push.
+ */
+async function placeScheduledCall(userId, action) {
+  const name = String(action?.name || "").trim() || "them";
+  try {
+    const agent = require("../agents/agentCall");
+    if (!agent.enabled()) {
+      return `I couldn't call ${name} — calling isn't configured on this server.`;
+    }
+    if (!action.message) {
+      return (
+        `I couldn't call ${name} in the background without knowing what ` +
+        `to say — schedule it again including the message to deliver.`
+      );
+    }
+    const { resolveContact } = require("../users/resolve");
+    const { match, candidates } = await resolveContact(userId, name);
+    const phone =
+      match?.phone ||
+      (candidates && candidates.length === 1 ? candidates[0].phone : null);
+    if (!phone) {
+      return `I couldn't call ${name} — no single matching number in your contacts.`;
+    }
+    const me = await one(`SELECT name FROM users WHERE id=$1`, [userId]);
+    await agent.start({
+      userId,
+      userName: me?.name || "",
+      toNumber: phone,
+      contactName: name,
+      task: action.message,
+    });
+    return `I'm calling ${name} now to pass on your message.`;
+  } catch (e) {
+    return `The call to ${name} failed: ${String(e.code || e.message || "unknown error")}.`;
+  }
 }
 
 function short(task) {

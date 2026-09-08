@@ -661,7 +661,10 @@ function registerBuiltins() {
   registry.register({
     name: "create_reminder",
     description:
-      "Create a reminder or task for the user, optionally with a due time.",
+      "Create a reminder or task for the user, optionally with a due time. " +
+      "This only NOTIFIES the user at that time — if they want the " +
+      "assistant to actually DO the thing then (place a call, order food, " +
+      "send a message), use schedule_task instead.",
     risk: "medium",
     inputSchema: {
       type: "object",
@@ -798,12 +801,15 @@ function registerBuiltins() {
     name: "schedule_task",
     description:
       "Schedule ANY task to run automatically at a later time — 'order " +
-      "biryani from Swiggy at 11', 'call Allen at 11 pm and tell him to " +
-      "bring my laptop', 'send a message to Manish tomorrow morning'. " +
+      "biryani from Swiggy at 11', 'call Allen at 1:50 and tell him the " +
+      "meeting moved', 'send a message to Manish tomorrow morning'. " +
       "When the user wants something DONE later (not just a reminder), " +
-      "use this instead of doing it now or refusing. Pass the task " +
-      "self-contained with every detail needed to execute it with no one " +
-      "present. For 'remind me' use create_reminder instead.",
+      "use this instead of doing it now or refusing — INCLUDING 'set a " +
+      "reminder to call X at TIME' when they mean the assistant should " +
+      "place the call. A scheduled call needs the message to speak on it; " +
+      "if the user gave none, ask what to say BEFORE scheduling. Pass the " +
+      "task self-contained with every detail needed to execute it with no " +
+      "one present. For notify-me-only reminders use create_reminder.",
     risk: "medium",
     inputSchema: {
       type: "object",
