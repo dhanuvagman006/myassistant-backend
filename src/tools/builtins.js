@@ -1540,13 +1540,16 @@ function registerBuiltins() {
   registry.register({
     name: "open_webpage",
     description:
-      "Open ANY website on the user's phone — 'open the income tax filing " +
-      "site', 'open irctc', 'open github.com'. YOU supply the URL: for a " +
-      "named service use its well-known OFFICIAL domain (income tax India " +
-      "e-filing → https://eportal.incometax.gov.in, IRCTC → " +
-      "https://www.irctc.co.in, DigiLocker → https://www.digilocker.gov.in). " +
-      "Prefer the dedicated tools for YouTube, shopping, food, cabs and " +
-      "movies; this one is for everything else on the web.",
+      "Open a website on the user's phone. Pass `url` ONLY for a service " +
+      "whose OFFICIAL domain you are completely certain of (IndiGo → " +
+      "https://www.goindigo.in, IRCTC → https://www.irctc.co.in, income " +
+      "tax e-filing → https://eportal.incometax.gov.in). For ANYTHING " +
+      "generic or any domain you are not 100% sure of — 'court documents', " +
+      "'course material', a small business, an unfamiliar site — pass " +
+      "`search` instead and the user gets Google results to choose from. " +
+      "A guessed domain that doesn't exist is far worse than a search " +
+      "page: NEVER invent or approximate a URL. Prefer the dedicated " +
+      "tools for YouTube, shopping, food, cabs and movies.",
     risk: "low",
     deviceAction: true,
     inputSchema: {
@@ -1555,7 +1558,12 @@ function registerBuiltins() {
         url: {
           type: "string",
           description:
-            "Full URL of the page to open. https:// is assumed if missing.",
+            "Full URL — ONLY when the official domain is beyond doubt. https:// is assumed if missing.",
+        },
+        search: {
+          type: "string",
+          description:
+            "What to search Google for, when no certain official URL exists — e.g. 'district court documents download Karnataka'.",
         },
         label: {
           type: "string",
@@ -1563,10 +1571,23 @@ function registerBuiltins() {
             "Short human name of the site ('the income tax portal') for the spoken confirmation.",
         },
       },
-      required: ["url"],
     },
     async execute(args) {
+      const searchQ = String(args.search || "").trim();
       let url = String(args.url || "").trim();
+      if (!url && !searchQ) {
+        return { ok: false, error: "give either a certain official url or a search query" };
+      }
+      if (!url) {
+        return {
+          ok: true,
+          deviceAction: {
+            type: "open_url",
+            url: `https://www.google.com/search?q=${encodeURIComponent(searchQ)}`,
+          },
+          speak: `I've put the search results for ${searchQ.slice(0, 60)} on your screen — pick the one you want.`,
+        };
+      }
       if (!/^https?:\/\//i.test(url)) url = "https://" + url;
       let parsed;
       try {
