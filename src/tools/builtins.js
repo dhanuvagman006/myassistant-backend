@@ -2227,6 +2227,143 @@ function registerBuiltins() {
     }
   });
 
+  registry.register({
+    name: "send_document",
+    description:
+      "Send one of the USER'S OWN saved documents to another person who " +
+      "uses this app — 'send my driving license to Allen'. The document is " +
+      "copied into the recipient's documents and their assistant tells " +
+      "them it arrived. Works only for registered app users; for anyone " +
+      "else, tell the user to open the document and use its Send button " +
+      "(WhatsApp, email…).",
+    risk: "medium",
+    inputSchema: {
+      type: "object",
+      properties: {
+        contact_name: { type: "string", description: "Who should receive it" },
+        document: { type: "string", description: "Which document, e.g. 'driving license'" },
+        note: { type: "string", description: "Optional short message to send along" },
+      },
+      required: ["contact_name", "document"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const { one } = require("../db");
+      const fs = require("fs");
+
+      // 1. Which document? Search the sender's own library.
+      const found = await docs.searchDocuments(ctx.userId, args.document);
+      const hit = found && found[0];
+      if (!hit) {
+        return {
+          ok: false,
+          error: `no saved document matching "${args.document}" — use find_document or list their documents first`,
+        };
+      }
+      const d = await one(
+        `SELECT * FROM documents WHERE user_id=$1 AND id=$2`,
+        [ctx.userId, hit.id]
+      );
+      if (!d || !d.path || !fs.existsSync(d.path)) {
+        return { ok: false, error: "that document's file is missing on the server" };
+      }
+      const docName = d.title || d.filename || "document";
+
+      // 2. The recipient must be a REGISTERED user — same resolution rules
+      // as send_agent_message, condensed: address book first, then a
+      // single unambiguous registered-user name match.
+      const contactLower = String(args.contact_name).trim().toLowerCase();
+      const { resolveContact } = require("../users/resolve");
+      const { match, candidates } = await resolveContact(ctx.userId, args.contact_name);
+      let phone = normalizePhone(match?.phone || "");
+      if (!phone && candidates?.length) {
+        const phones = candidates.map((c) => normalizePhone(c.phone)).filter(Boolean);
+        const regd = await query(
+          `SELECT phone_number FROM users
+            WHERE phone_number = ANY($1) AND phone_verified_at IS NOT NULL`,
+          [phones]
+        ).catch(() => []);
+        if (regd.length === 1) phone = regd[0].phone_number;
+      }
+      let appUser = phone
+        ? await one(
+            `SELECT id, name, fcm_token FROM users
+              WHERE phone_number=$1 AND phone_verified_at IS NOT NULL LIMIT 1`,
+            [phone]
+          )
+        : null;
+      if (!appUser) {
+        const users = await query(
+          `SELECT id, name, fcm_token, phone_number FROM users
+            WHERE phone_verified_at IS NOT NULL AND phone_number IS NOT NULL
+              AND (lower(name) = $1 OR lower(name) LIKE $1 || ' %')`,
+          [contactLower]
+        ).catch(() => []);
+        if (users.length === 1) {
+          appUser = users[0];
+          phone = users[0].phone_number;
+        }
+      }
+      if (!appUser) {
+        return {
+          ok: false,
+          error: `${args.contact_name} is not a registered app user`,
+          speak:
+            `${args.contact_name} isn't on the app, so I can't deliver it ` +
+            `directly — open the document and use its Send button to share ` +
+            `it on WhatsApp instead.`,
+        };
+      }
+
+      // 3. COPY into the recipient's library — their own row and file, so
+      // the sender later deleting theirs never breaks the received copy.
+      // Metadata rides along; the copy is instantly searchable, no re-OCR.
+      const buffer = fs.readFileSync(d.path);
+      const copy = await docs.createDocument(appUser.id, {
+        buffer,
+        filename: d.filename,
+        mime: d.mime,
+        note: `sent by ${ctx.userName || "a contact"}`,
+      });
+      await docs.setMetadata(appUser.id, copy.id, {
+        title: d.title,
+        category: d.category,
+        docDate: d.doc_date,
+        summary: d.summary,
+        tags: d.tags,
+        fullText: d.full_text,
+      });
+
+      // 4. Announce through the normal agent-message channel: push nudge
+      // now, spoken delivery when they next talk to their assistant, and
+      // "show the document X sent" works because the copy is THEIRS.
+      const text =
+        (args.note ? `${String(args.note).slice(0, 300)} — ` : "") +
+        `I've sent you a document: "${docName}". Ask your assistant to show it.`;
+      const inserted = await query(
+        `INSERT INTO agent_messages (from_user_id, to_phone_number, message, created_at)
+         VALUES ($1,$2,$3,$4) RETURNING id`,
+        [ctx.userId, phone, text, Date.now()]
+      );
+      require("../avatarmsg/service")
+        .generateForMessage({
+          messageId: inserted[0]?.id,
+          fromUserId: ctx.userId,
+          fromUserName: ctx.userName,
+          toPhone: phone,
+          text,
+          fcmToken: appUser.fcm_token || "",
+        })
+        .catch((e) => console.error("send_document push:", e.message));
+
+      return {
+        ok: true,
+        data: { sent: docName, to: appUser.name },
+        speak: `Sent — ${appUser.name} now has your ${docName} and will be told it arrived.`,
+      };
+    },
+  });
+
   // ---------------- FULFILLMENT: BOOKING BY REAL PHONE CALL ----------------
   //
   // This tool used to be a mock: it slept three seconds and told the user
