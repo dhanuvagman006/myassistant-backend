@@ -56,7 +56,16 @@ async function publish({ tmpPath, versionCode, versionName, changelog }) {
 
   const filename = `hari-${versionCode}.apk`;
   const finalPath = path.join(APK_DIR, filename);
-  fs.renameSync(tmpPath, finalPath);
+  // The temp file usually sits on the container overlay while APK_DIR is
+  // the persistent volume — rename() cannot cross that boundary (EXDEV),
+  // so fall back to copy + unlink.
+  try {
+    fs.renameSync(tmpPath, finalPath);
+  } catch (e) {
+    if (e.code !== "EXDEV") throw e;
+    fs.copyFileSync(tmpPath, finalPath);
+    fs.rmSync(tmpPath, { force: true });
+  }
 
   // Drop the previous build (keep exactly one on disk).
   const prev = readMeta();
