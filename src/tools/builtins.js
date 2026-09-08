@@ -2354,21 +2354,27 @@ function registerBuiltins() {
       const text =
         (args.note ? `${String(args.note).slice(0, 300)} — ` : "") +
         `I've sent you a document: "${docName}". Ask your assistant to show it.`;
-      const inserted = await query(
+      await query(
         `INSERT INTO agent_messages (from_user_id, to_phone_number, message, created_at)
          VALUES ($1,$2,$3,$4) RETURNING id`,
         [ctx.userId, phone, text, Date.now()]
       );
-      require("../avatarmsg/service")
-        .generateForMessage({
-          messageId: inserted[0]?.id,
-          fromUserId: ctx.userId,
-          fromUserName: ctx.userName,
-          toPhone: phone,
-          text,
-          fcmToken: appUser.fcm_token || "",
-        })
-        .catch((e) => console.error("send_document push:", e.message));
+      // A nudge, not the content — same contract as send_agent_message:
+      // the recipient's own assistant speaks it when they open the app.
+      if (appUser.fcm_token) {
+        try {
+          await require("../services/push").sendNotification(
+            appUser.fcm_token,
+            ctx.userName
+              ? `${ctx.userName} sent you a document`
+              : "You received a document",
+            "Open the app and your assistant will show it to you.",
+            { kind: "agent_message" }
+          );
+        } catch (e) {
+          console.error("send_document push:", e.message);
+        }
+      }
 
       return {
         ok: true,
