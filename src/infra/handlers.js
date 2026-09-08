@@ -64,9 +64,23 @@ async function scheduledTask(payload, job) {
         `already authorized this when I scheduled it — do NOT ask for ` +
         `confirmation, just do it. Then state the outcome in one or two ` +
         `short sentences; they will reach me as a notification.`,
-      { userId, tzOffsetMin: tz }
+      // approved: the user consented when they SCHEDULED the task — the
+      // high-risk confirmation gate has nobody to ask here, and without
+      // this it silently swallowed the whole action: place_phone_call
+      // returned needsConfirmation, the turn ended with empty text, and
+      // the outcome push said "Done." over a call that never happened.
+      { userId, tzOffsetMin: tz, approved: true }
     );
-    outcome = String(res?.text || "").trim() || "Done.";
+    if (res?.needsConfirmation) {
+      // Defensive: should be impossible with approved:true, but a lied
+      // "Done." must never come back.
+      failed = true;
+      outcome =
+        `I couldn't do it — "${short(task)}" needed a confirmation I ` +
+        `can't get in the background.`;
+    } else {
+      outcome = String(res?.text || "").trim() || "Done.";
+    }
 
     // Device actions have no device here. Calls the server CAN place
     // itself (the Exotel relay); anything else that reached this point
