@@ -50,7 +50,7 @@ async function one(text, params = []) {
 }
 /** Row count of an INSERT/UPDATE/DELETE. */
 async function run(text, params = []) {
-  return (await pool.query(text, params)).rowCount;
+  return (await pool.query(text, checkParams(params))).rowCount;
 }
 /** Callback receives a client inside BEGIN…COMMIT (ROLLBACK on throw). */
 async function tx(fn) {
