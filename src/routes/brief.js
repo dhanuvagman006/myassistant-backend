@@ -107,6 +107,21 @@ router.get("/calendar", async (req, res) => {
     }
   } catch (_) {}
 
+  // Saved birthdays/anniversaries ("Allen's birthday is 26 May") land on
+  // their day every year — the visible proof the date was saved, which a
+  // push-only nudge never gave.
+  try {
+    const rows = await require("../db").query(
+      `SELECT pd.day, pd.label, c.name
+         FROM person_dates pd JOIN clients c ON c.id = pd.person_id
+        WHERE pd.user_id = $1 AND pd.month = $2`,
+      [uid, m]
+    );
+    for (const r of rows) {
+      add(Number(r.day), "birthday", `🎂 ${r.name}'s ${r.label}`);
+    }
+  } catch (_) {}
+
   // Google Calendar meetings, when the account is linked.
   try {
     const events = await require("../google/api").upcomingEvents(uid, {

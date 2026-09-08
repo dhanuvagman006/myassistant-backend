@@ -412,8 +412,9 @@ function registerBuiltins() {
     name: "lookup_person",
     description:
       "Retrieve everything stored about a person the user has told us about " +
-      "(relationship, organisation, notes, linked documents). Use for " +
-      "'what do you know about Ravi', 'tell me about my client X'.",
+      "(relationship, organisation, notes, linked documents, and saved " +
+      "birthdays/anniversaries under `dates`). Use for 'what do you know " +
+      "about Ravi', 'tell me about my client X', 'when is Allen's birthday'.",
     risk: "low",
     inputSchema: {
       type: "object",
@@ -690,7 +691,12 @@ function registerBuiltins() {
       const label =
         String(args.label || "birthday").trim().slice(0, 40).toLowerCase() ||
         "birthday";
-      const p = await mem.upsertPerson(ctx.userId, { name: args.person });
+      // Speech drifts names ("Allen" arrives as "Alan"): match the person
+      // FUZZILY first, and only create a new card when nobody matches —
+      // otherwise every retry mints a duplicate person with its own date.
+      const p =
+        (await mem.findPerson(ctx.userId, args.person)) ||
+        (await mem.upsertPerson(ctx.userId, { name: args.person }));
       const { run } = require("../db");
       await run(
         `INSERT INTO person_dates (user_id,person_id,label,month,day,year,created_at)
