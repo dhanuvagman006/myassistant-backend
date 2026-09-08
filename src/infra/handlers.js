@@ -57,9 +57,9 @@ async function scheduledTask(payload, job) {
         `scheduled earlier, exactly as stated: "${task}". You are running ` +
         `in the background on the server WITHOUT my phone in hand: any ` +
         `tool that only OPENS something on the device (camera, WhatsApp, ` +
-        `apps, screens, direct dialing) will NOT actually happen — never ` +
-        `claim it did. To make a phone call, use place_phone_call WITH ` +
-        `the message to deliver — the server places that call itself. ` +
+        `apps, screens) will NOT actually happen — never claim it did. ` +
+        `To make a phone call, use place_phone_call — my own phone will ` +
+        `be told to dial it right now. ` +
         `Ordering, agent messages, reminders and search work normally. I ` +
         `already authorized this when I scheduled it — do NOT ask for ` +
         `confirmation, just do it. Then state the outcome in one or two ` +
@@ -76,9 +76,9 @@ async function scheduledTask(payload, job) {
     for (const a of res?.deviceActions || []) {
       const t = String(a?.type || "");
       if (t === "resolve_and_call") {
-        const line = await placeScheduledCall(userId, a);
-        outcome = `${outcome} ${line}`.trim();
-        if (!/calling .* now/i.test(line)) failed = true;
+        const r = await placeScheduledCall(userId, a);
+        outcome = `${outcome} ${r.line}`.trim();
+        if (!r.ok) failed = true;
       } else if (!HARMLESS.has(t)) {
         neededPhone = true;
       }
@@ -149,48 +149,40 @@ function nextOccurrence(fromMs, repeat, payload) {
 }
 
 /**
- * Places a scheduled call SERVER-SIDE through the agent-call relay: the
- * assistant dials the contact and speaks the message itself — the only
- * way a call can happen with no handset in the loop. Returns one plain
- * sentence for the outcome push.
+ * A scheduled call rings out from the USER'S OWN PHONE — Dhanush wants
+ * to watch his handset dial Allen at 2 pm, not have a robot voice call
+ * on his behalf. The server's part is one high-priority push: with the
+ * app in the foreground the phone dials by itself the moment it lands;
+ * otherwise the notification's tap places the call.
  */
 async function placeScheduledCall(userId, action) {
   const name = String(action?.name || "").trim() || "them";
+  const message = String(action?.message || "").slice(0, 200);
   try {
-    const agent = require("../agents/agentCall");
-    if (!agent.enabled()) {
-      return `I couldn't call ${name} — calling isn't configured on this server.`;
+    const u = await one(`SELECT fcm_token FROM users WHERE id=$1`, [userId]);
+    if (!u?.fcm_token) {
+      return {
+        ok: false,
+        line: `I couldn't reach your phone to place the call to ${name} — no device is registered.`,
+      };
     }
-    if (!action.message) {
-      return (
-        `I couldn't call ${name} in the background without knowing what ` +
-        `to say — schedule it again including the message to deliver.`
-      );
-    }
-    const { resolveContact } = require("../users/resolve");
-    const { match, candidates } = await resolveContact(userId, name);
-    const phone =
-      match?.phone ||
-      (candidates && candidates.length === 1 ? candidates[0].phone : null);
-    if (!phone) {
-      return `I couldn't call ${name} — no single matching number in your contacts.`;
-    }
-    const me = await one(`SELECT name FROM users WHERE id=$1`, [userId]);
-    await agent.start({
-      userId,
-      userName: me?.name || "",
-      toNumber: phone,
-      contactName: name,
-      task: action.message,
-    });
-    return `I'm calling ${name} now to pass on your message.`;
+    await require("../services/push").sendNotification(
+      u.fcm_token,
+      `📞 Time to call ${name}`,
+      message
+        ? `To tell them: ${message}`
+        : "Tap if the call doesn't start by itself.",
+      { kind: "scheduled_call", name, message }
+    );
+    return {
+      ok: true,
+      line: `I've asked your phone to dial ${name} — the call should be starting on it now.`,
+    };
   } catch (e) {
-    // Surface the PROVIDER's words when there are any — "Insufficient
-    // balance to make a call" beats a bare code:"failed" in the push.
-    const detail = String(e.detail || e.message || "");
-    const m = /"Message"\s*:\s*"([^"]+)"/.exec(detail);
-    const why = m ? m[1] : String(e.code || detail || "unknown error").slice(0, 120);
-    return `The call to ${name} failed: ${why}`;
+    return {
+      ok: false,
+      line: `I couldn't trigger the call to ${name}: ${String(e.message).slice(0, 120)}`,
+    };
   }
 }
 

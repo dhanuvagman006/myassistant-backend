@@ -804,12 +804,12 @@ function registerBuiltins() {
       "biryani from Swiggy at 11', 'call Allen at 1:50 and tell him the " +
       "meeting moved', 'send a message to Manish tomorrow morning'. " +
       "When the user wants something DONE later (not just a reminder), " +
-      "use this instead of doing it now or refusing — INCLUDING 'set a " +
-      "reminder to call X at TIME' when they mean the assistant should " +
-      "place the call. A scheduled call needs the message to speak on it; " +
-      "if the user gave none, ask what to say BEFORE scheduling. Pass the " +
-      "task self-contained with every detail needed to execute it with no " +
-      "one present. For notify-me-only reminders use create_reminder.",
+      "use this instead of doing it now or refusing — INCLUDING 'call X " +
+      "at TIME' and 'set a reminder to call X at TIME': at that moment " +
+      "the user's own phone dials the contact so they can speak. Pass " +
+      "the task self-contained with every detail needed to execute it " +
+      "with no one present. For notify-me-only reminders use " +
+      "create_reminder.",
     risk: "medium",
     inputSchema: {
       type: "object",
