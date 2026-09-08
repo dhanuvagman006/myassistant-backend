@@ -1,161 +1,187 @@
+/**
+ * CHAT — the WhatsApp-style view over the agent-message rail.
+ *
+ * The same agent_messages rows that the assistant SPEAKS also render as
+ * chat threads here: one thread per counterpart, bubbles both ways,
+ * documents inline. Typing in the chat and telling the assistant to
+ * "message Allen" land in the same place — one rail, two faces.
+ *
+ *   GET  /chat/threads        one row per counterpart, newest first
+ *   GET  /chat/thread/:phone  full history with them; marks incoming READ
+ *                             (read in chat must not be re-spoken later)
+ *   POST /chat/send           {phone, text} → deliver + push nudge
+ */
 const router = require("express").Router();
-const { generateReply, generateReplyStream } = require("../services/ai/router");
-const { buildToolContext } = require("../services/intents");
+const { query, one, run } = require("../db");
+const { normalizePhone } = require("../users/phone");
 
-/** Numeric DB user id for signed-in accounts; null for dev/app-key sessions. */
-function userIdOf(req) {
-  const id = Number(req.user?.sub);
-  return Number.isInteger(id) && id > 0 ? id : null;
+const uidOf = (req) => {
+  const n = Number(req.user?.sub);
+  return Number.isInteger(n) && n > 0 ? n : null;
+};
+
+/** The caller's own verified number — their inbox address. */
+async function myPhone(uid) {
+  const u = await one(`SELECT phone_number FROM users WHERE id=$1`, [uid]);
+  return u?.phone_number || null;
 }
 
-/** A4 — assistant style settings, sent by the app as headers. */
-const TONES = {
-  friendly: "Speak warmly and casually, like a close friend.",
-  professional: "Speak politely and precisely, with a professional tone.",
-  cheerful: "Be upbeat, positive and encouraging.",
-  calm: "Keep a calm, soothing, unhurried tone.",
-};
-const LENGTHS = {
-  short: "Keep every answer to ONE short spoken sentence unless more is essential.",
-  balanced: "", // the base prompt's 1–3 sentence default
-  detailed: "Give fuller answers of 4–6 spoken sentences when the topic benefits from detail.",
-};
-function styleDirective(req) {
-  const t = TONES[String(req.get("X-Style-Tone") || "").toLowerCase()];
-  const l = LENGTHS[String(req.get("X-Style-Length") || "").toLowerCase()];
-  if (!t && !l) return "";
-  return "\n\nUSER STYLE PREFERENCE: " + [t, l].filter(Boolean).join(" ");
-}
+router.get("/threads", async (req, res) => {
+  const uid = uidOf(req);
+  if (!uid) return res.status(401).json({ error: "sign in" });
+  const mine = await myPhone(uid);
 
-router.post("/", async (req, res) => {
-  const { messages } = req.body || {};
-  if (!Array.isArray(messages) || messages.length === 0) {
-    return res.status(400).json({ error: "messages array required" });
-  }
-  // Keep context bounded (cost + latency)
-  const trimmed = messages.slice(-20).map((m) => ({
-    role: m.role === "assistant" ? "assistant" : "user",
-    content: String(m.content || "").slice(0, 8000),
-  }));
+  // Outgoing: rows I sent. Incoming: rows addressed to my number.
+  const [out, inc] = await Promise.all([
+    query(
+      `SELECT m.id, m.to_phone_number AS phone, m.message, m.created_at,
+              m.document_id, m.from_document_id, u.name
+         FROM agent_messages m
+         LEFT JOIN users u ON u.phone_number = m.to_phone_number
+        WHERE m.from_user_id = $1
+        ORDER BY m.id DESC LIMIT 500`,
+      [uid]
+    ),
+    mine
+      ? query(
+          `SELECT m.id, u.phone_number AS phone, m.message, m.created_at,
+                  m.status, m.document_id, m.from_document_id, u.name
+             FROM agent_messages m
+             LEFT JOIN users u ON u.id = m.from_user_id
+            WHERE m.to_phone_number = $1
+            ORDER BY m.id DESC LIMIT 500`,
+          [mine]
+        )
+      : [],
+  ]);
 
-  const userId = userIdOf(req);
-
-  try {
-    // Tools: intents (reminders/weather/news/clock) run first — they may
-    // EXECUTE actions and inject live data the AI must answer from.
-    const toolCtx = await buildToolContext({
-      userId,
-      messages: trimmed,
-      tzOffsetMin: Number(req.get("X-TZ-Offset")) || 330,
-      lat: parseFloat(req.get("X-Geo-Lat")),
-      lng: parseFloat(req.get("X-Geo-Lng")),
-    });
-    // A4 — user-selected style rides on headers; a plain string concat,
-    // so personalization costs zero extra latency.
-    const extraSystem = toolCtx.block + styleDirective(req);
-    const { reply, provider } = await generateReply(trimmed, { extraSystem });
-    res.json({
-      reply: reply || "Sorry, I couldn't answer that.",
-      sources: toolCtx.sources,
-      documents: toolCtx.documents || [],
-      provider,
-    });
-
-  } catch (e) {
-    console.error("All providers failed:", e.message);
-    res.status(502).json({ reply: "The assistant is unavailable right now. Please try again.", sources: [] });
-  }
-});
-
-/**
- * POST /chat/stream — NDJSON streaming chat for the VOICE loop.
- * Lines: {"d":"delta"}… then {"done":true,"sources":[…],"provider":…}.
- * The app speaks each sentence the moment it completes, so the user
- * hears the start of the answer while the rest is still generating.
- * Falls back to non-streaming Gemini if streaming can’t start.
- */
-router.post("/stream", async (req, res) => {
-  const { messages } = req.body || {};
-  if (!Array.isArray(messages) || messages.length === 0) {
-    return res.status(400).json({ error: "messages array required" });
-  }
-  const trimmed = messages.slice(-20).map((m) => ({
-    role: m.role === "assistant" ? "assistant" : "user",
-    content: String(m.content || "").slice(0, 8000),
-  }));
-  const userId = userIdOf(req);
-
-  let sources = [];
-  let documents = [];
-  let full = "";
-  res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("X-Accel-Buffering", "no"); // proxies must not buffer the stream
-  res.flushHeaders?.();
-  const send = (obj) => res.write(JSON.stringify(obj) + "\n");
-
-  try {
-    const ctx = await buildToolContext({
-      userId,
-      messages: trimmed,
-      tzOffsetMin: Number(req.get("X-TZ-Offset")) || 330,
-      lat: parseFloat(req.get("X-Geo-Lat")),
-      lng: parseFloat(req.get("X-Geo-Lng")),
-    });
-    sources = ctx.sources;
-    documents = ctx.documents || [];
-    const extraSystem =
-      ctx.block +
-      styleDirective(req);
-
-    try {
-      for await (const d of generateReplyStream(trimmed, { extraSystem })) {
-        full += d;
-        send({ d });
-      }
-      send({ done: true, sources, documents, provider: "gemini" });
-    } catch (e) {
-      if (full) {
-        // Stream broke mid-answer: end cleanly with what was sent.
-        send({ done: true, sources, documents, provider: "gemini" });
-      } else {
-        // Streaming couldn’t start: non-streaming Gemini, sent as one delta.
-        const { reply, provider } = await generateReply(trimmed, { extraSystem });
-        full = reply || "";
-        send({ d: full });
-        send({ done: true, sources, documents, provider });
-      }
+  const threads = new Map(); // phone -> {phone,name,last,lastAt,unread}
+  const touch = (phone, name, text, at, unreadDelta) => {
+    if (!phone) return;
+    const t = threads.get(phone) || {
+      phone, name: null, last: "", lastAt: 0, unread: 0,
+    };
+    if (name && !t.name) t.name = name;
+    if (Number(at) > t.lastAt) {
+      t.lastAt = Number(at);
+      t.last = text;
     }
-  } catch (e) {
-    console.error("stream chat failed:", e.message);
-    send({ error: "unavailable" });
+    t.unread += unreadDelta;
+    threads.set(phone, t);
+  };
+  for (const m of out) touch(m.phone, m.name, m.message, m.created_at, 0);
+  for (const m of inc) {
+    touch(m.phone, m.name, m.message, m.created_at, m.status === "unread" ? 1 : 0);
   }
-  res.end();
 
+  res.json({
+    threads: [...threads.values()]
+      .sort((a, b) => b.lastAt - a.lastAt)
+      .map((t) => ({
+        phone: t.phone,
+        name: t.name || t.phone,
+        last: String(t.last || "").slice(0, 120),
+        lastAt: t.lastAt,
+        unread: t.unread,
+      })),
+  });
 });
 
-/**
- * POST /chat/greeting — spoken greeting for app open / sign-in.
- */
-router.post("/greeting", async (req, res) => {
-  const name = req.user?.name ? String(req.user.name).split(" ")[0] : null;
-  try {
-    const { reply } = await generateReply(
-      [{ role: "user", content: "(The user just opened the app and signed in. Greet them.)" }],
-      {
-        extraSystem:
-          (name ? `\n\nThe user's name is ${name}.` : "") +
-          "\n\nTASK: The user just opened the app. Greet them warmly by name if you " +
-          "know it, matching the time of day if unknown just be warm. Maximum two short " +
-          "spoken sentences.",
-      }
-    );
-    res.json({ greeting: reply || "Hi! How can I help you today?" });
-  } catch (e) {
-    // Never block the app on a greeting — fall back to a static one.
-    const name = req.user?.name ? `, ${String(req.user.name).split(" ")[0]}` : "";
-    res.json({ greeting: `Hi${name}! How can I help you today?` });
+router.get("/thread/:phone", async (req, res) => {
+  const uid = uidOf(req);
+  if (!uid) return res.status(401).json({ error: "sign in" });
+  const them = normalizePhone(req.params.phone) || req.params.phone;
+  const mine = await myPhone(uid);
+
+  const [out, inc] = await Promise.all([
+    query(
+      `SELECT id, message, created_at, status, auto, document_id, from_document_id
+         FROM agent_messages
+        WHERE from_user_id = $1 AND to_phone_number = $2
+        ORDER BY id ASC LIMIT 500`,
+      [uid, them]
+    ),
+    mine
+      ? query(
+          `SELECT m.id, m.message, m.created_at, m.status, m.auto,
+                  m.document_id, m.from_document_id
+             FROM agent_messages m
+             JOIN users u ON u.id = m.from_user_id
+            WHERE m.to_phone_number = $1 AND u.phone_number = $2
+            ORDER BY m.id ASC LIMIT 500`,
+          [mine, them]
+        )
+      : [],
+  ]);
+
+  // Read in chat = read. The voice path only speaks status='unread', so
+  // without this, everything read on screen gets re-announced out loud.
+  const unreadIds = inc.filter((m) => m.status === "unread").map((m) => m.id);
+  if (unreadIds.length) {
+    await run(
+      `UPDATE agent_messages SET status='read' WHERE id = ANY($1::bigint[])`,
+      [unreadIds]
+    ).catch(() => {});
   }
+
+  const items = [
+    ...out.map((m) => ({
+      id: Number(m.id),
+      mine: true,
+      text: m.message,
+      at: Number(m.created_at),
+      auto: m.auto === 1,
+      // Each side references the copy it OWNS (auth on /docs/:id/file).
+      documentId: m.from_document_id ? Number(m.from_document_id) : null,
+    })),
+    ...inc.map((m) => ({
+      id: Number(m.id),
+      mine: false,
+      text: m.message,
+      at: Number(m.created_at),
+      auto: m.auto === 1,
+      documentId: m.document_id ? Number(m.document_id) : null,
+    })),
+  ].sort((a, b) => a.at - b.at || a.id - b.id);
+
+  res.json({ items });
+});
+
+router.post("/send", async (req, res) => {
+  const uid = uidOf(req);
+  if (!uid) return res.status(401).json({ error: "sign in" });
+  const them = normalizePhone(String(req.body?.phone || ""));
+  const text = String(req.body?.text || "").trim().slice(0, 2000);
+  if (!them || !text) return res.status(400).json({ error: "phone and text required" });
+
+  const recipient = await one(
+    `SELECT id, name, fcm_token FROM users
+      WHERE phone_number = $1 AND phone_verified_at IS NOT NULL LIMIT 1`,
+    [them]
+  );
+  if (!recipient) {
+    return res.status(404).json({ error: "That person isn't on the app yet." });
+  }
+  const row = await one(
+    `INSERT INTO agent_messages (from_user_id, to_phone_number, message, created_at)
+     VALUES ($1,$2,$3,$4) RETURNING id, created_at`,
+    [uid, them, text, Date.now()]
+  );
+  if (recipient.fcm_token) {
+    try {
+      const me = await one(`SELECT name FROM users WHERE id=$1`, [uid]);
+      await require("../services/push").sendNotification(
+        recipient.fcm_token,
+        me?.name ? `${me.name.split(" ")[0]} sent you a message` : "New message",
+        "Open the app to read it.",
+        { kind: "agent_message" }
+      );
+    } catch (_) {}
+  }
+  res.json({
+    ok: true,
+    item: { id: Number(row.id), mine: true, text, at: Number(row.created_at), auto: false, documentId: null },
+  });
 });
 
 module.exports = router;

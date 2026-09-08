@@ -2355,9 +2355,10 @@ function registerBuiltins() {
         (args.note ? `${String(args.note).slice(0, 300)} — ` : "") +
         `I've sent you a document: "${docName}". Ask your assistant to show it.`;
       await query(
-        `INSERT INTO agent_messages (from_user_id, to_phone_number, message, created_at)
-         VALUES ($1,$2,$3,$4) RETURNING id`,
-        [ctx.userId, phone, text, Date.now()]
+        `INSERT INTO agent_messages
+           (from_user_id, to_phone_number, message, document_id, from_document_id, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+        [ctx.userId, phone, text, copy.id, d.id, Date.now()]
       );
       // A nudge, not the content — same contract as send_agent_message:
       // the recipient's own assistant speaks it when they open the app.

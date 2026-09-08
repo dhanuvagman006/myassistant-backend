@@ -154,6 +154,11 @@ async function migrate(exec) {
       created_at      BIGINT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_agent_messages_phone ON agent_messages(to_phone_number, status);
+    -- A message can carry a document: the recipient's own copy
+    -- (document_id) and the sender's original (from_document_id), so each
+    -- side's chat renders the thumbnail from a file it owns.
+    ALTER TABLE agent_messages ADD COLUMN IF NOT EXISTS document_id      BIGINT;
+    ALTER TABLE agent_messages ADD COLUMN IF NOT EXISTS from_document_id BIGINT;
     -- 1 = sent automatically by the recipient's assistant (interim
     -- scheduling acknowledgement). Kept OUT of the auto-responder's own
     -- triggers so two assistants can never chat in a loop, and phrased
