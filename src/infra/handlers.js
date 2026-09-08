@@ -59,7 +59,10 @@ async function scheduledTask(payload, job) {
         `tool that only OPENS something on the device (camera, WhatsApp, ` +
         `apps, screens) will NOT actually happen — never claim it did. ` +
         `To make a phone call, use place_phone_call — my own phone will ` +
-        `be told to dial it right now. ` +
+        `be told to dial it right now. To SEND SOMEONE A MESSAGE, use ` +
+        `send_agent_message — it delivers by itself; NEVER the WhatsApp ` +
+        `tool here, which only pre-fills a draft waiting for a tap that ` +
+        `will never come. ` +
         `Ordering, agent messages, reminders and search work normally. I ` +
         `already authorized this when I scheduled it — do NOT ask for ` +
         `confirmation, just do it. Then state the outcome in one or two ` +
