@@ -2252,7 +2252,7 @@ function registerBuiltins() {
     },
     async execute(args, ctx) {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
-      const { one } = require("../db");
+      const { one, query } = require("../db");
       const fs = require("fs");
 
       // 1. Which document? Search the sender's own library. Only an EXACT
