@@ -391,7 +391,7 @@ async function onHangup(rec, params = {}) {
             ? `Urgent: ${rec.callerName || "someone"} called`
             : `${rec.callerName || "New caller"} called`;
         await require("../services/push").sendNotification(
-          u.fcm_token, title, rec.summary
+          u.fcm_token, title, rec.summary, { kind: "inbound_call" }
         );
       }
     } catch (_) {}

@@ -220,7 +220,7 @@ async function notify(userId, title, body) {
     const u = await one(`SELECT fcm_token FROM users WHERE id=$1`, [userId]);
     if (u?.fcm_token) {
       await require("../services/push").sendNotification(u.fcm_token, title, body, {
-        type: "scheduled_task",
+        kind: "scheduled_task",
       });
     }
   } catch (e) {

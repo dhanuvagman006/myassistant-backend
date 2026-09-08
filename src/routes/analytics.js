@@ -1,42 +1,43 @@
 const router = require("express").Router();
 const db = require("../db");
 
-router.get("/", async (req, res) => {
+// Real numbers only. This endpoint used to 500 on a destructuring bug —
+// and, worse, padded the user count by +1420 and served hand-written
+// crashes and weekly curves "for wow factor". An admin dashboard that
+// lies is worse than an empty one.
+router.get("/", async (_req, res) => {
   try {
-    // We can fetch real data from DB if possible, or provide rich mock data for the dashboard.
-    // For MVP, we'll return a robust structure combining real counts and realistic analytics.
-    const { rows: users } = await db.query("SELECT COUNT(*) as count FROM users");
-    const totalUsers = parseInt(users[0].count, 10) + 1420; // add some padding for wow factor in demo
-
+    const [users, active, docs, msgs, week] = await Promise.all([
+      db.one(`SELECT COUNT(*)::int AS n FROM users`),
+      db.one(`SELECT COUNT(*)::int AS n FROM users WHERE fcm_token IS NOT NULL AND fcm_token <> ''`),
+      db.one(`SELECT COUNT(*)::int AS n, COALESCE(SUM(size),0)::bigint AS bytes FROM documents`),
+      db.one(`SELECT COUNT(*)::int AS n FROM agent_messages`),
+      db.query(
+        `SELECT day, COUNT(DISTINCT user_id)::int AS users
+           FROM app_usage_daily
+          WHERE day >= to_char(now() - interval '6 days', 'YYYY-MM-DD')
+          GROUP BY day ORDER BY day`
+      ).catch(() => []),
+    ]);
     res.json({
       overview: {
-        totalUsers: totalUsers,
-        activeUsers: Math.floor(totalUsers * 0.4),
-        totalStorageGb: 124.5,
-        avgTimeSpentMin: 45,
+        totalUsers: users.n,
+        activeUsers: active.n, // devices registered for push
+        totalStorageGb: Number((Number(docs.bytes) / 1e9).toFixed(2)),
+        totalDocuments: docs.n,
+        totalMessages: msgs.n,
       },
       storage: {
-        documents: 65.2,
-        media: 40.1,
-        logs: 19.2,
+        documents: Number((Number(docs.bytes) / 1e9).toFixed(2)),
+        media: 0,
+        logs: 0,
       },
-      crashes: [
-        { id: "CR-9921", error: "SocketException: Connection refused", time: "2m ago", status: "Open", usersAffected: 12 },
-        { id: "CR-9920", error: "NullReference in image_picker", time: "1h ago", status: "Resolved", usersAffected: 4 },
-        { id: "CR-9919", error: "LateInitializationError: _engine", time: "3h ago", status: "Investigating", usersAffected: 28 },
-      ],
-      usageActivity: [
-        { day: "Mon", users: 320 },
-        { day: "Tue", users: 450 },
-        { day: "Wed", users: 410 },
-        { day: "Thu", users: 590 },
-        { day: "Fri", users: 720 },
-        { day: "Sat", users: 850 },
-        { day: "Sun", users: 910 },
-      ]
+      crashes: [], // no crash pipeline exists — an empty list is the truth
+      usageActivity: week.map((r) => ({ day: r.day, users: r.users })),
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error("analytics failed:", e.message);
+    res.status(500).json({ error: "analytics unavailable" });
   }
 });
 

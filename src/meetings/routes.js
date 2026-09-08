@@ -122,7 +122,7 @@ router.get("/", async (req, res) => {
   const u = uid(req);
   if (!u) return res.status(401).json({ error: "unauthorized" });
   try {
-    res.json({ meetings: await meetings.list(u, { limit: Number(req.query.limit) || 10 }) });
+    res.json({ meetings: await meetings.list(u, { limit: Math.min(Math.max(1, Number(req.query.limit) || 10), 200) }) });
   } catch (e) {
     res.status(500).json({ error: "could not read meetings" });
   }

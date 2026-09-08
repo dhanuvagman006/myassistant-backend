@@ -81,6 +81,12 @@ function setSession(req, res, value, maxAgeS) {
 const attempts = new Map();
 function throttled(ip) {
   const now = Date.now();
+  // One key per IP forever adds up; sweep stale IPs once it grows.
+  if (attempts.size > 500) {
+    for (const [k, v] of attempts) {
+      if (!v.length || now - v[v.length - 1] > 600_000) attempts.delete(k);
+    }
+  }
   const list = (attempts.get(ip) || []).filter((t) => now - t < 600_000);
   attempts.set(ip, list);
   return list.length >= 8;

@@ -222,7 +222,6 @@ app.use("/finance", appAuth, require("./routes/finance").router);
 // TODAY BRIEF — one aggregate fetch for the home dashboard (agenda,
 // promises, unread agent messages, circle, weather, headlines).
 app.use("/brief", appAuth, require("./routes/brief"));
-app.use("/chat", appAuth, require("./routes/chat"));
 
 // ADMIN — read-only ops stats behind a static key (set ADMIN_KEY).
 app.use("/admin", require("./routes/admin"));

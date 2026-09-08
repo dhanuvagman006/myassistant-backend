@@ -209,7 +209,8 @@ async function notifyPaid(row) {
     await require("../services/push").sendNotification(
       u.fcm_token,
       `₹${rupees} received`,
-      `${row.payer_name || "Someone"} paid${row.description ? ` for ${row.description}` : ""}.`
+      `${row.payer_name || "Someone"} paid${row.description ? ` for ${row.description}` : ""}.`,
+      { kind: "payment" }
     );
   } catch (_) {}
 }

@@ -168,7 +168,8 @@ async function sweep({ staleMs = 6 * 60 * 60 * 1000, limit = 20 } = {}) {
           ? `₹${amt} — your ${w.origin}→${w.destination} target is met`
           : `${w.origin}→${w.destination} dropped to ₹${amt}`,
         `${best.flight.flight} on ${w.depart_date}, ${best.flight.stops === 0 ? "non-stop" : best.flight.stops + " stop"}.`
-      );
+      ,
+        { kind: "fare_alert" });
       alerts++;
       await run(
         `UPDATE fare_watches SET last_alerted=$2, status=$3 WHERE id=$1`,

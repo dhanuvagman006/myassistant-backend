@@ -91,6 +91,11 @@ setInterval(gc, 5 * 60 * 1000).unref?.();
 const dayCounts = new Map(); // `${userId}:${yyyy-mm-dd}` -> n
 function bumpDaily(userId) {
   const key = `${userId}:${new Date().toISOString().slice(0, 10)}`;
+  // Yesterday's keys are dead weight forever — sweep them on write.
+  const today = key.slice(-10);
+  for (const k of dayCounts.keys()) {
+    if (!k.endsWith(today)) dayCounts.delete(k);
+  }
   const n = (dayCounts.get(key) || 0) + 1;
   dayCounts.set(key, n);
   return n;

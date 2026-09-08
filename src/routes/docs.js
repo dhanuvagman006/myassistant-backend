@@ -222,4 +222,12 @@ router.delete("/:id", async (req, res) => {
   res.status(ok ? 200 : 404).json(ok ? { ok: true } : { error: "not found" });
 });
 
+// Multer's size-limit error otherwise falls through to the generic 500.
+router.use((err, _req, res, next) => {
+  if (err && err.code === "LIMIT_FILE_SIZE") {
+    return res.status(413).json({ error: "file too large — the limit is 18 MB" });
+  }
+  next(err);
+});
+
 module.exports = router;

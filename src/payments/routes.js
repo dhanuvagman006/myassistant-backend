@@ -55,7 +55,7 @@ router.get("/", async (req, res) => {
   try {
     const rows = await payments.list(u, {
       status: req.query.status ? String(req.query.status) : null,
-      limit: Number(req.query.limit) || 20,
+      limit: Math.min(Math.max(1, Number(req.query.limit) || 20), 200),
     });
     res.json({
       available: payments.enabled(),

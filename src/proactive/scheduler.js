@@ -77,7 +77,8 @@ async function sweepCommitments() {
       await push.sendNotification(
         c.fcm_token,
         overdue ? "Overdue" : "Due soon",
-        `You said you'd ${lowerFirst(c.text)}${who}.`
+        `You said you'd ${lowerFirst(c.text)}${who}.`,
+        { kind: "commitment" }
       );
       await commitments.markNudged(c.id);
       sent++;
@@ -209,7 +210,8 @@ async function sweepMeetings() {
       await push.sendNotification(
         u.fcm_token,
         `${prep.event.title} in ${mins} min${withWho}`,
-        body
+        body,
+        { kind: "meeting_brief" }
       );
       await markBriefed(u.id, prep.event.id);
       sent++;
@@ -323,7 +325,8 @@ async function sweepMorningBriefs() {
       const ok = await push.sendNotification(
         u.fcm_token,
         first ? `Good morning, ${first} ☀️` : "Good morning ☀️",
-        morningBody(b, tz) || "Your day is ready — tap for your brief."
+        morningBody(b, tz) || "Your day is ready — tap for your brief.",
+        { kind: "morning_brief" }
       );
       if (ok) sent++;
     } catch (_) {}
@@ -378,7 +381,7 @@ async function sweepPersonDates() {
           `🎂 Tomorrow: ${d.name}'s ${d.label}`,
           `${d.name}'s ${d.label} is tomorrow (${when}). Want me to ` +
             `schedule a call or a message?`,
-          { type: "person_date" }
+          { kind: "person_date" }
         );
         if (ok) sent++;
       } catch (_) {}

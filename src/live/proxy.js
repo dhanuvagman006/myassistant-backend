@@ -351,6 +351,23 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   // approval is only honoured on a turn LATER than the one that asked for
   // it. See the toolCall handler.
   let userTurns = 0;
+  // Gemini streams the user's transcript in FRAGMENTS. Mining each
+  // fragment separately broke the relay guard ("tell Ravi …" / "… my
+  // exam is the 20th" stored the tail as a personal fact) and bumped the
+  // approval turn counter mid-utterance. Buffer the turn; flush once the
+  // model responds (reply, tool call, or turn end) — i.e. when the
+  // user's utterance is definitively over.
+  let turnBuf = "";
+  const flushUserTurn = () => {
+    const t = turnBuf.trim();
+    if (!t) return;
+    turnBuf = "";
+    userTurns++;
+    if (Number(user?.sub) > 0) {
+      require("../commitments/service").extractAsync(Number(user.sub), t, { source: "voice" });
+      require("../agents/memory").extractAndStore(Number(user.sub), t);
+    }
+  };
   let pendingApproval = null;
   // Turn-boundary timing, so latency can be measured rather than guessed.
   let speechStartedAt = 0;
@@ -534,6 +551,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     }
 
     if (msg.toolCall) {
+      flushUserTurn(); // the user's utterance caused this call — turn over
       const responses = [];
       for (const fc of msg.toolCall.functionCalls || []) {
         // HIGH-RISK CONFIRMATION IN LIVE MODE (§17).
@@ -772,22 +790,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       // The user has spoken. This is the signal the high-risk confirmation
       // gate below waits on: an approval only counts if it came AFTER we
       // asked, and a real user turn is what separates the two.
-      userTurns++;
-      // Live mode is the main screen, so commitments must be caught here
-      // too. Fire-and-forget: nothing about this may delay the audio.
-      if (Number(user?.sub) > 0) {
-        require("../commitments/service").extractAsync(
-          Number(user.sub),
-          sc.inputTranscription.text,
-          { source: "voice" }
-        );
-        // Personal facts too ("I'm vegetarian", "my exam is on the 20th")
-        // — regex-gated + fire-and-forget, so ordinary turns cost nothing.
-        require("../agents/memory").extractAndStore(
-          Number(user.sub),
-          sc.inputTranscription.text
-        );
-      }
+      turnBuf += (turnBuf ? " " : "") + sc.inputTranscription.text;
       appWs.send(
         JSON.stringify({
           type: "input_transcript",
@@ -796,6 +799,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       );
     }
     if (sc.outputTranscription?.text) {
+      flushUserTurn(); // model is replying — the user's turn is over
       appWs.send(
         JSON.stringify({
           type: "output_transcript",
@@ -804,6 +808,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       );
     }
     if (sc.turnComplete) {
+      flushUserTurn();
       appWs.send(JSON.stringify({ type: "turn_complete" }));
     }
   });

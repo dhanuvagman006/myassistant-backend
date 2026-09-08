@@ -2491,8 +2491,12 @@ function registerBuiltins() {
 
   registry.register({
     name: "book_by_calling_business",
-    // Hidden without telephony — she genuinely cannot dial.
-    available: () => require("../agents/agentCall").enabled(),
+    // HIDDEN entirely for now: the call rings via the server, but the
+    // follow-up channel is a deviceAction ("fulfillment_call") no app
+    // build handles, so the user never hears the real outcome — a fake
+    // feature by our own rule. Re-enable together with the app handler
+    // (and only when telephony credit exists).
+    available: () => false,
     description:
       "Actually telephone a business and speak to them to arrange something: " +
       "a doctor/dentist/salon appointment, a restaurant table, or an order " +
@@ -2864,6 +2868,11 @@ function registerBuiltins() {
 
   registry.register({
     name: "start_interpreter_mode",
+    // HIDDEN: duplicates translator_mode, and its whole effect rides on a
+    // deviceAction ("interpreter_mode") no app build has ever handled —
+    // the model announced interpreter mode while nothing changed. Remove
+    // this gate only together with an app-side handler.
+    available: () => false,
     description:
       "Become a live two-way interpreter between the user and someone who " +
       "speaks another language. Use for 'translate between me and him', " +
@@ -2909,6 +2918,8 @@ function registerBuiltins() {
 
   registry.register({
     name: "stop_interpreter_mode",
+    // HIDDEN: see start_interpreter_mode.
+    available: () => false,
     description:
       "Leave interpreter mode and go back to being the user's assistant. " +
       "Use for 'stop translating', 'that's enough', 'back to normal'.",
@@ -3123,8 +3134,9 @@ function registerBuiltins() {
 
   registry.register({
     name: "arrange_meeting_with",
-    // Same: negotiating a meeting means phoning someone.
-    available: () => require("../agents/agentCall").enabled(),
+    // HIDDEN: same reason as book_by_calling_business — its outcome rides
+    // on the unhandled "scheduling_call" deviceAction.
+    available: () => false,
     description:
       "Arrange a meeting with someone END TO END: find times the user is " +
       "free, PHONE the person, agree a slot with them, and put it in the " +

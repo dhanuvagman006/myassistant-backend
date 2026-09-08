@@ -141,7 +141,7 @@ router.get("/calls", async (req, res) => {
   if (!u) return res.status(401).json({ error: "unauthorized" });
   try {
     const calls = await receptionist.listCalls(u, {
-      limit: Number(req.query.limit) || 20,
+      limit: Math.min(Math.max(1, Number(req.query.limit) || 20), 200),
       unseenOnly: req.query.unseen === "1",
     });
     res.json({ calls });

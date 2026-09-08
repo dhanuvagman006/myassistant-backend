@@ -58,22 +58,36 @@ async function saveMemory(userId, fact, importance = 2) {
   if (!userId || !fact) return;
   const f = String(fact).trim().slice(0, 300);
   if (!f) return;
-  // Skip near-duplicates (same fact re-learned across sessions).
+  // Skip near-duplicates (same fact re-learned across sessions) — but a
+  // FORGOTTEN fact the user states again is a revival, not a duplicate:
+  // the old dedupe matched the invalid row and silently stored nothing.
   const dup = await one(
-    `SELECT id FROM agent_memories WHERE user_id=$1 AND lower(fact)=lower($2)`,
+    `SELECT id, valid FROM agent_memories WHERE user_id=$1 AND lower(fact)=lower($2)`,
     [userId, f]
   );
-  if (dup) return;
+  if (dup) {
+    if (!dup.valid) {
+      await run(
+        `UPDATE agent_memories SET valid=1, importance=GREATEST(importance,$3), created_at=$4 WHERE id=$1 AND user_id=$2`,
+        [dup.id, userId, importance, Date.now()]
+      );
+    }
+    return;
+  }
   await run(
     `INSERT INTO agent_memories (user_id, fact, importance, created_at)
      VALUES ($1,$2,$3,$4)`,
     [userId, f, importance, Date.now()]
   );
-  // Evict beyond the cap: lowest importance, oldest first.
+  // Evict beyond the cap: KEEP the top rows by importance (newest as the
+  // tie-break) and delete the remainder. The old ASC ordering kept the 60
+  // least important facts and deleted the rest — fact #61 evicted "user
+  // is diabetic" and preserved "likes dosa". Forgotten rows no longer
+  // occupy cap slots either.
   await run(
     `DELETE FROM agent_memories WHERE id IN (
-       SELECT id FROM agent_memories WHERE user_id=$1
-       ORDER BY importance ASC, id ASC
+       SELECT id FROM agent_memories WHERE user_id=$1 AND valid=1
+       ORDER BY importance DESC, id DESC
        OFFSET $2)`,
     [userId, MAX_MEMORIES]
   );
