@@ -121,15 +121,30 @@ const EXTRACT_PROMPT =
   "Facts must be about the USER (name, family, city, work, likes, health " +
   "constraints, important dates), written as short third-person statements " +
   "(\"User's name is Dhanya\"). importance: 3 = identity/health, 2 = " +
-  "preferences/relationships, 1 = minor. If nothing durable, return [].";
+  "preferences/relationships, 1 = minor. If nothing durable, return []. " +
+  "STRICT EXCLUSIONS — return [] for: anything the user is asking you to " +
+  "RELAY or SEND to someone else ('tell Allen I'm…', 'message Ravi " +
+  "that…' — that is the message, not a fact about the user); quoted or " +
+  "reported speech of other people; hypotheticals, jokes and test " +
+  "phrases; and ANY time-bound plan ('going to Bangalore tomorrow', " +
+  "'meeting at 5', 'next week') — plans belong to reminders, never to " +
+  "permanent memory. Keep only what stays true for months.";
 
 /**
  * Fire-and-forget: never throws, never blocks the reply.
  * @param {number} userId
  * @param {string} userText the raw user message/transcript
  */
+// Words the user wants CARRIED to someone else are the message, not a
+// fact about the user — "tell Allen I'm going to Bangalore tomorrow" once
+// became "User is travelling to Bangalore tomorrow" in permanent memory.
+// System-tagged text from the app is never the user's own voice either.
+const RELAY_RX =
+  /^\s*\[system\]|\b(?:tell|message|inform|text|whatsapp|ask|say to)\s+(?!me\b|you\b)\w+/i;
+
 function extractAndStore(userId, userText) {
-  if (!userId || !looksSelfDescriptive(userText)) return;
+  const text = String(userText || "");
+  if (!userId || RELAY_RX.test(text) || !looksSelfDescriptive(text)) return;
   (async () => {
     try {
       const { reply } = await generateReply(
