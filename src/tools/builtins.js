@@ -1076,7 +1076,12 @@ function registerBuiltins() {
       "delivered until a [SYSTEM] message confirms it; if a [SYSTEM] " +
       "message reports an ERROR, tell the user plainly that the call " +
       "FAILED and why.",
-    risk: "high",
+    // MEDIUM, deliberately (Dhanush, twice): "call Allen Lobo" must just
+    // dial — the user watches their own phone place the call and can end
+    // it in one tap, so a spoken should-I-call round-trip on every
+    // explicit command was pure friction. Money and anything irreversible
+    // stay high-risk.
+    risk: "medium",
     deviceAction: true,
     inputSchema: {
       type: "object",
