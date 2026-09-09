@@ -109,6 +109,24 @@ router.post("/", async (req, res) => {
   }
 });
 
+// RETELL webhook — the URL secret (sha256 of the API key) plus the
+// per-call metadata token inside the payload gate it. Always 200s fast;
+// Retell retries on non-2xx and duplicate events are harmless.
+const crypto = require("crypto");
+const retellWebhooks = require("express").Router();
+retellWebhooks.use(require("express").json({ limit: "1mb" }));
+retellWebhooks.post("/webhook/:secret", (req, res) => {
+  const key = process.env.RETELL_API_KEY || "";
+  const want = crypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
+  if (!key || req.params.secret !== want) return res.status(404).json({ error: "not found" });
+  try {
+    agent.retellWebhook(req.body || {});
+  } catch (e) {
+    console.error("retell webhook failed:", e.message);
+  }
+  res.json({ ok: true });
+});
+
 router.get("/:id", (req, res) => {
   const rec = agent.get(String(req.params.id));
   // Transcripts and outcomes are the caller's own business only.
@@ -220,4 +238,4 @@ exotelWebhooks.all("/status", (req, res) => {
   res.status(200).end();
 });
 
-module.exports = { router, webhooks, exotelWebhooks };
+module.exports = { router, webhooks, exotelWebhooks, retellWebhooks };

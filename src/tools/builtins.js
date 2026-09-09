@@ -927,8 +927,9 @@ function registerBuiltins() {
       "meeting moved', 'send a message to Manish tomorrow morning'. " +
       "When the user wants something DONE later (not just a reminder), " +
       "use this instead of doing it now or refusing — INCLUDING 'call X " +
-      "at TIME' and 'set a reminder to call X at TIME': at that moment " +
-      "the user's own phone dials the contact so they can speak. Pass " +
+      "at TIME and ask/tell them Y': at that moment the assistant places " +
+      "the call itself, speaks with them, and reports their answer back; " +
+      "a plain 'call X at TIME' makes the user's own phone dial. Pass " +
       "the task self-contained with every detail needed to execute it " +
       "with no one present. For notify-me-only reminders use " +
       "create_reminder.",

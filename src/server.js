@@ -159,7 +159,8 @@ const perUserLimit = rateLimit({
 // app-facing routes so they don't hit appAuth.
 const agentCall = require("./routes/agentCall");
 app.use("/agent-call/plivo", agentCall.webhooks);
-app.use("/agent-call/exotel", agentCall.exotelWebhooks);
+app.use("/agent-call/exotel", agentCall.exotelWebhooks); // legacy — provider removed 2026-09-09
+app.use("/agent-call/retell", agentCall.retellWebhooks);
 app.use("/agent-call", appAuth, perUserLimit, agentCall.router);
 
 // INBOUND CALLING — Hari answers the user's own number: screens callers,

@@ -58,8 +58,10 @@ async function scheduledTask(payload, job) {
         `in the background on the server WITHOUT my phone in hand: any ` +
         `tool that only OPENS something on the device (camera, WhatsApp, ` +
         `apps, screens) will NOT actually happen — never claim it did. ` +
-        `To make a phone call, use place_phone_call — my own phone will ` +
-        `be told to dial it right now. To SEND SOMEONE A MESSAGE, use ` +
+        `To make a phone call, use place_phone_call — with a message/` +
+        `question attached the assistant places and handles the call ` +
+        `itself and the true result is reported; without one my own ` +
+        `phone is told to dial. To SEND SOMEONE A MESSAGE, use ` +
         `send_agent_message — it delivers by itself; NEVER the WhatsApp ` +
         `tool here, which only pre-fills a draft waiting for a tap that ` +
         `will never come. ` +
@@ -93,8 +95,15 @@ async function scheduledTask(payload, job) {
     for (const a of res?.deviceActions || []) {
       const t = String(a?.type || "");
       if (t === "resolve_and_call") {
-        const r = await placeScheduledCall(userId, a);
-        outcome = `${outcome} ${r.line}`.trim();
+        // With a MESSAGE and the conversational relay configured, the
+        // agent places the call ITSELF at the scheduled time, talks to the
+        // person, and the push carries their actual answer — "Allen said
+        // he's attending." Anything else falls back to ringing the user's
+        // own phone to dial.
+        const r = a.message
+          ? await placeScheduledAgentCall(userId, a)
+          : await placeScheduledCall(userId, a);
+        outcome = r.replaceOutcome ? r.line : `${outcome} ${r.line}`.trim();
         if (!r.ok) failed = true;
       } else if (!HARMLESS.has(t)) {
         neededPhone = true;
@@ -180,6 +189,81 @@ function nextOccurrence(fromMs, repeat, payload) {
  * app in the foreground the phone dials by itself the moment it lands;
  * otherwise the notification's tap places the call.
  */
+/**
+ * Scheduled ASK/TELL call, placed by the AGENT itself: resolve the contact
+ * from the server-synced address book, let the conversational relay talk
+ * to them, wait for the real result, and hand back the person's answer as
+ * the outcome. Falls back to the tap-to-dial push when the relay is off,
+ * the name doesn't resolve to exactly one person, or the call can't start.
+ */
+async function placeScheduledAgentCall(userId, action) {
+  const agentCall = require("../agents/agentCall");
+  const name = String(action?.name || "").trim() || "them";
+  const message = String(action?.message || "").slice(0, 400);
+  if (!agentCall.enabled()) return placeScheduledCall(userId, action);
+
+  let phone = null;
+  let resolvedName = name;
+  try {
+    const out = await require("../users/resolve").resolveContact(userId, name, { limit: 2 });
+    if (out.match?.phone) {
+      phone = out.match.phone;
+      resolvedName = out.match.name || name;
+    } else if (out.candidates?.length === 1 && out.candidates[0].phone) {
+      phone = out.candidates[0].phone;
+      resolvedName = out.candidates[0].name || name;
+    }
+  } catch (e) {
+    console.warn("scheduled agent call resolve failed:", e.message);
+  }
+  if (!phone) return placeScheduledCall(userId, action); // user dials themselves
+
+  let callId;
+  try {
+    const u = await one(`SELECT name FROM users WHERE id=$1`, [userId]);
+    const started = await agentCall.start({
+      userId,
+      userName: u?.name ? String(u.name).split(" ")[0] : null,
+      toNumber: phone,
+      contactName: resolvedName,
+      task: message,
+      lang: null,
+    });
+    callId = started.id;
+  } catch (e) {
+    console.warn("scheduled agent call start failed:", e?.message || e?.code);
+    return placeScheduledCall(userId, action);
+  }
+  try {
+    require("../outcomes/store").create(userId, {
+      kind: "agent_call", target: resolvedName, detail: message,
+      status: "dialing", path: "relay", externalId: callId,
+    }).catch(() => {});
+  } catch (_) {}
+
+  // Wait for the terminal state — the whole point is reporting the answer.
+  const deadline = Date.now() + 3 * 60 * 1000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const st = agentCall.status(callId);
+    if (!st) break;
+    if (st.state === "completed") {
+      return { ok: true, replaceOutcome: true, line: st.result || `I spoke with ${resolvedName}.` };
+    }
+    if (st.state === "no_answer") {
+      return { ok: false, replaceOutcome: true, line: st.result || `${resolvedName} didn't pick up.` };
+    }
+    if (st.state === "failed") {
+      return { ok: false, replaceOutcome: true, line: st.result || `The call to ${resolvedName} failed.` };
+    }
+  }
+  return {
+    ok: false,
+    replaceOutcome: true,
+    line: `I called ${resolvedName} but didn't get a result back in time — check Task outcomes for what happened.`,
+  };
+}
+
 async function placeScheduledCall(userId, action) {
   const name = String(action?.name || "").trim() || "them";
   const message = String(action?.message || "").slice(0, 200);

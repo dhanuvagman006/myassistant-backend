@@ -55,14 +55,22 @@ function cfg() {
     base: (process.env.PUBLIC_BASE_URL || "").replace(/\/$/, ""),
     voice: process.env.PLIVO_VOICE || "Polly.Aditi",
     dailyLimit: Number(process.env.AGENT_CALL_DAILY_LIMIT || 20),
+    // ---- Retell AI (conversational agent calls — the current provider).
+    // The agent holds a REAL two-way conversation, and the webhook hands
+    // back the transcript + summary, so "ask Allen if he's coming" gets an
+    // actual answer instead of a one-shot recording.
+    retellKey: process.env.RETELL_API_KEY || "",
+    retellFrom: process.env.RETELL_FROM_NUMBER || "",
+    retellAgent: process.env.RETELL_AGENT_ID || "",
   };
 }
 
-/** Which telephony provider is configured. Exotel wins when both exist
- *  (it is the India-native choice this deployment is moving to). */
+/** Which telephony provider is configured. Retell is the conversational
+ *  choice; Plivo remains a legacy fallback. Exotel was REMOVED 2026-09-09
+ *  (speak-only flows, no usable two-way path — owner's call). */
 function provider() {
   const c = cfg();
-  if (c.exoKey && c.exoToken && c.exoSid && c.exoFrom && c.exoApp) return "exotel";
+  if (c.retellKey && c.retellFrom && c.retellAgent) return "retell";
   if (c.authId && c.authToken && c.from) return "plivo";
   return null;
 }
@@ -240,6 +248,85 @@ function xmlEscape(s) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
+}
+
+/**
+ * RETELL — one dashboard agent handles every call; the per-call task rides
+ * in as dynamic variables the agent's prompt references ({{task}},
+ * {{contact_name}}, {{user_name}}, {{mode}}). The webhook below settles
+ * the record from call_ended / call_analyzed.
+ */
+async function retellPlaceCall({ to, rec }) {
+  const c = cfg();
+  const r = await fetch("https://api.retellai.com/v2/create-phone-call", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${c.retellKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from_number: c.retellFrom,
+      to_number: to,
+      override_agent_id: c.retellAgent,
+      retell_llm_dynamic_variables: {
+        task: rec.task || "",
+        contact_name: rec.contactName || "there",
+        user_name: rec.script?.userName || rec.userName || "the caller",
+        mode: rec.mode || "inform",
+      },
+      metadata: { rec_id: rec.id, token: rec.token },
+    }),
+  });
+  if (!r.ok) {
+    const body = await r.text().catch(() => "");
+    throw new Error(`retell create-phone-call ${r.status}: ${body.slice(0, 200)}`);
+  }
+  const j = await r.json();
+  return j.call_id || rec.id;
+}
+
+/**
+ * Retell webhook (POST /agent-call/retell/webhook/:secret). The URL secret
+ * plus the per-call metadata token gate it; the record is matched by
+ * metadata.rec_id. call_ended maps busy/no-answer; call_analyzed carries
+ * the transcript + summary that become the spoken outcome.
+ */
+function retellWebhook(body) {
+  const event = String(body?.event || "");
+  const call = body?.call || {};
+  const recId = String(call?.metadata?.rec_id || "");
+  const rec = calls.get(recId);
+  if (!rec || String(call?.metadata?.token || "") !== rec.token) return false;
+
+  if (event === "call_started") {
+    if (rec.state === "dialing") rec.state = "in_progress";
+    return true;
+  }
+  if (event === "call_ended") {
+    const why = String(call?.disconnection_reason || "").toLowerCase();
+    if (/busy|no.?answer|dial_failed|invalid|voicemail/.test(why)) {
+      rec.state = "no_answer";
+      rec.result = `${rec.contactName} didn't pick up. Want me to try again later?`;
+      settle(rec);
+    } else if (rec.state !== "completed") {
+      // Connected and ended normally — the analysis event lands seconds
+      // later with the summary; mark it so the poller keeps waiting.
+      rec.state = "summarizing";
+      rec.answer = String(call?.transcript || "").slice(0, 4000) || rec.answer;
+    }
+    return true;
+  }
+  if (event === "call_analyzed") {
+    rec.answer = String(call?.transcript || rec.answer || "").slice(0, 4000);
+    const summary = String(call?.call_analysis?.call_summary || "").trim();
+    rec.result = summary
+      ? `I spoke with ${rec.contactName}. ${summary}`
+      : rec.result || `I spoke with ${rec.contactName}, but couldn't summarise the call.`;
+    rec.state = "completed";
+    settle(rec);
+    return true;
+  }
+  return true;
 }
 
 async function plivoPlaceCall({ to, id, token }) {
@@ -442,6 +529,7 @@ async function start({ userId, userName, toNumber, contactName, task, lang }) {
     contactName,
     task,
     lang: lang || "en",
+    userName: userName || null,
     mode: script.mode,
     script,
     state: "dialing",
@@ -454,8 +542,8 @@ async function start({ userId, userName, toNumber, contactName, task, lang }) {
 
   try {
     rec.plivoUuid =
-      provider() === "exotel"
-        ? await exotelPlaceCall({ to, id, token })
+      provider() === "retell"
+        ? await retellPlaceCall({ to, rec })
         : await plivoPlaceCall({ to, id, token });
     if (userId) bumpDaily(userId);
   } catch (e) {
@@ -624,6 +712,7 @@ function normalizeNumber(n) {
 module.exports = {
   enabled,
   provider,
+  retellWebhook,
   preview,
   start,
   status,
