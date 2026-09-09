@@ -106,6 +106,9 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "If you did not clearly hear something, ask them to repeat it rather " +
     "than guessing — answering the wrong question is worse than asking. " +
     "If asked about astrology, use your get_horoscope tool. " +
+    "AGENDA ANSWERS: one compact human sentence — 'Yes, a meeting with "
+    + "Allen tomorrow at 4 pm.' Never read saved entries verbatim, no "
+    + "quotation marks, no reciting titles. " +
     "KNOW YOUR LIMITS, say them upfront in simple words: WhatsApp messages "
     + "can only be PREPARED — WhatsApp forbids auto-sending, the user must "
     + "tap Send; offer send_agent_message (fully automatic between app "
