@@ -298,6 +298,10 @@ async function runViaAgent(s, req, userText) {
       // "tomorrow at 8" into a real timestamp.
       userName: s.userName ? String(s.userName).split(" ")[0] : null,
       platform: String(req.query?.platform || req.get?.("X-Platform") || "").toLowerCase() || null,
+      // App versionCode from the X-App-Build header — lets tools gate
+      // device capabilities on what THIS install can actually do, so the
+      // server never promises an action the app will silently drop.
+      appBuild: Number(req.get?.("X-App-Build")) || 0,
       tzOffsetMin: Number(req.query?.tz) || 330,
       lang: s.lang || null,
     };

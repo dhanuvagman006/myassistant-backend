@@ -809,6 +809,56 @@ function registerBuiltins() {
   });
 
   registry.register({
+    name: "update_reminder",
+    description:
+      "EDIT an existing reminder/appointment — add or change a detail, move " +
+      "the time, or reword it: 'the meeting tomorrow is with Allen', 'move my " +
+      "3pm reminder to 5', 'change the hackathon meeting to Friday'. Finds " +
+      "the reminder by its words/day, applies the change, and the updated " +
+      "text is what agenda questions read back — so details like WHO a " +
+      "meeting is with are never lost. If nothing matches, say so and offer " +
+      "to create it; never pretend an edit happened.",
+    risk: "medium",
+    inputSchema: {
+      type: "object",
+      properties: {
+        match: { type: "string", description: "Words identifying the reminder, e.g. 'hackathon meeting'." },
+        new_text: { type: "string", description: "The COMPLETE new text, keeping every existing detail plus the change, e.g. 'Meeting regarding Hackathon with Allen'." },
+        new_due_at: { type: "string", description: "New ISO-8601 datetime, only if the time changes." },
+      },
+      required: ["match"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const rows = (await reminders.list(ctx.userId)).filter((r) => !r.done);
+      const words = String(args.match || "").toLowerCase()
+        .replace(/[^\p{L}\p{N} ]/gu, " ").split(/\s+/).filter((w) => w.length >= 3);
+      if (!words.length) return { ok: false, error: "say which reminder to change" };
+      const scored = rows
+        .map((r) => ({ r, hits: words.filter((w) => r.text.toLowerCase().includes(w)).length }))
+        .filter((x) => x.hits > 0)
+        .sort((a, b) => b.hits - a.hits || Number(b.r.created_at) - Number(a.r.created_at));
+      if (!scored.length) {
+        return { ok: false, error: "no_matching_reminder",
+          data: { hint: "no reminder matches those words — offer to create it instead; do NOT claim an edit happened" } };
+      }
+      if (scored.length > 1 && scored[0].hits === scored[1].hits) {
+        return { ok: false, error: "ambiguous",
+          speak: `Which one: "${scored[0].r.text}" or "${scored[1].r.text}"?` };
+      }
+      const target = scored[0].r;
+      const newDue = args.new_due_at ? parseUserTime(args.new_due_at, ctx.tzOffsetMin) : undefined;
+      const updated = await reminders.update(
+        ctx.userId, target.id,
+        args.new_text ? String(args.new_text) : null,
+        newDue !== undefined ? newDue : undefined
+      );
+      if (!updated) return { ok: false, error: "could not update the reminder" };
+      return { ok: true, data: updated, speak: `Updated: ${updated.text}.` };
+    },
+  });
+
+  registry.register({
     name: "remember_person_date",
     description:
       "Save an important DATE for a person — birthday, anniversary, due " +
@@ -2465,6 +2515,21 @@ function registerBuiltins() {
         : null;
 
       if (!appUser) {
+        // CAPABILITY GATE. Automatic SMS shipped in app build 13; an older
+        // install silently drops the send_sms action — and the assistant
+        // would have already claimed it was sending. Never promise what
+        // THIS install cannot do.
+        if (!(Number(ctx.appBuild) >= 13)) {
+          return {
+            ok: true,
+            data: "Recipient not on app; this app build cannot auto-send SMS.",
+            speak:
+              `${args.contact_name} isn't on the app, and this version of the ` +
+              `app can't send texts by itself yet — update the app when the ` +
+              `popup offers it. Meanwhile I can set up a WhatsApp message for ` +
+              `you to tap send on.`,
+          };
+        }
         // Not on the app → the phone sends a REAL SMS by itself (the app
         // holds the SEND_SMS permission; the user granted it once). Still
         // zero taps for the user — and the phone reports the true result

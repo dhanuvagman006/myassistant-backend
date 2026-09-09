@@ -640,6 +640,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           lng: deviceCtx.lng,
           platform: deviceCtx.platform,
           tzOffsetMin: deviceCtx.tz,
+          appBuild: deviceCtx.build,
         });
         try {
           appWs.send(JSON.stringify({ type: "tool_completed", tool: fc.name }));
@@ -952,6 +953,7 @@ function attachWs(server) {
     const deviceCtx = {
       lat: num("lat"),
       lng: num("lng"),
+      build: num("build") ?? 0, // app versionCode — capability gating
       tz: num("tz") ?? 330,
       platform:
         String(url.searchParams.get("platform") || "").toLowerCase() || null,
