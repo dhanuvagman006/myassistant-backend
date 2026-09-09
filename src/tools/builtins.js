@@ -1542,7 +1542,12 @@ function registerBuiltins() {
       "the number is looked up from their contacts. Use for 'whatsapp Ravi " +
       "that I'll be late', 'message the team group about tomorrow'. Write " +
       "the message yourself in the user's voice unless they dictated exact " +
-      "words; keep it natural and short.",
+      "words; keep it natural and short. This PREPARES the chat — the user " +
+      "must tap Send themselves. If they ask why it didn't send by itself, " +
+      "explain warmly and simply: WhatsApp doesn't allow any assistant to " +
+      "press send on a person's behalf — that last tap is theirs by " +
+      "WhatsApp's own rules — and offer the automatic ways instead (their " +
+      "assistant-to-assistant message, or a plain text message).",
     risk: "low",
     deviceAction: true,
     inputSchema: {
@@ -2355,10 +2360,11 @@ function registerBuiltins() {
       "'inform X's agent that…'. Delivers through the recipient's OWN " +
       "assistant: they get a push notification and their assistant speaks " +
       "it aloud, naming the sender. Call this IMMEDIATELY — never ask the " +
-      "user to choose between WhatsApp and a call first. Use " +
-      "send_whatsapp_message ONLY when the user explicitly says WhatsApp. " +
-      "If the recipient turns out not to be reachable this way, this tool " +
-      "says so — offer WhatsApp then.",
+      "user to choose a channel first. DELIVERY LADDER, automatic: if the " +
+      "recipient uses this app the message goes through their assistant; " +
+      "if not, the phone sends it as a normal SMS text by itself — either " +
+      "way nothing needs a tap. Use send_whatsapp_message ONLY when the " +
+      "user explicitly says WhatsApp.",
     risk: "medium",
     inputSchema: {
       type: "object",
@@ -2459,10 +2465,22 @@ function registerBuiltins() {
         : null;
 
       if (!appUser) {
-        return { 
-          ok: true, 
-          data: "User not on app.", 
-          speak: `${args.contact_name} is not using the app yet. Would you like me to draft an SMS invitation so they can download it?` 
+        // Not on the app → the phone sends a REAL SMS by itself (the app
+        // holds the SEND_SMS permission; the user granted it once). Still
+        // zero taps for the user — and the phone reports the true result
+        // to /outcomes, so "did it go?" has an honest answer.
+        return {
+          ok: true,
+          data: { channel: "sms", to: contactPhone, name: args.contact_name },
+          deviceAction: {
+            type: "send_sms",
+            to: contactPhone,
+            name: args.contact_name,
+            message: args.message,
+          },
+          speak:
+            `${args.contact_name} isn't on the app, so I'm sending it to them ` +
+            `as a text message instead.`,
         };
       }
 
