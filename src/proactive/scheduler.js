@@ -402,9 +402,68 @@ async function sweepFares() {
   }
 }
 
+/**
+ * PATIENT RECALL CALLS — the assistant phones the patient in the hours
+ * before their recall/appointment is due ("this is a reminder from Dr
+ * Dhanush's clinic…"). One attempt per recall, stamped BEFORE dialing so
+ * a crashing call can never become a redial loop; the real result lands
+ * in task_outcomes via the telephony webhooks.
+ */
+async function sweepPatientRecalls() {
+  const agentCall = require("../agents/agentCall");
+  if (!agentCall.enabled()) return;
+  const practice = require("../practice/store");
+  const outcomes = require("../outcomes/store");
+  const db = require("../db");
+  let due = [];
+  try {
+    due = await practice.recallsNeedingCall();
+  } catch (e) {
+    console.error("recall sweep query failed:", e.message);
+    return;
+  }
+  for (const r of due) {
+    await practice.markCalled(r.id); // one attempt, ever
+    try {
+      const u = await db.one("SELECT name FROM users WHERE id = $1", [r.user_id]);
+      const firstName = String(u?.name || "").split(" ")[0] || null;
+      const whenTxt = new Date(Number(r.due_at)).toLocaleString("en-IN", {
+        weekday: "long", day: "numeric", month: "long",
+        hour: "numeric", minute: "2-digit", timeZone: "Asia/Kolkata",
+      });
+      const task =
+        `Remind them about their upcoming ${r.note ? `appointment for ${r.note}` : "appointment"} ` +
+        `with ${firstName || "the doctor"} on ${whenTxt}. Ask nothing; just remind them warmly.`;
+      const { id } = await agentCall.start({
+        userId: r.user_id,
+        userName: firstName,
+        toNumber: r.client_phone,
+        contactName: r.client_name,
+        task,
+        lang: null,
+      });
+      outcomes.create(r.user_id, {
+        kind: "agent_call", target: r.client_name,
+        detail: `recall reminder: ${r.note || "appointment"}`,
+        status: "dialing", path: "relay", externalId: id,
+      }).catch(() => {});
+      console.log(`recall: calling ${r.client_name} for user ${r.user_id} (recall ${r.id})`);
+    } catch (e) {
+      outcomes.create(r.user_id, {
+        kind: "agent_call", target: r.client_name,
+        detail: `recall reminder: ${r.note || "appointment"}`, status: "failed", path: "relay",
+      }).then((row) => row && outcomes.update(r.user_id, row.id, {
+        status: "failed", reason: String(e?.message || e?.code || "could not start the call"),
+      })).catch(() => {});
+      console.error(`recall call to ${r.client_name} failed to start:`, e?.message || e?.code);
+    }
+  }
+}
+
 async function sweep() {
   const results = await Promise.allSettled([
     sweepCommitments(),
+    sweepPatientRecalls(),
     sweepMeetings(),
     sweepFares(),
     sweepMorningBriefs(),

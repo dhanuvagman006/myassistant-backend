@@ -57,10 +57,23 @@ router.get("/:id", async (req, res) => {
   const profile = await store.getProfile(id, Number(req.params.id));
   if (!profile) return res.status(404).json({ error: "not found" });
   audit.record(id, "client.viewed", `case file of "${profile.client.name}"`);
+  // Practice extras — next recall + outstanding balance — ride along so
+  // the case-file screen needs no second round-trip. Failures here must
+  // never hide the case file itself.
+  let recall = null;
+  let balance = 0;
+  try {
+    const practice = require("../practice/store");
+    const r = await practice.nextRecallFor(id, profile.client.id);
+    if (r) recall = practice.recallToClient(r);
+    balance = await practice.balanceOf(id, profile.client.id);
+  } catch (_) {}
   res.json({
     client: store.toClient(profile.client),
     notes: profile.notes.map(store.noteToClient),
     documents: profile.documents.map(docsStore.toClient),
+    recall,
+    balance,
   });
 });
 
@@ -93,7 +106,10 @@ router.delete("/:id", async (req, res) => {
     }
   }
   const ok = await store.deleteClient(id, clientId);
-  if (ok) audit.record(id, "client.deleted", `"${row.name}" with ${documentsDeleted} document(s)`);
+  if (ok) {
+    try { await require("../practice/store").removeForClient(id, clientId); } catch (_) {}
+    audit.record(id, "client.deleted", `"${row.name}" with ${documentsDeleted} document(s)`);
+  }
   res.status(ok ? 200 : 404).json(ok ? { ok: true, documentsDeleted } : { error: "not found" });
 });
 

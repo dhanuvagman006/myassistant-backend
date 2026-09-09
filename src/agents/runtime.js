@@ -67,6 +67,12 @@ function systemPrompt(extra = "") {
     "starting it, never that it is done.\n" +
     "- If you need a detail to run a tool (a city, a date, a name), ask one " +
     "short question instead of guessing.\n" +
+    "- PRACTICE: schedule_patient_recall for recalls and next appointments or "
+    + "hearings (the assistant phones the patient beforehand when they have a "
+    + "number); record_patient_payment for 'X paid 500' or 'X owes 2000'; "
+    + "check_patient_dues for 'who has not paid'; send_patient_document for "
+    + "'send Ramesh his report on WhatsApp' — it opens the share sheet, so say "
+    + "it is READY to send, never that it was sent.\n" +
     "- DOCUMENTS: the user has two separate areas — their own documents and " +
     "per-client/patient case files. 'Save this in Manish's section/file', " +
     "'put it under patient Ravi', 'this belongs to Manish' about something " +

@@ -205,6 +205,24 @@ async function headlinesOf() {
  * @param {number} uid   verified positive user id
  * @param {{lat?:number,lng?:number,tzOffsetMin?:number}} opts
  */
+/** Recalls due in the next 2 days + who owes money. Empty for anyone who
+ *  never uses the practice features — the section simply doesn't appear. */
+async function practiceOf(uid, tzOffsetMin) {
+  const practice = require("../practice/store");
+  const db = require("../db");
+  const recalls = await practice.listRecalls(uid, { dueBefore: Date.now() + 2 * DAY_MS, limit: 6 });
+  const withNames = [];
+  for (const r of recalls) {
+    const c = await db.one("SELECT name FROM clients WHERE id = $1 AND user_id = $2", [r.client_id, uid]);
+    if (c) withNames.push({ name: c.name, note: r.note, dueAt: Number(r.due_at),
+      label: dueLabel(Number(r.due_at), tzOffsetMin) });
+  }
+  const dues = await practice.pendingDues(uid, 5);
+  const duesTotal = Math.round(dues.reduce((a, d) => a + Number(d.balance), 0) * 100) / 100;
+  if (!withNames.length && !dues.length) return null;
+  return { recalls: withNames, dues: dues.map((d) => ({ name: d.name, balance: Number(d.balance) })), duesTotal };
+}
+
 async function buildBrief(uid, opts = {}) {
   const tz = Number.isFinite(opts.tzOffsetMin) ? opts.tzOffsetMin : 330;
 
@@ -228,6 +246,7 @@ async function buildBrief(uid, opts = {}) {
       new Promise((r) => setTimeout(() => r(fallback), ms).unref?.()),
     ]);
 
+  const practice = await boxed(practiceOf(uid, tz), 2500, null);
   const [agenda, promises, messages, people, weather_line, headlines, screen_time] =
     await Promise.all([
       boxed(agendaOf(uid, tz), 3000, []),
@@ -243,6 +262,7 @@ async function buildBrief(uid, opts = {}) {
     name: profile?.user?.name ? String(profile.user.name).split(" ")[0] : null,
     weather_line,
     agenda,
+    practice,
     promises,
     messages,
     people,
@@ -267,6 +287,23 @@ function speakBrief(b) {
           : `, including ${first.title}`) +
         "."
     );
+  }
+  if (b.practice) {
+    if (b.practice.recalls.length) {
+      bits.push(
+        `Patient recalls: ${b.practice.recalls
+          .slice(0, 3)
+          .map((r) => `${r.name}${r.label ? ` ${r.label}` : ""}`)
+          .join(", ")}.`
+      );
+    }
+    if (b.practice.duesTotal > 0) {
+      bits.push(
+        `₹${b.practice.duesTotal} pending from ${b.practice.dues.length} ` +
+          `${b.practice.dues.length === 1 ? "person" : "people"}` +
+          (b.practice.dues[0] ? `, most from ${b.practice.dues[0].name}` : "") + "."
+      );
+    }
   }
   if (b.messages.length) {
     bits.push(

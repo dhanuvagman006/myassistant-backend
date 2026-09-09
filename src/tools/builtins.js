@@ -3590,6 +3590,227 @@ function registerBuiltins() {
     },
   });
 
+  /** Shared: resolve a spoken name to exactly one real client, or return a
+   *  tool error the model can act on (ask / say nobody matches). */
+  async function requireClient(userId, spokenName) {
+    const name = String(spokenName || "").trim();
+    if (!name) return { err: { ok: false, error: "client_name is required" } };
+    const r = await people.resolveByName(userId, name);
+    if (r.none) {
+      return { err: { ok: false, error: "no_such_client",
+        data: { searched: name, hint: "no saved client/patient by that name — nothing was done; offer to add them from the Clients screen" } } };
+    }
+    if (r.ambiguous) {
+      return { err: { ok: false, error: "ambiguous_client",
+        data: { candidates: r.ambiguous.map((c) => ({ id: c.id, name: c.name, kind: c.kind })) },
+        speak: "Which one do you mean: " + r.ambiguous.map((c) => c.name).join(" or ") + "?" } };
+    }
+    return { client: r.client };
+  }
+
+  registry.register({
+    name: "schedule_patient_recall",
+    description:
+      "Schedule a RECALL / follow-up / next appointment for one of the user's " +
+      "clients or patients — 'recall Ramesh in six months for cleaning', " +
+      "'Sharma's next hearing is October 3rd', 'call Manish back for review " +
+      "next Friday 10am'. The user gets a reminder when it is due, and when " +
+      "notify_patient is true the assistant itself PHONES the patient in the " +
+      "hours before to remind them (needs the patient's number on their card). " +
+      "Default notify_patient to true when the patient has a phone number " +
+      "unless the user says otherwise.",
+    risk: "medium",
+    inputSchema: {
+      type: "object",
+      properties: {
+        client_name: { type: "string", description: "The patient/client's name as spoken." },
+        due_at: { type: "string", description: "ISO-8601 datetime it is due. Resolve relative phrases ('in six months', 'next Friday 10am') yourself; default 10:00 when no time was given." },
+        note: { type: "string", description: "What the recall is for, e.g. 'cleaning', 'case hearing', 'review'." },
+        notify_patient: { type: "boolean", description: "Assistant phones the patient beforehand. Default true when they have a number." },
+      },
+      required: ["client_name", "due_at"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const practice = require("../practice/store");
+      const { client, err } = await requireClient(ctx.userId, args.client_name);
+      if (err) return err;
+      const due = parseUserTime(args.due_at, ctx.tzOffsetMin);
+      if (!due || due < Date.now() - 60_000) {
+        return { ok: false, error: "due_at must be a valid future datetime (ISO-8601)" };
+      }
+      const hasPhone = Boolean(String(client.phone || "").trim());
+      const notify = args.notify_patient !== false && hasPhone;
+      const recall = await practice.createRecall(ctx.userId, {
+        clientId: client.id,
+        note: args.note || "",
+        dueAt: due,
+        notifyPatient: notify,
+      });
+      // The professional's own nudge rides the normal reminder pipeline
+      // (push + alarm), so recalls never need a second delivery mechanism.
+      try {
+        const r = await reminders.create(
+          ctx.userId,
+          `Recall: ${client.name}${args.note ? ` — ${args.note}` : ""}`,
+          due
+        );
+        if (r) await practice.setReminderId(ctx.userId, recall.id, r.id);
+      } catch (_) {}
+      const when = new Date(due).toLocaleString("en-IN", {
+        day: "numeric", month: "short",
+        hour: "numeric", minute: "2-digit", timeZone: "Asia/Kolkata",
+      });
+      return {
+        ok: true,
+        data: { recall: practice.recallToClient(recall), client: { id: Number(client.id), name: client.name } },
+        speak:
+          `Recall for ${client.name} set for ${when}.` +
+          (notify ? " I'll phone them beforehand to remind them." :
+            args.notify_patient !== false && !hasPhone ? " I can't call them — there's no number on their card." : ""),
+      };
+    },
+  });
+
+  registry.register({
+    name: "complete_patient_recall",
+    description:
+      "Mark a client/patient's pending recall as DONE ('Ramesh came in, close " +
+      "his recall') or CANCELLED ('cancel Sharma's recall').",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        client_name: { type: "string" },
+        cancel: { type: "boolean", description: "true to cancel instead of completing" },
+      },
+      required: ["client_name"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const practice = require("../practice/store");
+      const { client, err } = await requireClient(ctx.userId, args.client_name);
+      if (err) return err;
+      const next = await practice.nextRecallFor(ctx.userId, client.id);
+      if (!next) return { ok: false, error: `${client.name} has no pending recall` };
+      await practice.closeRecall(ctx.userId, next.id, args.cancel ? "cancelled" : "done");
+      if (next.reminder_id) {
+        await reminders.setDone(ctx.userId, Number(next.reminder_id), true).catch(() => {});
+      }
+      return { ok: true, data: { closed: practice.recallToClient(next) },
+        speak: `${client.name}'s recall is ${args.cancel ? "cancelled" : "marked done"}.` };
+    },
+  });
+
+  registry.register({
+    name: "record_patient_payment",
+    description:
+      "Track money per client/patient — 'Ramesh paid 500' (entry_type paid), " +
+      "'Sharma owes 2000 for the filing' / 'bill Manish 1500' (entry_type due). " +
+      "Speaks the client's new outstanding balance back.",
+    risk: "medium",
+    inputSchema: {
+      type: "object",
+      properties: {
+        client_name: { type: "string" },
+        amount: { type: "number", description: "Positive amount in rupees." },
+        entry_type: { type: "string", enum: ["paid", "due"], description: "'paid' = they settled money, 'due' = they now owe this much more." },
+        note: { type: "string", description: "What it was for, if said." },
+      },
+      required: ["client_name", "amount", "entry_type"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const practice = require("../practice/store");
+      const { client, err } = await requireClient(ctx.userId, args.client_name);
+      if (err) return err;
+      const row = await practice.addLedger(ctx.userId, {
+        clientId: client.id, amount: args.amount, kind: args.entry_type, note: args.note,
+      });
+      if (!row) return { ok: false, error: "amount must be a positive number" };
+      const bal = await practice.balanceOf(ctx.userId, client.id);
+      const balLine = bal > 0 ? `They now owe ₹${bal}.` : bal < 0 ? `They are ₹${-bal} in credit.` : "They're fully settled.";
+      return { ok: true, data: { client: { id: Number(client.id), name: client.name }, balance: bal },
+        speak: `Noted — ${client.name} ${args.entry_type === "paid" ? "paid" : "owes"} ₹${args.amount}. ${balLine}` };
+    },
+  });
+
+  registry.register({
+    name: "check_patient_dues",
+    description:
+      "Outstanding money across clients/patients — 'who hasn't paid', 'how much " +
+      "does Ramesh owe', 'total pending dues'. Answer ONLY from this data.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        client_name: { type: "string", description: "One client's balance; omit for everyone who owes." },
+      },
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const practice = require("../practice/store");
+      if (args.client_name) {
+        const { client, err } = await requireClient(ctx.userId, args.client_name);
+        if (err) return err;
+        const bal = await practice.balanceOf(ctx.userId, client.id);
+        return { ok: true, data: { client: client.name, balance: bal },
+          speak: bal > 0 ? `${client.name} owes ₹${bal}.` : bal < 0 ? `${client.name} is ₹${-bal} in credit.` : `${client.name} is fully settled.` };
+      }
+      const rows = await practice.pendingDues(ctx.userId);
+      if (!rows.length) return { ok: true, data: [], speak: "Nobody owes you anything right now." };
+      const total = Math.round(rows.reduce((a, r) => a + Number(r.balance), 0) * 100) / 100;
+      const lines = rows.slice(0, 5).map((r) => `${r.name} ₹${Number(r.balance)}`);
+      return { ok: true, data: rows,
+        speak: `₹${total} pending across ${rows.length} ${rows.length === 1 ? "person" : "people"}: ${lines.join(", ")}.` };
+    },
+  });
+
+  registry.register({
+    name: "send_patient_document",
+    description:
+      "Send/share one of a client/patient's filed documents — 'send Ramesh his " +
+      "blood report on WhatsApp', 'share Sharma's contract'. Finds the document " +
+      "in that person's case file and opens the phone's share sheet with the " +
+      "real file attached; the user taps the app/chat to send it. Nothing is " +
+      "sent without that tap, so never claim it was sent — say it's ready to send.",
+    risk: "medium",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        client_name: { type: "string" },
+        description: { type: "string", description: "Which document, in the user's words ('blood report', 'latest x-ray'). Omit for the most recent one." },
+      },
+      required: ["client_name"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const { client, err } = await requireClient(ctx.userId, args.client_name);
+      if (err) return err;
+      const rows = await people.listClientDocuments(ctx.userId, client.id, 50);
+      if (!rows.length) return { ok: false, error: `${client.name} has no documents filed yet` };
+      let doc = rows[0];
+      const want = String(args.description || "").toLowerCase().replace(/[^\p{L}\p{N} ]/gu, " ")
+        .split(/\s+/).filter((w) => w.length >= 3);
+      if (want.length) {
+        let best = 0;
+        for (const r of rows) {
+          const hay = `${r.title} ${r.note} ${r.category} ${r.tags} ${r.summary}`.toLowerCase();
+          const hits = want.filter((w) => hay.includes(w)).length;
+          if (hits > best) { best = hits; doc = r; }
+        }
+      }
+      const shape = docs.toClient(doc);
+      return {
+        ok: true,
+        data: { client: { id: Number(client.id), name: client.name }, document: shape },
+        deviceAction: { type: "share_document", document: shape, client_name: client.name },
+        speak: `Here's ${client.name}'s ${shape.title || "document"} — pick the chat to send it.`,
+      };
+    },
+  });
+
   registry.register({
     name: "check_task_outcomes",
     description:
