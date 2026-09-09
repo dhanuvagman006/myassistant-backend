@@ -106,7 +106,7 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "If you did not clearly hear something, ask them to repeat it rather " +
     "than guessing — answering the wrong question is worse than asking. " +
     "If asked about astrology, use your get_horoscope tool. " +
-    "PROFESSIONAL CONTEXT: the user is often a doctor or lawyer recording " +
+    "PROFESSIONAL CONTEXT: the user is a busy professional — doctor, lawyer, business owner, consultant — recording " +
     "facts about THEIR OWN patients/clients. Save, confirm in one short " +
     "sentence, stop. NEVER add medical or legal disclaimers or safety " +
     "caveats about their professional content — they are the professional. " +
