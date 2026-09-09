@@ -1069,13 +1069,83 @@ function registerBuiltins() {
 
   registry.register({
     name: "list_reminders",
-    description: "List the user's upcoming reminders and tasks.",
+    description:
+      "The user's upcoming agenda: reminders, tasks, appointments AND " +
+      "patient/client recalls. USE THIS to answer 'do I have any meetings/" +
+      "appointments/anything tomorrow', 'what's on Friday', 'am I free on " +
+      "the 12th' — answer ONLY from what it returns (each entry carries a " +
+      "human-readable `when`). Pass `day` to filter to one day.",
     risk: "low",
-    inputSchema: { type: "object", properties: {} },
-    async execute(_args, ctx) {
+    inputSchema: {
+      type: "object",
+      properties: {
+        day: {
+          type: "string",
+          description:
+            "'today', 'tomorrow' or a YYYY-MM-DD date — only that user-local day. Omit for everything upcoming.",
+        },
+      },
+    },
+    async execute(args, ctx) {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
-      const list = await reminders.list(ctx.userId);
-      return { ok: true, data: list };
+      const tz = Number.isFinite(ctx.tzOffsetMin) ? ctx.tzOffsetMin : 330;
+      const localDay = (ms) => {
+        const d = new Date(ms + tz * 60_000);
+        return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+      };
+      let wantDay = null;
+      const dayArg = String(args.day || "").trim().toLowerCase();
+      if (dayArg === "today") wantDay = localDay(Date.now());
+      else if (dayArg === "tomorrow") wantDay = localDay(Date.now() + 86_400_000);
+      else if (/^\d{4}-\d{2}-\d{2}$/.test(dayArg)) wantDay = dayArg;
+
+      const humanize = (ms) => {
+        if (!Number.isFinite(ms) || ms <= 0) return "no set time";
+        const day = localDay(ms);
+        const rel =
+          day === localDay(Date.now()) ? "today" :
+          day === localDay(Date.now() + 86_400_000) ? "tomorrow" : null;
+        const t = new Date(ms).toLocaleString("en-IN", {
+          weekday: rel ? undefined : "short", day: rel ? undefined : "numeric",
+          month: rel ? undefined : "short",
+          hour: "numeric", minute: "2-digit", timeZone: "Asia/Kolkata",
+        });
+        return rel ? `${rel} ${t}` : t;
+      };
+
+      const rows = await reminders.list(ctx.userId);
+      const items = rows
+        .filter((r) => !r.done)
+        .map((r) => ({ kind: "reminder", text: r.text, dueAt: Number(r.due_at) || null,
+          when: humanize(Number(r.due_at)) }))
+        .filter((r) => !wantDay || (r.dueAt && localDay(r.dueAt) === wantDay));
+
+      // A professional's recalls ARE their appointments — include them.
+      try {
+        const practice = require("../practice/store");
+        const { one } = require("../db");
+        const recs = await practice.listRecalls(ctx.userId, { limit: 50 });
+        for (const r of recs) {
+          const due = Number(r.due_at);
+          if (wantDay && localDay(due) !== wantDay) continue;
+          const c = await one("SELECT name FROM clients WHERE id = $1 AND user_id = $2",
+            [r.client_id, ctx.userId]);
+          items.push({
+            kind: "recall",
+            text: `Recall: ${c?.name || "client"}${r.note ? ` — ${r.note}` : ""}`,
+            dueAt: due, when: humanize(due),
+          });
+        }
+      } catch (_) {}
+      items.sort((a, b) => (a.dueAt || Infinity) - (b.dueAt || Infinity));
+
+      if (!items.length) {
+        return { ok: true, data: [],
+          speak: wantDay
+            ? `Nothing scheduled ${dayArg === "today" || dayArg === "tomorrow" ? dayArg : "on " + wantDay}.`
+            : "Nothing scheduled." };
+      }
+      return { ok: true, data: items };
     },
   });
 

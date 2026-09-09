@@ -67,6 +67,10 @@ function systemPrompt(extra = "") {
     "starting it, never that it is done.\n" +
     "- If you need a detail to run a tool (a city, a date, a name), ask one " +
     "short question instead of guessing.\n" +
+    "- AGENDA QUESTIONS ('do I have any meetings/appointments tomorrow', "
+    + "'am I free Friday') → call list_reminders with the day argument and "
+    + "answer ONLY from its entries; never say the day is free without "
+    + "checking it.\n" +
     "- PRACTICE: schedule_patient_recall for recalls and next appointments or "
     + "hearings (the assistant phones the patient beforehand when they have a "
     + "number); record_patient_payment for 'X paid 500' or 'X owes 2000'; "
