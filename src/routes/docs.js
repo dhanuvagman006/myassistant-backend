@@ -97,12 +97,22 @@ router.post(
   if (!f || !f.buffer?.length) return res.status(400).json({ error: "file required" });
   if (!OK_MIME.has(f.mimetype)) return res.status(415).json({ error: `unsupported type ${f.mimetype}` });
 
-  const row = await docs.createDocument(id, {
-    buffer: f.buffer,
-    filename: f.originalname,
-    mime: f.mimetype,
-    note: req.body.note,
-  });
+  let row;
+  try {
+    row = await docs.createDocument(id, {
+      buffer: f.buffer,
+      filename: f.originalname,
+      mime: f.mimetype,
+      note: req.body.note,
+    });
+  } catch (e) {
+    if (e.code === "DOC_LIMIT") {
+      return res.status(409).json({
+        error: "You've reached the saved-document limit. Delete a few you no longer need, then try again — nothing is ever removed on its own.",
+      });
+    }
+    throw e;
+  }
 
   // PROFESSIONAL MODE: file the document under a client/patient.
   //  • explicit — the app sent clientId (upload from a case-file screen);

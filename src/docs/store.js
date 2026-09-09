@@ -19,7 +19,7 @@ const fs = require("fs");
 const path = require("path");
 const { query, one, run } = require("../db");
 
-const MAX_PER_USER = 100; // oldest doc evicted when full
+const MAX_PER_USER = 5000; // safety valve only — never auto-deletes (see createDocument)
 
 const filesRoot = path.join(
   process.env.DATA_DIR || path.join(__dirname, "..", "..", "data"),
@@ -62,13 +62,16 @@ function guessCategory(note) {
 
 /** Save the file bytes + a metadata row. Returns the new row. */
 async function createDocument(userId, { buffer, filename, mime, note = "" }) {
-  // Cap: evict the oldest document (and its file) when the user is full.
+  // NEVER auto-delete a document the user saved. The old code silently
+  // evicted the OLDEST document once a user hit 100 — a professional's
+  // earliest evidence vanished without them ever asking. Documents are
+  // only ever removed when the user (or account deletion) asks. The cap
+  // is now just a runaway-safety valve: refuse the NEW upload with a
+  // clear message rather than destroying an old one.
   if ((await countDocuments(userId)) >= MAX_PER_USER) {
-    const old = await one(
-      "SELECT * FROM documents WHERE user_id = $1 ORDER BY created_at ASC LIMIT 1",
-      [userId]
-    );
-    if (old) await deleteDocument(userId, old.id);
+    const err = new Error("document limit reached");
+    err.code = "DOC_LIMIT";
+    throw err;
   }
   const row = await one(
     `INSERT INTO documents (user_id, filename, mime, size, path, note, category, created_at)
