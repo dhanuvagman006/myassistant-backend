@@ -103,7 +103,15 @@ const EXTRACT_PROMPT = [
 const DELIVERY_RX =
   /^\s*(please\s+|can you\s+|hey\s+\w+[,\s]+)*(tell|say|inform|message|text|send|call|ask|let)\b/i;
 
+// A command TO the assistant to manage reminders is not a promise — the
+// reminder tool already files it, and extracting it too created a
+// duplicate, dateless "promise" for every "set a reminder that I need
+// to…" sentence.
+const REMINDER_CMD_RX =
+  /\b(set|add|create|make|put|schedule)\b.{0,24}\breminders?\b|\breminders?\b.{0,16}\b(for|to|that)\b|\bremind me\b/i;
+
 function extractAsync(userId, text, { source = "voice" } = {}) {
+  if (REMINDER_CMD_RX.test(text)) return;
   if (!userId || !text) return;
   if (DELIVERY_RX.test(text) && !/\bremind me\b/i.test(text)) return;
   if (!PROMISE_RX.test(text)) return; // no model call for an ordinary sentence

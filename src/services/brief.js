@@ -103,7 +103,11 @@ async function promisesOf(uid, tzOffsetMin) {
       text:
         (c.owed_to ? `To ${c.owed_to}: ` : "") +
         String(c.text || "").slice(0, 140),
-      due_label: dueLabel(Number(c.due_at), tzOffsetMin),
+      // An UNDATED promise has no deadline — calling it "overdue" (via
+      // Number(null) → 0 → in the past) told users their fresh promises
+      // were already late.
+      due_label:
+        Number(c.due_at) > 0 ? dueLabel(Number(c.due_at), tzOffsetMin) : null,
     }));
   } catch (_) {
     return [];
