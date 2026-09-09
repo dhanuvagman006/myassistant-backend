@@ -85,7 +85,37 @@ async function publish({ tmpPath, versionCode, versionName, changelog }) {
     uploadedAt: new Date().toISOString(),
   };
   writeMeta(meta);
+
+  // ANNOUNCE the release. An app that has been sitting in memory for days
+  // may not run its update check for a long time — the push wakes every
+  // registered device so the user opens the app and gets the offer. Fire
+  // and forget: a push hiccup must never fail the publish.
+  announceUpdate(meta).catch((e) =>
+    console.warn("update announce failed (publish unaffected):", e.message)
+  );
   return meta;
+}
+
+async function announceUpdate(meta) {
+  const db = require("../db");
+  const push = require("../services/push");
+  const rows = await db.query(
+    "SELECT id, fcm_token FROM users WHERE fcm_token <> '' AND status = 'active'"
+  );
+  let sent = 0;
+  for (const u of rows) {
+    try {
+      const r = await push.send(
+        u.fcm_token,
+        `Update ready — version ${meta.versionName}`,
+        (Array.isArray(meta.changelog) && meta.changelog[0]) ||
+          "Open the app to install the latest version.",
+        { kind: "app_update", versionCode: String(meta.versionCode) }
+      );
+      if (r.ok) sent++;
+    } catch (_) {}
+  }
+  console.log(`update ${meta.versionName}: announced to ${sent}/${rows.length} device(s)`);
 }
 
 // ---- public download ----
