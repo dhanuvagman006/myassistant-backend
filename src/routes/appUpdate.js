@@ -88,9 +88,11 @@ async function publish({ tmpPath, versionCode, versionName, changelog }) {
 
   // ANNOUNCE the release. An app that has been sitting in memory for days
   // may not run its update check for a long time — the push wakes every
-  // registered device so the user opens the app and gets the offer. Fire
-  // and forget: a push hiccup must never fail the publish.
-  announceUpdate(meta).catch((e) =>
+  // registered device so the user opens the app and gets the offer.
+  // AWAITED: the publish script's node process exits right after publish()
+  // resolves, so a fire-and-forget loop was killed before a single send.
+  // A push hiccup still never fails the publish.
+  await announceUpdate(meta).catch((e) =>
     console.warn("update announce failed (publish unaffected):", e.message)
   );
   return meta;
@@ -130,4 +132,4 @@ router.get("/latest.apk", (_req, res) => {
   res.sendFile(file);
 });
 
-module.exports = { router, readMeta, publish, APK_DIR };
+module.exports = { router, readMeta, publish, announceUpdate, APK_DIR };
