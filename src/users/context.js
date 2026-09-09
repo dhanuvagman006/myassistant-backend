@@ -129,6 +129,24 @@ async function updateProfile(userId, fields = {}) {
   }
   if (!sets.length) return getProfile(userId);
   await run(`UPDATE users SET ${sets.join(", ")} WHERE id = $1`, vals);
+
+  // ONE DEVICE, ONE OWNER. A phone's FCM token identifies the handset, not
+  // the account: after an app update or a sign-out/sign-in as somebody
+  // else, the SAME token was left sitting on the previous user's row too.
+  // Two rows then held one token, so pushes for either account rang the
+  // same phone, and the day FCM called that token dead the stale-prune
+  // (`WHERE fcm_token=$1`) wiped it from BOTH rows — push silently died
+  // for everyone on that device. The newest registrant owns it; every
+  // other row is cleared and re-registers on its own next app open.
+  const tok = String(fields.fcm_token ?? "").trim();
+  if (tok) {
+    try {
+      await run("UPDATE users SET fcm_token = '', fcm_token_at = 0 WHERE fcm_token = $1 AND id <> $2",
+        [tok.slice(0, 512), userId]);
+    } catch (e) {
+      console.warn("push: could not release token from other accounts:", e.message);
+    }
+  }
   return getProfile(userId);
 }
 

@@ -213,6 +213,7 @@ const NAV = [
   ["#/users", "Users"],
   ["#/analytics", "Analytics"],
   ["#/activity", "Activity"],
+  ["#/outcomes", "Task outcomes"],
   ["#/broadcast", "Notifications"],
   ["#/flags", "Feature flags"],
   ["#/debug", "System & debug"],
@@ -261,6 +262,7 @@ async function render() {
     if (hash.startsWith("#/users")) return await viewUsers();
     if (hash.startsWith("#/analytics")) return await viewAnalytics();
     if (hash.startsWith("#/activity")) return await viewActivity();
+    if (hash.startsWith("#/outcomes")) return await viewOutcomes();
     if (hash.startsWith("#/broadcast")) return await viewBroadcast();
     if (hash.startsWith("#/flags")) return await viewFlags();
     if (hash.startsWith("#/debug")) return await viewDebug();
@@ -615,6 +617,87 @@ async function viewActivity() {
     h("div", { class: "card table-card" },
       h("table", {},
         h("thead", {}, h("tr", {}, h("th", {}, "When"), h("th", {}, "User"), h("th", {}, "Action"), h("th", {}, "Detail"))),
+        body),
+      moreBtn)));
+  await load(false);
+}
+
+/* ------------------------------------------------------------------ */
+/* Task outcomes — success / failure of what users asked for            */
+/* ------------------------------------------------------------------ */
+
+const OUTCOME_LABEL = {
+  requested: "Requested", dialing: "Dialing", connected: "Connected", unconfirmed: "Unconfirmed",
+  completed: "Completed", no_answer: "No answer", failed: "Failed", cancelled: "Cancelled",
+};
+function outcomePill(status) {
+  const ok = status === "connected" || status === "completed";
+  const bad = status === "failed" || status === "no_answer" || status === "cancelled";
+  const color = ok ? "#15803d" : bad ? "#b91c1c" : status === "unconfirmed" ? "#b45309" : "#475569";
+  const bg = ok ? "rgba(21,128,61,.12)" : bad ? "rgba(185,28,28,.12)" : status === "unconfirmed" ? "rgba(180,83,9,.12)" : "rgba(71,85,105,.12)";
+  return h("span", { style: `display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600;color:${color};background:${bg};` }, OUTCOME_LABEL[status] || status);
+}
+
+async function viewOutcomes() {
+  shell("#/outcomes", loading());
+  let q = "", status = "", kind = "", offset = 0;
+  const body = h("tbody", {});
+  const summaryRow = h("div", { style: "display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:16px;" });
+  const moreBtn = h("button", { class: "btn", style: "margin:12px;" }, "Load more");
+
+  function kpi(label, value, tone) {
+    return h("div", { class: "card", style: "padding:14px 16px;" },
+      h("div", { class: "sub", style: "font-size:12px;" }, label),
+      h("div", { style: `font-size:24px;font-weight:700;${tone ? "color:" + tone + ";" : ""}` }, String(value)));
+  }
+
+  async function load(append) {
+    const d = await api(`/outcomes?q=${encodeURIComponent(q)}&status=${status}&kind=${kind}&offset=${offset}&limit=50&days=30`);
+    if (!append) {
+      const s = d.summary || {};
+      summaryRow.replaceChildren(
+        kpi("Tasks (30d)", s.total || 0),
+        kpi("Succeeded", s.succeeded || 0, "#15803d"),
+        kpi("Failed", s.failed || 0, "#b91c1c"),
+        kpi("Unconfirmed", s.unconfirmed || 0, "#b45309"),
+        kpi("Pending", s.pending || 0));
+    }
+    const rows = d.outcomes.map((x) =>
+      h("tr", {},
+        h("td", { class: "sub", style: "white-space:nowrap;" }, timeAgo(x.updatedAt)),
+        h("td", {}, x.userId ? h("a", { href: "#/user/" + x.userId }, x.userName || "#" + x.userId) : h("span", { class: "faint" }, "—")),
+        h("td", {}, x.kind === "agent_call" ? "Relay call" : x.kind === "call" ? "Phone call" : x.kind === "document" ? "Document" : x.kind),
+        h("td", {}, x.target || h("span", { class: "faint" }, "—")),
+        h("td", {}, outcomePill(x.status)),
+        h("td", { class: "sub" }, [x.reason, x.detail].filter(Boolean).join(" · "))));
+    if (!append) body.replaceChildren();
+    if (rows.length) body.append(...rows);
+    else if (!append) body.append(h("tr", {}, h("td", { colspan: 6, class: "chart-empty" }, "No tasks recorded yet.")));
+    moreBtn.disabled = d.outcomes.length < 50;
+  }
+  moreBtn.addEventListener("click", () => { offset += 50; load(true).catch((e) => toast(e.message, true)); });
+
+  const reload = () => { offset = 0; load(false).catch((x) => toast(x.message, true)); };
+  const search = h("input", {
+    class: "input", style: "max-width:240px;", placeholder: "Filter by contact, reason…",
+    oninput: debounce((e) => { q = e.target.value.trim(); reload(); }, 300),
+  });
+  const sel = (opts, onchange) =>
+    h("select", { class: "input", style: "max-width:170px;", onchange: (e) => onchange(e.target.value) },
+      ...opts.map(([v, l]) => h("option", { value: v }, l)));
+  const statusSel = sel([["", "All statuses"], ["failed", "Failed"], ["no_answer", "No answer"], ["unconfirmed", "Unconfirmed"],
+    ["connected", "Connected"], ["completed", "Completed"], ["dialing", "Dialing"], ["requested", "Requested"]], (v) => { status = v; reload(); });
+  const kindSel = sel([["", "All kinds"], ["call", "Phone calls"], ["agent_call", "Relay calls"], ["document", "Documents"]], (v) => { kind = v; reload(); });
+
+  shell("#/outcomes", h("div", {},
+    h("div", { class: "page-head" },
+      h("div", {}, h("div", { class: "page-title" }, "Task outcomes"),
+        h("div", { class: "page-sub" }, "What users asked the assistant to do, and what actually happened — as reported by the phone and the telephony provider.")),
+      h("div", { style: "display:flex; gap:8px; flex-wrap:wrap;" }, search, statusSel, kindSel)),
+    summaryRow,
+    h("div", { class: "card table-card" },
+      h("table", {},
+        h("thead", {}, h("tr", {}, h("th", {}, "When"), h("th", {}, "User"), h("th", {}, "Kind"), h("th", {}, "Target"), h("th", {}, "Result"), h("th", {}, "Reason / detail"))),
         body),
       moreBtn)));
   await load(false);

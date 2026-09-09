@@ -23,6 +23,7 @@ const audit = require("../audit/log");
 // fact silently never landed.
 const memory = require("../agents/memory");
 const clients = require("../clients/store");
+const outcomes = require("../outcomes/store");
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -97,6 +98,36 @@ router.post(
   if (!f || !f.buffer?.length) return res.status(400).json({ error: "file required" });
   if (!OK_MIME.has(f.mimetype)) return res.status(415).json({ error: `unsupported type ${f.mimetype}` });
 
+  // PROFESSIONAL MODE: WHERE does this document belong? Decided BEFORE the
+  // file is written so a document can never land in the wrong area:
+  //  • explicit — the app sent clientId (upload from a case-file screen, or
+  //    the agent resolved the patient first). Unknown id → 404, NOTHING is
+  //    saved (silently falling back to "My Documents" is how a patient's
+  //    report ended up in the user's own folder).
+  //  • person   — the agent/capture flow named whose document it is. Matched
+  //    against the user's REAL clients only; a confident, unambiguous hit
+  //    files it there. No match → it stays a personal document and the
+  //    response says so honestly (no placeholder patient is ever created).
+  //  • note     — legacy: the spoken save-note names a known client.
+  let targetClient = null;
+  let clientCandidates = null; // names when the person was ambiguous
+  const explicit = Number(req.body.clientId);
+  if (Number.isInteger(explicit) && explicit > 0) {
+    targetClient = await clients.getClient(id, explicit);
+    if (!targetClient) return res.status(404).json({ error: "client not found — nothing was saved" });
+  } else {
+    const spoken = String(req.body.person || "").trim() || String(req.body.note || "").trim();
+    if (spoken) {
+      try {
+        const r = await clients.resolveByName(id, spoken);
+        if (r.client) targetClient = r.client;
+        else if (r.ambiguous) clientCandidates = r.ambiguous.map((c) => ({ id: c.id, name: c.name }));
+      } catch (e) {
+        console.warn("docs client resolve skipped:", e.message);
+      }
+    }
+  }
+
   let row;
   try {
     row = await docs.createDocument(id, {
@@ -107,36 +138,24 @@ router.post(
     });
   } catch (e) {
     if (e.code === "DOC_LIMIT") {
-      return res.status(409).json({
-        error: "You've reached the saved-document limit. Delete a few you no longer need, then try again — nothing is ever removed on its own.",
-      });
+      outcomes.create(id, { kind: "document", target: "", detail: f.originalname || "", status: "failed" })
+        .then((r) => r && outcomes.update(id, r.id, { status: "failed", reason: "document limit reached" })).catch(() => {});
+      return res.status(409).json({ error: e.message });
     }
-    throw e;
+    console.error("docs create failed:", e.message);
+    return res.status(500).json({ error: "could not save the document" });
   }
 
-  // PROFESSIONAL MODE: file the document under a client/patient.
-  //  • explicit — the app sent clientId (upload from a case-file screen);
-  //  • spoken   — the save-note names a known client ("this is patient
-  //    Ramesh's blood report") → auto-link to the confident match only.
   let linkedClient = null;
-  try {
-    const explicit = Number(req.body.clientId);
-    if (Number.isInteger(explicit) && explicit > 0) {
-      if (await clients.linkDocument(id, row.id, explicit)) {
-        linkedClient = await clients.getClient(id, explicit);
-      }
-    } else if (req.body.note) {
-      const matches = await clients.findByName(id, req.body.note, 2);
-      // Auto-link ONLY on an unambiguous, high-confidence hit — a wrong
-      // guess in a patient file is worse than no guess.
-      if (matches.length && matches[0].score >= 80 &&
-          (matches.length === 1 || matches[1].score < matches[0].score)) {
-        await clients.linkDocument(id, row.id, matches[0].client.id);
-        linkedClient = matches[0].client;
-      }
+  if (targetClient) {
+    if (await clients.linkDocument(id, row.id, targetClient.id)) {
+      linkedClient = targetClient;
+    } else {
+      // The link is the whole point of a case-file upload — if it cannot
+      // be made the save must not be reported as one. Roll back.
+      await docs.deleteDocument(id, row.id).catch(() => {});
+      return res.status(500).json({ error: "could not file the document under that client" });
     }
-  } catch (e) {
-    console.warn("docs client-link skipped:", e.message);
   }
 
   // MEMORY-PEOPLE link. The voice tools (lookup_person, find_document,
@@ -160,14 +179,25 @@ router.post(
   // receipt" must not hold the conversation hostage to a slow AI call.
   // Analysis (title/summary/tags + the memory fact) completes in the
   // background and shows up on the next GET /docs.
+  // Re-read so the app gets the row WITH client_id — the truth of where it
+  // was filed, straight from the database, not an optimistic echo.
+  const saved = (await docs.getDocument(id, row.id)) || row;
   res.json({
     ok: true,
-    document: docs.toClient(row),
+    document: docs.toClient(saved),
     analyzed: false,
     // Filing confirmation for the app ("Saved to Ramesh's file").
+    filedUnder: linkedClient ? "client" : "personal",
     client: linkedClient ? { id: linkedClient.id, name: linkedClient.name } : null,
+    clientCandidates,
     person: linkedPerson,
   });
+  outcomes.create(id, {
+    kind: "document",
+    target: linkedClient ? linkedClient.name : "My documents",
+    detail: linkedClient ? `filed under ${linkedClient.name}` : "saved to My documents",
+    status: "completed",
+  }).catch(() => {});
   audit.record(
     id,
     "document.saved",
@@ -179,11 +209,15 @@ router.post(
   await analyzeInBackground(id, row, f.buffer, f.mimetype);
 });
 
+// GET /docs?scope=personal|clients|all — the app's "My Documents" screen
+// asks for `personal` (documents NOT filed under any client). Default is
+// `all` so existing/other consumers keep seeing everything.
 router.get("/", async (req, res) => {
   const id = uid(req, res);
   if (id === null) return;
-  const rows = await docs.listDocuments(id);
-  res.json({ documents: rows.map(docs.toClient) });
+  const scope = ["personal", "clients", "all"].includes(req.query.scope) ? req.query.scope : "all";
+  const rows = await docs.listDocuments(id, 500, scope);
+  res.json({ documents: rows.map(docs.toClient), scope });
 
   // SELF-HEAL: docs whose analysis never landed (saved while the Gemini
   // key was missing or broken) OR that were analyzed before full-text

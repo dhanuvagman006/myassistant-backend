@@ -28,6 +28,8 @@
  * so a dropped SSE connection replays from Last-Event-ID seamlessly.
  */
 
+const outcomes = require("../outcomes/store");
+const audit = require("../audit/log");
 const router = require("express").Router();
 const crypto = require("crypto");
 const multer = require("multer");
@@ -246,8 +248,15 @@ function detectVideoMode(text) {
   return VIDEO_MODE_RX.test(t);
 }
 
+// "Save this IN/UNDER Manish's section/file" is a FILING command about a
+// document that already exists — handled by the agent's
+// file_document_under_client tool, never by reopening the camera.
+const FILE_UNDER_RX =
+  /\b(in|into|under|to)\s+(the\s+)?[\p{L}][\p{L}.'-]*(\s+[\p{L}][\p{L}.'-]*)?('s)?\s+(section|file|folder|records?|profile|case|account)\b|\bunder\s+(patient|client)\b/iu;
+
 function detectSaveDocument(text) {
   const t = String(text || "").trim();
+  if (FILE_UNDER_RX.test(t)) return null;
   const hasSaveish =
     SAVE_VERB_RX.test(t) || SCAN_VERB_RX.test(t) || NOTE_THIS_RX.test(t);
   if (!hasSaveish) return null;
@@ -887,9 +896,10 @@ async function startAgentCall(s, contact, task, req) {
     });
 
     let id;
+    const uidNum = Number(s.userSub) > 0 ? Number(s.userSub) : null;
     try {
       const out = await agentCall.start({
-        userId: Number(s.userSub) > 0 ? Number(s.userSub) : null,
+        userId: uidNum,
         userName: s.userName ? String(s.userName).split(" ")[0] : null,
         toNumber: number,
         contactName: name,
@@ -898,6 +908,13 @@ async function startAgentCall(s, contact, task, req) {
       });
       id = out.id;
     } catch (e) {
+      if (uidNum) {
+        outcomes.create(uidNum, {
+          kind: "agent_call", target: name, detail: task, status: "failed", path: "relay",
+          sessionId: s.sid || "",
+        }).then((r) => r && outcomes.update(uidNum, r.id, { status: "failed", reason: e?.code === "quota" ? "daily relay-call limit reached" : String(e?.message || e?.code || "could not start") })).catch(() => {});
+        audit.record(uidNum, "call.failed", `${name}: relay call could not start (${e?.code || "error"})`);
+      }
       if (e?.code === "quota") {
         state(s, "speaking");
         emit(s, {
@@ -917,16 +934,24 @@ async function startAgentCall(s, contact, task, req) {
 
     emit(s, { type: "call_status", status: "dialing", contact_name: name });
     state(s, "in_call");
+    let outcomeRow = null;
+    if (uidNum) {
+      outcomeRow = await outcomes.create(uidNum, {
+        kind: "agent_call", target: name, detail: task, status: "dialing", path: "relay",
+        externalId: id, sessionId: s.sid || "",
+      }).catch(() => null);
+    }
 
     // Poll the in-process call store until it reaches a terminal state.
     const deadline = Date.now() + 3 * 60 * 1000;
     let terminal = null;
     let result = null;
+    let lostRecord = false;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 3000));
       if (s.cancelled) return;
       const st = agentCall.status(id);
-      if (!st) break;
+      if (!st) { lostRecord = true; break; }
       if (st.state === "completed" || st.state === "no_answer" || st.state === "failed") {
         terminal = st.state;
         result = st.result;
@@ -935,6 +960,15 @@ async function startAgentCall(s, contact, task, req) {
     }
 
     emit(s, { type: "call_status", status: terminal || "ended", contact_name: name });
+    if (uidNum && outcomeRow) {
+      const finalStatus = terminal || "failed";
+      outcomes.update(uidNum, outcomeRow.id, {
+        status: finalStatus,
+        reason: terminal ? "" : lostRecord ? "call record lost (server restarted mid-call)" : "no result within 3 minutes",
+        detail: result ? String(result).slice(0, 400) : task,
+      }).catch(() => {});
+      audit.record(uidNum, terminal === "completed" ? "call.placed" : "call.failed", `${name}: relay ${finalStatus}`);
+    }
 
     // No answer → offer ONE retry through the normal confirmation card.
     if (terminal === "no_answer" && (s.agentRetries || 0) < 1) {
@@ -981,6 +1015,64 @@ async function startAgentCall(s, contact, task, req) {
   }
 }
 
+// POST /assistant/:sid/call_result — the phone reports what REALLY happened
+// after it was asked to dial: { outcome_id?, status, reason?, contact_name? }
+//   status: connected | unconfirmed | failed | cancelled
+// Updates the outcome row, audits it, tells the agent (a [SYSTEM] line in
+// the session history so the next turn knows), and on failure says so to
+// the user right away so nobody is left believing a call was made.
+router.post("/:sid/call_result", async (req, res) => {
+  const s = getSession(req, res);
+  if (!s) return;
+  const b = req.body || {};
+  const status = String(b.status || "");
+  if (!["connected", "unconfirmed", "failed", "cancelled", "dialing"].includes(status)) {
+    return res.status(400).json({ error: "invalid status" });
+  }
+  res.json({ ok: true });
+  const uid = Number(s.userSub) > 0 ? Number(s.userSub) : null;
+  const id = Number(b.outcome_id) || s.pendingCallOutcomeId || null;
+  let row = null;
+  try {
+    if (uid && id) row = await outcomes.update(uid, id, { status, reason: b.reason || "" });
+    if (uid && !row) {
+      row = await outcomes.create(uid, {
+        kind: "call", target: b.contact_name || "", status, path: "device", sessionId: s.sid || "",
+      });
+      if (row && b.reason) row = await outcomes.update(uid, row.id, { status, reason: b.reason });
+    }
+  } catch (e) {
+    console.warn("call_result record failed:", e.message);
+  }
+  if (status !== "dialing") s.pendingCallOutcomeId = null;
+  const who = row?.target || b.contact_name || "the contact";
+  if (uid) {
+    audit.record(
+      uid,
+      status === "failed" ? "call.failed" : status === "connected" ? "call.placed" : "call.status",
+      `${who}: ${status}${b.reason ? ` — ${String(b.reason).slice(0, 120)}` : ""}`
+    );
+  }
+  emit(s, { type: "call_status", status, contact_name: who, outcome_id: id, reason: b.reason || null });
+  // The agent must know the truth on its next turn.
+  const line =
+    status === "connected" ? `[SYSTEM] The call to ${who} connected on the phone.` :
+    status === "unconfirmed" ? `[SYSTEM] The dialer opened for ${who}, but the phone never confirmed the call started — treat it as NOT confirmed.` :
+    status === "failed" ? `[SYSTEM] ERROR: the call to ${who} FAILED${b.reason ? ` — ${b.reason}` : ""}. No call happened.` :
+    status === "cancelled" ? `[SYSTEM] The call to ${who} was cancelled.` : null;
+  if (line) {
+    s.history = [...(s.history || []), { role: "user", content: line }].slice(-16);
+  }
+  if (status === "failed") {
+    state(s, "speaking");
+    emit(s, {
+      type: "assistant_message",
+      text: `The call to ${who} didn't go through${b.reason ? ` — ${b.reason}` : ""}.`,
+    });
+    state(s, "completed");
+  }
+});
+
 // POST /assistant/:sid/choose — pick from the ambiguous list.
 router.post("/:sid/choose", (req, res) => {
   const s = getSession(req, res);
@@ -993,7 +1085,29 @@ router.post("/:sid/choose", (req, res) => {
   s.ambiguous = null;
   if (chosen) {
     if (s.pendingCallTask) return startAgentCall(s, chosen, s.pendingCallTask, req);
-    return askCallConfirm(s, chosen);
+    // The user just TAPPED this person out of a duplicate-name list — that
+    // tap IS the confirmation. Asking "Call Manish Kumar?" straight after
+    // would cost a second tap for no new information, so dial now and let
+    // the phone report the real outcome on /call_result.
+    (async () => {
+      let outcomeId = null;
+      try {
+        const row = await outcomes.create(Number(s.userSub) > 0 ? Number(s.userSub) : null, {
+          kind: "call", target: chosen.name || "", detail: chosen.phone ? `to ${chosen.phone}` : "",
+          status: "dialing", path: "device", sessionId: s.sid || "",
+        });
+        outcomeId = row ? Number(row.id) : null;
+      } catch (e) {
+        console.warn("outcome create failed:", e.message);
+      }
+      s.pendingCallOutcomeId = outcomeId;
+      emit(s, { type: "contact_found", contact: chosen });
+      emit(s, { type: "place_call", contact: chosen, outcome_id: outcomeId });
+      emit(s, { type: "call_status", status: "dialing", contact_name: chosen.name || "", outcome_id: outcomeId });
+      state(s, "in_call");
+      state(s, "completed");
+    })();
+    return;
   }
   state(s, "speaking");
   emit(s, {
@@ -1023,15 +1137,28 @@ router.post("/:sid/confirm", (req, res) => {
     return;
   }
   if (pending.action === "call") {
-    // The APP places the call (it holds the phone + contact permissions);
-    // these events drive its status UI while it does.
-    emit(s, {
-      type: "call_status",
-      status: "dialing",
-      contact_name: pending.contact?.name || "",
-    });
-    state(s, "in_call");
-    state(s, "completed");
+    // The APP places the call (it holds the phone + contact permissions).
+    // The server records the attempt as `dialing` and waits for the phone
+    // to report the REAL result on POST /:sid/call_result — it never
+    // declares the call done on its own (that used to be the case, and the
+    // agent then confirmed calls that never started).
+    (async () => {
+      const who = pending.contact?.name || "";
+      let outcomeId = null;
+      try {
+        const row = await outcomes.create(Number(s.userSub) > 0 ? Number(s.userSub) : null, {
+          kind: "call", target: who, detail: pending.contact?.phone ? `to ${pending.contact.phone}` : "",
+          status: "dialing", path: "device", sessionId: s.sid || "",
+        });
+        outcomeId = row ? Number(row.id) : null;
+      } catch (e) {
+        console.warn("outcome create failed:", e.message);
+      }
+      s.pendingCallOutcomeId = outcomeId;
+      emit(s, { type: "call_status", status: "dialing", contact_name: who, outcome_id: outcomeId });
+      state(s, "in_call");
+      state(s, "completed");
+    })();
     return;
   }
 

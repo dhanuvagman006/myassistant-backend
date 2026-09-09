@@ -400,6 +400,41 @@ router.get("/api/analytics", async (_req, res) => {
 /* Activity (audit trail explorer)                                     */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Task outcomes — what users asked for and what REALLY happened        */
+/* ------------------------------------------------------------------ */
+
+router.get("/api/outcomes", async (req, res) => {
+  const outcomes = require("../outcomes/store");
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 365);
+  try {
+    const out = await outcomes.adminList({
+      q: String(req.query.q || "").trim(),
+      status: String(req.query.status || ""),
+      kind: String(req.query.kind || ""),
+      userId: parseInt(req.query.user_id, 10),
+      limit: Math.min(parseInt(req.query.limit, 10) || 50, 200),
+      offset: Math.max(parseInt(req.query.offset, 10) || 0, 0),
+      sinceMs: Date.now() - days * 86400000,
+    });
+    const h = out.histogram;
+    const sum = (...k) => k.reduce((a, x) => a + (h[x] || 0), 0);
+    res.json({
+      outcomes: out.rows.map((r) => ({ ...outcomes.toClient(r), userId: r.user_id, userName: r.user_name })),
+      summary: {
+        total: Object.values(h).reduce((a, b) => a + b, 0),
+        succeeded: sum("connected", "completed"),
+        failed: sum("failed", "no_answer", "cancelled"),
+        unconfirmed: sum("unconfirmed"),
+        pending: sum("requested", "dialing"),
+        byStatus: h,
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get("/api/activity", async (req, res) => {
   const q = String(req.query.q || "").trim();
   const userId = parseInt(req.query.user_id, 10);

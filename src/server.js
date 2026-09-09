@@ -296,6 +296,12 @@ app.use("/docs", appAuth, require("./routes/docs"));
 // ("pull up patient Ramesh's file"). See routes/clients.js.
 app.use("/clients", appAuth, require("./routes/clients"));
 
+// TASK OUTCOMES — what the assistant was asked to do and what REALLY
+// happened (call connected / failed and why…). Written by the device and by
+// the relay webhooks; read by the agent, the app's Activity screen and the
+// admin panel. See routes/outcomes.js and outcomes/store.js.
+app.use("/outcomes", appAuth, require("./routes/outcomes"));
+
 // Group C — nearby places search (ratings, distance, call & directions).
 app.use("/places", appAuth, require("./routes/places"));
 

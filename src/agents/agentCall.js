@@ -384,6 +384,7 @@ async function exotelPassthru(params) {
         lang: rec.lang,
       });
       rec.state = "completed";
+      settle(rec);
     } catch (e) {
       console.error("exotel passthru transcription failed:", e.message);
     }
@@ -459,6 +460,7 @@ async function start({ userId, userName, toNumber, contactName, task, lang }) {
     if (userId) bumpDaily(userId);
   } catch (e) {
     rec.state = "failed";
+    settle(rec);
     rec.result = `I couldn't start the call to ${contactName} just now.`;
     throw { code: "failed", message: String(e.message || e) };
   }
@@ -541,6 +543,7 @@ async function onGather(rec, params) {
     lang: rec.lang,
   });
   rec.state = "completed";
+  settle(rec);
 
   // Say thanks and hang up.
   return (
@@ -553,7 +556,23 @@ async function onGather(rec, params) {
 }
 
 /** Hangup/status callback: mark terminal state if not already resolved. */
+/** Mirror a relay call's terminal state into task_outcomes (the durable,
+ *  admin-visible record — the in-memory `calls` map dies with the process). */
+function settle(rec) {
+  try {
+    if (!["completed", "failed", "no_answer"].includes(rec.state)) return;
+    require("../outcomes/store")
+      .updateByExternalId(rec.id, { status: rec.state, detail: rec.result ? String(rec.result).slice(0, 400) : rec.task })
+      .catch(() => {});
+  } catch (_) {}
+}
+
 function onHangup(rec, params) {
+  onHangupInner(rec, params);
+  settle(rec);
+}
+
+function onHangupInner(rec, params) {
   const callStatus = String(params.CallStatus || params.Status || "").toLowerCase();
   const hangupCause = String(params.HangupCause || "").toLowerCase();
 

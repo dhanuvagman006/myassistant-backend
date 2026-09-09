@@ -566,7 +566,9 @@ async function buildToolContext({ userId, messages, tzOffsetMin = 330, lat, lng 
       // ---- SAVED DOCUMENTS RECALL ("show me the report from my last
       // hospital visit") — pure FTS lookup, zero extra AI/network calls.
       // Skipped when a client turn already carried that person's documents. ----
-      if (userId && !clientHandled && RE.docRecall.test(msg)) {
+      const isFilingCmd =
+        /\b(save|file|put|move|add|attach|store|keep)\b.{0,40}\b(in|into|under|to)\b.{0,40}\b(section|file|folder|records?|profile|case)\b/i.test(msg);
+      if (userId && !clientHandled && !isFilingCmd && RE.docRecall.test(msg)) {
         const { hits, exact } = await docsStore.searchDocuments(userId, msg, 3);
         if (hits.length) {
           for (const d of hits) documents.push(docsStore.toClient(d));

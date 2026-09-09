@@ -106,6 +106,14 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "If you did not clearly hear something, ask them to repeat it rather " +
     "than guessing — answering the wrong question is worse than asking. " +
     "If asked about astrology, use your get_horoscope tool. " +
+    "DOCUMENTS: the user has two separate areas — their own documents and " +
+    "per-client/patient case files. 'Save this in Manish's section/file', " +
+    "'put it under patient Ravi' about something ALREADY captured or saved → " +
+    "call file_document_under_client (do NOT open the camera again). " +
+    "'Scan/save Manish's report' with nothing captured yet → capture_document " +
+    "with person set. Never invent a client: if the tool says nobody matches, " +
+    "say so and offer to add them; if ambiguous, ask which one. Confirm a " +
+    "filing ONLY from an ok:true tool result — never before. " +
     // Google Search is opt-in now (see the setup payload), so pointing at
     // it unconditionally would name a tool that is not there. web_search is
     // ours, is measurable, and reports honestly when unconfigured.

@@ -19,7 +19,17 @@ const fs = require("fs");
 const path = require("path");
 const { query, one, run } = require("../db");
 
-const MAX_PER_USER = 5000; // safety valve only — never auto-deletes (see createDocument)
+// Hard cap per account. NEVER silently evicts: a user's saved document is
+// only ever removed by an explicit delete (theirs) — a full account gets a
+// clear error on upload instead (see DocumentLimitError).
+const MAX_PER_USER = 5000; // safety valve only — never auto-deletes
+
+class DocumentLimitError extends Error {
+  constructor() {
+    super("You've reached the saved-document limit. Delete a few you no longer need, then try again — nothing is ever removed on its own.");
+    this.code = "DOC_LIMIT";
+  }
+}
 
 const filesRoot = path.join(
   process.env.DATA_DIR || path.join(__dirname, "..", "..", "data"),
@@ -62,17 +72,7 @@ function guessCategory(note) {
 
 /** Save the file bytes + a metadata row. Returns the new row. */
 async function createDocument(userId, { buffer, filename, mime, note = "" }) {
-  // NEVER auto-delete a document the user saved. The old code silently
-  // evicted the OLDEST document once a user hit 100 — a professional's
-  // earliest evidence vanished without them ever asking. Documents are
-  // only ever removed when the user (or account deletion) asks. The cap
-  // is now just a runaway-safety valve: refuse the NEW upload with a
-  // clear message rather than destroying an old one.
-  if ((await countDocuments(userId)) >= MAX_PER_USER) {
-    const err = new Error("document limit reached");
-    err.code = "DOC_LIMIT";
-    throw err;
-  }
+  if ((await countDocuments(userId)) >= MAX_PER_USER) throw new DocumentLimitError();
   const row = await one(
     `INSERT INTO documents (user_id, filename, mime, size, path, note, category, created_at)
      VALUES ($1, $2, $3, $4, '', $5, $6, $7) RETURNING id`,
@@ -118,10 +118,20 @@ async function getDocument(userId, id) {
   return one("SELECT * FROM documents WHERE id = $1 AND user_id = $2", [id, userId]);
 }
 
-async function listDocuments(userId, limit = 100) {
+/**
+ * @param scope 'all' (default — search/recall tools see everything the
+ *   user owns) | 'personal' (My Documents: NOT filed under any client) |
+ *   'clients' (only documents filed in a case file). The two areas of the
+ *   app are strictly separate — a patient's report must never surface in
+ *   the user's own document list and vice versa.
+ */
+async function listDocuments(userId, limit = 200, scope = "all") {
+  const where =
+    scope === "personal" ? " AND client_id IS NULL" :
+    scope === "clients" ? " AND client_id IS NOT NULL" : "";
   return query(
-    "SELECT * FROM documents WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2",
-    [userId, Math.min(limit, 200)]
+    `SELECT * FROM documents WHERE user_id = $1${where} ORDER BY created_at DESC LIMIT $2`,
+    [userId, Math.min(limit, 500)]
   );
 }
 
@@ -210,7 +220,7 @@ function fallbackTitle(d) {
         : d.mime === "application/pdf"
           ? "Document"
           : "Photo";
-  const date = new Date(d.created_at).toLocaleDateString("en-IN", {
+  const date = new Date(Number(d.created_at)).toLocaleDateString("en-IN", {
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -254,4 +264,5 @@ module.exports = {
   toClient,
   fallbackTitle,
   MAX_PER_USER,
+  DocumentLimitError,
 };

@@ -623,8 +623,10 @@ function registerBuiltins() {
   registry.register({
     name: "associate_document",
     description:
-      "Link the most recent (or a named) document to a person and/or case — " +
-      "'this document belongs to Ravi's case'.",
+      "Link the most recent (or a named) document to a person in memory and/or " +
+      "a case — 'this document belongs to Ravi's case'. If the person is one of " +
+      "the user's saved clients/patients the document is filed in that case " +
+      "file (prefer file_document_under_client for that).",
     risk: "medium",
     inputSchema: {
       type: "object",
@@ -647,6 +649,22 @@ function registerBuiltins() {
         if (!latest) return { ok: false, error: "no documents saved yet" };
         id = latest.id;
       }
+      // If the named person is one of the user's REAL clients/patients the
+      // document belongs in that case file — same path as
+      // file_document_under_client, so either tool the model picks lands
+      // the file in the right place (or asks when the name is ambiguous).
+      if (args.person) {
+        const r = await people.resolveByName(ctx.userId, args.person);
+        if (r.ambiguous) {
+          return {
+            ok: false,
+            error: "ambiguous_client",
+            data: { candidates: r.ambiguous.map((c) => ({ id: c.id, name: c.name, kind: c.kind })) },
+            speak: "Which one do you mean: " + r.ambiguous.map((c) => c.name).join(" or ") + "?",
+          };
+        }
+        if (r.client) return fileUnderClient(ctx.userId, id, r.client);
+      }
       const out = await intel.associate(ctx.userId, id, {
         person: args.person || null,
         caseTitle: args.case_title || null,
@@ -655,6 +673,110 @@ function registerBuiltins() {
         return { ok: false, error: "name a person or case to link it to" };
       }
       return { ok: true, data: out, speak: "Linked." };
+    },
+  });
+
+  /** Shared by file_document_under_client and associate_document: move a
+   *  document into a client's case file and VERIFY it landed there before
+   *  reporting success. Returns a tool result. */
+  async function fileUnderClient(userId, docId, client) {
+    const before = await docs.getDocument(userId, docId);
+    if (!before) return { ok: false, error: "that document no longer exists" };
+    const linked = await people.linkDocument(userId, docId, client.id);
+    const after = linked ? await docs.getDocument(userId, docId) : null;
+    if (!after || Number(after.client_id) !== Number(client.id)) {
+      return { ok: false, error: `could not file the document under ${client.name} — it was NOT moved` };
+    }
+    const shape = docs.toClient(after);
+    const movedFrom = before.client_id && Number(before.client_id) !== Number(client.id)
+      ? await people.getClient(userId, before.client_id)
+      : null;
+    return {
+      ok: true,
+      data: {
+        client: { id: Number(client.id), name: client.name, kind: client.kind },
+        document: shape,
+        movedFrom: movedFrom ? movedFrom.name : null,
+      },
+      // The app refreshes the case file / document lists on this event.
+      deviceAction: {
+        type: "document_filed",
+        client: { id: Number(client.id), name: client.name, kind: client.kind },
+        document: shape,
+      },
+      speak: `Filed under ${client.name}.`,
+    };
+  }
+
+  registry.register({
+    name: "file_document_under_client",
+    description:
+      "File a saved document into one of the user's EXISTING clients/patients' " +
+      "case files — 'save this in Manish's section', 'put this under patient " +
+      "Ravi', 'this report belongs to Manish', 'move it to Sharma's file'. " +
+      "'This/it' means the document the user just captured or saved (omit " +
+      "document_id). Resolves the name against the user's REAL client list: " +
+      "it never creates a client. If the name matches nobody, tell the user so " +
+      "and offer to add the person from the Clients screen; if it is ambiguous, " +
+      "ask which one. Do NOT open the camera for this — the document already " +
+      "exists. Report success ONLY when this tool returns ok:true.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        client_name: { type: "string", description: "The patient/client's name as the user said it." },
+        client_id: { type: "integer", description: "Use instead of client_name when the id is already known (e.g. from an ambiguity answer)." },
+        document_id: { type: "integer", description: "Omit for the most recently saved/captured document." },
+      },
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const { one } = require("../db");
+
+      // 1. Which client — by id, else by an unambiguous name match.
+      let client = null;
+      if (args.client_id) {
+        client = await people.getClient(ctx.userId, args.client_id);
+        if (!client) return { ok: false, error: "no client with that id" };
+      } else {
+        const name = String(args.client_name || "").trim();
+        if (!name) return { ok: false, error: "client_name or client_id is required" };
+        const r = await people.resolveByName(ctx.userId, name);
+        if (r.none) {
+          const total = await people.countClients(ctx.userId);
+          return {
+            ok: false,
+            error: "no_such_client",
+            data: {
+              searched: name,
+              hint: total
+                ? `none of the user's ${total} saved clients/patients is named "${name}". Nothing was filed and no record was created — offer to add them from the Clients screen first.`
+                : "the user has no saved clients/patients yet. Nothing was filed — tell them to add the person from the Clients screen first.",
+            },
+          };
+        }
+        if (r.ambiguous) {
+          return {
+            ok: false,
+            error: "ambiguous_client",
+            data: { candidates: r.ambiguous.map((c) => ({ id: c.id, name: c.name, kind: c.kind })) },
+            speak: "Which one do you mean: " + r.ambiguous.map((c) => c.name).join(" or ") + "?",
+          };
+        }
+        client = r.client;
+      }
+
+      // 2. Which document — explicit id, else the newest one.
+      let docId = args.document_id;
+      if (!docId) {
+        const latest = await one(
+          `SELECT id FROM documents WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,
+          [ctx.userId]
+        );
+        if (!latest) return { ok: false, error: "no documents saved yet — capture or upload one first" };
+        docId = latest.id;
+      }
+      return fileUnderClient(ctx.userId, docId, client);
     },
   });
 
@@ -1187,21 +1309,45 @@ function registerBuiltins() {
       },
     },
     async execute(args, ctx) {
-      // Ensure the person exists in memory NOW, so "what do you know about
-      // Prasant" works even if the capture is cancelled — and the upload
-      // that follows links to this same record by name.
-      if (args.person && ctx.userId) {
+      let clientId = args.client_id || null;
+      let clientName = null;
+      if (args.person && ctx.userId && !clientId) {
+        // Is this one of the user's REAL clients/patients? Resolve BEFORE the
+        // camera opens so the shot is filed straight into the right case
+        // file — and so an ambiguous name is asked about now, not guessed.
+        try {
+          const r = await people.resolveByName(ctx.userId, args.person);
+          if (r.ambiguous) {
+            return {
+              ok: false,
+              error: "ambiguous_client",
+              data: { candidates: r.ambiguous.map((c) => ({ id: c.id, name: c.name, kind: c.kind })) },
+              speak: "Which one do you mean: " + r.ambiguous.map((c) => c.name).join(" or ") + "?",
+            };
+          }
+          if (r.client) {
+            clientId = Number(r.client.id);
+            clientName = r.client.name;
+          }
+        } catch (_) {}
+      }
+      if (args.person && ctx.userId && !clientId) {
+        // Not a client: a plain person in memory ("Prasant's MRI"). Ensure
+        // the person exists NOW so "what do you know about Prasant" works
+        // even if the capture is cancelled, and the upload links by name.
         try {
           await mem.upsertPerson(ctx.userId, { name: args.person });
         } catch (_) {}
       }
       return {
         ok: true,
+        data: clientId ? { filesUnder: { id: clientId, name: clientName || args.person || null } } : { filesUnder: "personal" },
         deviceAction: {
           type: "capture_document",
           note: args.note || null,
           person: args.person || null,
-          client_id: args.client_id || null,
+          client_id: clientId,
+          client_name: clientName,
           source: args.source || "ask",
         },
         speak: args.source === "gallery" ? "Please select the file." : "Opening the capture screen.",
@@ -3441,6 +3587,39 @@ function registerBuiltins() {
         data: calls,
         speak: `${calls.length === 1 ? "One call" : `${calls.length} calls`}. ` + lines.join(". "),
       };
+    },
+  });
+
+  registry.register({
+    name: "check_task_outcomes",
+    description:
+      "The REAL result of things the user asked the assistant to do on the " +
+      "phone — did the call to X connect or fail (and why), was the document " +
+      "filed. Use for 'did my call go through', 'did you call Allen', 'what " +
+      "happened with that call', 'was that saved'. Answer ONLY from this data; " +
+      "a status of requested/dialing means the result is not known yet.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", enum: ["call", "document", "all"], description: "Default all." },
+        limit: { type: "integer", description: "How many recent tasks (default 5)." },
+      },
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const outcomes = require("../outcomes/store");
+      const max = Math.min(Number(args.limit) || 5, 20);
+      let rows = await outcomes.list(ctx.userId, { limit: max * 3 });
+      if (args.kind === "call") rows = rows.filter((r) => r.kind === "call" || r.kind === "agent_call");
+      else if (args.kind === "document") rows = rows.filter((r) => r.kind === "document");
+      rows = rows.slice(0, max);
+      if (!rows.length) return { ok: true, data: [], speak: "I don't have any recorded tasks yet." };
+      const lines = rows.map((r) => {
+        const when = new Date(Number(r.updated_at)).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+        return `${when}: ${outcomes.describe(r)}`;
+      });
+      return { ok: true, data: rows.map(outcomes.toClient), speak: lines.join(". ") };
     },
   });
 

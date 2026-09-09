@@ -5,7 +5,7 @@
  *   POST   /clients   {name, kind?, …}    → { client }
  *   GET    /clients/:id                   → { client, notes, documents }  (full case file)
  *   PATCH  /clients/:id  {any field}      → { client }
- *   DELETE /clients/:id                   → { ok }   (docs are UNLINKED, never deleted)
+ *   DELETE /clients/:id                   → { ok, documentsDeleted } (its documents go with it)
  *   POST   /clients/:id/notes   {text}    → { note }
  *   DELETE /clients/:id/notes/:noteId     → { ok }
  *   POST   /clients/:id/docs/:docId       → { ok }   link an existing saved document
@@ -19,6 +19,7 @@ const router = require("express").Router();
 const store = require("../clients/store");
 const docsStore = require("../docs/store");
 const audit = require("../audit/log");
+const memory = require("../agents/memory");
 
 function uid(req, res) {
   let sub = req.user?.sub;
@@ -71,13 +72,29 @@ router.patch("/:id", async (req, res) => {
   res.json({ client: store.toClient(row) });
 });
 
+// Deleting a case file deletes ITS documents too (the app's confirmation
+// dialog says so explicitly). They belong to the patient's area, not the
+// user's own — silently "unlinking" them used to dump a patient's reports
+// into My Documents, which is exactly the cross-contamination the two
+// areas must never have. This is an explicit user action; nothing else in
+// the system (logout, reinstall, sync) ever reaches this code.
 router.delete("/:id", async (req, res) => {
   const id = uid(req, res);
   if (id === null) return;
-  const row = await store.getClient(id, Number(req.params.id));
-  const ok = await store.deleteClient(id, Number(req.params.id));
-  if (ok) audit.record(id, "client.deleted", `"${row?.name}" (documents kept, unlinked)`);
-  res.status(ok ? 200 : 404).json(ok ? { ok: true } : { error: "not found" });
+  const clientId = Number(req.params.id);
+  const row = await store.getClient(id, clientId);
+  if (!row) return res.status(404).json({ error: "not found" });
+  const linked = await store.listClientDocuments(id, clientId, 100);
+  let documentsDeleted = 0;
+  for (const d of linked) {
+    if (await docsStore.deleteDocument(id, d.id)) {
+      documentsDeleted++;
+      if (d.title) await memory.deleteFactsContaining(id, `"${d.title}"`).catch(() => {});
+    }
+  }
+  const ok = await store.deleteClient(id, clientId);
+  if (ok) audit.record(id, "client.deleted", `"${row.name}" with ${documentsDeleted} document(s)`);
+  res.status(ok ? 200 : 404).json(ok ? { ok: true, documentsDeleted } : { error: "not found" });
 });
 
 /* ---------------- notes ---------------- */

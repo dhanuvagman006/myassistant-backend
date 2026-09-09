@@ -13,7 +13,16 @@
 const { query, one, run } = require("../db");
 
 const MAX_PER_USER = 500; // generous; a busy practice, not a CRM
-const KINDS = new Set(["patient", "client", "student", "customer", "other"]);
+
+// The professional kinds. The same `clients` table also holds the
+// assistant's PEOPLE memory ("Ravi is my friend" → kind 'other', see
+// src/memory/service.js). Those are NOT case files: they must never show
+// up in Clients & patients, never receive a filed document, and never be
+// matched by "save this under Manish". Every read in this store is
+// therefore restricted to CASE_KINDS.
+const CASE_KINDS = ["patient", "client", "student", "customer"];
+const KINDS = new Set(CASE_KINDS);
+const CASE_FILTER = `kind IN (${CASE_KINDS.map((k) => `'${k}'`).join(",")}) AND archived = 0`;
 
 const clean = (s, n) => String(s ?? "").trim().slice(0, n);
 
@@ -27,7 +36,7 @@ function cleanKind(k) {
 /* ------------------------------------------------------------------ */
 
 async function countClients(userId) {
-  return (await one("SELECT COUNT(*)::int AS n FROM clients WHERE user_id = $1", [userId])).n;
+  return (await one(`SELECT COUNT(*)::int AS n FROM clients WHERE user_id = $1 AND ${CASE_FILTER}`, [userId])).n;
 }
 
 async function createClient(userId, { name, kind, phone, email, summary, tags }) {
@@ -46,12 +55,12 @@ async function createClient(userId, { name, kind, phone, email, summary, tags })
 }
 
 async function getClient(userId, id) {
-  return one("SELECT * FROM clients WHERE id = $1 AND user_id = $2", [Number(id), userId]);
+  return one(`SELECT * FROM clients WHERE id = $1 AND user_id = $2 AND ${CASE_FILTER}`, [Number(id), userId]);
 }
 
 async function listClients(userId, limit = 200) {
   return query(
-    "SELECT * FROM clients WHERE user_id = $1 ORDER BY updated_at DESC LIMIT $2",
+    `SELECT * FROM clients WHERE user_id = $1 AND ${CASE_FILTER} ORDER BY updated_at DESC LIMIT $2`,
     [userId, Math.min(Number(limit) || 200, MAX_PER_USER)]
   );
 }
@@ -219,6 +228,59 @@ async function findByName(userId, spoken, limit = 3) {
   return scored.slice(0, limit);
 }
 
+/**
+ * Deterministic "which client did they mean?" for WRITES (filing a
+ * document, adding a note). Unlike findByName — which returns ranked
+ * candidates for a search UI — this returns exactly one of:
+ *   { client }                 a single confident match
+ *   { ambiguous: [clients…] }  two or more plausible people → ask, never guess
+ *   { none: true }             nobody matches → the caller must NOT invent one
+ *
+ * A confident match is score ≥ 80 (full name or every name word present)
+ * that clearly beats the runner-up. A weaker best hit (a prefix or a
+ * single word of a two-word name) is treated as ambiguous when others
+ * are close, or as a single match only when it's the ONLY candidate and
+ * the spoken text is nothing but that name (e.g. "Manish" for "Manish
+ * Kumar").
+ */
+async function resolveByName(userId, spoken) {
+  const matches = await findByName(userId, spoken, 6);
+  if (!matches.length) return { none: true };
+
+  const words = (c) =>
+    String(c.name || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(/\s+/);
+  // a's name words are all contained in b's ("Manish" ⊂ "Manish Sharma")
+  const subsetOf = (a, b) => {
+    const wb = new Set(words(b));
+    return words(a).every((w) => wb.has(w));
+  };
+
+  // Everyone whose name genuinely appears (fully or by a real name word).
+  const plausible = matches.filter((m) => m.score >= 40);
+  if (!plausible.length) {
+    // Only prefix hits ("Rames" → "Ramesh Gowda"): never file on a guess —
+    // surface the candidate(s) for the user to confirm.
+    return { ambiguous: matches.slice(0, 3).map((m) => m.client) };
+  }
+  if (plausible.length === 1) return { client: plausible[0].client };
+
+  const full = plausible.filter((m) => m.score === 100);
+  if (full.length) {
+    // The user said a whole name. If one full match CONTAINS every other
+    // full match ("Manish Sharma" ⊇ "Manish") it is the most specific
+    // thing they said — pick it, provided no partial match remains that
+    // is not itself covered by it.
+    const longest = full.reduce((a, b) => (words(b.client).length > words(a.client).length ? b : a));
+    const othersCovered = plausible.every(
+      (m) => m === longest || subsetOf(m.client, longest.client)
+    );
+    if (othersCovered) return { client: longest.client };
+  }
+  // "Manish" when there is a Manish AND a Manish Sharma — genuinely
+  // ambiguous: ask, never pick.
+  return { ambiguous: plausible.slice(0, 4).map((m) => m.client) };
+}
+
 /* ------------------------------------------------------------------ */
 /* Full profile (the "case file")                                      */
 /* ------------------------------------------------------------------ */
@@ -257,10 +319,10 @@ function noteToClient(n) {
 }
 
 module.exports = {
-  MAX_PER_USER,
+  MAX_PER_USER, CASE_KINDS,
   countClients, createClient, getClient, listClients, updateClient, deleteClient,
   addNote, listNotes, deleteNote,
   linkDocument, listClientDocuments,
-  findByName, getProfile,
+  findByName, resolveByName, getProfile,
   toClient, noteToClient,
 };
