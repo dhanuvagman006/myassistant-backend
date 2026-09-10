@@ -193,9 +193,12 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   // sit in front of every decision — this is the judgment layer (§13/§14).
   if (ctx.userId && ctx.extraSystem === undefined) {
     try {
-      const [block, mem] = await Promise.all([
+      const [block, mem, recent] = await Promise.all([
         require("../users/context").contextBlock(ctx.userId),
         require("../agents/memory").memoryBlock(ctx.userId),
+        // Continuity across sessions: what was said minutes ago, so a
+        // fresh session never re-asks what it just answered.
+        require("../memory/recent").recentBlock(ctx.userId),
       ]);
       // The user's clock, so "tomorrow 5 pm" resolves in THEIR zone and
       // tool datetimes carry the right offset (bare ones read as UTC).
@@ -208,7 +211,7 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
         `${new Date(Date.now() + tz * 60_000).toISOString().replace("T", " ").slice(0, 16)} (UTC${off}). ` +
         `When passing any datetime to a tool, use the user's LOCAL time with ` +
         `this offset written explicitly, e.g. 2026-09-04T17:00:00${off}.`;
-      const joined = [nowLine, block, mem].filter(Boolean).join("\n");
+      const joined = [nowLine, block, mem, recent].filter(Boolean).join("\n");
       if (joined) ctx = { ...ctx, extraSystem: "\n\n" + joined };
     } catch (_) {}
   }
@@ -272,11 +275,17 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
     if (out.text) spoken.push(out.text.trim());
 
     if (!out.functionCalls.length) {
-      return {
-        text: spoken.join(" ").trim(),
-        deviceActions,
-        toolResults,
-      };
+      {
+        const finalText = spoken.join(" ").trim();
+        const recent = require("../memory/recent");
+        recent.append(ctx.userId, "user", userText);
+        recent.append(ctx.userId, "assistant", finalText);
+        return {
+          text: finalText,
+          deviceActions,
+          toolResults,
+        };
+      }
     }
 
     // Record the model's turn (any preamble text plus its tool calls) so
@@ -343,8 +352,12 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   // Ran out of rounds — answer with whatever was said/produced rather
   // than looping forever.
   const last = toolResults[toolResults.length - 1];
+  const finalText = spoken.join(" ").trim() || (last && last.speak ? last.speak : "");
+  const recent = require("../memory/recent");
+  recent.append(ctx.userId, "user", userText);
+  recent.append(ctx.userId, "assistant", finalText);
   return {
-    text: spoken.join(" ").trim() || (last && last.speak ? last.speak : ""),
+    text: finalText,
     deviceActions,
     toolResults,
   };

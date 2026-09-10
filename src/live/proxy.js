@@ -341,11 +341,14 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       // Profile + standing rules + remembered facts — account-level, so
       // logging in on a new phone brings the same memory with it.
       try {
-        const [ctxBlock, memBlock] = await Promise.all([
+        const [ctxBlock, recentBlock, memBlock] = await Promise.all([
           require("../users/context").contextBlock(uid),
+          require("../memory/recent").recentBlock(uid),
           require("../agents/memory").memoryBlock(uid),
         ]);
-        personalContext = [ctxBlock, memBlock].filter(Boolean).join("\n");
+        personalContext = [ctxBlock, memBlock, recentBlock]
+          .filter(Boolean)
+          .join("\n");
       } catch (_) {}
       
 
@@ -392,6 +395,18 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     if (Number(user?.sub) > 0) {
       require("../commitments/service").extractAsync(Number(user.sub), t, { source: "voice" });
       require("../agents/memory").extractAndStore(Number(user.sub), t);
+      require("../memory/recent").append(Number(user.sub), "user", t);
+    }
+  };
+  // The model's spoken turn, accumulated the same way and flushed at the
+  // turn boundary — this is what makes the NEXT session remember what
+  // this one said ("you have a meeting with Allen…").
+  let modelBuf = "";
+  const flushModelTurn = () => {
+    const t = modelBuf.trim();
+    modelBuf = "";
+    if (t && Number(user?.sub) > 0) {
+      require("../memory/recent").append(Number(user.sub), "assistant", t);
     }
   };
   let pendingApproval = null;
@@ -827,6 +842,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     }
     if (sc.outputTranscription?.text) {
       flushUserTurn(); // model is replying — the user's turn is over
+      modelBuf += sc.outputTranscription.text;
       appWs.send(
         JSON.stringify({
           type: "output_transcript",
@@ -836,6 +852,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     }
     if (sc.turnComplete) {
       flushUserTurn();
+      flushModelTurn();
       appWs.send(JSON.stringify({ type: "turn_complete" }));
     }
   });
