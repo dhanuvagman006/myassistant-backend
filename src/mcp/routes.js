@@ -37,6 +37,120 @@ async function owned(userId, id) {
   ]);
 }
 
+/**
+ * CURATED CATALOG — one-tap connections for non-technical users. A blank
+ * "add server URL" form is developer furniture; these cards are the
+ * product. Free/no-signup entries first; keyed ones say exactly which
+ * single token to paste and where to get it. Server-side so new entries
+ * reach every installed app without an update.
+ */
+const CATALOG = [
+  {
+    id: "fetch",
+    name: "Web page reader",
+    description:
+      "Lets your assistant open and read any link you mention — articles, " +
+      "reports, product pages — and answer from what's on them.",
+    category: "Knowledge",
+    transport: "http",
+    config: { url: "https://remote.mcpservers.org/fetch/mcp" },
+    auth: { type: "none" },
+  },
+  {
+    id: "zerodha-kite",
+    name: "Zerodha trading",
+    description:
+      "For Zerodha account holders: live portfolio, positions and order " +
+      "placement by voice. Free with your Zerodha account — you log in " +
+      "once in the conversation when first used.",
+    category: "Finance",
+    transport: "sse",
+    config: { url: "https://mcp.kite.trade/sse" },
+    auth: { type: "none" },
+  },
+  {
+    id: "notion",
+    name: "Notion workspace",
+    description:
+      "Read and update your Notion pages and databases — notes, trackers, " +
+      "client records. Needs one integration token from notion.so/my-integrations.",
+    category: "Productivity",
+    transport: "http",
+    config: { url: "https://mcp.notion.com/mcp" },
+    auth: {
+      type: "bearer",
+      label: "Notion integration token",
+      hint: "Create a free internal integration at notion.so/my-integrations and paste its secret.",
+    },
+  },
+  {
+    id: "github",
+    name: "GitHub",
+    description:
+      "Repositories, issues and pull requests by voice. Needs a personal " +
+      "access token from github.com/settings/tokens.",
+    category: "Developer",
+    transport: "http",
+    config: { url: "https://api.githubcopilot.com/mcp/" },
+    auth: {
+      type: "bearer",
+      label: "GitHub personal access token",
+      hint: "Create a fine-grained token at github.com/settings/tokens and paste it.",
+    },
+  },
+];
+
+// GET /mcp/catalog — the curated one-tap list (no user data involved).
+router.get("/catalog", (_req, res) => {
+  res.json({ catalog: CATALOG });
+});
+
+// POST /mcp/catalog/:id/connect { token? } — add a catalog entry as this
+// user's server, with the pasted token (if any) stored encrypted as an
+// Authorization header secret. Reuses the exact add-server path.
+router.post("/catalog/:id/connect", async (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+  const entry = CATALOG.find((c) => c.id === req.params.id);
+  if (!entry) return res.status(404).json({ error: "unknown catalog entry" });
+  const token = String(req.body?.token || "").trim();
+  if (entry.auth.type === "bearer" && !token) {
+    return res.status(400).json({ error: `${entry.auth.label} required` });
+  }
+  const secrets =
+    entry.auth.type === "bearer"
+      ? { headers: { Authorization: `Bearer ${token}` } }
+      : null;
+  try {
+    const row = await one(
+      `INSERT INTO mcp_servers (user_id, name, transport, config, secrets_enc, enabled, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,1,$6,$6)
+       ON CONFLICT (user_id, lower(name)) DO UPDATE
+         SET transport=$3, config=$4, secrets_enc=$5, enabled=1, updated_at=$6
+       RETURNING *`,
+      [user, entry.name, entry.transport, JSON.stringify(entry.config),
+       secrets ? schema.encryptSecrets(secrets) : null, now()]
+    );
+    // Connect right away so the card shows truth, not hope — same call
+    // shape as the manual connect route: (user, ROW, decrypted secrets),
+    // never-throwing, and the outcome persisted on the row.
+    const out = await manager.connect(user, row, secrets || {});
+    const saved = await one(
+      `UPDATE mcp_servers SET status=$3, last_error=$4, tools_cache=$5,
+         last_connected_at=CASE WHEN $3='connected' THEN $6 ELSE last_connected_at END,
+         updated_at=$6
+       WHERE user_id=$1 AND id=$2 RETURNING *`,
+      [user, row.id, out.status, out.error || "", JSON.stringify(out.tools || []), now()]
+    );
+    res.json({
+      server: schema.toClient(saved || row, manager.statusOf(user, row.id)),
+      status: { ok: out.status === "connected", error: out.error || null, tools: (out.tools || []).length },
+    });
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e).slice(0, 200) });
+  }
+});
+
 // GET /mcp/servers
 router.get("/servers", async (req, res) => {
   const user = requireUser(req, res);
