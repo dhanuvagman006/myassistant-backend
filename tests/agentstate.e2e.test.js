@@ -16,6 +16,7 @@ process.env.DATABASE_URL =
   "postgres://myassistant:localdev@localhost:5432/myassistant";
 
 const assert = require("assert");
+const fs = require("fs");
 const db = require("../src/db");
 const sessionState = require("../src/agents/sessionState");
 const inputQuality = require("../src/agents/inputQuality");
@@ -673,6 +674,125 @@ console.log("\nexecution record");
     const text = actions.argsText({ query: "weather", api_key: "sk-secret-value" });
     assert.match(text, /weather/);
     assert.ok(!text.includes("sk-secret-value"), "a secret reached the ledger");
+  });
+
+  /* ================================================================ */
+  /* 13. THE INVARIANTS ARE WIRED, NOT JUST WRITTEN DOWN              */
+  /*     The audit found the state machine was largely write-only:    */
+  /*     takePending, activeEntity, setEntity and clarificationFor    */
+  /*     had zero callers. A passing test over an API production      */
+  /*     never reaches proves nothing, so these assert the wiring.    */
+  /* ================================================================ */
+  console.log("\nwired invariants");
+
+  test("E — a claim is caught in every language the product speaks", () => {
+    // Tester sessions run in English, Hindi, Kannada and Tulu. An
+    // English-only pattern let a false claim through in the other three.
+    const cases = [
+      ["Calling Ravi now.", "call"],
+      ["ರವಿಗೆ ಕರೆ ಮಾಡುತ್ತಿದ್ದೇನೆ.", "call"],
+      ["मैं रवि को कॉल कर रहा हूँ।", "call"],
+      ["ഞാൻ വിളിക്കുന്നു.", "call"],
+      ["ಇನ್‌ಸ್ಟಾಗ್ರಾಮ್ ತೆರೆಯುತ್ತಿದ್ದೇನೆ.", "open"],
+      ["இன்ஸ்டாகிராம் திறக்கிறேன்.", "open"],
+      ["मैसेज भेज दिया।", "message"],
+      ["ಅಲಾರಂ ಇಟ್ಟಿದ್ದೇನೆ.", "remind"],
+      ["సంగీతం ప్లే చేస్తున్నాను.", "play"],
+      ["Shall I call him?", null],
+      ["I called her yesterday.", null],
+    ];
+    for (const [text, want] of cases) {
+      assert.strictEqual(claimCheck.classify(text), want,
+        `classify(${JSON.stringify(text)}) should be ${want}`);
+    }
+  });
+
+  test("E — an unsupported claim in Kannada is corrected, not spoken", () => {
+    const v = claimCheck.check("ರವಿಗೆ ಕರೆ ಮಾಡುತ್ತಿದ್ದೇನೆ.", []);
+    assert.strictEqual(v.ok, false, "a Kannada false claim passed unchecked");
+    assert.match(v.text, /couldn't start that call/i);
+  });
+
+  test("G — a resolved contact becomes the entity pronouns refer to", () => {
+    const st = sessionState.begin(USER_A, "s-entity", {});
+    assert.strictEqual(sessionState.activeEntity(st), null, "a new session had an entity");
+    sessionState.setEntity(st, {
+      kind: "contact", name: "Ashmita", phone: "+919000000001", source: "device_contacts",
+    });
+    assert.strictEqual(sessionState.activeEntity(st).name, "Ashmita");
+    // The correction must REPLACE, not merge — the tester case was
+    // "no, it's Yashmita" leaving Ashmita still active.
+    sessionState.setEntity(st, {
+      kind: "contact", name: "Yashmita", phone: "+919000000002", source: "device_contacts",
+    });
+    const who = sessionState.activeEntity(st);
+    assert.strictEqual(who.name, "Yashmita");
+    assert.strictEqual(who.phone, "+919000000002", "the old number survived the correction");
+    sessionState.end(USER_A, "s-entity");
+  });
+
+  test("H — a background run gets its own session, never a shared one", () => {
+    // Every scheduled run used to fall back to one key per user, so jobs
+    // inherited each other's executed list, entity and pending action.
+    const src = String(require("../src/agents/runtime").runAgentTurn);
+    assert.ok(!/runtime:\$\{ctx\.userId/.test(src),
+      "the runtime still falls back to a per-user constant session key");
+    const handlers = fs.readFileSync(
+      require.resolve("../src/infra/handlers.js"), "utf8");
+    assert.match(handlers, /sessionId: `job:/,
+      "scheduled tasks do not pass a session id of their own");
+  });
+
+  test("J — the live path no longer pre-approves every tool", () => {
+    // approved:true meant both "not high risk" and "the user said yes",
+    // so the input-quality gate never fired in live mode.
+    const proxy = fs.readFileSync(require.resolve("../src/live/proxy.js"), "utf8");
+    assert.match(proxy, /approved: userConfirmed/,
+      "live tool calls no longer carry a real approval flag");
+    assert.ok(!/^\s*let approved = true;/m.test(proxy),
+      "the blanket approval flag is still there");
+  });
+
+  await atest("J — a garbled turn is answered with a question, not an action", async () => {
+    // "con" used to reach the model and come back as a confident reply
+    // about the previous conversation's contact.
+    const a = inputQuality.assess("con");
+    assert.strictEqual(a.quality, "garbled", "precondition: this is garbled");
+    const ask = inputQuality.clarificationFor(a, { language: "Kannada" });
+    assert.ok(ask && ask.length > 0);
+    const runtime = fs.readFileSync(require.resolve("../src/agents/runtime.js"), "utf8");
+    assert.match(runtime, /quality\.quality === "garbled"/,
+      "the runtime does not short-circuit a garbled turn before the model");
+    assert.match(runtime, /clarificationFor/,
+      "clarificationFor still has no caller in the runtime");
+  });
+
+  test("A/C — a confirmation card expires and a new utterance retires it", () => {
+    const routes = fs.readFileSync(require.resolve("../src/assistant/routes.js"), "utf8");
+    assert.match(routes, /askedAt: Date\.now\(\)/,
+      "confirmation cards carry no timestamp, so none can expire");
+    assert.match(routes, /pending\.askedAt && Date\.now\(\) - pending\.askedAt > PENDING_TTL_MS/,
+      "an old card is still executable by one POST /confirm");
+    assert.match(routes, /s\.pending = null;\n    s\.ambiguous = null;/,
+      "a new utterance no longer retires the previous card");
+  });
+
+  await atest("F — a failed call is retracted under either name", async () => {
+    // "call mom" resolves to a contact stored as "Amma Lobo"; the handset
+    // reports the RESOLVED name, and the row was written under the spoken
+    // one — so the failure never retracted and the log said it succeeded.
+    actions.record(USER_A, {
+      sessionId: "s-resolve", turnId: "R1", tool: "place_phone_call",
+      args: { name: "mom" }, ok: true, surface: "voice",
+    });
+    await settle();
+    await actions.attachResolvedTarget(USER_A, "place_phone_call", "mom", "Amma Lobo");
+    await actions.invalidate(USER_A, "place_phone_call", "Amma Lobo",
+      { detail: "call failed" });
+    const row = await actions.findRecent(USER_A, "place_phone_call", "mom", 60_000);
+    assert.ok(row, "the row disappeared");
+    assert.strictEqual(Number(row.ok), 0,
+      "a failed call under a nickname is still recorded as a success");
   });
 
   /* ---------------------------------------------------------------- */

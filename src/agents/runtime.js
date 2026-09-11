@@ -292,7 +292,11 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   const sessionState = require("../agents/sessionState");
   const inputQuality = require("../agents/inputQuality");
   const claimCheck = require("../agents/claimCheck");
-  const sid = ctx.sessionId || `runtime:${ctx.userId || 0}`;
+  // A SESSION KEY IS NEVER SHARED. Falling back to a per-user constant
+  // meant every caller that omitted a session id landed in the same state
+  // object — which is the one thing this state machine exists to prevent.
+  // A caller with no session of its own gets a fresh one per turn.
+  const sid = ctx.sessionId || `turn:${ctx.userId || 0}:${turnId}`;
   const state = ctx.userId ? sessionState.begin(ctx.userId, sid, {
     surface: ctx.source || (ctx.background ? "background" : "voice"),
     appBuild: ctx.appBuild,
@@ -308,6 +312,44 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   quality.heard = String(userText || "").slice(0, 120);
   if (state) sessionState.beginTurn(state, { turnId, text: userText, quality: quality.quality });
   ctx = { ...ctx, session: state, turnId, sessionId: sid, inputQuality: quality };
+
+  // ── GARBLED IN, CLARIFICATION OUT ─────────────────────────────────
+  // The tool gate catches a bad transcript only if the model happens to
+  // reach for a world action. A fragment that produced no tool call was
+  // answered freely — which is how "con" became a confident reply about
+  // the previous conversation's contact. Nothing is worth generating from
+  // a transcript this poor, so the turn ends here with a question.
+  //
+  // Deliberately only the WORST tier: "weak" input is often a real short
+  // command ("louder", "next one"), and refusing those would be its own
+  // failure.
+  if (quality.quality === "garbled" && !ctx.background && !ctx.approved) {
+    const ask = inputQuality.clarificationFor(quality, {
+      language: (ctx.languages && ctx.languages[0]) || ctx.lang || "",
+    });
+    onEvent("sentence", { text: ask });
+    if (state) sessionState.recordReply(state, ask);
+    try {
+      const recentMem = require("../memory/recent");
+      const meta = {
+        source: ctx.source || (ctx.background ? "background" : "voice"),
+        appBuild: ctx.appBuild, turnId, sessionId: sid,
+      };
+      recentMem.append(ctx.userId, "user", userText, { ...meta, latencyMs: 0 });
+      recentMem.append(ctx.userId, "assistant", ask, {
+        ...meta, latencyMs: Date.now() - turnStartedAt,
+      });
+      // Observable: a turn that was deliberately refused is a decision,
+      // and "why did nothing happen?" needs an answer other than silence.
+      require("../actions/store").record(ctx.userId, {
+        sessionId: sid, turnId, tool: "clarify", args: { heard: quality.heard },
+        ok: true, world: false, intent: userText,
+        detail: `input ${quality.reason || "garbled"}`, result: ask,
+        surface: ctx.source || "voice",
+      });
+    } catch (_) {}
+    return { text: ask, deviceActions: [], toolResults: [], clarified: true };
+  }
   // WHO the user is, WHO the assistant is, and the user's STANDING RULES
   // sit in front of every decision — this is the judgment layer (§13/§14).
   if (ctx.userId && ctx.extraSystem === undefined) {
@@ -334,7 +376,33 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
         `${new Date(Date.now() + tz * 60_000).toISOString().replace("T", " ").slice(0, 16)} (UTC${off}). ` +
         `When passing any datetime to a tool, use the user's LOCAL time with ` +
         `this offset written explicitly, e.g. 2026-09-04T17:00:00${off}.`;
-      const joined = [nowLine, block, mem, recent].filter(Boolean).join("\n");
+      // WHO WE ARE TALKING ABOUT, and WHAT ALREADY HAPPENED in this
+      // session. Both were tracked and never shown to the model, so a
+      // pronoun resolved from whatever survived in its own window, and a
+      // question about this session's actions could be answered from
+      // remembered facts instead of from what actually ran.
+      const live = [];
+      const who = state && sessionState.activeEntity(state);
+      if (who) {
+        live.push(
+          `CURRENTLY TALKING ABOUT: ${who.name}` +
+          (who.phone ? ` (${who.phone})` : "") +
+          `. "her", "him", "them", "that number" mean this person until the ` +
+          `user names someone else. If the user corrects the name, the ` +
+          `correction wins immediately — do not act on the old one.`
+        );
+      }
+      const doneHere = state ? sessionState.executedThisSession(state) : [];
+      if (doneHere.length) {
+        live.push(
+          "ALREADY DONE IN THIS SESSION (from the execution record, not memory — " +
+          "answer questions about what you did from THIS list, and do not repeat these):\n" +
+          doneHere.slice(-8).map((e) =>
+            `- ${e.tool}${e.target ? ` → ${e.target}` : ""}${e.ok ? "" : " (FAILED)"}`
+          ).join("\n")
+        );
+      }
+      const joined = [nowLine, block, mem, recent, ...live].filter(Boolean).join("\n");
       if (joined) ctx = { ...ctx, extraSystem: "\n\n" + joined };
     } catch (_) {}
   }
@@ -505,6 +573,10 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
         return {
           text: "",
           question,
+          // The turn this question belongs to. The approval arrives on a
+          // separate request, and without this the action it authorises
+          // cannot be joined back to the request that raised it.
+          turnId,
           needsConfirmation: {
             tool: res.tool,
             args: res.args,

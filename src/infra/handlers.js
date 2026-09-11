@@ -74,7 +74,16 @@ async function scheduledTask(payload, job) {
       // this it silently swallowed the whole action: place_phone_call
       // returned needsConfirmation, the turn ended with empty text, and
       // the outcome push said "Done." over a call that never happened.
-      { userId, tzOffsetMin: tz, approved: true, background: true }
+      // ITS OWN SESSION. Every scheduled run used to fall back to a
+      // constant key, so a user's background jobs shared one state object
+      // for an hour — the executed list, the active entity and any pending
+      // action carried from one scheduled task into the next. A job is a
+      // session of exactly one turn.
+      {
+        userId, tzOffsetMin: tz, approved: true, background: true,
+        sessionId: `job:${job.id || job.jobId || Date.now()}`,
+        source: "background",
+      }
     );
     if (res?.needsConfirmation) {
       // Defensive: should be impossible with approved:true, but a lied

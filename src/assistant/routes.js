@@ -369,7 +369,17 @@ async function runViaAgent(s, req, userText) {
         tool: out.needsConfirmation.tool,
         args: out.needsConfirmation.args,
         summary: out.needsConfirmation.summary,
-        ctx,
+        askedAt: Date.now(),
+        // THE LEDGER HAS TO SURVIVE THE APPROVAL. The replay used to run
+        // with the bare ctx built for the turn — no turn id, no intent, no
+        // session — so the one action the user explicitly approved was the
+        // only row with no request, no turn link and no final response.
+        ctx: {
+          ...ctx,
+          turnId: out.turnId || ctx.turnId,
+          intent: userText,
+          sessionId: s.sid,
+        },
       };
       state(s, "speaking");
       emit(s, {
@@ -497,6 +507,26 @@ async function runViaAgent(s, req, userText) {
 async function runTurn(s, req, userText) {
   s.busy = true;
   s.cancelled = false;
+  // A NEW UTTERANCE RETIRES THE OLD CARD. Nothing used to clear these, so
+  // after "no, it's Yashmita" the confirmation card raised for Ashmita was
+  // still live: one POST /confirm would dial the name the user had just
+  // corrected. The same card also survived twenty-five minutes and six
+  // turns, because it carried no timestamp and nothing expired it.
+  //
+  // A yes arrives on POST /confirm, never as a new turn, so anything still
+  // pending when the user speaks again has been superseded by definition.
+  if (s.pending || s.ambiguous || s.pendingContactName) {
+    s.pending = null;
+    s.ambiguous = null;
+    s.pendingContactName = null;
+    s.pendingCallTask = null;
+    try {
+      const st = require("../agents/sessionState").get(
+        Number(s.userSub) > 0 ? Number(s.userSub) : 0, s.sid
+      );
+      if (st) require("../agents/sessionState").clearPending(st);
+    } catch (_) {}
+  }
   try {
     // ---- AGENT RUNTIME (Phase 1) -------------------------------------
     // When enabled, the MODEL selects capabilities from the tool registry
@@ -764,6 +794,9 @@ router.post("/:sid/contacts", (req, res) => {
   const matches = Array.isArray(req.body?.matches) ? req.body.matches : [];
   const name = s.pendingContactName || "that contact";
   s.pendingContactName = null;
+  // Remember what was ASKED FOR, so the resolved name can be attached to
+  // the right ledger row and a later failure can retract it.
+  s.requestedContactName = name;
   res.json({ ok: true });
 
   if (matches.length === 0) {
@@ -802,7 +835,28 @@ router.post("/:sid/contacts", (req, res) => {
 });
 
 function askCallConfirm(s, contact) {
-  s.pending = { action: "call", contact };
+  s.pending = { action: "call", contact, askedAt: Date.now() };
+  try {
+    const uidNum = Number(s.userSub) > 0 ? Number(s.userSub) : null;
+    if (uidNum) {
+      require("../actions/store").attachResolvedTarget(
+        uidNum, "place_phone_call", s.requestedContactName || "", contact.name
+      );
+    }
+  } catch (_) {}
+  // WHO WE ARE TALKING ABOUT. The contact the handset actually resolved
+  // becomes the session's active entity, so "call her again" and "what
+  // did she say" mean this person and not whoever the model last guessed.
+  try {
+    const sessionState = require("../agents/sessionState");
+    const st = sessionState.get(Number(s.userSub) > 0 ? Number(s.userSub) : 0, s.sid);
+    if (st) {
+      sessionState.setEntity(st, {
+        kind: "contact", name: contact.name, phone: contact.phone,
+        id: contact.id ?? null, source: "device_contacts",
+      });
+    }
+  } catch (_) {}
   emit(s, { type: "contact_found", contact });
   emit(s, {
     type: "confirmation_request",
@@ -1001,7 +1055,7 @@ async function startAgentCall(s, contact, task, req) {
 
     // No answer → offer ONE retry through the normal confirmation card.
     if (terminal === "no_answer" && (s.agentRetries || 0) < 1) {
-      s.pending = { action: "agent_call_retry", contact, task };
+      s.pending = { action: "agent_call_retry", contact, task, askedAt: Date.now() };
       state(s, "speaking");
       emit(s, {
         type: "assistant_message",
@@ -1169,6 +1223,19 @@ router.post("/:sid/confirm", (req, res) => {
     state(s, "completed");
     return;
   }
+  // THE SAME THREE MINUTES THE STATE MACHINE ALREADY PROMISED. A yes has
+  // to follow the question; a card left open while the conversation moved
+  // on is stale, and acting on it is acting without a current request.
+  const PENDING_TTL_MS = require("../agents/sessionState").PENDING_TTL_MS;
+  if (pending.askedAt && Date.now() - pending.askedAt > PENDING_TTL_MS) {
+    state(s, "speaking");
+    emit(s, {
+      type: "assistant_message",
+      text: "That was a while ago — tell me again and I'll do it now.",
+    });
+    state(s, "completed");
+    return;
+  }
   if (!approved) {
     // NOTHING HAPPENED. The action was logged when it was dispatched —
     // for a call, long before anything could ring — so the optimistic row
@@ -1246,10 +1313,25 @@ router.post("/:sid/confirm", (req, res) => {
             // they never spoke — which the model then reads back as if
             // they had. The question is already in the transcript, so the
             // result reads as its answer without inventing anything.
-            require("../memory/recent").append(uidNum, "assistant",
-              res.speak || (res.ok ? "Done." : `That didn't work: ${res.error || "unknown error"}`),
-              { source: "voice", sessionId: s.sid,
-                turnId: require("crypto").randomUUID(), tools: [pending.tool] });
+            //
+            // THE REPLY IS CHECKED LIKE ANY OTHER. This path emitted
+            // straight to the user with no claim check at all — on the
+            // single highest-consequence action in the product.
+            const claimCheck = require("../agents/claimCheck");
+            let said = res.speak ||
+              (res.ok ? "Done." : `That didn't work: ${res.error || "unknown error"}`);
+            const verdict = claimCheck.check(said, [
+              { tool: pending.tool, ok: res.ok !== false },
+            ]);
+            if (!verdict.ok) {
+              console.warn("claim check corrected a confirmed reply:", verdict.violations.join(" | "));
+              said = verdict.text;
+            }
+            const turnId = (pending.ctx && pending.ctx.turnId) || require("crypto").randomUUID();
+            require("../memory/recent").append(uidNum, "assistant", said,
+              { source: "voice", sessionId: s.sid, turnId, tools: [pending.tool] });
+            // Close the ledger entry the question opened.
+            require("../actions/store").attachReply(uidNum, turnId, said);
           }
         } catch (_) {}
 

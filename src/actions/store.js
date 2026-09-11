@@ -52,6 +52,12 @@ function migrate() {
       -- produced the answer. The world flag keeps the two apart, so questions
       -- that mean "what did you DO" still get actions, not every search.
       ALTER TABLE executed_actions ADD COLUMN IF NOT EXISTS world INTEGER NOT NULL DEFAULT 1;
+      -- The name the MODEL passed and the name the HANDSET found are not
+      -- the same string: "call mom" resolves to a contact called "Amma
+      -- Lobo". Retracting a failed call matched only the first, so the
+      -- failure of a call the user made under a nickname stayed recorded
+      -- as a success — and check_recent_actions then said it was made.
+      ALTER TABLE executed_actions ADD COLUMN IF NOT EXISTS resolved_target TEXT NOT NULL DEFAULT '';
       CREATE INDEX IF NOT EXISTS idx_exec_user ON executed_actions(user_id, id DESC);
       CREATE INDEX IF NOT EXISTS idx_exec_session ON executed_actions(session_id, id DESC);
       -- Repeat suppression looks up (user, tool, target) inside a short
@@ -224,9 +230,33 @@ async function invalidate(userId, tool, target, { windowMs = 10 * 60_000, detail
   const t = clean(target, 120);
   const params = [uid, clean(tool, 60), Date.now() - windowMs, clean(detail, 300)];
   let where = "user_id = $1 AND tool = $2 AND created_at >= $3 AND ok = 1";
-  if (t) { params.push(t); where += ` AND lower(target) = lower($${params.length})`; }
+  if (t) {
+    params.push(t);
+    const i = params.length;
+    // Either name identifies the same attempt.
+    where += ` AND (lower(target) = lower($${i}) OR lower(resolved_target) = lower($${i}))`;
+  }
   return run(`UPDATE executed_actions SET ok = 0, detail = $4 WHERE ${where}`, params)
     .catch((e) => { console.warn("invalidate failed:", e.message); return 0; });
+}
+
+/**
+ * The handset found who the user meant. Teach the open row that name, so
+ * a later failure report — which only ever knows the resolved contact —
+ * can find the attempt it belongs to.
+ */
+function attachResolvedTarget(userId, tool, requestedTarget, resolvedTarget, { windowMs = 10 * 60_000 } = {}) {
+  const uid = Number(userId);
+  const req = clean(requestedTarget, 120);
+  const got = clean(resolvedTarget, 120);
+  if (!Number.isInteger(uid) || uid <= 0 || !tool || !got) return;
+  return serialize(uid, async () => {
+    await migrate();
+    const params = [got, uid, clean(tool, 60), Date.now() - windowMs];
+    let where = "user_id = $2 AND tool = $3 AND created_at >= $4 AND resolved_target = ''";
+    if (req) { params.push(req); where += ` AND lower(target) = lower($${params.length})`; }
+    await run(`UPDATE executed_actions SET resolved_target = $1 WHERE ${where}`, params);
+  });
 }
 
 /**
@@ -326,5 +356,5 @@ function describe(r) {
 
 module.exports = {
   migrate, record, recent, didRun, findRecent, invalidate, attachReply,
-  ledger, describe, targetOf, argsText,
+  attachResolvedTarget, ledger, describe, targetOf, argsText,
 };
