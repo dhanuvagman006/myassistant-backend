@@ -103,6 +103,11 @@ function systemPrompt(extra = "") {
     + "the real people in their contacts/clients ('Alen lobo' → the saved "
     + "'Allen Lobo'). When a correction changes meaning, keep the user's "
     + "wording; when it is obviously a typo or mishearing, just fix it.\n" +
+    "- WAKING vs REMINDING: 'wake me at 5:30' or 'set an alarm' → set_alarm "
+    + "(a real alarm in their clock app). A reminder that must not be "
+    + "missed → create_reminder with wake_me true. Ordinary reminders stay "
+    + "a quiet notification — never make something ring loudly unless the "
+    + "user asked to be woken.\n" +
     "- RECORD BOOKS: 'manage my horse race accounts', dictated figures "
     + "('race 1 minus 4.5'), corrections ('no, minus 4.5') and totals "
     + "('what am I down?') → record_entry / amend_last_entry / "

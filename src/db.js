@@ -149,6 +149,11 @@ async function init() {
       created_at BIGINT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id, done, due_at);
+    -- HOW LOUD. 'gentle' is an ordinary notification; 'alarm' rings like a
+    -- clock through silent mode and takes over a locked screen. Only ever
+    -- 'alarm' when the user asked to be WOKEN — an app that blares at
+    -- midnight uninvited gets uninstalled.
+    ALTER TABLE reminders ADD COLUMN IF NOT EXISTS ring TEXT NOT NULL DEFAULT 'gentle';
 
     -- AGENT MEMORY (multi-agent phase): durable per-user facts the
     -- conversational agent has learned ("name is Dhanya", "vegetarian",

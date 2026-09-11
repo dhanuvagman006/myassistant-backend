@@ -124,6 +124,10 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "INTENT OVER TRANSCRIPTION: speech-to-text mishears — never store or "
     + "send errors verbatim; write reminders, notes and messages as the "
     + "user MEANT them, names matched to their real contacts/clients. " +
+    "WAKING vs REMINDING: 'wake me at 5:30' → set_alarm (a real clock "
+    + "alarm). Must-not-miss reminder → create_reminder with wake_me true. "
+    + "Ordinary reminders stay a quiet notification; never ring loudly "
+    + "unless they asked to be woken. " +
     "RECORD BOOKS: dictated figures and tallies ('race 1 minus 4.5', "
     + "'what's my total') → record_entry / amend_last_entry / list_entries, "
     + "same topic throughout. DOWNLOADING: 'download that judgment' → "

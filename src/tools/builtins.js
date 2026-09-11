@@ -786,7 +786,12 @@ function registerBuiltins() {
       "Create a reminder or task for the user, optionally with a due time. " +
       "This only NOTIFIES the user at that time — if they want the " +
       "assistant to actually DO the thing then (place a call, order food, " +
-      "send a message), use schedule_task instead.",
+      "send a message), use schedule_task instead. " +
+      "Set wake_me ONLY when they asked to be WOKEN or insisted it must " +
+      "not be missed ('wake me at 5', 'make sure I get up', 'ring loudly') " +
+      "— that rings like a clock alarm through silent mode. Everything " +
+      "else stays a normal notification. To create a real alarm in the " +
+      "phone's own clock app instead, use set_alarm.",
     risk: "medium",
     inputSchema: {
       type: "object",
@@ -796,15 +801,25 @@ function registerBuiltins() {
           type: "string",
           description: "ISO-8601 datetime, or omit if no specific time",
         },
+        wake_me: {
+          type: "boolean",
+          description:
+            "True ONLY if the user asked to be woken or said it must not be missed. Rings like an alarm through silent mode.",
+        },
       },
       required: ["text"],
     },
     async execute(args, ctx) {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
       const due = parseUserTime(args.due_at, ctx.tzOffsetMin);
-      const r = await reminders.create(ctx.userId, args.text, due);
+      const ring = args.wake_me === true ? "alarm" : "gentle";
+      const r = await reminders.create(ctx.userId, args.text, due, ring);
       if (!r) return { ok: false, error: "could not save the reminder" };
-      return { ok: true, data: r, speak: "Saved." };
+      return {
+        ok: true,
+        data: r,
+        speak: ring === "alarm" ? "Set — it'll ring like an alarm." : "Saved.",
+      };
     },
   });
 
@@ -1782,7 +1797,11 @@ function registerBuiltins() {
 
   registry.register({
     name: "set_alarm",
-    description: "Set an alarm on the user's phone for a specific time.",
+    description:
+      "Create a real alarm in the phone's own clock app — the right choice " +
+      "for waking up ('wake me at 5:30', 'set an alarm for 6'), because it " +
+      "rings even if this app is closed. For a reminder that should nag at " +
+      "a time without being a clock alarm, use create_reminder.",
     risk: "low",
     deviceAction: true,
     inputSchema: {
@@ -1795,12 +1814,23 @@ function registerBuiltins() {
       required: ["hour", "minute"],
     },
     async execute(args) {
-      const label = args.label ? `S.android.intent.extra.alarm.MESSAGE=${encodeURIComponent(args.label)};` : "";
-      const url = `intent://#Intent;action=android.intent.action.SET_ALARM;i.android.intent.extra.alarm.HOUR=${args.hour};i.android.intent.extra.alarm.MINUTES=${args.minute};${label}end`;
+      const label = args.label
+        ? `S.android.intent.extra.alarm.MESSAGE=${encodeURIComponent(args.label)};`
+        : "";
+      // SKIP_UI creates the alarm in the phone's own clock app without
+      // making the user finish the form — and because it lives in the
+      // clock app, it rings even if this app is closed or updated.
+      const url =
+        `intent://#Intent;action=android.intent.action.SET_ALARM;` +
+        `i.android.intent.extra.alarm.HOUR=${args.hour};` +
+        `i.android.intent.extra.alarm.MINUTES=${args.minute};` +
+        `B.android.intent.extra.alarm.SKIP_UI=true;${label}end`;
+      const hh = String(args.hour).padStart(2, "0");
+      const mm = String(args.minute).padStart(2, "0");
       return {
         ok: true,
         deviceAction: { type: "open_url", url },
-        speak: `Setting an alarm for ${args.hour}:${args.minute < 10 ? '0' + args.minute : args.minute}.`,
+        speak: `Setting a clock alarm for ${hh}:${mm}.`,
       };
     }
   });

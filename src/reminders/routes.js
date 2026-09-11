@@ -24,6 +24,9 @@ const shape = (r) => ({
   id: r.id,
   text: r.text,
   dueAt: r.due_at,
+  // 'alarm' reminders ring like a clock on the phone; 'gentle' ones are
+  // an ordinary notification (see the ring column in src/db.js).
+  ring: r.ring || "gentle",
   done: !!r.done,
   createdAt: r.created_at,
 });
@@ -37,8 +40,8 @@ router.get("/", async (req, res) => {
 router.post("/", async (req, res) => {
   const id = uid(req, res);
   if (id === null) return;
-  const { text, dueAt } = req.body || {};
-  const r = await store.create(id, text, Number.isFinite(dueAt) ? dueAt : null);
+  const { text, dueAt, ring } = req.body || {};
+  const r = await store.create(id, text, Number.isFinite(dueAt) ? dueAt : null, ring);
   if (!r) return res.status(400).json({ error: "text required" });
   audit.record(id, "reminder.created", r.text);
   res.json({ reminder: shape(r) });

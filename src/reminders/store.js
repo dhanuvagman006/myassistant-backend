@@ -16,12 +16,13 @@ async function list(userId) {
   );
 }
 
-async function create(userId, text, dueAt = null) {
+async function create(userId, text, dueAt = null, ring = "gentle") {
   const t = String(text || "").trim().slice(0, 300);
   if (!t) return null;
   return one(
-    "INSERT INTO reminders (user_id, text, due_at, created_at) VALUES ($1, $2, $3, $4) RETURNING *",
-    [userId, t, dueAt || null, Date.now()]
+    `INSERT INTO reminders (user_id, text, due_at, created_at, ring)
+     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+    [userId, t, dueAt || null, Date.now(), ring === "alarm" ? "alarm" : "gentle"]
   );
 }
 
