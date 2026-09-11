@@ -1381,6 +1381,51 @@ console.log("\nexecution record");
       "a video request would be enqueued and never picked up");
   });
 
+  test("a finished image is not described to the model as pending", () => {
+    // The ledger showed generate_image ok=1 in 4.4s with the file saved,
+    // while the assistant said "it'll pop up when it's ready" and then, a
+    // turn later, that generation had failed. The live path was
+    // summarising every device action with no `data` as "Device action
+    // REQUESTED: show_image" and throwing away the tool's own words.
+    const proxy = fs.readFileSync(require.resolve("../src/live/proxy.js"), "utf8");
+    assert.ok(!/result: "Device action requested: " \+ res\.deviceAction\.type/.test(proxy),
+      "the live path still tells the model the action was merely requested");
+    assert.match(proxy, /result:\s*\n?\s*res\.speak \|\|/,
+      "the tool's own speak is still discarded");
+
+    const src = fs.readFileSync(require.resolve("../src/tools/builtins.js"), "utf8");
+    const i = src.indexOf('name: "generate_image"');
+    const body = src.slice(i, src.indexOf('name: "generate_video"', i));
+    assert.match(body, /generated: true/,
+      "generate_image still returns no data, so it reads as a bare device action");
+    // The instruction is a concatenated literal — match a fragment that
+    // cannot span the join.
+    assert.match(body, /The image EXISTS and is saved/,
+      "nothing tells the model the image exists");
+  });
+
+  test("one result is presented once, not twice", () => {
+    // A recalled document opened the full-screen gallery AND pushed the
+    // conversation view over Home behind it.
+    const engine = fs.readFileSync(
+      require.resolve("../../myassistant-flutter/lib/features/assistant/state/assistant_engine.dart"),
+      "utf8");
+    assert.match(engine, /_shownFullScreen = onShowDocuments/,
+      "the gallery result is not remembered");
+    assert.match(engine, /!_shownFullScreen &&/,
+      "something already on screen can still force a second presentation");
+    assert.match(engine, /_resetTurn\(\) \{\s*\n\s*_shownFullScreen = false;/,
+      "the flag is never cleared, so later turns would stop escalating");
+    // A generated image goes straight to full screen, with no prompt caption.
+    const imgCase = engine.slice(
+      engine.indexOf("case 'show_image':"),
+      engine.indexOf("case 'translator':"));
+    assert.match(imgCase, /onShowDocuments\?\.call\(\[doc\]\)/,
+      "a generated image does not open full screen");
+    assert.ok(!/generatedImagePrompt = e\['prompt'\] as String\? \?\? '';\s*\n\s*\}\s*\n\s*break;/.test(imgCase),
+      "the prompt caption is still the default presentation");
+  });
+
   test("something to look at gets a screen to appear on", () => {
     // "Your image is on the screen" while the user was on Home with the
     // orb, where no card is rendered.

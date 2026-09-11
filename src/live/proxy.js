@@ -1016,7 +1016,32 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
             })();
           }
 
-          responses.push({ id: fc.id, name: fc.name, response: res.data ? res : { result: "Device action requested: " + res.deviceAction.type } });
+          // WHAT THE TOOL SAID, not a generic stand-in.
+          //
+          // A tool with no `data` used to be summarised to the model as
+          // "Device action requested: show_image" — and the word REQUESTED
+          // is why a finished image got narrated as pending ("it'll pop up
+          // on your screen when it's ready"), and why the next turn, with
+          // no confirmation of success anywhere in its context, concluded
+          // the generation had failed. It had not: the ledger recorded
+          // generate_image ok=1 in 4.4 seconds with the file saved.
+          //
+          // The tool's own speak/note already distinguish "this is done"
+          // from "the phone has been asked to do this", so forward those
+          // rather than inventing a word that flattens the difference.
+          responses.push({
+            id: fc.id,
+            name: fc.name,
+            response: res.data
+              ? res
+              : {
+                  ok: res.ok !== false,
+                  result:
+                    res.speak ||
+                    `done — the phone was handed a ${res.deviceAction.type} action`,
+                  ...(res.note ? { note: res.note } : {}),
+                },
+          });
         } else {
           responses.push({ id: fc.id, name: fc.name, response: res });
         }

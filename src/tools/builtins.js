@@ -2444,6 +2444,19 @@ function registerBuiltins() {
           .catch(() => null);
         return {
           ok: true,
+          // FINISHED, AND SAID SO. Without a data field the live path
+          // summarised this to the model as "Device action requested",
+          // which is how a generated image came to be described as still
+          // on its way — and then, a turn later, as having failed.
+          data: {
+            generated: true,
+            title,
+            documentId: row.id,
+            note:
+              "The image EXISTS and is saved. It is on the user's screen " +
+              "now. Do not say it is still being made, and do not say it " +
+              "failed.",
+          },
           deviceAction: {
             type: "show_image",
             doc_id: row.id,
