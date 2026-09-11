@@ -90,6 +90,21 @@ function systemPrompt(extra = "") {
     + "commentary about the content — they ARE the professional and it is "
     + "patronising. Disclaimers are acceptable ONLY when the user asks for "
     + "medical/legal advice for themselves personally.\n" +
+    "- WHAT YOU DID: 'did you call X', 'why did settings open', 'what "
+    + "did I just ask', 'when did I ask you to call X' → check_recent_actions. "
+    + "That tool is the record of what really ran; recall_memory is NOT. "
+    + "Never claim you did something it does not show, and never deny "
+    + "something it does show.\n" +
+    "- ONE REQUEST AT A TIME: act ONLY on what the user just said. If a "
+    + "line is unclear, short or garbled, ask them to repeat it — do NOT "
+    + "borrow the subject of an earlier request. A tool that returns "
+    + "unclear_request means exactly this: ask, do not guess.\n" +
+    "- CORRECTIONS REPLACE: when the user corrects a name ('no, it is "
+    + "Yashmita, not Ashmita'), the new name REPLACES the old one "
+    + "completely. Repeat the action with the corrected name; never keep "
+    + "acting on the name they just rejected.\n" +
+    "- ALREADY RUNNING: if a tool says an action already ran moments ago, "
+    + "say it is under way — do not run it a second time.\n" +
     "- EDITS: 'the meeting is with Allen', 'move it to 5' about an EXISTING "
     + "reminder → update_reminder with the complete new text (keep every "
     + "old detail, add the new one). Never re-create, never drop details, "
@@ -227,6 +242,30 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   // One id shared by this turn's question and its answer, so the admin
   // panel can never pair an answer with somebody else's question.
   const turnId = require("crypto").randomUUID();
+
+  // ── TURN STATE ────────────────────────────────────────────────────
+  // Five separate things, never mixed: this turn, the conversation, the
+  // remembered facts, what is pending, what has run. A session that did
+  // not exist a moment ago starts EMPTY — no inherited pending action.
+  const sessionState = require("../agents/sessionState");
+  const inputQuality = require("../agents/inputQuality");
+  const claimCheck = require("../agents/claimCheck");
+  const sid = ctx.sessionId || `runtime:${ctx.userId || 0}`;
+  const state = ctx.userId ? sessionState.begin(ctx.userId, sid, {
+    surface: ctx.source || (ctx.background ? "background" : "voice"),
+    appBuild: ctx.appBuild,
+  }) : null;
+  const quality = inputQuality.assess(userText, {
+    // A number is an answer when the assistant has just asked for one.
+    expectsNumber: Boolean(
+      state && state.turns.slice(-1)[0] &&
+      /\b(number|digits|phone)\b/i.test(state.turns.slice(-1)[0].text || "")
+    ),
+    languages: ctx.languages || [],
+  });
+  quality.heard = String(userText || "").slice(0, 120);
+  if (state) sessionState.beginTurn(state, { turnId, text: userText, quality: quality.quality });
+  ctx = { ...ctx, session: state, turnId, sessionId: sid, inputQuality: quality };
   // WHO the user is, WHO the assistant is, and the user's STANDING RULES
   // sit in front of every decision — this is the judgment layer (§13/§14).
   if (ctx.userId && ctx.extraSystem === undefined) {
@@ -235,8 +274,12 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
         require("../users/context").contextBlock(ctx.userId),
         require("../agents/memory").memoryBlock(ctx.userId),
         // Continuity across sessions: what was said minutes ago, so a
-        // fresh session never re-asks what it just answered.
-        require("../memory/recent").recentBlock(ctx.userId),
+        // fresh session never re-asks what it just answered. THIS
+        // session's own turns are excluded — they are the live
+        // conversation, not history to be re-read as instructions.
+        require("../memory/recent").recentBlock(ctx.userId, {
+          excludeSessionId: ctx.sessionId || "",
+        }),
       ]);
       // The user's clock, so "tomorrow 5 pm" resolves in THEIR zone and
       // tool datetimes carry the right offset (bare ones read as UTC).
@@ -314,7 +357,17 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
 
     if (!out.functionCalls.length) {
       {
-        const finalText = spoken.join(" ").trim();
+        let finalText = spoken.join(" ").trim();
+        // THE REPLY MAY NOT CLAIM WHAT DID NOT RUN. Checked against this
+        // turn's executed actions, not against the model's recollection.
+        if (state) {
+          const verdict = claimCheck.check(finalText, sessionState.executedThisTurn(state));
+          if (!verdict.ok) {
+            console.warn("claim check corrected a reply:", verdict.violations.join(" | "));
+            finalText = verdict.text;
+          }
+          sessionState.recordReply(state, finalText);
+        }
         const recent = require("../memory/recent");
         const meta = {
           latencyMs: Date.now() - turnStartedAt,
@@ -322,6 +375,7 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
           tools: toolResults.map((t) => t.name).filter(Boolean),
           appBuild: ctx.appBuild,
           turnId,
+          sessionId: sid,
         };
         recent.append(ctx.userId, "user", userText, { ...meta, latencyMs: 0 });
         recent.append(ctx.userId, "assistant", finalText, meta);
@@ -397,7 +451,15 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   // Ran out of rounds — answer with whatever was said/produced rather
   // than looping forever.
   const last = toolResults[toolResults.length - 1];
-  const finalText = spoken.join(" ").trim() || (last && last.speak ? last.speak : "");
+  let finalText = spoken.join(" ").trim() || (last && last.speak ? last.speak : "");
+  if (state) {
+    const verdict = claimCheck.check(finalText, sessionState.executedThisTurn(state));
+    if (!verdict.ok) {
+      console.warn("claim check corrected a reply:", verdict.violations.join(" | "));
+      finalText = verdict.text;
+    }
+    sessionState.recordReply(state, finalText);
+  }
   const recent = require("../memory/recent");
   const meta = {
     latencyMs: Date.now() - turnStartedAt,
@@ -405,6 +467,7 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
     tools: toolResults.map((t) => t.name).filter(Boolean),
     appBuild: ctx.appBuild,
     turnId,
+    sessionId: sid,
   };
   recent.append(ctx.userId, "user", userText, { ...meta, latencyMs: 0 });
   recent.append(ctx.userId, "assistant", finalText, meta);

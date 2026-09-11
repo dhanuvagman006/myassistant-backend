@@ -37,6 +37,11 @@ function migrate() {
       -- a brief's answer under "Call Jeevan B2" and made a working call
       -- look broken.
       ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS turn_id    TEXT NOT NULL DEFAULT '';
+      -- WHICH CONVERSATION a turn belongs to. Without it the memory block
+      -- could not tell "what we are saying now" from "what was said in a
+      -- finished session", and the tail of the previous session read as an
+      -- unfinished instruction.
+      ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT '';
       CREATE INDEX IF NOT EXISTS idx_convturns_turn ON conversation_turns(turn_id);
       CREATE INDEX IF NOT EXISTS idx_convturns_time ON conversation_turns(created_at DESC);
     `).catch((e) => {
@@ -71,8 +76,8 @@ function append(userId, role, text, meta = {}) {
     await migrate();
     await run(
       `INSERT INTO conversation_turns
-         (user_id, role, text, created_at, latency_ms, source, tools, app_build, turn_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+         (user_id, role, text, created_at, latency_ms, source, tools, app_build, turn_id, session_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [
         uid,
         role === "assistant" ? "assistant" : "user",
@@ -83,6 +88,7 @@ function append(userId, role, text, meta = {}) {
         (Array.isArray(meta.tools) ? meta.tools.join(", ") : String(meta.tools || "")).slice(0, 300),
         Math.max(0, Number(meta.appBuild) || 0),
         String(meta.turnId || "").slice(0, 40),
+        String(meta.sessionId || "").slice(0, 80),
       ]
     );
     await run(
@@ -189,16 +195,29 @@ async function adminStats(days = 7) {
  * The conversation tail as a prompt block, oldest first — or "" when
  * there is nothing recent. Capped hard so it can never crowd a prompt.
  */
-async function recentBlock(userId, { maxTurns = 12, maxAgeMs = 48 * 3600_000, maxChars = 1700 } = {}) {
+/**
+ * @param opts.excludeSessionId  the session being started. Its own turns
+ *   are ALREADY the live conversation; repeating them here as "earlier
+ *   conversation" is what made a fresh "hello" look like the continuation
+ *   of the previous request.
+ */
+async function recentBlock(userId, { maxTurns = 12, maxAgeMs = 48 * 3600_000, maxChars = 1700, excludeSessionId = "" } = {}) {
   const uid = Number(userId);
   if (!Number.isInteger(uid) || uid <= 0) return "";
   try {
     await migrate();
+    const params = [uid, Date.now() - maxAgeMs];
+    let where = "user_id = $1 AND created_at >= $2";
+    if (excludeSessionId) {
+      params.push(String(excludeSessionId).slice(0, 80));
+      where += ` AND session_id <> $${params.length}`;
+    }
+    params.push(maxTurns);
     const rows = await query(
       `SELECT role, text, created_at FROM conversation_turns
-        WHERE user_id = $1 AND created_at >= $2
-        ORDER BY id DESC LIMIT $3`,
-      [uid, Date.now() - maxAgeMs, maxTurns]
+        WHERE ${where}
+        ORDER BY id DESC LIMIT $${params.length}`,
+      params
     );
     if (!rows.length) return "";
     const lines = [];

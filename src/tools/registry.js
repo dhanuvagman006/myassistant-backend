@@ -173,9 +173,58 @@ function missingRequired(tool, args) {
  *   { ok:false, needsConfirmation:true, … }   high-risk, awaiting yes/no
  *   { ok:true,  deviceAction:{…} }            the APP must perform it
  */
+/**
+ * WORLD ACTIONS — tools whose effect leaves the conversation: a phone
+ * rings, an app opens, a message arrives, a record changes. These are the
+ * ones that must never fire on a misheard fragment, and the ones a reply
+ * may not claim without evidence (src/agents/claimCheck.js).
+ *
+ * Everything else (lookups, reads, brief, memory recall) is harmless to
+ * run on a poor transcript — at worst the answer is unhelpful.
+ */
+const WORLD_ACTIONS = new Set([
+  "place_phone_call", "send_agent_message", "send_whatsapp_message",
+  "send_document", "send_patient_document", "book_by_calling_business",
+  "arrange_meeting_with", "order_food", "book_ride", "book_movie_tickets",
+  "collect_payment", "open_app", "open_webpage", "open_service_app",
+  "open_video_mode", "start_navigation", "phone_control", "play_music",
+  "capture_document", "analyze_camera", "set_alarm", "create_reminder",
+  "update_reminder", "schedule_task", "schedule_patient_recall",
+  "record_entry", "amend_last_entry", "record_patient_payment",
+  "file_document_under_client", "associate_document", "save_web_document",
+  "forget_memory", "start_interpreter_mode", "generate_image", "generate_video",
+]);
+
+function isWorldAction(name) {
+  return WORLD_ACTIONS.has(name);
+}
+
 async function execute(name, rawArgs, ctx = {}) {
   const tool = get(name);
   if (!tool) return { ok: false, error: `unknown tool "${name}"` };
+
+  // ── GATE 1: DO NOT ACT ON WHAT WE DID NOT HEAR ────────────────────
+  // The model, handed a fragment like "con" or a bare phone number, will
+  // helpfully complete it from the previous turn — and place a call the
+  // user never asked for. Input quality is judged before the turn
+  // (src/agents/inputQuality.js) and carried on ctx; a world action on a
+  // garbled turn is refused outright, and the model is told to ask.
+  if (isWorldAction(name) && ctx.inputQuality && ctx.inputQuality.quality !== "clear") {
+    const quality = ctx.inputQuality.quality;
+    if (quality === "garbled" || !ctx.approved) {
+      return {
+        ok: false,
+        error: "unclear_request",
+        data: {
+          heard: ctx.inputQuality.heard || "",
+          reason: ctx.inputQuality.reason || "the last thing said was not clear",
+          hint:
+            "Do NOT guess what was meant and do NOT reuse the subject of an " +
+            "earlier request. Ask the user to say it again, in one short line.",
+        },
+      };
+    }
+  }
 
   // Defence in depth: even if a name were guessed, an MCP tool may only be
   // run by the user whose server provides it.
@@ -254,12 +303,38 @@ async function execute(name, rawArgs, ctx = {}) {
     };
   }
 
+  // ── GATE 2: THE SAME ACTION TWICE IN A BREATH ─────────────────────
+  // Testers saw one "Call Dikshit Pujari" answered three different ways in
+  // forty seconds, because each repetition took a different path. A repeat
+  // of the same world action on the same target inside the repeat window
+  // returns what happened the FIRST time instead of racing it again.
+  const session = ctx.session || null;
+  if (session && isWorldAction(name)) {
+    const recentSame = (session.executed || [])
+      .filter((e) => e.tool === name && Date.now() - e.at < 20_000)
+      .pop();
+    const target = require("../actions/store").targetOf(name, args);
+    if (recentSame && recentSame.target === target && recentSame.ok && !ctx.approved) {
+      return {
+        ok: true,
+        repeated: true,
+        data: { alreadyDone: true, tool: name, target },
+        speak: "",
+        note:
+          `${name} for "${target}" already ran moments ago in this turn or the ` +
+          "one before. Do NOT run it again; tell the user it is already under " +
+          "way, or ask whether they want it repeated.",
+      };
+    }
+  }
+
   const started = Date.now();
   try {
     const out = await tool.execute(args, ctx);
     const res = out && typeof out === "object" ? out : { ok: true, data: out };
     res.ms = Date.now() - started;
     audit(tool, args, res, ctx);
+    recordExecution(name, args, res, ctx);
     return res;
   } catch (e) {
     // §28: report the actual failure; never fabricate success.
@@ -269,7 +344,44 @@ async function execute(name, rawArgs, ctx = {}) {
       ms: Date.now() - started,
     };
     audit(tool, args, res, ctx);
+    recordExecution(name, args, res, ctx);
     return res;
+  }
+}
+
+/**
+ * THE EXECUTION RECORD. Session state holds what ran in this turn (the
+ * claim checker's evidence); actions/store holds it durably (so "why did
+ * settings open?" has an answer tomorrow). A tool that merely READS is
+ * not worth recording — only actions that touch the world.
+ */
+function recordExecution(name, args, res, ctx) {
+  try {
+    if (!ctx.userId || !isWorldAction(name)) return;
+    const sessionState = require("../agents/sessionState");
+    if (ctx.session) {
+      sessionState.recordExecution(ctx.session, {
+        turnId: ctx.turnId,
+        tool: name,
+        args,
+        ok: res.ok !== false,
+        detail: res.error || (res.speak ? String(res.speak).slice(0, 160) : ""),
+      });
+      return;
+    }
+    // No session object (scheduled task, webhook) — still keep the durable
+    // record, since those actions are exactly the ones users ask about.
+    require("../actions/store").record(ctx.userId, {
+      sessionId: ctx.sessionId || "",
+      turnId: ctx.turnId || "",
+      tool: name,
+      args,
+      ok: res.ok !== false,
+      detail: res.error || "",
+      surface: ctx.background ? "background" : ctx.source || "",
+    });
+  } catch (e) {
+    console.warn("execution record failed:", e.message);
   }
 }
 
@@ -310,6 +422,8 @@ function audit(tool, args, res, ctx) {
 }
 
 module.exports = {
+  isWorldAction,
+  WORLD_ACTIONS,
   register,
   get,
   unregister,

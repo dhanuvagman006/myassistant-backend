@@ -214,7 +214,12 @@ function registerBuiltins() {
     description:
       "Look up what is remembered about the user or a topic. Use when asked " +
       "'what do you know about me', 'what did I tell you about X', or when " +
-      "personal context would improve the answer.",
+      "personal context would improve the answer." +
+      " SCOPE: durable facts about the user's life only. NEVER use it " +
+      "for what happened in this conversation or for what you did — " +
+      "'what did I just ask', 'when did I ask you to call X', 'did you " +
+      "open that' are answered by check_recent_actions or by reading the " +
+      "conversation in front of you, never by recalling memory.",
     risk: "low",
     inputSchema: {
       type: "object",
@@ -4324,6 +4329,73 @@ function registerBuiltins() {
         data: { document: shape, filedUnder },
         deviceAction: { type: "documents", documents: [shape] },
         speak: filedUnder ? `Saved to ${filedUnder}'s file.` : "Saved to your documents.",
+      };
+    },
+  });
+
+  registry.register({
+    name: "check_recent_actions",
+    description:
+      "What the assistant ACTUALLY did, from its execution record — the only " +
+      "correct way to answer 'did you call X?', 'why did settings open?', " +
+      "'what did I just ask you?', 'when did I ask you to call Jeevan?', " +
+      "'did you open Google search?'. NEVER answer those from memory or " +
+      "from your impression of the conversation: use this, and say exactly " +
+      "what it returns. If it returns nothing, say plainly that nothing of " +
+      "that kind was done.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        about: {
+          type: "string",
+          description:
+            "Optional filter in the user's words — a person, an app, 'call', 'settings', 'search'.",
+        },
+        minutes: {
+          type: "integer",
+          description: "How far back to look. Default 120.",
+        },
+      },
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const store = require("../actions/store");
+      const minutes = Math.min(Math.max(Number(args.minutes) || 120, 1), 60 * 24 * 7);
+      const rows = await store.recent(ctx.userId, {
+        limit: 25,
+        sinceMs: Date.now() - minutes * 60_000,
+      });
+      const about = String(args.about || "").trim().toLowerCase();
+      const words = about.replace(/[^\p{L}\p{N} ]/gu, " ").split(/\s+/).filter((w) => w.length >= 3);
+      const matched = words.length
+        ? rows.filter((r) => {
+            const hay = `${r.tool} ${r.target} ${r.detail}`.toLowerCase();
+            return words.some((w) => hay.includes(w));
+          })
+        : rows;
+      const use = (matched.length ? matched : rows).slice(0, 8);
+      if (!use.length) {
+        return {
+          ok: true,
+          data: [],
+          speak:
+            "Nothing like that is in my record for the last " +
+            (minutes >= 60 ? Math.round(minutes / 60) + " hours" : minutes + " minutes") +
+            " — say so plainly; do not guess that you might have done it.",
+        };
+      }
+      return {
+        ok: true,
+        data: use.map((r) => ({
+          tool: r.tool,
+          target: r.target,
+          ok: r.ok === 1 || r.ok === true,
+          at: Number(r.created_at),
+          line: store.describe(r),
+        })),
+        speak: use.map((r) => store.describe(r)).join(". ") +
+          ". Answer ONLY from these; they are the record of what really ran.",
       };
     },
   });

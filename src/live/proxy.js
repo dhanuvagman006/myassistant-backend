@@ -121,6 +121,14 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "If you did not clearly hear something, ask them to repeat it rather " +
     "than guessing — answering the wrong question is worse than asking. " +
     "If asked about astrology, use your get_horoscope tool. " +
+    "WHAT YOU DID: 'did you call X', 'why did settings open', 'what did I "
+    + "just ask' → check_recent_actions, which is the record of what really "
+    + "ran; recall_memory is for durable facts only. Never claim an action it "
+    + "does not show; never deny one it does. "
+    + "ONE REQUEST AT A TIME: act only on what was just said; if it is "
+    + "unclear or garbled, ask for a repeat instead of reusing the earlier "
+    + "subject. CORRECTIONS REPLACE: a corrected name fully replaces the old "
+    + "one. If a tool says something already ran, do not run it again. " +
     "INTENT OVER TRANSCRIPTION: speech-to-text mishears — never store or "
     + "send errors verbatim; write reminders, notes and messages as the "
     + "user MEANT them, names matched to their real contacts/clients. " +
@@ -377,7 +385,9 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       try {
         const [ctxBlock, recentBlock, memBlock] = await Promise.all([
           require("../users/context").contextBlock(uid),
-          require("../memory/recent").recentBlock(uid),
+          require("../memory/recent").recentBlock(uid, {
+            excludeSessionId: liveSessionId,
+          }),
           require("../agents/memory").memoryBlock(uid),
         ]);
         personalContext = [ctxBlock, memBlock, recentBlock]
@@ -430,6 +440,22 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   // model responds (reply, tool call, or turn end) — i.e. when the
   // user's utterance is definitively over.
   let turnBuf = "";
+  // ── TURN STATE for this socket. A new connection is a NEW session: no
+  // pending action, no active entity, nothing inherited from the last
+  // conversation. (src/agents/sessionState.js)
+  const sessionState = require("../agents/sessionState");
+  const inputQuality = require("../agents/inputQuality");
+  const claimCheck = require("../agents/claimCheck");
+  const liveSessionId = "live:" + require("crypto").randomUUID();
+  const liveState = Number(user?.sub) > 0
+    ? sessionState.begin(Number(user.sub), liveSessionId, {
+        surface: "live",
+        appBuild: deviceCtx.build,
+      })
+    : null;
+  let turnQuality = { quality: "clear", reason: "" };
+  let lastModelLine = "";
+
   const flushUserTurn = () => {
     const t = turnBuf.trim();
     if (!t) return;
@@ -439,10 +465,26 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       require("../commitments/service").extractAsync(Number(user.sub), t, { source: "voice" });
       require("../agents/memory").extractAndStore(Number(user.sub), t);
       currentTurnId = require("crypto").randomUUID();
+      // Is this safe to act on at all? A fragment ("con") or a bare number
+      // must not be completed from the previous request — the gate lives in
+      // the tool registry, this is where the verdict is made.
+      turnQuality = inputQuality.assess(t, {
+        expectsNumber: /\b(number|digits|phone)\b/i.test(lastModelLine),
+        languages: preferredLanguage ? [preferredLanguage] : [],
+      });
+      turnQuality.heard = t.slice(0, 120);
+      if (liveState) {
+        sessionState.beginTurn(liveState, {
+          turnId: currentTurnId,
+          text: t,
+          quality: turnQuality.quality,
+        });
+      }
       require("../memory/recent").append(Number(user.sub), "user", t, {
         source: "live",
         appBuild: deviceCtx.build,
         turnId: currentTurnId,
+        sessionId: liveSessionId,
       });
     }
   };
@@ -460,6 +502,38 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   const flushModelTurn = () => {
     const t = modelBuf.trim();
     modelBuf = "";
+    lastModelLine = t;
+    // CLAIM CHECK. In live mode the words are already spoken, so instead
+    // of rewriting them the model is told at once that it said something
+    // untrue and must correct itself in its next breath.
+    if (t && liveState) {
+      const verdict = claimCheck.check(t, sessionState.executedThisTurn(liveState));
+      if (!verdict.ok) {
+        console.warn("live claim check:", verdict.violations.join(" | "));
+        try {
+          upstream.send(
+            JSON.stringify({
+              clientContent: {
+                turns: [{
+                  role: "user",
+                  parts: [{
+                    text:
+                      "[SYSTEM] CORRECTION: you just told the user " +
+                      verdict.violations.join("; ") +
+                      " — but no such action ran. Tell them plainly, in one " +
+                      "short sentence, that it did not actually happen, and " +
+                      "either do it properly now with the right tool or ask " +
+                      "what they want. Never repeat the false claim.",
+                  }],
+                }],
+                turnComplete: true,
+              },
+            })
+          );
+        } catch (_) {}
+      }
+      sessionState.recordReply(liveState, t);
+    }
     const latencyMs = turnLatency;
     const tools = turnTools;
     turnLatency = 0;
@@ -471,6 +545,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         tools,
         appBuild: deviceCtx.build,
         turnId: currentTurnId,
+        sessionId: liveSessionId,
       });
     }
   };
@@ -717,6 +792,11 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         // resolved in the wrong timezone — in live mode only.
         turnTools.push(fc.name);
         const res = await require("../tools/registry").execute(fc.name, fc.args, {
+          session: liveState,
+          sessionId: liveSessionId,
+          turnId: currentTurnId,
+          inputQuality: turnQuality,
+          source: "live",
           userId: user?.sub,
           userName,
           approved,
@@ -936,7 +1016,10 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     } catch (_) {}
     closeBoth("upstream error");
   });
-  upstream.on("close", (code) => closeBoth(`upstream ${code}`));
+  upstream.on("close", (code) => {
+    if (liveState) sessionState.end(Number(user?.sub), liveSessionId);
+    closeBoth(`upstream ${code}`);
+  });
 
   function sendAudioUp(chunk) {
     upstream.send(
