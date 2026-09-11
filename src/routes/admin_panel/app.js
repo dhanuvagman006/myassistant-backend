@@ -213,6 +213,7 @@ const NAV = [
   ["#/users", "Users"],
   ["#/analytics", "Analytics"],
   ["#/conversations", "Conversations"],
+  ["#/documents", "Documents"],
   ["#/activity", "Activity"],
   ["#/outcomes", "Task outcomes"],
   ["#/broadcast", "Notifications"],
@@ -263,6 +264,7 @@ async function render() {
     if (hash.startsWith("#/users")) return await viewUsers();
     if (hash.startsWith("#/analytics")) return await viewAnalytics();
     if (hash.startsWith("#/conversations")) return await viewConversations();
+    if (hash.startsWith("#/documents")) return await viewDocuments();
     if (hash.startsWith("#/activity")) return await viewActivity();
     if (hash.startsWith("#/outcomes")) return await viewOutcomes();
     if (hash.startsWith("#/broadcast")) return await viewBroadcast();
@@ -548,6 +550,7 @@ async function viewUserDetail(id) {
           u.phone_number ? h("div", { style: "margin-bottom:10px;" }, "Current: ", h("strong", {}, u.phone_number)) : null,
           h("div", { class: "inline-form" }, phoneInput, phoneBtn)),
         h("div", { class: "section-gap" }, conversationCard(d.conversations, id)),
+        h("div", { class: "section-gap" }, documentsCard(id, c.docs)),
         h("div", { class: "card section-gap" },
           h("h3", {}, "Recent activity"),
           d.recent.length ? d.recent.map((x) => h("div", { class: "feed-item" },
@@ -641,6 +644,181 @@ async function viewAnalytics() {
                 h("td", {}, t.name), h("td", { class: "num" }, t.count)))
               : h("tr", {}, h("td", { colspan: 2, class: "chart-empty" }, "No data yet."))))))
   ));
+}
+
+/* ------------------------------------------------------------------ */
+/* Saved documents                                                     */
+/*                                                                     */
+/* A count told you nothing about whether filing actually works. These */
+/* tiles show the document as the user has it: the picture or PDF, the */
+/* title analysis produced (or a warning that it never landed), which  */
+/* case file it went into, and whether the bytes are still on disk.    */
+/* ------------------------------------------------------------------ */
+
+const DOC_CATEGORIES = ["medical", "prescription", "receipt", "bill", "id", "ticket", "other"];
+
+const fmtBytes = (n) => {
+  const b = Number(n) || 0;
+  if (b < 1024) return b + " B";
+  if (b < 1024 * 1024) return Math.round(b / 1024) + " KB";
+  return (b / 1048576).toFixed(1) + " MB";
+};
+
+/** PDF / JPG / PNG — the short kind shown when there is no thumbnail. */
+const docKind = (mime) => {
+  const m = String(mime || "");
+  if (m === "application/pdf") return "PDF";
+  if (m.startsWith("image/")) return m.slice(6).toUpperCase();
+  if (m.startsWith("text/")) return "TEXT";
+  return "FILE";
+};
+
+const docFileUrl = (d, download) =>
+  `/admin-panel/api/documents/${d.id}/file` + (download ? "?download=1" : "");
+
+/** One document as a tile. Clicking opens the real file in a new tab. */
+function docTile(d, { showUser = false } = {}) {
+  const isImage = String(d.mime || "").startsWith("image/") && d.onDisk;
+  const thumb = h("div", { class: "doc-thumb" },
+    isImage
+      ? h("img", { src: docFileUrl(d), alt: "", loading: "lazy" })
+      : h("span", { class: "doc-kind" }, d.onDisk ? docKind(d.mime) : "MISSING"));
+
+  return h("div", {
+    class: "doc-tile",
+    title: d.summary || d.note || d.title,
+    onclick: () => {
+      if (!d.onDisk) return toast("That file is no longer on disk.", true);
+      window.open(docFileUrl(d), "_blank");
+    },
+  },
+    thumb,
+    h("div", { class: "doc-body" },
+      h("div", { class: "doc-title" }, d.title),
+      h("div", { class: "doc-chips" },
+        h("span", { class: "badge neutral" }, d.category),
+        d.clientId
+          ? h("span", { class: "badge accent" }, d.clientName || "case file")
+          : null,
+        !d.analyzed ? h("span", { class: "badge warn" }, "not analysed") : null,
+        !d.onDisk ? h("span", { class: "badge danger" }, "file missing") : null),
+      h("div", { class: "doc-meta" },
+        showUser && d.userId
+          ? h("a", {
+              href: "#/user/" + d.userId,
+              onclick: (e) => e.stopPropagation(),
+            }, d.userName || "#" + d.userId)
+          : null,
+        h("span", {}, fmtBytes(d.size)),
+        h("span", {}, "·"),
+        h("span", {}, d.docDate || fmtDate(d.createdAt)))));
+}
+
+/**
+ * The documents card on a user's detail page. Loaded on its own after
+ * the page renders — a user with hundreds of saves must not hold up
+ * everything else on the page.
+ */
+function documentsCard(userId, count) {
+  const body = h("div", { class: "chart-empty" }, "Loading documents…");
+  const card = h("div", { class: "card" },
+    h("div", { style: "display:flex; align-items:center; gap:10px; margin-bottom:12px;" },
+      h("h3", { style: "margin:0;" }, "Saved documents"),
+      h("div", { style: "flex:1;" }),
+      count
+        ? h("button", {
+            class: "btn sm",
+            onclick: () => window.open(
+              `/admin-panel/api/documents.csv?user_id=${userId}&limit=2000`, "_blank"),
+          }, "Download CSV")
+        : null),
+    body);
+
+  api(`/users/${userId}/documents?limit=200`)
+    .then((d) => {
+      if (!d.documents.length) {
+        body.replaceWith(h("div", { class: "chart-empty" }, "Nothing saved yet."));
+        return;
+      }
+      const missing = d.documents.filter((x) => !x.onDisk).length;
+      const unanalysed = d.documents.filter((x) => !x.analyzed).length;
+      body.replaceWith(h("div", {},
+        h("div", { class: "doc-meta", style: "margin-bottom:10px;" },
+          h("span", {}, d.documents.length + (d.documents.length === 1 ? " document" : " documents")),
+          h("span", {}, "·"),
+          h("span", {}, fmtBytes(d.totalBytes)),
+          ...d.byCategory.map((c) =>
+            h("span", { class: "badge neutral" }, `${c.category} ${c.n}`)),
+          unanalysed ? h("span", { class: "badge warn" }, unanalysed + " not analysed") : null,
+          missing ? h("span", { class: "badge danger" }, missing + " missing on disk") : null),
+        h("div", { class: "doc-grid" }, d.documents.map((x) => docTile(x)))));
+    })
+    .catch((e) => {
+      if (e.message !== "signed out") {
+        body.replaceWith(h("div", { class: "chart-empty" }, "Could not load documents: " + e.message));
+      }
+    });
+
+  return card;
+}
+
+/** Every saved document, across every user. */
+async function viewDocuments() {
+  shell("#/documents", loading());
+  let q = "", category = "", area = "", offset = 0;
+
+  const search = h("input", { class: "input", placeholder: "Search title, note, tags or user…", style: "max-width:300px;" });
+  const catSel = h("select", { class: "input" },
+    h("option", { value: "" }, "All categories"),
+    DOC_CATEGORIES.map((c) => h("option", { value: c }, c)));
+  const areaSel = h("select", { class: "input" },
+    h("option", { value: "" }, "Everywhere"),
+    h("option", { value: "personal" }, "Personal only"),
+    h("option", { value: "clients" }, "Case files only"));
+
+  const grid = h("div", { class: "doc-grid" });
+  const summary = h("div", { class: "doc-meta", style: "margin-bottom:14px;" });
+  const moreBtn = h("button", { class: "btn", onclick: () => load(true) }, "Load more");
+
+  const qs = () =>
+    `q=${encodeURIComponent(q)}&category=${encodeURIComponent(category)}` +
+    `&area=${encodeURIComponent(area)}`;
+
+  async function load(append) {
+    if (!append) { offset = 0; grid.replaceChildren(); }
+    const d = await api(`/documents?${qs()}&limit=60&offset=${offset}`);
+    offset += d.documents.length;
+    if (d.documents.length) {
+      grid.append(...d.documents.map((x) => docTile(x, { showUser: true })));
+    } else if (!append) {
+      grid.append(h("div", { class: "chart-empty" }, "No documents match that."));
+    }
+    summary.replaceChildren(
+      h("span", {}, `${offset} of ${d.total} shown`),
+      ...d.categories.map((c) => h("span", { class: "badge neutral" }, `${c.category} ${c.n}`)));
+    moreBtn.disabled = offset >= d.total;
+  }
+
+  let debounce = null;
+  search.addEventListener("input", () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => { q = search.value.trim(); load(false); }, 300);
+  });
+  catSel.addEventListener("change", () => { category = catSel.value; load(false); });
+  areaSel.addEventListener("change", () => { area = areaSel.value; load(false); });
+
+  shell("#/documents", h("div", {},
+    pageHead("Documents", "Everything users have saved — the file itself, how it was filed, and whether analysis landed.",
+      h("button", {
+        class: "btn",
+        onclick: () => window.open(`/admin-panel/api/documents.csv?${qs()}&limit=2000`, "_blank"),
+      }, "Download CSV")),
+    h("div", { class: "doc-filters" }, search, catSel, areaSel),
+    summary,
+    grid,
+    h("div", { style: "margin-top:16px; text-align:center;" }, moreBtn)));
+
+  await load(false);
 }
 
 /* ------------------------------------------------------------------ */

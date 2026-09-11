@@ -464,6 +464,180 @@ router.get("/api/conversations.csv", async (req, res) => {
   res.send("\uFEFF" + lines.join("\n"));
 });
 
+/* ------------------------------------------------------------------ */
+/* Saved documents — what users have actually filed                    */
+/*                                                                     */
+/* The panel could say "Documents: 14" and nothing more. Seeing the     */
+/* documents themselves is how you tell a working filing flow from a   */
+/* broken one: whether analysis landed (title/summary/category), which */
+/* case file a document went into, and whether the bytes are still on  */
+/* disk. The file itself is streamed from the same store the app reads,*/
+/* so what the admin sees is what the user has.                        */
+/* ------------------------------------------------------------------ */
+
+const DOC_COLS = `d.id, d.user_id, d.filename, d.mime, d.size, d.path, d.title,
+  d.category, d.doc_date, d.summary, d.note, d.tags, d.client_id, d.created_at`;
+
+/** Row → panel shape. Never leaks the disk path; says whether it exists. */
+function docRow(r) {
+  const fs = require("fs");
+  return {
+    id: r.id,
+    userId: r.user_id,
+    userName: r.user_name || null,
+    filename: r.filename,
+    mime: r.mime,
+    size: Number(r.size) || 0,
+    title: r.title || require("../docs/store").fallbackTitle(r),
+    analyzed: Boolean(r.title),
+    category: r.category || "other",
+    docDate: r.doc_date || "",
+    summary: r.summary || "",
+    note: r.note || "",
+    tags: r.tags || "",
+    clientId: r.client_id || null,
+    clientName: r.client_name || null,
+    area: r.client_id ? "case file" : "personal",
+    onDisk: Boolean(r.path) && fs.existsSync(r.path),
+    createdAt: Number(r.created_at) || 0,
+  };
+}
+
+/** Shared filter for the per-user list, the global list and the CSV. */
+function docFilters(q) {
+  const params = [];
+  const where = [];
+  const uid = parseInt(q.user_id, 10);
+  if (Number.isFinite(uid)) { params.push(uid); where.push(`d.user_id = $${params.length}`); }
+  const cat = String(q.category || "").trim();
+  if (cat) { params.push(cat); where.push(`d.category = $${params.length}`); }
+  const area = String(q.area || "").trim();
+  if (area === "personal") where.push("d.client_id IS NULL");
+  else if (area === "clients") where.push("d.client_id IS NOT NULL");
+  const term = String(q.q || "").trim();
+  if (term) {
+    params.push(`%${term}%`);
+    const i = params.length;
+    where.push(`(d.title ILIKE $${i} OR d.note ILIKE $${i} OR d.summary ILIKE $${i}
+                 OR d.tags ILIKE $${i} OR d.filename ILIKE $${i} OR u.name ILIKE $${i})`);
+  }
+  return { where: where.length ? "WHERE " + where.join(" AND ") : "", params };
+}
+
+async function queryDocs(q, { limit = 60, offset = 0 } = {}) {
+  const { where, params } = docFilters(q);
+  const rows = await sq(
+    `SELECT ${DOC_COLS}, u.name AS user_name, c.name AS client_name
+       FROM documents d
+       LEFT JOIN users u   ON u.id = d.user_id
+       LEFT JOIN clients c ON c.id = d.client_id
+       ${where}
+      ORDER BY d.created_at DESC
+      LIMIT ${Math.min(Math.max(limit, 1), 500)} OFFSET ${Math.max(offset, 0)}`,
+    params
+  );
+  return rows.map(docRow);
+}
+
+/** Every document one user has saved, newest first. */
+router.get("/api/users/:id/documents", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: "bad user id" });
+  const documents = await queryDocs(
+    { ...req.query, user_id: String(id) },
+    { limit: parseInt(req.query.limit, 10) || 200 }
+  );
+  const byCategory = await sq(
+    `SELECT category, COUNT(*)::int AS n, COALESCE(SUM(size),0)::bigint AS bytes
+       FROM documents WHERE user_id = $1 GROUP BY category ORDER BY n DESC`,
+    [id]
+  );
+  res.json({
+    documents,
+    total: documents.length,
+    byCategory: byCategory.map((r) => ({ category: r.category, n: r.n, bytes: Number(r.bytes) })),
+    totalBytes: byCategory.reduce((a, r) => a + Number(r.bytes), 0),
+  });
+});
+
+/** Every document across every user — searchable, filterable, paged. */
+router.get("/api/documents", async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit, 10) || 60, 200);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+  const { where, params } = docFilters(req.query);
+  const [documents, totalRow, cats] = await Promise.all([
+    queryDocs(req.query, { limit, offset }),
+    sq(`SELECT COUNT(*)::int AS count FROM documents d
+          LEFT JOIN users u ON u.id = d.user_id ${where}`, params),
+    sq(`SELECT category, COUNT(*)::int AS n FROM documents GROUP BY category ORDER BY n DESC`, []),
+  ]);
+  res.json({
+    documents,
+    total: totalRow[0] ? totalRow[0].count : 0,
+    categories: cats.map((c) => ({ category: c.category, n: c.n })),
+  });
+});
+
+/**
+ * The file itself. Inline by default so images and PDFs preview in the
+ * browser; ?download=1 forces a save. Read straight from the store's own
+ * path, so a missing file reports 404 rather than an empty preview.
+ */
+router.get("/api/documents/:docId/file", async (req, res) => {
+  const fs = require("fs");
+  const docId = parseInt(req.params.docId, 10);
+  if (!Number.isFinite(docId)) return res.status(400).json({ error: "bad document id" });
+  const rows = await sq(
+    "SELECT id, user_id, filename, mime, path, title FROM documents WHERE id = $1", [docId]
+  );
+  const row = rows[0];
+  if (!row) return res.status(404).json({ error: "no such document" });
+  if (!row.path || !fs.existsSync(row.path)) {
+    return res.status(404).json({ error: "the file is no longer on disk" });
+  }
+  const safe = String(row.title || row.filename || "document")
+    .replace(/[^\w .\-]+/g, "_").slice(0, 80);
+  res.setHeader("Content-Type", row.mime || "application/octet-stream");
+  res.setHeader(
+    "Content-Disposition",
+    `${req.query.download ? "attachment" : "inline"}; filename="${safe}"`
+  );
+  res.setHeader("Cache-Control", "private, max-age=3600");
+  fs.createReadStream(row.path).pipe(res);
+});
+
+/** The same list as a spreadsheet, matching the conversations export. */
+router.get("/api/documents.csv", async (req, res) => {
+  const rows = await queryDocs(req.query, {
+    limit: Math.min(parseInt(req.query.limit, 10) || 2000, 5000),
+  });
+  const cell = (v) => {
+    let t = v === null || v === undefined ? "" : String(v);
+    if (/^[=+\-@]/.test(t)) t = "'" + t;
+    return '"' + t.replace(/"/g, '""') + '"';
+  };
+  const when = (ms) => {
+    const d = new Date(Number(ms) || 0);
+    return Number.isFinite(d.getTime()) ? d.toISOString().replace("T", " ").slice(0, 19) : "";
+  };
+  const header = ["saved_utc", "user_id", "user", "title", "category", "area",
+    "case_file", "document_date", "size_kb", "type", "analyzed", "on_disk",
+    "note", "summary", "tags", "filename"];
+  const lines = [header.map(cell).join(",")];
+  for (const d of rows) {
+    lines.push([
+      when(d.createdAt), d.userId, d.userName || "", d.title, d.category, d.area,
+      d.clientName || "", d.docDate, Math.round(d.size / 1024), d.mime,
+      d.analyzed ? "yes" : "no", d.onDisk ? "yes" : "missing",
+      d.note, d.summary, d.tags, d.filename,
+    ].map(cell).join(","));
+  }
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="documents-${stamp}.csv"`);
+  res.send("\uFEFF" + lines.join("\n"));
+});
+
 router.get("/api/analytics", async (_req, res) => {
   const monthAgo = Date.now() - 30 * 86400_000;
   const [signups30, dau14, actions14, msgs14, topActions, topUsers] =
