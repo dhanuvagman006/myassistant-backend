@@ -1110,6 +1110,104 @@ console.log("\nexecution record");
       "a phone that reported nothing got a limits lecture anyway");
   });
 
+  /* ================================================================ */
+  /* 17. THE 11 SEPTEMBER LIVE-MODE SESSION                           */
+  /*     Build 26, all on the live surface: an alarm request opened    */
+  /*     Brave, "laugh" opened YouTube, and the assistant then denied  */
+  /*     opening it.                                                  */
+  /* ================================================================ */
+  console.log("\nlive session failures");
+
+  await atest("an alarm is handed to the clock app, never to a browser", async () => {
+    const res = await registry.execute("set_alarm", { hour: 5, minute: 50 },
+      { userId: USER_A, inputQuality: { quality: "clear" } });
+    assert.strictEqual(res.ok, true);
+    const url = res.deviceAction.url;
+    assert.match(url, /^intent:\/\/#Intent;/, "the alarm is not an intent URI");
+    // The app used to synthesise https:// from this URI's empty host and
+    // hand THAT to a browser. Asking for an alarm opened Brave, and the
+    // tool had already said the alarm was set.
+    const host = url.substring(9).split('#')[0];
+    assert.strictEqual(host, "", "precondition: the URI has no host");
+    const engine = fs.readFileSync(
+      require.resolve("../../myassistant-flutter/lib/features/assistant/state/assistant_engine.dart"),
+      "utf8");
+    assert.match(engine, /MethodChannel\('hari\/intent'\)/,
+      "the app still has no native way to launch an intent URI");
+    assert.ok(!/'https:\/\/\$\{url\.substring\(9\)/.test(engine),
+      "the app still synthesises an https URL out of an intent URI");
+  });
+
+  test("play_music is documented as music only, not as a way to perform", () => {
+    const t = registry.get("play_music");
+    assert.match(t.description, /laugh/i,
+      "nothing warns the model off using play_music to laugh");
+    assert.match(t.description, /OPENS YOUTUBE/,
+      "the description does not say it takes over the screen");
+  });
+
+  test("the record names the app that opened, so it cannot be denied", () => {
+    // "No, I didn't open YouTube. I played a laughing sound for you."
+    // Both halves were true of the TOOL; the second was false of the PHONE.
+    const line = actions.describe({
+      tool: "play_music", target: "laughing sound", ok: 1,
+      created_at: Date.now(),
+      result: "device action: open_url → https://www.youtube.com/watch?v=abc",
+    });
+    assert.match(line, /youtube/i,
+      "the record still does not say YouTube opened");
+    // An intent handed to the clock must not read as "opened SET_ALARM".
+    const alarm = actions.describe({
+      tool: "set_alarm", target: "", ok: 1, created_at: Date.now(),
+      result: "device action: open_url → intent://#Intent;action=android.intent.action.SET_ALARM;end",
+    });
+    assert.ok(!/SET_ALARM/.test(alarm), "the alarm line reads as gibberish");
+    assert.match(alarm, /phone's own app/);
+  });
+
+  test("live mode refuses to answer a garbled transcript", () => {
+    // "o a", "clove" and "Love illah" all came back as confident answers,
+    // because the tool gate only fires when the model reaches for a tool
+    // and these reached for nothing.
+    const proxy = fs.readFileSync(require.resolve("../src/live/proxy.js"), "utf8");
+    assert.match(proxy, /turnQuality\.quality === "garbled"/,
+      "live mode still generates from a garbled transcript");
+    assert.match(proxy, /clarificationFor/,
+      "live mode has no clarification path");
+    for (const fragment of ["o a", "clove"]) {
+      assert.notStrictEqual(inputQuality.assess(fragment).quality, "clear",
+        `"${fragment}" was judged clear`);
+    }
+  });
+
+  await atest("a text is not promised when SMS permission is off", async () => {
+    // "Alan isn't on the app, so I'm sending it to them as a text message
+    // instead" — and the next turn admitted the permission was never given.
+    //
+    // The SMS rung is only reached once the contact resolves and turns out
+    // NOT to be an app user, so the test has to get that far: checking the
+    // permission earlier would wrongly refuse a message to someone who IS
+    // on the app, where SMS is irrelevant.
+    await require("../src/routes/contacts").migrate();
+    await db.run(
+      `INSERT INTO contacts (user_id, name, phone, updated_at)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (user_id, phone) DO UPDATE SET name = $2`,
+      [USER_A, "Alan Test", "+919000000099", Date.now()]
+    );
+    const res = await registry.execute(
+      "send_agent_message",
+      { contact_name: "Alan Test", message: "I will be late today" },
+      {
+        userId: USER_A, appBuild: 26, inputQuality: { quality: "clear" },
+        deviceCaps: { build: 26, granted: [], denied: ["sms"] },
+      }
+    );
+    assert.strictEqual(res.ok, false, "it still promised a text it cannot send");
+    assert.strictEqual(res.error, "sms_permission_denied");
+    assert.match(res.data.hint, /must not say it was/i);
+  });
+
   /* ---------------------------------------------------------------- */
   console.log("");
   for (const uid of [USER_A, USER_B]) {
@@ -1117,6 +1215,7 @@ console.log("\nexecution record");
     await db.run("DELETE FROM conversation_turns WHERE user_id = $1", [uid]).catch(() => {});
     await db.run("DELETE FROM task_outcomes WHERE user_id = $1", [uid]).catch(() => {});
     await db.run("DELETE FROM reminders WHERE user_id = $1", [uid]).catch(() => {});
+    await db.run("DELETE FROM contacts WHERE user_id = $1", [uid]).catch(() => {});
   }
   console.log(`${passed} checks passed`);
   process.exit(process.exitCode || 0);

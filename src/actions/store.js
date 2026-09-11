@@ -452,8 +452,33 @@ function describe(r) {
     record_entry: "recorded an entry",
   };
   const verb = verbs[r.tool] || r.tool.replace(/_/g, " ");
-  const what = r.target ? ` ${r.target}` : "";
-  return `${when}: ${r.ok ? "" : "FAILED — "}${verb}${what}`.trim();
+  const what = r.resolved_target || r.target
+    ? ` ${r.resolved_target || r.target}` : "";
+  // WHICH APP ACTUALLY OPENED. A tester asked the assistant to laugh, it
+  // used play_music, YouTube opened — and a minute later it said "I didn't
+  // open YouTube. I played a laughing sound." Both halves were true of the
+  // TOOL and the second was false of the PHONE. The record knows which app
+  // the device action named; saying it is the difference between a true
+  // answer and a denial.
+  const opened = /device action: \w+ → (.+)$/.exec(String(r.result || ""));
+  let via = "";
+  if (opened) {
+    const t = opened[1];
+    const host = /^https?:\/\/([^/?#]+)/.exec(t);
+    if (host) {
+      const app = host[1].replace(/^(www|m|music)\./, "").split(".")[0];
+      if (app) via = ` (this opened ${app} on the phone)`;
+    } else if (/^intent:/.test(t)) {
+      // An intent handed to the phone's own app — the clock, the launcher,
+      // a settings page. Saying "opened SET_ALARM" would read as gibberish;
+      // the verb above already says what it was.
+      via = " (handed to the phone's own app)";
+    } else if (t) {
+      via = ` (this opened ${t.split("/")[0]} on the phone)`;
+    }
+  }
+  const how = r.decision && r.decision !== "ran" ? ` [${r.decision}]` : "";
+  return `${when}: ${r.ok ? "" : "FAILED — "}${verb}${what}${via}${how}`.trim();
 }
 
 module.exports = {

@@ -1675,7 +1675,13 @@ function registerBuiltins() {
     description:
       "Play a song, artist or playlist for the user. Defaults to YouTube, " +
       "where the track starts playing on its own. Use for 'play Tum Hi Ho', " +
-      "'put on some Arijit Singh', 'play my workout playlist'.",
+      "'put on some Arijit Singh', 'play my workout playlist'.\n" +
+      "ONLY for actual music the user named. This OPENS YOUTUBE on their " +
+      "phone and takes over their screen, so it is never the answer to a " +
+      "request for YOU to do something with your voice — 'laugh', 'sing', " +
+      "'tell me a joke', 'make a sound', 'do an accent'. Do those yourself, " +
+      "out loud, with no tool at all. A tester asked the assistant to laugh " +
+      "and YouTube opened.",
     risk: "low",
     deviceAction: true,
     inputSchema: {
@@ -3252,6 +3258,27 @@ function registerBuiltins() {
               `app can't send texts by itself yet — update the app when the ` +
               `popup offers it. Meanwhile I can set up a WhatsApp message for ` +
               `you to tap send on.`,
+          };
+        }
+        // PERMISSION, CHECKED BEFORE PROMISING. A tester was told "Alan
+        // isn't on the app, so I'm sending it to them as a text message
+        // instead" — and the next turn had to admit SMS permission was
+        // never granted. The phone now reports what it can do, so the rung
+        // that cannot run is skipped instead of announced.
+        const caps = ctx.deviceCaps;
+        if (caps && Array.isArray(caps.denied) && caps.denied.includes("sms") &&
+            !(Array.isArray(caps.granted) && caps.granted.includes("sms"))) {
+          return {
+            ok: false,
+            error: "sms_permission_denied",
+            data: {
+              recipient: args.contact_name,
+              hint:
+                "SMS permission is OFF on this phone, so the text CANNOT be " +
+                "sent and you must not say it was. Tell them the permission " +
+                "is off, offer to open Settings, and offer a WhatsApp message " +
+                "they tap send on as the alternative.",
+            },
           };
         }
         // Not on the app → the phone sends a REAL SMS by itself (the app
@@ -5011,7 +5038,10 @@ function registerBuiltins() {
       "What the assistant ACTUALLY did, from its execution record — the only " +
       "correct way to answer 'did you call X?', 'why did settings open?', " +
       "'what did I just ask you?', 'when did I ask you to call Jeevan?', " +
-      "'did you open Google search?'. NEVER answer those from memory or " +
+      "'did you open Google search?', 'why did YouTube open?'. A line that " +
+      "says an app was opened on the phone means it OPENED — do not deny it " +
+      "because the tool had another name (play_music opens YouTube). " +
+      "NEVER answer those from memory or " +
       "from your impression of the conversation: use this, and say exactly " +
       "what it returns. If it returns nothing, say plainly that nothing of " +
       "that kind was done.",
@@ -5067,7 +5097,11 @@ function registerBuiltins() {
           line: store.describe(r),
         })),
         speak: use.map((r) => store.describe(r)).join(". ") +
-          ". Answer ONLY from these; they are the record of what really ran.",
+          ". Answer ONLY from these; they are the record of what really ran. " +
+          "Where a line says an app was opened on the phone, THAT APP DID " +
+          "OPEN — say so even if the tool's own name is something else. " +
+          "Denying an app opened because the tool was called something " +
+          "different is the mistake this record exists to prevent.",
       };
     },
   });

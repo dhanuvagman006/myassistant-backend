@@ -157,6 +157,13 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     + "meeting gets missed. Answer in one compact human sentence — 'Yes, a "
     + "meeting with Allen tomorrow at 4 pm.' Never read saved entries "
     + "verbatim, no quotation marks, no reciting titles. "
+    + "PRICES in the user's own currency: an Indian fare or bill is in "
+    + "RUPEES (₹), never dollars, even if a search result quoted USD. "
+    + "Distances in km, temperature in °C, dates day-before-month. "
+    + "PERFORMING vs PLAYING: 'laugh', 'sing', 'tell me a joke', 'do a "
+    + "voice' — do it YOURSELF with your own voice and NO tool. play_music "
+    + "opens YouTube and takes over their screen; it is only for music they "
+    + "actually named. "
     + "TIMERS: 'for N minutes' counts down → set_timer; 'at 6am' → "
     + "set_alarm; 'every morning/Monday/1st' → create_reminder with repeat. "
     + "READING A PAGE: 'summarise this' / 'what does this article say' → "
@@ -497,6 +504,48 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         turnId: currentTurnId,
         sessionId: liveSessionId,
       });
+
+      // ── GARBLED IN, CLARIFICATION OUT ────────────────────────────
+      // The voice path has refused to generate from a garbled transcript
+      // for a while; live mode did not, and live mode is the app's main
+      // screen. "o a", "clove" and "Love illah" all came back as
+      // confident answers — a greeting, a half-sentence about phone
+      // settings — because the tool gate only fires if the model happens
+      // to reach for a world action, and these reached for nothing.
+      //
+      // The model is already mid-stream here, so the correction is sent
+      // upstream as an instruction rather than substituted: the assistant
+      // asks the question itself, in its own voice and language.
+      if (turnQuality.quality === "garbled") {
+        const ask = inputQuality.clarificationFor(turnQuality, {
+          language: preferredLanguage || "",
+        });
+        try {
+          if (!upstream || !upstreamReady) throw new Error("upstream not ready");
+          upstream.send(JSON.stringify({
+            clientContent: {
+              turns: [{
+                role: "user",
+                parts: [{
+                  text:
+                    `[SYSTEM] That transcript was not usable ` +
+                    `("${turnQuality.heard}" — ${turnQuality.reason || "unclear"}). ` +
+                    `Do NOT answer it, do NOT guess what was meant, and do NOT ` +
+                    `reuse the subject of an earlier request. Say only this, in ` +
+                    `their language: "${ask}"`,
+                }],
+              }],
+              turnComplete: true,
+            },
+          }));
+        } catch (_) {}
+        require("../actions/store").record(Number(user.sub), {
+          sessionId: liveSessionId, turnId: currentTurnId, tool: "clarify",
+          args: { heard: turnQuality.heard }, ok: true, world: false,
+          decision: "clarified", intent: t, surface: "live",
+          detail: `input ${turnQuality.reason || "garbled"}`, result: ask,
+        });
+      }
     }
   };
   // The model's spoken turn, accumulated the same way and flushed at the
