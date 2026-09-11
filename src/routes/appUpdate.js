@@ -44,7 +44,7 @@ function writeMeta(meta) {
 }
 
 /** Called from the admin upload route after multer stored the temp file. */
-async function publish({ tmpPath, versionCode, versionName, changelog }) {
+async function publish({ tmpPath, versionCode, versionName, changelog, allowDuplicate }) {
   fs.mkdirSync(APK_DIR, { recursive: true });
 
   // Hash while it's still a temp file, then move into place atomically.
@@ -55,6 +55,25 @@ async function publish({ tmpPath, versionCode, versionName, changelog }) {
       .on("end", () => resolve(h.digest("hex")))
       .on("error", reject);
   });
+
+  // THE SAME BYTES UNDER A NEW NUMBER cost every installed user a full
+  // re-download for nothing — the app compares version codes, never the
+  // hash of what it is already running, and the update sheet starts
+  // downloading on its own. Refuse it unless the caller says it is
+  // deliberate.
+  {
+    const previous = readMeta();
+    if (previous && previous.sha256 === sha256 &&
+        Number(previous.versionCode) !== Number(versionCode) && !allowDuplicate) {
+      fs.rmSync(tmpPath, { force: true });
+      throw new Error(
+        `this APK is byte-identical to published build ${previous.versionCode} ` +
+        `(sha256 ${sha256.slice(0, 12)}…) — publishing it as ${versionCode} would ` +
+        "make every installed app re-download it for no change. Rebuild, or pass " +
+        "allowDuplicate if that is really what you want."
+      );
+    }
+  }
 
   const filename = `hari-${versionCode}.apk`;
   const finalPath = path.join(APK_DIR, filename);

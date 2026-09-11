@@ -514,6 +514,12 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
         : res.needsArgs
           ? { ok: false, missing: res.needsArgs }
           : { ok: false, error: res.error || "failed" };
+      // A tool's `note` is an instruction ABOUT the result — "this already
+      // ran, do not run it again". It was reaching the live path (which
+      // forwards the whole envelope) and being dropped here, so the same
+      // suppression behaved differently on the two surfaces and the voice
+      // path — the one the confirmation flow runs on — flew blind.
+      if (res.note) payload.note = res.note;
 
       responseParts.push({
         functionResponse: { name: call.name, response: payload },

@@ -200,10 +200,9 @@ function isWorldAction(name) {
 }
 
 /**
- * REPEAT-GUARDED — the subset of world actions where doing it twice is
- * almost never what the user meant: a second call to the same person, a
- * second copy of the same message, a second order, the same app launched
- * again seconds later.
+ * REPEAT-GUARDED (same breath, same socket) — world actions where firing
+ * twice in one turn is a double-fire, not a second request. Broad on
+ * purpose: launching an app twice in the same breath is always a bug.
  *
  * Deliberately NOT everything in WORLD_ACTIONS. Reminders, alarms, ledger
  * entries and generated media are things a user legitimately repeats — two
@@ -217,6 +216,31 @@ const REPEAT_GUARDED = new Set([
   "collect_payment", "open_app", "open_webpage", "open_service_app",
   "start_navigation", "play_music",
 ]);
+
+/**
+ * DURABLE-GUARDED (cross-session, 45 s) — the far narrower set where a
+ * repeat arriving on another surface is still the same request: something
+ * has left the device and cannot be taken back.
+ *
+ * App launches and navigation are NOT here. Reopening an app you just
+ * backed out of, or restarting navigation, is ordinary and happens well
+ * inside the window; refusing it reads as the assistant breaking.
+ *
+ * Calls are not here either, and that is deliberate. executed_actions is
+ * written when a call is DISPATCHED — before the user approves the card
+ * and before the handset finds the contact — so a declined or failed call
+ * leaves an ok=1 row behind. Suppressing on that row would refuse the
+ * retry of a call that never happened. Calls are guarded by the in-flight
+ * tier below, which reads the outcome's real state instead.
+ */
+const DURABLE_GUARDED = new Set([
+  "send_agent_message", "send_whatsapp_message", "send_document",
+  "send_patient_document", "order_food", "book_ride", "book_movie_tickets",
+  "collect_payment",
+]);
+
+/** Tools that put a call on a line — guarded by outcome, not by clock. */
+const CALL_TOOLS = new Set(["place_phone_call", "book_by_calling_business"]);
 
 async function execute(name, rawArgs, ctx = {}) {
   const tool = get(name);
@@ -322,87 +346,99 @@ async function execute(name, rawArgs, ctx = {}) {
     };
   }
 
-  // ── GATE 2: THE SAME ACTION TWICE IN A BREATH ─────────────────────
+  // ── GATE 2: THE SAME REQUEST, TWICE ───────────────────────────────
   // Testers saw one "Call Dikshit Pujari" answered three different ways in
-  // forty seconds, because each repetition took a different path. A repeat
-  // of the same world action on the same target inside the repeat window
-  // returns what happened the FIRST time instead of racing it again.
-  if (REPEAT_GUARDED.has(name) && ctx.userId && !ctx.approved && !ctx.background) {
+  // forty seconds, because each repetition took a different path.
+  //
+  // Three tiers, in order of authority: what the world is actually doing
+  // right now, what this socket did a breath ago, and what any surface did
+  // in the last three-quarters of a minute.
+  //
+  // A suppressed action is pushed into the session's executed list before
+  // returning. Without that, claimCheck sees no tool for this turn and
+  // rewrites the reply into "I couldn't start that call — nothing was
+  // dialled" about a call that is, at that moment, ringing.
+  if (ctx.userId && !ctx.background && isWorldAction(name)) {
     const store = require("../actions/store");
     const target = store.targetOf(name, args);
 
-    // A CALL ALREADY IN FLIGHT outranks everything: the phone or the relay
-    // is mid-dial to this very person. Time does not decide this — the
-    // task's own state does.
-    if (["place_phone_call", "book_by_calling_business"].includes(name)) {
+    const suppress = (data, note) => {
       try {
-        const live = await require("../outcomes/store").findInFlight(
-          ctx.userId, "call", target
-        );
-        const relay = live || (await require("../outcomes/store").findInFlight(
-          ctx.userId, "agent_call", target
-        ));
-        if (relay) {
-          return {
-            ok: true,
-            repeated: true,
-            data: { inFlight: true, tool: name, target, status: relay.status },
-            speak: "",
-            note:
-              `A call to "${target}" is already ${relay.status} — it was started ` +
-              "moments ago and has not finished. Do NOT dial again. Tell the " +
-              "user it is already going through, or ask if they want it cancelled.",
-          };
+        if (ctx.session) {
+          require("../agents/sessionState").noteSuppressed(ctx.session, {
+            turnId: ctx.turnId,
+            tool: name,
+            args,
+          });
         }
-      } catch (e) {
-        console.warn("in-flight check failed:", e.message);
-      }
-    }
+      } catch (_) {}
+      return { ok: true, repeated: true, data, speak: "", note };
+    };
 
-    // SAME BREATH, SAME SOCKET. The session's own list is in memory and
-    // therefore instantaneous; the durable record below is written
-    // fire-and-forget and would not yet exist for two calls milliseconds
-    // apart. Both tiers are needed — this one catches the double-fire, the
-    // next catches the repeat that arrives on a different surface.
-    const session = ctx.session || null;
-    if (session) {
-      const twin = (session.executed || [])
-        .filter((e) => e.tool === name && e.target === target && Date.now() - e.at < 20_000)
-        .pop();
-      if (twin && twin.ok) {
-        return {
-          ok: true,
-          repeated: true,
-          data: { alreadyDone: true, tool: name, target, at: twin.at },
-          speak: "",
-          note:
+    // An action we cannot identify a target for is never a known repeat —
+    // matching on an empty target would collapse every order, every ride
+    // and every untargeted message onto one another.
+    if (target) {
+      // TIER 1 — A CALL ALREADY ON THE LINE. This outranks everything and
+      // runs even on the approved path: confirming the same call twice, on
+      // two surfaces, is exactly the failure. Time does not decide it; the
+      // task's own status does.
+      if (CALL_TOOLS.has(name)) {
+        try {
+          const live = await require("../outcomes/store").findInFlight(
+            ctx.userId, ["call", "agent_call"], target
+          );
+          if (live) {
+            return suppress(
+              { inFlight: true, tool: name, target, status: live.status },
+              `A call to "${target}" is already ${live.status} — it was started ` +
+              "moments ago and has not finished. Do NOT dial again. Tell the " +
+              "user it is already going through, or ask if they want it cancelled."
+            );
+          }
+        } catch (e) {
+          console.warn("in-flight check failed:", e.message);
+        }
+      }
+
+      // The remaining tiers are about a REQUEST repeating. An approved
+      // replay is the same request continuing, so it passes through.
+      if (!ctx.approved && REPEAT_GUARDED.has(name)) {
+        // TIER 2 — SAME BREATH, SAME SOCKET. The session's own list is in
+        // memory and therefore instantaneous; the durable record below is
+        // written fire-and-forget and would not yet exist for two calls
+        // milliseconds apart.
+        const twin = ((ctx.session && ctx.session.executed) || [])
+          .filter((e) => e.tool === name && e.target === target && Date.now() - e.at < 20_000)
+          .pop();
+        if (twin && twin.ok) {
+          return suppress(
+            { alreadyDone: true, tool: name, target, at: twin.at },
             `${name} for "${target}" already ran moments ago in this turn or the ` +
             "one before. Do NOT run it again; tell the user it is already under " +
-            "way, or ask whether they want it repeated.",
-        };
-      }
-    }
+            "way, or ask whether they want it repeated."
+          );
+        }
 
-    // Otherwise: the same action on the same target already ran for this
-    // user recently — on ANY surface, not just this socket, which is how
-    // one request repeated across the live and voice paths got two
-    // different answers.
-    try {
-      const prior = await store.findRecent(ctx.userId, name, target, 45_000);
-      if (prior && (prior.ok === 1 || prior.ok === true)) {
-        return {
-          ok: true,
-          repeated: true,
-          data: { alreadyDone: true, tool: name, target, at: Number(prior.created_at) },
-          speak: "",
-          note:
-            `${name} for "${target}" already ran moments ago. Do NOT run it ` +
-            "again; tell the user it is already under way, or ask whether they " +
-            "want it repeated.",
-        };
+        // TIER 3 — ANY SURFACE, LAST 45 SECONDS. This is how one request
+        // repeated across the live and voice paths got two different
+        // answers. Only for things that have already left the device.
+        if (DURABLE_GUARDED.has(name)) {
+          try {
+            const prior = await store.findRecent(ctx.userId, name, target, 45_000);
+            if (prior && (prior.ok === 1 || prior.ok === true)) {
+              return suppress(
+                { alreadyDone: true, tool: name, target, at: Number(prior.created_at) },
+                `${name} for "${target}" already ran moments ago. Do NOT run it ` +
+                "again; tell the user it is already under way, or ask whether they " +
+                "want it repeated."
+              );
+            }
+          } catch (e) {
+            console.warn("repeat check failed:", e.message);
+          }
+        }
       }
-    } catch (e) {
-      console.warn("repeat check failed:", e.message);
     }
   }
 

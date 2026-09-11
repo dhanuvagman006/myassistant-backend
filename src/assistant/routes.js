@@ -292,6 +292,12 @@ async function runViaAgent(s, req, userText) {
       lng: Number(req.query?.lng) || undefined,
       history: (s.history || []).slice(-8),
       approved: false,
+      // The SSE session id, so every writer on this socket agrees on one.
+      // Without it the runtime fell back to a constant "runtime:<uid>" and
+      // the confirmation question was filed under a different session than
+      // the answer to it — leaving a bare "yes" in the next prompt with the
+      // request it answered filtered out.
+      sessionId: s.sid,
       // Fulfillment needs these: the caller's first name goes into the
       // script Hari speaks to a business, the platform decides whether a
       // deep link can use an Android intent:// URL, and the timezone turns
@@ -455,7 +461,18 @@ async function runViaAgent(s, req, userText) {
     }
 
     const text = String(out.text || "").trim();
-    if (!text && !out.deviceActions.length) return false; // nothing to say → legacy
+    // A REPEAT THAT WAS SUPPRESSED produces no device action and often no
+    // text. Falling through to the legacy regex chain here meant
+    // detectCallIntent re-matched "call Dikshit Pujari" and dialled it —
+    // defeating the guard in exactly the case it exists for.
+    const suppressed = (out.toolResults || []).some((t) => t && t.repeated);
+    if (!text && !out.deviceActions.length && !suppressed) return false; // → legacy
+    if (!text && suppressed) {
+      state(s, "speaking");
+      emit(s, { type: "assistant_message", text: "That's already under way." });
+      state(s, "completed");
+      return true;
+    }
 
     if (text) {
       state(s, "speaking");
@@ -750,6 +767,14 @@ router.post("/:sid/contacts", (req, res) => {
   res.json({ ok: true });
 
   if (matches.length === 0) {
+    // The call was logged at dispatch; no contact means it never happened.
+    try {
+      const uidNum = Number(s.userSub) > 0 ? Number(s.userSub) : null;
+      if (uidNum) {
+        require("../actions/store").invalidate(uidNum, "place_phone_call", name,
+          { detail: "no matching contact" });
+      }
+    } catch (_) {}
     emit(s, { type: "contact_not_found" });
     state(s, "speaking");
     emit(s, {
@@ -1067,6 +1092,16 @@ router.post("/:sid/call_result", async (req, res) => {
   if (line) {
     s.history = [...(s.history || []), { role: "user", content: line }].slice(-16);
   }
+  if (status === "failed" || status === "cancelled") {
+    // The handset says nothing happened. Retract the optimistic dispatch
+    // row so "try again" is not refused as a repeat of a call that failed.
+    try {
+      if (uid) {
+        require("../actions/store").invalidate(uid, "place_phone_call", who,
+          { detail: `call ${status}${b.reason ? ` — ${b.reason}` : ""}` });
+      }
+    } catch (_) {}
+  }
   if (status === "failed") {
     state(s, "speaking");
     emit(s, {
@@ -1135,6 +1170,24 @@ router.post("/:sid/confirm", (req, res) => {
     return;
   }
   if (!approved) {
+    // NOTHING HAPPENED. The action was logged when it was dispatched —
+    // for a call, long before anything could ring — so the optimistic row
+    // has to be retracted here, or asking again within the repeat window
+    // is refused as a duplicate of a call the user deliberately cancelled.
+    try {
+      const uidNum = Number(s.userSub) > 0 ? Number(s.userSub) : null;
+      const tool = pending.tool || (pending.action === "call" ? "place_phone_call" : "");
+      if (uidNum && tool) {
+        const store = require("../actions/store");
+        store.invalidate(
+          uidNum, tool,
+          store.targetOf(tool, pending.args || { name: pending.contact?.name || "" }),
+          { detail: "cancelled by the user" }
+        );
+      }
+    } catch (e) {
+      console.warn("decline invalidate failed:", e.message);
+    }
     state(s, "speaking");
     emit(s, { type: "assistant_message", text: "Okay, cancelled." });
     state(s, "completed");
@@ -1187,12 +1240,16 @@ router.post("/:sid/confirm", (req, res) => {
         try {
           const uidNum = Number(s.userSub) > 0 ? Number(s.userSub) : null;
           if (uidNum) {
-            const recentMem = require("../memory/recent");
-            const meta = { source: "voice", sessionId: s.sid, turnId: require("crypto").randomUUID() };
-            recentMem.append(uidNum, "user", "Yes — go ahead.", { ...meta, latencyMs: 0 });
-            recentMem.append(uidNum, "assistant",
+            // Only the RESULT is recorded. The approval was a tap on a
+            // card, not something the user said, and writing "Yes — go
+            // ahead." as their words put a sentence in the transcript
+            // they never spoke — which the model then reads back as if
+            // they had. The question is already in the transcript, so the
+            // result reads as its answer without inventing anything.
+            require("../memory/recent").append(uidNum, "assistant",
               res.speak || (res.ok ? "Done." : `That didn't work: ${res.error || "unknown error"}`),
-              { ...meta, tools: [pending.tool] });
+              { source: "voice", sessionId: s.sid,
+                turnId: require("crypto").randomUUID(), tools: [pending.tool] });
           }
         } catch (_) {}
 

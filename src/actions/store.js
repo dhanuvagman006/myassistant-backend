@@ -39,6 +39,11 @@ function migrate() {
       );
       CREATE INDEX IF NOT EXISTS idx_exec_user ON executed_actions(user_id, id DESC);
       CREATE INDEX IF NOT EXISTS idx_exec_session ON executed_actions(session_id, id DESC);
+      -- Repeat suppression looks up (user, tool, target) inside a short
+      -- window on every guarded action; without this it scans the user's
+      -- whole history on the most latency-sensitive path in the product.
+      CREATE INDEX IF NOT EXISTS idx_exec_repeat
+        ON executed_actions(user_id, tool, created_at DESC);
     `).catch((e) => {
       console.error("executed_actions migration failed:", e.message);
       migrated = null;
@@ -57,9 +62,19 @@ const clean = (s, n) => String(s ?? "").trim().slice(0, n);
 function targetOf(tool, args = {}) {
   const a = args || {};
   const first =
-    a.name || a.contact_name || a.client_name || a.to || a.query || a.q ||
-    a.app || a.url || a.text || a.topic || a.action || a.service || a.person;
-  return clean(typeof first === "string" ? first : JSON.stringify(first ?? ""), 120);
+    a.name || a.contact_name || a.client_name || a.business_name || a.to ||
+    a.query || a.q || a.app || a.url || a.destination || a.dish ||
+    a.restaurant || a.title || a.text || a.message || a.topic || a.action ||
+    a.service || a.person || a.from;
+  // An UNRESOLVABLE target must stay empty, never the literal string '""'.
+  // It used to stringify undefined into two quote characters, which then
+  // compared equal to every other unresolvable target — so "order biryani"
+  // and "order a pizza" thirty seconds later were treated as one request.
+  // Callers read "" as "I cannot identify this action" and skip matching.
+  if (typeof first === "string") return clean(first, 120);
+  if (first === undefined || first === null) return "";
+  const s = clean(JSON.stringify(first), 120);
+  return s === '""' ? "" : s;
 }
 
 /** Record one tool execution. Never throws — logging must not break a turn. */
@@ -130,6 +145,26 @@ async function findRecent(userId, tool, target, windowMs = 60_000) {
   );
 }
 
+/**
+ * Mark recent records for this tool+target as failed. A world action is
+ * logged when it is DISPATCHED, which for a phone call is long before
+ * anything rings: the user still has to approve the card and the handset
+ * still has to find the contact. When that later step fails or is
+ * declined, the optimistic ok=1 row is what repeat suppression reads, and
+ * the user is refused a retry of something that never happened.
+ */
+async function invalidate(userId, tool, target, { windowMs = 10 * 60_000, detail = "" } = {}) {
+  await migrate();
+  const uid = Number(userId);
+  if (!Number.isInteger(uid) || uid <= 0 || !tool) return 0;
+  const t = clean(target, 120);
+  const params = [uid, clean(tool, 60), Date.now() - windowMs, clean(detail, 300)];
+  let where = "user_id = $1 AND tool = $2 AND created_at >= $3 AND ok = 1";
+  if (t) { params.push(t); where += ` AND lower(target) = lower($${params.length})`; }
+  return run(`UPDATE executed_actions SET ok = 0, detail = $4 WHERE ${where}`, params)
+    .catch((e) => { console.warn("invalidate failed:", e.message); return 0; });
+}
+
 /** Plain-language line for one record — what the assistant tells the user. */
 function describe(r) {
   const when = new Date(Number(r.created_at)).toLocaleString("en-IN", {
@@ -157,4 +192,4 @@ function describe(r) {
   return `${when}: ${r.ok ? "" : "FAILED — "}${verb}${what}`.trim();
 }
 
-module.exports = { migrate, record, recent, didRun, findRecent, describe, targetOf };
+module.exports = { migrate, record, recent, didRun, findRecent, invalidate, describe, targetOf };

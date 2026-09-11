@@ -448,18 +448,57 @@ console.log("\nexecution record");
     assert.strictEqual(await actions.findRecent(USER_A, "open_app", "Twitter", 60_000), null);
   });
 
-  await atest("a second launch of the same app from a NEW session is suppressed", async () => {
+  await atest("an app relaunch from a NEW session is allowed", async () => {
+    // Reopening an app you just backed out of is ordinary. The durable
+    // tier deliberately does not guard app launches — only the same-breath
+    // double-fire is a bug, and that is the session tier's job.
     const res = await registry.execute(
       "open_app",
       { app: "Instagram" },
       { userId: USER_A, sessionId: "voice-2", inputQuality: { quality: "clear" } }
     );
+    assert.notStrictEqual(res.repeated, true, "a legitimate relaunch was refused");
+  });
+
+  await atest("a repeated message DOES cross the session boundary", async () => {
+    // Something that has left the device is a different matter.
+    actions.record(USER_A, {
+      sessionId: "live-1", turnId: "m1", tool: "send_whatsapp_message",
+      args: { to: "Dikshit Pujari", message: "on my way" }, ok: true, surface: "live",
+    });
+    await settle();
+    const res = await registry.execute(
+      "send_whatsapp_message",
+      { to: "Dikshit Pujari", message: "on my way" },
+      { userId: USER_A, sessionId: "voice-2", inputQuality: { quality: "clear" } }
+    );
     assert.strictEqual(res.repeated, true, "the repeat crossed a session boundary unchecked");
-    assert.strictEqual(res.data.alreadyDone, true);
     assert.match(res.note, /already ran/i);
   });
 
-  await atest("a call still dialing blocks a second dial to the same person", async () => {
+  await atest("a suppressed action still satisfies the claim checker", async () => {
+    // Suppression used to leave the turn with no executed tool, so the
+    // reply was rewritten to "I couldn't send that" about a message that
+    // had in fact gone out a moment earlier — the exact lie the claim
+    // checker exists to prevent.
+    const st = sessionState.begin(USER_A, "s-suppress", {});
+    sessionState.beginTurn(st, { turnId: "sp1", text: "message Dikshit", quality: "clear" });
+    const res = await registry.execute(
+      "send_whatsapp_message",
+      { to: "Dikshit Pujari", message: "on my way" },
+      { userId: USER_A, session: st, sessionId: "s-suppress", turnId: "sp1",
+        inputQuality: { quality: "clear" } }
+    );
+    assert.strictEqual(res.repeated, true, "precondition: it should have been suppressed");
+    const executed = sessionState.executedThisTurn(st);
+    assert.ok(executed.some((e) => e.tool === "send_whatsapp_message" && e.suppressed),
+      "the suppressed action was not recorded for this turn");
+    assert.strictEqual(claimCheck.satisfied("message", executed), true,
+      "the reply would have been rewritten into a denial");
+    sessionState.end(USER_A, "s-suppress");
+  });
+
+  await atest("a call still dialing blocks a second dial — even an approved one", async () => {
     const row = await outcomes.create(USER_A, {
       kind: "call", target: "Dikshit Pujari", status: "dialing", path: "device",
       sessionId: "voice-2",
@@ -470,39 +509,63 @@ console.log("\nexecution record");
       { name: "Dikshit Pujari" },
       { userId: USER_A, sessionId: "voice-3", approved: true, inputQuality: { quality: "clear" } }
     );
-    // approved:true is the confirmed path — the in-flight guard must still
-    // hold, because the user confirming twice is exactly the failure.
+    // Confirming the same call twice, on two surfaces, is exactly the
+    // failure — so the in-flight tier must hold on the approved path too.
+    assert.strictEqual(res.repeated, true, "an approved replay dialled over a live call");
+    assert.strictEqual(res.data.inFlight, true);
     const res2 = await registry.execute(
       "place_phone_call",
       { name: "Dikshit Pujari" },
       { userId: USER_A, sessionId: "voice-3", inputQuality: { quality: "clear" } }
     );
     assert.strictEqual(res2.repeated, true, "it dialled a second time mid-call");
-    assert.strictEqual(res2.data.inFlight, true);
-    assert.match(res2.note, /already dialing|already requested/i);
     await outcomes.update(USER_A, row.id, { status: "no_answer" });
     assert.strictEqual(
-      await outcomes.findInFlight(USER_A, "call", "Dikshit Pujari"), null,
+      await outcomes.findInFlight(USER_A, ["call", "agent_call"], "Dikshit Pujari"), null,
       "a finished call still counted as in flight"
     );
   });
 
-  await atest("record-keeping tools are NOT suppressed as repeats", async () => {
-    // Two reminders about the same thing, two payments for one client: a
-    // user repeats these deliberately. Over-suppression would be a new bug.
+  await atest("a cancelled call can be asked for again immediately", async () => {
+    // The row is written when the call is DISPATCHED — before the user
+    // approves the card. Declining left an ok=1 row that refused the retry.
     actions.record(USER_A, {
-      sessionId: "voice-2", turnId: "t9", tool: "create_reminder",
-      args: { text: "call the office" }, ok: true, surface: "voice",
+      sessionId: "voice-9", turnId: "c1", tool: "place_phone_call",
+      args: { name: "Sunil" }, ok: true, surface: "voice",
     });
     await settle();
-    const hit = await actions.findRecent(USER_A, "create_reminder", "call the office", 60_000);
-    assert.ok(hit, "precondition: the record exists");
+    assert.ok(await actions.findRecent(USER_A, "place_phone_call", "Sunil", 60_000),
+      "precondition: the dispatch row exists");
+    await actions.invalidate(USER_A, "place_phone_call", "Sunil", { detail: "cancelled" });
+    const row = await actions.findRecent(USER_A, "place_phone_call", "Sunil", 60_000);
+    assert.ok(row && Number(row.ok) === 0, "the cancelled dispatch was not retracted");
     const res = await registry.execute(
-      "create_reminder",
-      { text: "call the office", when: "in 10 minutes" },
-      { userId: USER_A, sessionId: "voice-2", inputQuality: { quality: "clear" } }
+      "place_phone_call",
+      { name: "Sunil" },
+      { userId: USER_A, sessionId: "voice-9", inputQuality: { quality: "clear" } }
     );
-    assert.notStrictEqual(res.repeated, true, "a legitimate second reminder was refused");
+    assert.notStrictEqual(res.repeated, true, "a cancelled call could not be retried");
+  });
+
+  test("two different orders are not the same request", () => {
+    // targetOf stringified undefined into the two-character string '""',
+    // so every order_food matched every other one inside the window.
+    assert.strictEqual(actions.targetOf("order_food", { dish: "biryani" }), "biryani");
+    assert.notStrictEqual(
+      actions.targetOf("order_food", { dish: "biryani" }),
+      actions.targetOf("order_food", { dish: "pizza" })
+    );
+    assert.strictEqual(actions.targetOf("book_ride", { destination: "airport" }), "airport");
+    assert.strictEqual(actions.targetOf("order_food", {}), "",
+      "an unidentifiable target must be empty, never a matchable constant");
+  });
+
+  await atest("an unidentifiable target is never treated as a repeat", async () => {
+    const ctx = { userId: USER_A, sessionId: "voice-blank", inputQuality: { quality: "clear" } };
+    const a = await registry.execute("order_food", { dish: "biryani" }, ctx);
+    const b = await registry.execute("order_food", { dish: "masala dosa" }, ctx);
+    assert.notStrictEqual(b.repeated, true, "two different orders collided");
+    void a;
   });
 
   /* ================================================================ */

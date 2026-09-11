@@ -133,14 +133,18 @@ async function adminList({ q, status, kind, userId, limit = 50, offset = 0, sinc
 async function findInFlight(userId, kind, target, windowMs = 90_000) {
   await migrate();
   const uid = Number(userId);
-  if (!Number.isInteger(uid) || uid <= 0) return null;
+  const t = clean(target, 160);
+  // An unidentifiable target must never match — see actions/store.targetOf.
+  if (!Number.isInteger(uid) || uid <= 0 || !t) return null;
+  const kinds = (Array.isArray(kind) ? kind : [kind]).map((k) => clean(k, 20));
+  if (!kinds.length) return null;
   return one(
     `SELECT * FROM task_outcomes
-      WHERE user_id = $1 AND kind = $2 AND lower(target) = lower($3)
+      WHERE user_id = $1 AND kind = ANY($2) AND lower(target) = lower($3)
         AND status IN ('requested','dialing')
         AND created_at >= $4
       ORDER BY id DESC LIMIT 1`,
-    [uid, clean(kind, 20), clean(target, 160), Date.now() - windowMs]
+    [uid, kinds, t, Date.now() - windowMs]
   );
 }
 

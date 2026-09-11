@@ -190,6 +190,29 @@ function clearPending(state) {
 /* 5. EXECUTED ACTIONS                                                 */
 /* ------------------------------------------------------------------ */
 
+/**
+ * A guarded action that was SUPPRESSED as a repeat. It belongs in the
+ * session's executed list — the claim checker reads that list to decide
+ * whether a reply may say "calling him now", and a call that is already
+ * ringing makes that sentence true. It must NOT be written durably: the
+ * first execution already has a row, and a second would slide the repeat
+ * window forward every time the user asked again.
+ */
+function noteSuppressed(state, { turnId, tool, args }) {
+  if (!state) return null;
+  const entry = {
+    turnId: turnId || (state.turn && state.turn.id) || "",
+    tool,
+    target: actions.targetOf(tool, args),
+    ok: true,
+    suppressed: true,
+    at: Date.now(),
+  };
+  state.executed.push(entry);
+  if (state.executed.length > 60) state.executed.shift();
+  return entry;
+}
+
 /** Record an execution both in the session and durably. */
 function recordExecution(state, { turnId, tool, args, ok, detail }) {
   const entry = {
@@ -238,7 +261,7 @@ module.exports = {
   begin, get, end,
   beginTurn, recordReply,
   setEntity, clearEntity, activeEntity,
-  setPending, takePending, clearPending,
+  setPending, takePending, clearPending, noteSuppressed,
   recordExecution, executedThisTurn, executedThisSession,
   PENDING_TTL_MS, ENTITY_TTL_MS,
 };
