@@ -123,6 +123,27 @@ async function adminList({ q, status, kind, userId, limit = 50, offset = 0, sinc
   return { rows, histogram: Object.fromEntries(hist.map((h) => [h.status, h.n])) };
 }
 
+/**
+ * A task of this kind for this target that has NOT reached a terminal
+ * state — a call still dialling, a request just dispatched. Dialling the
+ * same person again while one is in flight is never what the user meant.
+ */
+// 90s, not minutes: a dial that is still "dialing" after that never got a
+// result back from the device, and a stale record must not block a retry.
+async function findInFlight(userId, kind, target, windowMs = 90_000) {
+  await migrate();
+  const uid = Number(userId);
+  if (!Number.isInteger(uid) || uid <= 0) return null;
+  return one(
+    `SELECT * FROM task_outcomes
+      WHERE user_id = $1 AND kind = $2 AND lower(target) = lower($3)
+        AND status IN ('requested','dialing')
+        AND created_at >= $4
+      ORDER BY id DESC LIMIT 1`,
+    [uid, clean(kind, 20), clean(target, 160), Date.now() - windowMs]
+  );
+}
+
 function isSuccess(status) {
   return status === "connected" || status === "completed";
 }
@@ -170,4 +191,4 @@ function describe(r) {
   }
 }
 
-module.exports = { migrate, create, update, updateByExternalId, list, adminList, toClient, describe, isSuccess, isFailure, STATUSES, KINDS };
+module.exports = { migrate, create, update, updateByExternalId, findInFlight, list, adminList, toClient, describe, isSuccess, isFailure, STATUSES, KINDS };

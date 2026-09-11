@@ -199,6 +199,25 @@ function isWorldAction(name) {
   return WORLD_ACTIONS.has(name);
 }
 
+/**
+ * REPEAT-GUARDED — the subset of world actions where doing it twice is
+ * almost never what the user meant: a second call to the same person, a
+ * second copy of the same message, a second order, the same app launched
+ * again seconds later.
+ *
+ * Deliberately NOT everything in WORLD_ACTIONS. Reminders, alarms, ledger
+ * entries and generated media are things a user legitimately repeats — two
+ * reminders about "the meeting", two payments logged for one client — and
+ * suppressing those would invent a bug in place of the one being fixed.
+ */
+const REPEAT_GUARDED = new Set([
+  "place_phone_call", "book_by_calling_business", "send_agent_message",
+  "send_whatsapp_message", "send_document", "send_patient_document",
+  "arrange_meeting_with", "order_food", "book_ride", "book_movie_tickets",
+  "collect_payment", "open_app", "open_webpage", "open_service_app",
+  "start_navigation", "play_music",
+]);
+
 async function execute(name, rawArgs, ctx = {}) {
   const tool = get(name);
   if (!tool) return { ok: false, error: `unknown tool "${name}"` };
@@ -308,23 +327,82 @@ async function execute(name, rawArgs, ctx = {}) {
   // forty seconds, because each repetition took a different path. A repeat
   // of the same world action on the same target inside the repeat window
   // returns what happened the FIRST time instead of racing it again.
-  const session = ctx.session || null;
-  if (session && isWorldAction(name)) {
-    const recentSame = (session.executed || [])
-      .filter((e) => e.tool === name && Date.now() - e.at < 20_000)
-      .pop();
-    const target = require("../actions/store").targetOf(name, args);
-    if (recentSame && recentSame.target === target && recentSame.ok && !ctx.approved) {
-      return {
-        ok: true,
-        repeated: true,
-        data: { alreadyDone: true, tool: name, target },
-        speak: "",
-        note:
-          `${name} for "${target}" already ran moments ago in this turn or the ` +
-          "one before. Do NOT run it again; tell the user it is already under " +
-          "way, or ask whether they want it repeated.",
-      };
+  if (REPEAT_GUARDED.has(name) && ctx.userId && !ctx.approved && !ctx.background) {
+    const store = require("../actions/store");
+    const target = store.targetOf(name, args);
+
+    // A CALL ALREADY IN FLIGHT outranks everything: the phone or the relay
+    // is mid-dial to this very person. Time does not decide this — the
+    // task's own state does.
+    if (["place_phone_call", "book_by_calling_business"].includes(name)) {
+      try {
+        const live = await require("../outcomes/store").findInFlight(
+          ctx.userId, "call", target
+        );
+        const relay = live || (await require("../outcomes/store").findInFlight(
+          ctx.userId, "agent_call", target
+        ));
+        if (relay) {
+          return {
+            ok: true,
+            repeated: true,
+            data: { inFlight: true, tool: name, target, status: relay.status },
+            speak: "",
+            note:
+              `A call to "${target}" is already ${relay.status} — it was started ` +
+              "moments ago and has not finished. Do NOT dial again. Tell the " +
+              "user it is already going through, or ask if they want it cancelled.",
+          };
+        }
+      } catch (e) {
+        console.warn("in-flight check failed:", e.message);
+      }
+    }
+
+    // SAME BREATH, SAME SOCKET. The session's own list is in memory and
+    // therefore instantaneous; the durable record below is written
+    // fire-and-forget and would not yet exist for two calls milliseconds
+    // apart. Both tiers are needed — this one catches the double-fire, the
+    // next catches the repeat that arrives on a different surface.
+    const session = ctx.session || null;
+    if (session) {
+      const twin = (session.executed || [])
+        .filter((e) => e.tool === name && e.target === target && Date.now() - e.at < 20_000)
+        .pop();
+      if (twin && twin.ok) {
+        return {
+          ok: true,
+          repeated: true,
+          data: { alreadyDone: true, tool: name, target, at: twin.at },
+          speak: "",
+          note:
+            `${name} for "${target}" already ran moments ago in this turn or the ` +
+            "one before. Do NOT run it again; tell the user it is already under " +
+            "way, or ask whether they want it repeated.",
+        };
+      }
+    }
+
+    // Otherwise: the same action on the same target already ran for this
+    // user recently — on ANY surface, not just this socket, which is how
+    // one request repeated across the live and voice paths got two
+    // different answers.
+    try {
+      const prior = await store.findRecent(ctx.userId, name, target, 45_000);
+      if (prior && (prior.ok === 1 || prior.ok === true)) {
+        return {
+          ok: true,
+          repeated: true,
+          data: { alreadyDone: true, tool: name, target, at: Number(prior.created_at) },
+          speak: "",
+          note:
+            `${name} for "${target}" already ran moments ago. Do NOT run it ` +
+            "again; tell the user it is already under way, or ask whether they " +
+            "want it repeated.",
+        };
+      }
+    } catch (e) {
+      console.warn("repeat check failed:", e.message);
     }
   }
 

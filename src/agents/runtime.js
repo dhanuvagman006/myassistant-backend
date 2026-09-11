@@ -464,8 +464,39 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
 
       // High-risk: stop the whole turn and ask the user first (§17).
       if (res.needsConfirmation) {
+        // THE TURN STILL HAPPENED. This path used to return silently and
+        // write nothing: the user's request and the question asked back
+        // were both absent from the transcript, so "what did I just ask
+        // you?" could not see them and the only record of the pending
+        // action was a field on the SSE session. Record all three.
+        const question = res.summary ? `${res.summary}?` : "Shall I go ahead?";
+        flushHeld(state ? sessionState.executedThisTurn(state) : []);
+        if (state) {
+          sessionState.setPending(state, {
+            tool: res.tool,
+            args: res.args,
+            summary: res.summary,
+          });
+          sessionState.recordReply(state, question);
+        }
+        try {
+          const recentMem = require("../memory/recent");
+          const meta = {
+            source: ctx.source || (ctx.background ? "background" : "voice"),
+            appBuild: ctx.appBuild,
+            turnId,
+            sessionId: sid,
+          };
+          recentMem.append(ctx.userId, "user", userText, { ...meta, latencyMs: 0 });
+          recentMem.append(ctx.userId, "assistant", question, {
+            ...meta,
+            latencyMs: Date.now() - turnStartedAt,
+            tools: [res.tool],
+          });
+        } catch (_) {}
         return {
           text: "",
+          question,
           needsConfirmation: {
             tool: res.tool,
             args: res.args,

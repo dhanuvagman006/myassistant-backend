@@ -23,6 +23,7 @@ const claimCheck = require("../src/agents/claimCheck");
 const actions = require("../src/actions/store");
 const recent = require("../src/memory/recent");
 const registry = require("../src/tools/registry");
+const outcomes = require("../src/outcomes/store");
 
 const USER_A = 99001;
 const USER_B = 99002;
@@ -422,11 +423,137 @@ console.log("\nexecution record");
     assert.match(res.data.hint, /OFFER/);
   });
 
+  /* ================================================================ */
+  /* 10. A REPEAT IS DECIDED BY THE ACTION RECORD, NOT BY A CLOCK      */
+  /*     "Call Dikshit Pujari" was answered three different ways in    */
+  /*     forty seconds because each repetition arrived on a different  */
+  /*     surface and the only guard was a list held by one socket.     */
+  /* ================================================================ */
+  console.log("\nrepeat identity");
+
+  await atest("the action record finds the same action from another session", async () => {
+    actions.record(USER_A, {
+      sessionId: "live-1", turnId: "t1", tool: "open_app",
+      args: { app: "Instagram" }, ok: true, surface: "live",
+    });
+    await settle();
+    const hit = await actions.findRecent(USER_A, "open_app", "Instagram", 60_000);
+    assert.ok(hit, "a record written on the live surface was invisible to the voice surface");
+    assert.strictEqual(hit.session_id, "live-1");
+  });
+
+  await atest("it does not reach across users or past the window", async () => {
+    assert.strictEqual(await actions.findRecent(USER_B, "open_app", "Instagram", 60_000), null);
+    assert.strictEqual(await actions.findRecent(USER_A, "open_app", "Instagram", 1), null);
+    assert.strictEqual(await actions.findRecent(USER_A, "open_app", "Twitter", 60_000), null);
+  });
+
+  await atest("a second launch of the same app from a NEW session is suppressed", async () => {
+    const res = await registry.execute(
+      "open_app",
+      { app: "Instagram" },
+      { userId: USER_A, sessionId: "voice-2", inputQuality: { quality: "clear" } }
+    );
+    assert.strictEqual(res.repeated, true, "the repeat crossed a session boundary unchecked");
+    assert.strictEqual(res.data.alreadyDone, true);
+    assert.match(res.note, /already ran/i);
+  });
+
+  await atest("a call still dialing blocks a second dial to the same person", async () => {
+    const row = await outcomes.create(USER_A, {
+      kind: "call", target: "Dikshit Pujari", status: "dialing", path: "device",
+      sessionId: "voice-2",
+    });
+    assert.ok(row, "outcome row was not created");
+    const res = await registry.execute(
+      "place_phone_call",
+      { name: "Dikshit Pujari" },
+      { userId: USER_A, sessionId: "voice-3", approved: true, inputQuality: { quality: "clear" } }
+    );
+    // approved:true is the confirmed path — the in-flight guard must still
+    // hold, because the user confirming twice is exactly the failure.
+    const res2 = await registry.execute(
+      "place_phone_call",
+      { name: "Dikshit Pujari" },
+      { userId: USER_A, sessionId: "voice-3", inputQuality: { quality: "clear" } }
+    );
+    assert.strictEqual(res2.repeated, true, "it dialled a second time mid-call");
+    assert.strictEqual(res2.data.inFlight, true);
+    assert.match(res2.note, /already dialing|already requested/i);
+    await outcomes.update(USER_A, row.id, { status: "no_answer" });
+    assert.strictEqual(
+      await outcomes.findInFlight(USER_A, "call", "Dikshit Pujari"), null,
+      "a finished call still counted as in flight"
+    );
+  });
+
+  await atest("record-keeping tools are NOT suppressed as repeats", async () => {
+    // Two reminders about the same thing, two payments for one client: a
+    // user repeats these deliberately. Over-suppression would be a new bug.
+    actions.record(USER_A, {
+      sessionId: "voice-2", turnId: "t9", tool: "create_reminder",
+      args: { text: "call the office" }, ok: true, surface: "voice",
+    });
+    await settle();
+    const hit = await actions.findRecent(USER_A, "create_reminder", "call the office", 60_000);
+    assert.ok(hit, "precondition: the record exists");
+    const res = await registry.execute(
+      "create_reminder",
+      { text: "call the office", when: "in 10 minutes" },
+      { userId: USER_A, sessionId: "voice-2", inputQuality: { quality: "clear" } }
+    );
+    assert.notStrictEqual(res.repeated, true, "a legitimate second reminder was refused");
+  });
+
+  /* ================================================================ */
+  /* 11. A TURN THAT ASKS FOR CONFIRMATION IS STILL A TURN            */
+  /*     It used to return an empty string and write nothing, so the  */
+  /*     request and the question asked back were both missing from   */
+  /*     the transcript and "what did I just ask you?" found a hole.  */
+  /* ================================================================ */
+  console.log("\nconfirmation turns");
+
+  test("the confirmation branch is no longer a silent return", () => {
+    // The branch cannot be exercised without the model, so this guards its
+    // shape: it must write to durable memory and carry the question out.
+    const src = String(require("../src/agents/runtime").runAgentTurn);
+    const i = src.indexOf("res.needsConfirmation");
+    assert.ok(i > 0, "the confirmation branch has moved — update this guard");
+    const branch = src.slice(i, i + 1600);
+    assert.match(branch, /recentMem\.append/, "the confirmation turn is not written to memory");
+    assert.match(branch, /setPending/, "the pending action is not held in session state");
+    assert.ok(branch.includes("question"), "the question asked back is not returned");
+  });
+
+  await atest("the question and the request both reach the transcript", async () => {
+    const meta = { sessionId: "confirm-1", turnId: "c1", source: "voice" };
+    recent.append(USER_A, "user", "Call Dikshit Pujari", { ...meta, latencyMs: 0 });
+    recent.append(USER_A, "assistant", "Call Dikshit Pujari?", meta);
+    await settle();
+    const rows = await recent.turns(USER_A, { limit: 10, sessionId: "confirm-1" });
+    const texts = rows.map((r) => r.text);
+    assert.ok(texts.includes("Call Dikshit Pujari"), "the request is missing");
+    assert.ok(texts.includes("Call Dikshit Pujari?"), "the question asked back is missing");
+  });
+
+  test("a pending action is held in state and taken exactly once", () => {
+    const st = sessionState.begin(USER_A, "confirm-2");
+    assert.strictEqual(sessionState.takePending(st), null, "a new session began with a pending action");
+    sessionState.setPending(st, {
+      tool: "place_phone_call", args: { name: "Dikshit Pujari" }, summary: "Call Dikshit Pujari",
+    });
+    const taken = sessionState.takePending(st);
+    assert.ok(taken && taken.tool === "place_phone_call");
+    assert.strictEqual(sessionState.takePending(st), null, "the same pending action could be taken twice");
+    sessionState.end(USER_A, "confirm-2");
+  });
+
   /* ---------------------------------------------------------------- */
   console.log("");
   for (const uid of [USER_A, USER_B]) {
     await db.run("DELETE FROM executed_actions WHERE user_id = $1", [uid]).catch(() => {});
     await db.run("DELETE FROM conversation_turns WHERE user_id = $1", [uid]).catch(() => {});
+    await db.run("DELETE FROM task_outcomes WHERE user_id = $1", [uid]).catch(() => {});
     await db.run("DELETE FROM reminders WHERE user_id = $1", [uid]).catch(() => {});
   }
   console.log(`${passed} checks passed`);

@@ -111,6 +111,25 @@ async function didRun(userId, tools, { sinceMs, sessionId } = {}) {
   return one(`SELECT * FROM executed_actions WHERE ${where} ORDER BY id DESC LIMIT 1`, params);
 }
 
+/**
+ * The same action, on the same target, already run for this user inside
+ * the window — regardless of which session or surface it came from. This
+ * is the durable half of repeat suppression; the session's own list only
+ * covers one socket.
+ */
+async function findRecent(userId, tool, target, windowMs = 60_000) {
+  await migrate();
+  const uid = Number(userId);
+  if (!Number.isInteger(uid) || uid <= 0 || !tool) return null;
+  return one(
+    `SELECT * FROM executed_actions
+      WHERE user_id = $1 AND tool = $2 AND lower(target) = lower($3)
+        AND created_at >= $4
+      ORDER BY id DESC LIMIT 1`,
+    [uid, clean(tool, 60), clean(target, 120), Date.now() - windowMs]
+  );
+}
+
 /** Plain-language line for one record — what the assistant tells the user. */
 function describe(r) {
   const when = new Date(Number(r.created_at)).toLocaleString("en-IN", {
@@ -138,4 +157,4 @@ function describe(r) {
   return `${when}: ${r.ok ? "" : "FAILED — "}${verb}${what}`.trim();
 }
 
-module.exports = { migrate, record, recent, didRun, describe, targetOf };
+module.exports = { migrate, record, recent, didRun, findRecent, describe, targetOf };

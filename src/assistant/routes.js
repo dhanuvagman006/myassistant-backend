@@ -1181,6 +1181,20 @@ router.post("/:sid/confirm", (req, res) => {
           ...(pending.ctx || {}),
           approved: true,
         });
+        // The user said yes and something ran: both halves belong in the
+        // transcript, or the conversation record has a hole exactly where
+        // the consequential action was.
+        try {
+          const uidNum = Number(s.userSub) > 0 ? Number(s.userSub) : null;
+          if (uidNum) {
+            const recentMem = require("../memory/recent");
+            const meta = { source: "voice", sessionId: s.sid, turnId: require("crypto").randomUUID() };
+            recentMem.append(uidNum, "user", "Yes — go ahead.", { ...meta, latencyMs: 0 });
+            recentMem.append(uidNum, "assistant",
+              res.speak || (res.ok ? "Done." : `That didn't work: ${res.error || "unknown error"}`),
+              { ...meta, tools: [pending.tool] });
+          }
+        } catch (_) {}
 
         if (res.deviceAction) {
           const a = res.deviceAction;
