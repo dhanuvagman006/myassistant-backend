@@ -966,6 +966,26 @@ console.log("\nexecution record");
     assert.match(res.note, /Do NOT state any findings/i);
   });
 
+  test("research keeps a search answer that carries no URL", () => {
+    // The configured provider is Gemini grounding, whose reply arrives as
+    // {title:"Web answer", snippet:<the answer>, url:""} followed by
+    // citation chunks. Requiring a URL threw away the most substantial
+    // thing the search returned — and when grounding produced no chunks it
+    // threw away everything and the job reported finding nothing.
+    const src = fs.readFileSync(require.resolve("../src/infra/handlers.js"), "utf8");
+    const i = src.indexOf("async function deepResearch");
+    assert.ok(i > 0);
+    const body = src.slice(i, src.indexOf("function install()", i));
+    assert.ok(!/const url = it && \(it\.url \|\| it\.link\);\s*\n\s*if \(!url\) continue;/.test(body),
+      "a URL-less search answer is still discarded");
+    assert.match(body, /unattributed/,
+      "there is no separate bucket for an answer that cannot be cited");
+    // The instruction is a concatenated literal, so match a fragment that
+    // cannot span the join.
+    assert.match(body, /may NOT give them a citation/,
+      "an uncitable summary could still be passed off as a numbered source");
+  });
+
   test("deep_research runs out of the turn, on the job queue", () => {
     const jobs = require("../src/infra/jobs");
     require("../src/infra/handlers").install();

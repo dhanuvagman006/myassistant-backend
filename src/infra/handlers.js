@@ -372,22 +372,37 @@ async function deepResearch(payload = {}) {
       )
     );
     const sources = [];
+    const unattributed = [];
     for (const { q, r } of results) {
       // webSearch.run returns its hits as `data` directly — an array, not
       // an envelope. Reading data.results would have found nothing.
       const items = r && r.ok && Array.isArray(r.data) ? r.data : [];
-      for (const it of items.slice(0, 5)) {
-        const url = it && (it.url || it.link);
-        if (!url) continue;
-        sources.push({
-          query: q,
-          title: String(it.title || "").slice(0, 200),
-          snippet: String(it.snippet || it.description || "").slice(0, 400),
-          url: String(url).slice(0, 400),
-        });
+      for (const it of items.slice(0, 6)) {
+        if (!it) continue;
+        const url = String(it.url || it.link || "").slice(0, 400);
+        const text = String(it.snippet || it.description || "").slice(0, 1200);
+        if (url) {
+          sources.push({
+            query: q,
+            title: String(it.title || "").slice(0, 200),
+            snippet: text.slice(0, 400),
+            url,
+          });
+        } else if (text) {
+          // THE GEMINI PROVIDER'S ANSWER HAS NO URL. Its grounded reply
+          // arrives as {title:"Web answer", snippet:<the answer>, url:""}
+          // with citation chunks after it — so requiring a URL threw away
+          // the single most substantial thing the search returned, and when
+          // grounding produced no chunks it threw away everything and the
+          // job reported "no search provider returned anything".
+          //
+          // Kept, but kept SEPARATE: it cannot be cited as a numbered
+          // source, and the synthesis is told so.
+          unattributed.push({ query: q, text });
+        }
       }
     }
-    if (!sources.length) {
+    if (!sources.length && !unattributed.length) {
       return fail("No search provider returned anything for that question.");
     }
 
@@ -395,6 +410,12 @@ async function deepResearch(payload = {}) {
     const numbered = sources
       .map((sc, i) => `[${i + 1}] ${sc.title}\n${sc.snippet}\n${sc.url}`)
       .join("\n\n");
+    const unsourced = unattributed.length
+      ? "\n\nSEARCH SUMMARIES (no URL — these are the search engine's own " +
+        "answers. You may use them, but you may NOT give them a citation " +
+        "number, and where they are your only support say so in the text):\n" +
+        unattributed.map((u) => `• (${u.query}) ${u.text}`).join("\n")
+      : "";
     const { reply: brief } = await ai.generateReply(
       [{ role: "user", content:
       `Write a research brief answering: "${question}"\n\n` +
@@ -405,7 +426,7 @@ async function deepResearch(payload = {}) {
       `brief is worse than an admitted gap.\n\n` +
       `Structure: a two-sentence answer first, then the findings as short ` +
       `paragraphs, then "Sources" listing each number with its URL.\n\n` +
-      `SOURCES:\n${numbered}` }],
+      `SOURCES:\n${numbered}${unsourced}` }],
       { system:
         "You write sourced research briefs. Every claim carries the number " +
         "of the source it came from. You never add a fact the sources do " +
@@ -437,7 +458,10 @@ async function deepResearch(payload = {}) {
       tool: "deep_research", args: { question }, ok: true, world: false,
       intent: question, surface: "background", decision: "ran",
       ms: Date.now() - started,
-      result: `${sources.length} sources across ${subs.length} searches → document ${row.id}`,
+      result:
+        `${sources.length} cited sources` +
+        (unattributed.length ? ` + ${unattributed.length} search summaries` : "") +
+        ` across ${subs.length} searches → document ${row.id}`,
       reply: text.slice(0, 600),
     });
     await notify(userId, "Your research is ready", short(question));
