@@ -58,6 +58,25 @@ function migrate() {
       -- failure of a call the user made under a nickname stayed recorded
       -- as a success — and check_recent_actions then said it was made.
       ALTER TABLE executed_actions ADD COLUMN IF NOT EXISTS resolved_target TEXT NOT NULL DEFAULT '';
+      -- WHY NOTHING HAPPENED. A refusal is a decision, and until now the
+      -- assistant declining to act left no trace anywhere: no row, no
+      -- audit line, not even a log entry. "It ignored me" and "it asked me
+      -- to repeat myself" and "it said it was already doing it" were
+      -- indistinguishable afterwards.
+      --   ran        the tool executed
+      --   refused    a gate declined it (unclear input, permission)
+      --   suppressed a repeat of something already under way
+      --   clarified  the turn was answered with a question instead
+      ALTER TABLE executed_actions ADD COLUMN IF NOT EXISTS decision TEXT NOT NULL DEFAULT 'ran';
+      -- Which tool made a turn slow. The aggregate lived in memory and
+      -- died with the process.
+      ALTER TABLE executed_actions ADD COLUMN IF NOT EXISTS ms INTEGER NOT NULL DEFAULT 0;
+      -- The coarse family of the request, so it can be grouped and
+      -- counted: "how often does a call request end in a failed call"
+      -- cannot be asked of a free-text transcript.
+      ALTER TABLE executed_actions ADD COLUMN IF NOT EXISTS intent_kind TEXT NOT NULL DEFAULT '';
+      CREATE INDEX IF NOT EXISTS idx_exec_failures
+        ON executed_actions(ok, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_exec_user ON executed_actions(user_id, id DESC);
       CREATE INDEX IF NOT EXISTS idx_exec_session ON executed_actions(session_id, id DESC);
       -- Repeat suppression looks up (user, tool, target) inside a short
@@ -73,7 +92,10 @@ function migrate() {
   return migrated;
 }
 
-const KEEP_PER_USER = 800; // every execution lands here now, not only world actions
+// World actions are rare and consequential; lookups are frequent and
+// cheap. One shared cap let the second crowd out the first.
+const KEEP_WORLD = 600;
+const KEEP_LOOKUPS = 400;
 const clean = (s, n) => String(s ?? "").trim().slice(0, n);
 
 /**
@@ -106,20 +128,44 @@ function targetOf(tool, args = {}) {
 function argsText(args) {
   try {
     const redacted = require("../infra/observability").redact(args || {});
-    return clean(JSON.stringify(redacted), 1000);
+    return clean(JSON.stringify(redacted), 2000);
   } catch (_) {
-    try { return clean(JSON.stringify(args || {}), 1000); } catch (_) { return ""; }
+    try { return clean(JSON.stringify(args || {}), 2000); } catch (_) { return ""; }
   }
+}
+
+/**
+ * The family of action a tool belongs to — the groupable label the raw
+ * transcript cannot provide. Derived from the claim-check families, so
+ * there is one definition of "this is a call" in the codebase.
+ */
+function intentKindOf(tool) {
+  try {
+    const { FAMILIES } = require("../agents/claimCheck");
+    const f = FAMILIES.find((x) => x.tools.includes(tool));
+    if (f) return f.id;
+  } catch (_) {}
+  if (/^(web_search|deep_research|read_webpage|get_weather|get_news)/.test(tool)) return "lookup";
+  if (/^(recall_|check_recent|list_|get_)/.test(tool)) return "recall";
+  return "other";
 }
 
 /** A one-line, human-readable form of what the tool returned. */
 function resultText(res) {
-  if (!res || typeof res !== "object") return clean(res, 300);
-  if (res.error) return clean("error: " + res.error, 300);
-  if (res.speak) return clean(res.speak, 300);
-  if (res.repeated) return "suppressed as a repeat";
-  if (res.deviceAction) return clean("device action: " + (res.deviceAction.type || "?"), 300);
-  try { return clean(JSON.stringify(res.data ?? ""), 300); } catch (_) { return ""; }
+  if (!res || typeof res !== "object") return clean(res, 600);
+  if (res.error) return clean("error: " + res.error, 600);
+  if (res.repeated) return clean("suppressed: " + (res.note || "already under way"), 600);
+  if (res.deviceAction) {
+    // The TYPE alone said nothing about what the phone was asked to do.
+    // "device action: open_url" with the URL discarded cannot answer
+    // "why did Google Search open?" — which is the question that started
+    // all of this.
+    const a = res.deviceAction;
+    const what = a.url || a.app || a.name || a.query || a.package || a.action || "";
+    return clean(`device action: ${a.type || "?"}${what ? ` → ${what}` : ""}`, 600);
+  }
+  if (res.speak) return clean(res.speak, 600);
+  try { return clean(JSON.stringify(res.data ?? ""), 600); } catch (_) { return ""; }
 }
 
 /**
@@ -142,7 +188,7 @@ function serialize(uid, fn) {
 }
 
 /** Record one tool execution. Never throws — logging must not break a turn. */
-function record(userId, { sessionId, turnId, tool, args, ok, detail, surface, intent, result, world }) {
+function record(userId, { sessionId, turnId, tool, args, ok, detail, surface, intent, result, world, decision, ms }) {
   const uid = Number(userId);
   if (!Number.isInteger(uid) || uid <= 0 || !tool) return;
   return serialize(uid, async () => {
@@ -150,19 +196,32 @@ function record(userId, { sessionId, turnId, tool, args, ok, detail, surface, in
     await run(
       `INSERT INTO executed_actions
          (user_id, session_id, turn_id, tool, target, ok, detail, surface,
-          created_at, intent, args, result, world)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+          created_at, intent, args, result, world, decision, ms, intent_kind)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
       [uid, clean(sessionId, 80), clean(turnId, 40), clean(tool, 60),
        targetOf(tool, args), ok === false ? 0 : 1, clean(detail, 300),
        clean(surface, 20), Date.now(),
        clean(intent, 400), argsText(args),
-       typeof result === "string" ? clean(result, 300) : resultText(result),
-       world === false ? 0 : 1]
+       typeof result === "string" ? clean(result, 600) : resultText(result),
+       world === false ? 0 : 1,
+       clean(decision || "ran", 16), Math.max(0, Math.round(Number(ms) || 0)),
+       intentKindOf(tool)]
+    );
+    // TRIMMED BY KIND, not by recency alone. A user with heavy search
+    // traffic used to evict their own call and payment records inside a
+    // day — the rows you would actually want to audit were the first to
+    // go, because they are the rarest.
+    await run(
+      `DELETE FROM executed_actions WHERE user_id = $1 AND world = 1 AND id NOT IN
+         (SELECT id FROM executed_actions WHERE user_id = $1 AND world = 1
+           ORDER BY id DESC LIMIT $2)`,
+      [uid, KEEP_WORLD]
     );
     await run(
-      `DELETE FROM executed_actions WHERE user_id = $1 AND id NOT IN
-         (SELECT id FROM executed_actions WHERE user_id = $1 ORDER BY id DESC LIMIT $2)`,
-      [uid, KEEP_PER_USER]
+      `DELETE FROM executed_actions WHERE user_id = $1 AND world = 0 AND id NOT IN
+         (SELECT id FROM executed_actions WHERE user_id = $1 AND world = 0
+           ORDER BY id DESC LIMIT $2)`,
+      [uid, KEEP_LOOKUPS]
     );
   });
 }
@@ -306,6 +365,7 @@ async function ledger(userId, { limit = 40, sessionId, turnId } = {}) {
         sessionId: r.session_id || "",
         at: Number(r.created_at),
         intent: r.intent || "",
+        intentKind: r.intent_kind || "",
         reply: r.reply || "",
         surface: r.surface || "",
         steps: [],
@@ -314,17 +374,59 @@ async function ledger(userId, { limit = 40, sessionId, turnId } = {}) {
     const t = turns.get(key);
     if (!t.intent && r.intent) t.intent = r.intent;
     if (!t.reply && r.reply) t.reply = r.reply;
+    if (!t.intentKind && r.intent_kind) t.intentKind = r.intent_kind;
     t.steps.unshift({
       tool: r.tool,
       target: r.target || "",
+      resolvedTarget: r.resolved_target || "",
       args: r.args || "",
       ok: Number(r.ok) === 1,
+      decision: r.decision || "ran",
+      ms: Number(r.ms) || 0,
       result: r.result || "",
       detail: r.detail || "",
       at: Number(r.created_at),
     });
   }
   return [...turns.values()];
+}
+
+/**
+ * Everything that went wrong recently, across all users. A regression in
+ * one tool used to be invisible until somebody complained: an operator
+ * had to know which user to open, then read forty turns by eye.
+ */
+async function failures({ sinceMs, limit = 100, tool, includeRefusals = true } = {}) {
+  await migrate();
+  const params = [sinceMs || Date.now() - 24 * 3600_000];
+  let where = "created_at >= $1 AND (ok = 0" +
+    (includeRefusals ? " OR decision <> 'ran'" : "") + ")";
+  if (tool) { params.push(clean(tool, 60)); where += ` AND tool = $${params.length}`; }
+  params.push(Math.min(Math.max(Number(limit) || 100, 1), 500));
+  const rows = await query(
+    `SELECT * FROM executed_actions WHERE ${where} ORDER BY id DESC LIMIT $${params.length}`,
+    params
+  );
+  const byTool = new Map();
+  for (const r of rows) {
+    const key = `${r.tool}|${r.decision || "ran"}`;
+    if (!byTool.has(key)) {
+      byTool.set(key, { tool: r.tool, decision: r.decision || "ran", n: 0, users: new Set(), last: 0, example: "" });
+    }
+    const g = byTool.get(key);
+    g.n++;
+    g.users.add(r.user_id);
+    if (Number(r.created_at) > g.last) {
+      g.last = Number(r.created_at);
+      g.example = r.result || r.detail || "";
+    }
+  }
+  return {
+    rows,
+    groups: [...byTool.values()]
+      .map((g) => ({ ...g, users: g.users.size }))
+      .sort((a, b) => b.n - a.n),
+  };
 }
 
 /** Plain-language line for one record — what the assistant tells the user. */
@@ -356,5 +458,6 @@ function describe(r) {
 
 module.exports = {
   migrate, record, recent, didRun, findRecent, invalidate, attachReply,
-  attachResolvedTarget, ledger, describe, targetOf, argsText,
+  attachResolvedTarget, ledger, failures, describe, targetOf, argsText,
+  intentKindOf,
 };

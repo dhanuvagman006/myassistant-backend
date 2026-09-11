@@ -214,7 +214,7 @@ function noteSuppressed(state, { turnId, tool, args }) {
 }
 
 /** Record an execution both in the session and durably. */
-function recordExecution(state, { turnId, tool, args, ok, detail, result }) {
+function recordExecution(state, { turnId, tool, args, ok, detail, result, ms }) {
   const entry = {
     turnId: turnId || (state && state.turn && state.turn.id) || "",
     tool,
@@ -247,6 +247,7 @@ function recordExecution(state, { turnId, tool, args, ok, detail, result }) {
       // user actually asked for.
       intent: (state.turn && state.turn.text) || "",
       result,
+      ms,
     });
   }
   return entry;

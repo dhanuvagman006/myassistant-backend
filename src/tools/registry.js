@@ -255,6 +255,14 @@ async function execute(name, rawArgs, ctx = {}) {
   if (isWorldAction(name) && ctx.inputQuality && ctx.inputQuality.quality !== "clear") {
     const quality = ctx.inputQuality.quality;
     if (quality === "garbled" || !ctx.approved) {
+      // OBSERVABLE REFUSAL. Declining to act used to leave no trace at
+      // all — no row, no audit line, not even a log entry — so "it
+      // ignored me", "it asked me to repeat myself" and "it said it was
+      // already doing that" were indistinguishable afterwards.
+      // rawArgs, not args: GATE 1 runs before coercion, deliberately —
+      // nothing about a garbled turn should reach a tool's schema.
+      noteDecision(name, rawArgs, ctx, "refused",
+        `input ${ctx.inputQuality.reason || quality}: "${ctx.inputQuality.heard || ""}"`);
       return {
         ok: false,
         error: "unclear_request",
@@ -372,6 +380,7 @@ async function execute(name, rawArgs, ctx = {}) {
           });
         }
       } catch (_) {}
+      noteDecision(name, args, ctx, "suppressed", note);
       return { ok: true, repeated: true, data, speak: "", note };
     };
 
@@ -469,6 +478,34 @@ async function execute(name, rawArgs, ctx = {}) {
  * settings open?" has an answer tomorrow). A tool that merely READS is
  * not worth recording — only actions that touch the world.
  */
+/**
+ * A decision NOT to run something — a gate refusing it, a repeat guard
+ * swallowing it. It goes in the ledger beside the executions, marked so
+ * the two are never confused, and never into the session's executed list
+ * (only `suppress` adds there, and only because a suppressed action means
+ * the real one is already under way).
+ */
+function noteDecision(name, args, ctx, decision, detail) {
+  try {
+    if (!ctx.userId) return;
+    require("../actions/store").record(ctx.userId, {
+      sessionId: ctx.sessionId || (ctx.session && ctx.session.sessionId) || "",
+      turnId: ctx.turnId || "",
+      tool: name,
+      args,
+      ok: decision !== "refused",
+      decision,
+      detail: String(detail || "").slice(0, 300),
+      result: String(detail || "").slice(0, 600),
+      surface: ctx.background ? "background" : ctx.source || (ctx.session && ctx.session.surface) || "",
+      intent: ctx.intent || (ctx.session && ctx.session.turn && ctx.session.turn.text) || "",
+      world: isWorldAction(name),
+    });
+  } catch (e) {
+    console.warn("decision record failed:", e.message);
+  }
+}
+
 function recordExecution(name, args, res, ctx) {
   try {
     if (!ctx.userId) return;
@@ -488,6 +525,7 @@ function recordExecution(name, args, res, ctx) {
         surface: ctx.background ? "background" : ctx.source || (ctx.session && ctx.session.surface) || "",
         intent: ctx.intent || (ctx.session && ctx.session.turn && ctx.session.turn.text) || "",
         result: res,
+        ms: res.ms,
         world: false,
       });
       return;
@@ -500,6 +538,7 @@ function recordExecution(name, args, res, ctx) {
         ok: res.ok !== false,
         detail: res.error || (res.speak ? String(res.speak).slice(0, 160) : ""),
         result: res,
+        ms: res.ms,
       });
       return;
     }
@@ -515,6 +554,7 @@ function recordExecution(name, args, res, ctx) {
       surface: ctx.background ? "background" : ctx.source || "",
       intent: ctx.intent || "",
       result: res,
+      ms: res.ms,
     });
   } catch (e) {
     console.warn("execution record failed:", e.message);
@@ -539,6 +579,11 @@ function audit(tool, args, res, ctx) {
       ok: res.ok !== false,
       ms: res.ms,
       uid: ctx.userId ?? null,
+      // CORRELATION. In stdout a tool line could not be tied to the
+      // request that caused it, nor to the other tools in the same turn —
+      // that only existed in Postgres. These two make the log greppable.
+      rid: ctx.rid || null,
+      turn: ctx.turnId || null,
       args: obs.redact(args),
       error: res.error,
     });

@@ -298,6 +298,9 @@ async function runViaAgent(s, req, userText) {
       // the answer to it — leaving a bare "yes" in the next prompt with the
       // request it answered filtered out.
       sessionId: s.sid,
+      // The HTTP request id, so a tool line in stdout can be tied back to
+      // the request that caused it.
+      rid: req.requestId || undefined,
       // Fulfillment needs these: the caller's first name goes into the
       // script Hari speaks to a business, the platform decides whether a
       // deep link can use an Android intent:// URL, and the timezone turns
@@ -785,6 +788,53 @@ router.post("/:sid/message", async (req, res) => {
   res.status(202).json({ ok: true });
   emit(s, { type: "user_transcript", text });
   await runTurn(s, req, text);
+});
+
+/**
+ * POST /assistant/:sid/device_result — the phone reports how a device
+ * action actually went.
+ *
+ * Until now only calls reported back. Everything else the phone was asked
+ * to do — open an app, open a URL, start navigation, play music, set an
+ * alarm, toggle a control — was recorded as a success the moment the
+ * server DISPATCHED it, and stayed that way forever. If the app was not
+ * installed, the intent was refused, or the deep link went nowhere, the
+ * user saw it fail and the record said it worked. That is the same
+ * false-success the claim checker exists to prevent, one layer down.
+ *
+ *   { tool: "open_app", target: "instagram", ok: false, reason: "not installed" }
+ */
+router.post("/:sid/device_result", (req, res) => {
+  const s = getSession(req, res);
+  if (!s) return;
+  res.json({ ok: true });
+
+  const uid = Number(s.userSub) > 0 ? Number(s.userSub) : null;
+  const tool = String(req.body?.tool || "").trim().slice(0, 60);
+  if (!uid || !tool) return;
+  const ok = req.body?.ok !== false;
+  const target = String(req.body?.target || "").trim().slice(0, 120);
+  const reason = String(req.body?.reason || "").trim().slice(0, 200);
+
+  if (!ok) {
+    require("../actions/store")
+      .invalidate(uid, tool, target, {
+        windowMs: 5 * 60_000,
+        detail: `the phone reported failure${reason ? ` — ${reason}` : ""}`,
+      })
+      .catch((e) => console.warn("device_result invalidate:", e.message));
+    // The agent must know the truth on its next turn, exactly as it does
+    // for a failed call.
+    s.history = [
+      ...(s.history || []),
+      {
+        role: "user",
+        content:
+          `[SYSTEM] ERROR: ${tool}${target ? ` for "${target}"` : ""} did NOT happen on ` +
+          `the phone${reason ? ` — ${reason}` : ""}. Do not claim it did.`,
+      },
+    ].slice(-16);
+  }
 });
 
 // POST /assistant/:sid/contacts — device-resolved matches for a lookup.

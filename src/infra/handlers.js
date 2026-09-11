@@ -51,6 +51,7 @@ async function scheduledTask(payload, job) {
 
   let outcome = "";
   let failed = false;
+  const jobSessionId = `job:${job.id || job.jobId || Date.now()}`;
   try {
     const res = await require("../agents/runtime").runAgentTurn(
       `[SCHEDULED TASK] It is now the scheduled time. Execute this task I ` +
@@ -81,8 +82,9 @@ async function scheduledTask(payload, job) {
       // session of exactly one turn.
       {
         userId, tzOffsetMin: tz, approved: true, background: true,
-        sessionId: `job:${job.id || job.jobId || Date.now()}`,
+        sessionId: jobSessionId,
         source: "background",
+        intent: task,
       }
     );
     if (res?.needsConfirmation) {

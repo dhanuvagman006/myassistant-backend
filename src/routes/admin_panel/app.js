@@ -680,13 +680,19 @@ function ledgerCard(userId) {
               t.intent || h("span", { class: "faint" }, "(no request recorded)"))),
           h("div", { class: "ledger-steps" }, t.steps.map((st) =>
             h("div", { class: "ledger-step" },
-              h("span", { class: "badge " + (st.ok ? "good" : "danger") },
-                st.ok ? "ran" : "failed"),
+              h("span", {
+                class: "badge " + (st.decision && st.decision !== "ran"
+                  ? (DECISION_CLASS[st.decision] || "neutral")
+                  : st.ok ? "good" : "danger"),
+              }, st.decision && st.decision !== "ran"
+                ? st.decision
+                : st.ok ? "ran" : "failed"),
               h("code", { class: "ledger-tool" }, st.tool),
               st.args && st.args !== "{}"
                 ? h("code", { class: "ledger-args" }, st.args)
                 : null,
-              h("span", { class: "ledger-result" }, st.result || st.detail || "")))),
+              h("span", { class: "ledger-result" }, st.result || st.detail || ""),
+              st.ms ? h("span", { class: "ledger-when" }, st.ms + "ms") : null))),
           t.reply
             ? h("div", { class: "ledger-reply" }, "↳ ", t.reply)
             : h("div", { class: "ledger-reply faint" }, "↳ no reply recorded")))));

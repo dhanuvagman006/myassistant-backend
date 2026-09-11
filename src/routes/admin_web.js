@@ -465,6 +465,57 @@ router.get("/api/conversations.csv", async (req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
+/* Failures — what is going wrong, across everyone                     */
+/*                                                                     */
+/* There was no way to ask "which tools failed today". An operator had  */
+/* to already know which user to open, then read forty turns by eye, so */
+/* a regression in one tool stayed invisible until somebody complained. */
+/* ------------------------------------------------------------------ */
+
+router.get("/api/failures", async (req, res) => {
+  const hours = Math.min(Math.max(parseInt(req.query.hours, 10) || 24, 1), 24 * 14);
+  const out = await require("../actions/store")
+    .failures({
+      sinceMs: Date.now() - hours * 3600_000,
+      limit: Math.min(parseInt(req.query.limit, 10) || 150, 500),
+      tool: String(req.query.tool || "").trim() || undefined,
+      includeRefusals: req.query.refusals !== "0",
+    })
+    .catch((e) => {
+      console.warn("failures read failed:", e.message);
+      return { rows: [], groups: [] };
+    });
+
+  // Names, so a row reads as a person rather than an id.
+  const ids = [...new Set(out.rows.map((r) => r.user_id))].slice(0, 200);
+  const names = new Map();
+  if (ids.length) {
+    const rows = await sq("SELECT id, name FROM users WHERE id = ANY($1)", [ids]).catch(() => []);
+    for (const u of rows) names.set(u.id, u.name);
+  }
+  res.json({
+    hours,
+    groups: out.groups,
+    rows: out.rows.map((r) => ({
+      id: r.id,
+      userId: r.user_id,
+      userName: names.get(r.user_id) || null,
+      tool: r.tool,
+      target: r.resolved_target || r.target || "",
+      decision: r.decision || "ran",
+      ok: Number(r.ok) === 1,
+      intent: r.intent || "",
+      args: r.args || "",
+      result: r.result || r.detail || "",
+      reply: r.reply || "",
+      ms: Number(r.ms) || 0,
+      surface: r.surface || "",
+      at: Number(r.created_at),
+    })),
+  });
+});
+
+/* ------------------------------------------------------------------ */
 /* Action ledger — one turn, end to end                                */
 /*                                                                     */
 /* The panel could show what a user asked and what was answered, and    */

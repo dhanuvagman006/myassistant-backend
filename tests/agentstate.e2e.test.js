@@ -739,8 +739,10 @@ console.log("\nexecution record");
       "the runtime still falls back to a per-user constant session key");
     const handlers = fs.readFileSync(
       require.resolve("../src/infra/handlers.js"), "utf8");
-    assert.match(handlers, /sessionId: `job:/,
-      "scheduled tasks do not pass a session id of their own");
+    assert.match(handlers, /jobSessionId = `job:\$\{job\./,
+      "scheduled tasks do not mint a session id of their own");
+    assert.match(handlers, /sessionId: jobSessionId/,
+      "the job session id is not passed into the turn");
   });
 
   test("J — the live path no longer pre-approves every tool", () => {
@@ -793,6 +795,106 @@ console.log("\nexecution record");
     assert.ok(row, "the row disappeared");
     assert.strictEqual(Number(row.ok), 0,
       "a failed call under a nickname is still recorded as a success");
+  });
+
+  /* ================================================================ */
+  /* 14. A REFUSAL IS A DECISION, AND DECISIONS ARE OBSERVABLE        */
+  /*     Declining to act left no trace at all — no row, no audit     */
+  /*     line, not even a log entry. "It ignored me", "it asked me    */
+  /*     to repeat myself" and "it said it was already doing that"    */
+  /*     were indistinguishable afterwards.                           */
+  /* ================================================================ */
+  console.log("\nobservable decisions");
+
+  await atest("a refused action is recorded as refused", async () => {
+    const st = sessionState.begin(USER_A, "s-refuse", { surface: "voice" });
+    sessionState.beginTurn(st, { turnId: "RF1", text: "con", quality: "garbled" });
+    const res = await registry.execute(
+      "place_phone_call",
+      { name: "amma" },
+      { userId: USER_A, session: st, sessionId: "s-refuse", turnId: "RF1",
+        inputQuality: { quality: "garbled", reason: "too short", heard: "con" } }
+    );
+    assert.strictEqual(res.ok, false);
+    assert.strictEqual(res.error, "unclear_request");
+    await settle();
+    const turns = await actions.ledger(USER_A, { sessionId: "s-refuse" });
+    const step = turns[0] && turns[0].steps[0];
+    assert.ok(step, "the refusal left no trace");
+    assert.strictEqual(step.decision, "refused");
+    assert.strictEqual(step.ok, false);
+    assert.match(step.result, /too short|con/i, "the reason was not kept");
+    sessionState.end(USER_A, "s-refuse");
+  });
+
+  await atest("a suppressed repeat is recorded as suppressed, not as a run", async () => {
+    const st = sessionState.begin(USER_A, "s-supp2", { surface: "voice" });
+    sessionState.beginTurn(st, { turnId: "SP2", text: "message Dikshit", quality: "clear" });
+    const ctx = { userId: USER_A, session: st, sessionId: "s-supp2", turnId: "SP2",
+      inputQuality: { quality: "clear" } };
+    await registry.execute("send_whatsapp_message",
+      { to: "Rohan", message: "on my way" }, ctx);
+    await settle();
+    const again = await registry.execute("send_whatsapp_message",
+      { to: "Rohan", message: "on my way" }, ctx);
+    assert.strictEqual(again.repeated, true, "precondition: the repeat is suppressed");
+    await settle();
+    const turns = await actions.ledger(USER_A, { sessionId: "s-supp2" });
+    const decisions = turns.flatMap((t) => t.steps.map((x) => x.decision));
+    assert.ok(decisions.includes("suppressed"),
+      "the suppression is invisible in the ledger");
+    assert.ok(decisions.includes("ran"), "the real send is missing");
+    sessionState.end(USER_A, "s-supp2");
+  });
+
+  await atest("how long each step took is kept", async () => {
+    const st = sessionState.begin(USER_A, "s-ms", { surface: "voice" });
+    sessionState.beginTurn(st, { turnId: "MS1", text: "what reminders do I have", quality: "clear" });
+    await registry.execute("list_reminders", {},
+      { userId: USER_A, session: st, sessionId: "s-ms", turnId: "MS1",
+        inputQuality: { quality: "clear" } });
+    await settle();
+    const turns = await actions.ledger(USER_A, { sessionId: "s-ms" });
+    const step = turns[0] && turns[0].steps[0];
+    assert.ok(step, "no row");
+    assert.ok(typeof step.ms === "number", "latency is not retained per step");
+    sessionState.end(USER_A, "s-ms");
+  });
+
+  await atest("failures are findable across users, not one at a time", async () => {
+    const before = await actions.failures({ sinceMs: Date.now() - 60_000, limit: 200 });
+    assert.ok(Array.isArray(before.rows), "no failure listing");
+    assert.ok(Array.isArray(before.groups), "no grouping by tool");
+    // The refusal recorded above belongs in this window.
+    assert.ok(before.rows.some((r) => r.tool === "place_phone_call" && r.decision === "refused"),
+      "a refusal did not show up in the cross-user failure view");
+    const g = before.groups.find((x) => x.tool === "place_phone_call" && x.decision === "refused");
+    assert.ok(g && g.n >= 1 && g.users >= 1, "the grouping does not count users");
+  });
+
+  await atest("a device action keeps what the phone was asked to do", async () => {
+    // "device action: open_url" with the URL discarded cannot answer
+    // "why did Google Search open?" — the question that started all this.
+    const st = sessionState.begin(USER_A, "s-dev", { surface: "voice" });
+    sessionState.beginTurn(st, { turnId: "DV1", text: "open instagram", quality: "clear" });
+    await registry.execute("open_app", { app: "instagram", query: "nehashetty" },
+      { userId: USER_A, session: st, sessionId: "s-dev", turnId: "DV1",
+        inputQuality: { quality: "clear" } });
+    await settle();
+    const turns = await actions.ledger(USER_A, { sessionId: "s-dev" });
+    const step = turns[0] && turns[0].steps[0];
+    assert.ok(step, "no row");
+    assert.match(step.result, /instagram/i,
+      "the record does not say what the phone was actually asked to do");
+    sessionState.end(USER_A, "s-dev");
+  });
+
+  test("a request is labelled with a kind that can be counted", () => {
+    assert.strictEqual(actions.intentKindOf("place_phone_call"), "call");
+    assert.strictEqual(actions.intentKindOf("open_app"), "open");
+    assert.strictEqual(actions.intentKindOf("send_whatsapp_message"), "message");
+    assert.strictEqual(actions.intentKindOf("web_search"), "lookup");
+    assert.strictEqual(actions.intentKindOf("recall_memory"), "recall");
   });
 
   /* ---------------------------------------------------------------- */
