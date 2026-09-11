@@ -32,6 +32,30 @@ const SHAPES = {
   wide: { width: 1536, height: 864 }, // 16:9 — video frames, headers
 };
 
+/**
+ * The real pixel size of a JPEG, read from its SOF marker. No dependency
+ * for what is fifteen lines of header walking, and the alternative was
+ * trusting the provider to honour the size it was asked for — which,
+ * measured against the live tier, it does not.
+ */
+function jpegSize(buf) {
+  try {
+    if (!buf || buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return null;
+    let i = 2;
+    while (i < buf.length - 9) {
+      if (buf[i] !== 0xff) { i++; continue; }
+      const m = buf[i + 1];
+      // SOF0..SOF15, minus the markers in that range that are not frames.
+      if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+        return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
+      }
+      if (m === 0xd8 || m === 0xd9 || (m >= 0xd0 && m <= 0xd7)) { i += 2; continue; }
+      i += 2 + buf.readUInt16BE(i + 2);
+    }
+  } catch (_) {}
+  return null;
+}
+
 function shapeOf(aspect) {
   const a = String(aspect || "").toLowerCase();
   if (a.startsWith("port") || a === "9:16" || a === "3:4") return SHAPES.portrait;
@@ -81,10 +105,22 @@ async function tryGemini(prompt) {
   }
 }
 
+/**
+ * The keyless tier's real ceiling, measured rather than documented:
+ * asking for 1536x864 returns 1024x576 and asking for 1152x1536 returns
+ * 665x886. Requesting more than this buys nothing and costs up to forty
+ * extra seconds per image, so the request is capped to what will actually
+ * come back. SHAPES stays at the ideal size for a provider that honours it.
+ */
+const KEYLESS_LONG_EDGE = 1024;
+
 async function tryPollinations(prompt, { aspect, seed } = {}) {
   // Unkeyed GET; seed keeps "another one" from returning the same image.
   const s = Number.isFinite(seed) ? seed : Math.floor(Math.random() * 1e9);
-  const { width, height } = shapeOf(aspect);
+  const ideal = shapeOf(aspect);
+  const scale = Math.min(1, KEYLESS_LONG_EDGE / Math.max(ideal.width, ideal.height));
+  const width = Math.round(ideal.width * scale);
+  const height = Math.round(ideal.height * scale);
   const url =
     "https://image.pollinations.ai/prompt/" +
     encodeURIComponent(prompt.slice(0, 1400)) +
@@ -108,7 +144,21 @@ async function tryPollinations(prompt, { aspect, seed } = {}) {
   if (buffer.length < 20 * 1024) {
     throw new Error(`pollinations returned ${buffer.length} bytes`);
   }
-  return { buffer, mime, provider: "pollinations", width, height };
+  // WHAT WE ASKED FOR IS NOT WHAT WE GOT. Measured against the live free
+  // tier: 1536x864 comes back 1024x576 and 1152x1536 comes back 665x886.
+  // Reporting the requested size made the logs and the ledger claim a
+  // resolution the user never received.
+  const real = jpegSize(buffer);
+  return {
+    buffer,
+    mime,
+    provider: "pollinations",
+    width: real ? real.width : width,
+    height: real ? real.height : height,
+    requestedWidth: width,
+    requestedHeight: height,
+    downscaled: Boolean(real && real.width < width),
+  };
 }
 
 /**
@@ -185,4 +235,4 @@ async function tryVeoVideo(prompt) {
   }
 }
 
-module.exports = { generateImage, tryVeoVideo };
+module.exports = { generateImage, tryVeoVideo, jpegSize, shapeOf };
