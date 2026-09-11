@@ -166,6 +166,10 @@ function systemPrompt(extra = "") {
     + "notifies without being a clock → create_reminder. 'every morning', "
     + "'every Monday', 'on the 1st' → create_reminder WITH repeat, not one "
     + "reminder you re-create each time.\n" +
+    "- LOOKING AT A PICTURE: something in front of them right now → "
+    + "analyze_camera. A screenshot or photo already on their phone → "
+    + "look_at_screenshot. You cannot see their live screen and must never "
+    + "imply you can — offer to look at a screenshot instead.\n" +
     "- READING A PAGE: when the user asks what a page or article SAYS — "
     + "'summarise this', 'what does this say', 'what's the price on that "
     + "page' — call read_webpage with the URL and answer from the text it "
@@ -423,7 +427,11 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
           ).join("\n")
         );
       }
-      const joined = [nowLine, block, mem, recent, ...live].filter(Boolean).join("\n");
+      // The honest limits of THIS phone, so a denied permission is
+      // explained rather than attempted and then apologised for.
+      const limits = registry.limitsBlock(ctx.deviceCaps);
+      const joined = [nowLine, block, mem, recent, ...live, limits]
+        .filter(Boolean).join("\n");
       if (joined) ctx = { ...ctx, extraSystem: "\n\n" + joined };
     } catch (_) {}
   }
@@ -436,7 +444,11 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   }
   // Built-ins plus ONLY this user's MCP tools (§6). One selection path for
   // both sources — the runtime does not know MCP exists (§1).
-  const declarations = registry.declarations({ userId: ctx.userId });
+  const declarations = registry.declarations({
+    userId: ctx.userId,
+    // A tool whose permission the phone has denied is not offered at all.
+    deviceCaps: ctx.deviceCaps || null,
+  });
   const contents = [];
 
   // Short conversation context (§18) — recent turns only, never the whole

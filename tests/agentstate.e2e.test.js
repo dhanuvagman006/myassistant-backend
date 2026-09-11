@@ -1055,6 +1055,61 @@ console.log("\nexecution record");
     assert.match(res.error, /needs a time/i);
   });
 
+  /* ================================================================ */
+  /* 16. L — A CAPABILITY IS CHECKED BEFORE IT IS OFFERED             */
+  /*     Feasibility was discovered by failing: the assistant said it  */
+  /*     was calling, and the denied permission surfaced afterwards.   */
+  /* ================================================================ */
+  console.log("\ndeclared feasibility");
+
+  test("a tool whose permission is denied is not offered at all", () => {
+    const all = registry.declarations({ userId: USER_A }).map((d) => d.name);
+    const caps = {
+      platform: "android", build: 26,
+      granted: ["microphone", "camera"],
+      denied: ["contacts", "phone", "sms", "location"],
+    };
+    const offered = registry.declarations({ userId: USER_A, deviceCaps: caps })
+      .map((d) => d.name);
+    assert.ok(all.includes("place_phone_call"), "precondition: normally offered");
+    assert.ok(!offered.includes("place_phone_call"),
+      "a call tool was offered to a phone that cannot call");
+    assert.ok(!offered.includes("get_current_location"));
+    // A permission that IS granted must not hide anything.
+    assert.ok(offered.includes("analyze_camera"),
+      "camera was granted and the tool went missing anyway");
+  });
+
+  test("a phone that reports nothing keeps every capability", () => {
+    // An older build posts no permission map. Silently removing half the
+    // assistant's abilities would be a worse bug than the one being fixed.
+    const all = registry.declarations({ userId: USER_A }).length;
+    const blind = registry.declarations({
+      userId: USER_A,
+      deviceCaps: { build: 26, granted: [], denied: [] },
+    }).length;
+    assert.strictEqual(blind, all, "an unreported device lost capabilities");
+  });
+
+  test("an app too old for a tool is told to update, not left to fail", () => {
+    const caps = { platform: "android", build: 20, granted: ["camera"], denied: [] };
+    const offered = registry.declarations({ userId: USER_A, deviceCaps: caps })
+      .map((d) => d.name);
+    assert.ok(!offered.includes("look_at_screenshot"),
+      "a tool needing a newer build was offered to an old install");
+    assert.match(registry.limitsBlock(caps), /too old/i);
+  });
+
+  test("the limits are stated in the prompt, not discovered by failing", () => {
+    const block = registry.limitsBlock({
+      platform: "android", build: 26, granted: [], denied: ["phone"],
+    });
+    assert.match(block, /PHONE permission is NOT granted/);
+    assert.match(block, /do NOT attempt it and do NOT say it is done/);
+    assert.strictEqual(registry.limitsBlock(null), "",
+      "a phone that reported nothing got a limits lecture anyway");
+  });
+
   /* ---------------------------------------------------------------- */
   console.log("");
   for (const uid of [USER_A, USER_B]) {

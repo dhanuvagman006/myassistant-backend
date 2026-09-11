@@ -1347,6 +1347,7 @@ function registerBuiltins() {
 
   registry.register({
     name: "place_phone_call",
+    requiresPermission: "phone",
     description:
       "Call one of the user's contacts. Use for 'call mom', 'ring Ravi'. " +
       "EMERGENCIES work too: 'call an ambulance / the police / fire " +
@@ -1460,6 +1461,7 @@ function registerBuiltins() {
 
   registry.register({
     name: "capture_document",
+    requiresPermission: "camera",
     description:
       "Ask the user to capture a document, photo, or select an image/PDF from their gallery, " +
       "e.g. 'save Raj's MRI report', 'scan this receipt'. When the user names " +
@@ -1639,6 +1641,7 @@ function registerBuiltins() {
 
   registry.register({
     name: "analyze_camera",
+    requiresPermission: "camera",
     description:
       "Open the phone camera, look at whatever is in front of the user, and answer a question about it. " +
       "USE THIS WHENEVER the user cannot read, see or identify something in front of them — a sign, board, " +
@@ -1858,6 +1861,7 @@ function registerBuiltins() {
 
   registry.register({
     name: "start_navigation",
+    requiresPermission: "location",
     description: "Start turn-by-turn navigation in Google Maps to a specific destination.",
     risk: "low",
     deviceAction: true,
@@ -2961,6 +2965,49 @@ function registerBuiltins() {
   });
 
   registry.register({
+    name: "look_at_screenshot",
+    requiresPermission: "camera",
+    minAppBuild: 26,
+    description:
+      "Look at a SCREENSHOT or photo already on the user's phone and answer " +
+      "about it. Use when they say 'look at this screenshot', 'what does " +
+      "this say', 'read this for me', 'what do I do about this' and the " +
+      "thing is a picture they already have — an error message, a bill, a " +
+      "form, a message thread, a poster. They pick it from their gallery. " +
+      "For something in front of them RIGHT NOW use analyze_camera instead. " +
+      "You cannot see their live screen; never claim you can.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        question: {
+          type: "string",
+          description:
+            "What to find out about it, in the user's own words. Leave empty " +
+            "to just read and explain what it shows.",
+        },
+      },
+    },
+    async execute(args) {
+      return {
+        ok: true,
+        deviceAction: {
+          type: "ask_about_image",
+          source: "gallery",
+          question: String(args.question || "").slice(0, 400),
+        },
+        speak: "",
+        note:
+          "The gallery is opening for them to pick the picture. NOTHING has " +
+          "been read yet — the answer arrives as a [SYSTEM] line once they " +
+          "choose. Say you are ready to look, then WAIT. Do not describe an " +
+          "image you have not been given.",
+      };
+    },
+  });
+
+  registry.register({
     name: "read_webpage",
     description:
       "Read the actual TEXT of a web page so you can summarise it, answer a " +
@@ -3473,6 +3520,7 @@ function registerBuiltins() {
 
   registry.register({
     name: "book_by_calling_business",
+    requiresPermission: "phone",
     // HIDDEN entirely for now: the call rings via the server, but the
     // follow-up channel is a deviceAction ("fulfillment_call") no app
     // build handles, so the user never hears the real outcome — a fake
@@ -4896,6 +4944,7 @@ function registerBuiltins() {
 
   registry.register({
     name: "get_current_location",
+    requiresPermission: "location",
     description:
       "Where the user is right now — 'where am I', 'what is my location', " +
       "'which area is this'. The phone sends its coordinates with every " +

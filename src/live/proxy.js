@@ -689,7 +689,19 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
               silenceDurationMs: Number(process.env.LIVE_SILENCE_MS || 500),
             },
           },
-          systemInstruction: { parts: [{ text: liveSystemPrompt(assistantName, unreadMessages, personalContext, deviceCtx.tz, preferredLanguage) }] },
+          systemInstruction: {
+            parts: [{
+              text: liveSystemPrompt(
+                assistantName, unreadMessages, personalContext,
+                deviceCtx.tz, preferredLanguage
+              ) +
+              // The honest limits of THIS phone, so a denied permission is
+              // explained rather than attempted and apologised for.
+              (require("../tools/registry").limitsBlock(deviceCtx.caps)
+                ? "\n\n" + require("../tools/registry").limitsBlock(deviceCtx.caps)
+                : ""),
+            }],
+          },
           // GOOGLE SEARCH — only on models that accept it.
           //
           // The gemini-3.x live models close the session outright (WS 1011,
@@ -700,7 +712,12 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           // back to Gemini search grounding when no search key is set).
           // Set LIVE_GOOGLE_SEARCH=off to disable everywhere.
           tools: [
-            { functionDeclarations: require("../tools/registry").declarations({ userId: user?.sub }) },
+            {
+              functionDeclarations: require("../tools/registry").declarations({
+                userId: user?.sub,
+                deviceCaps: deviceCtx.caps || null,
+              }),
+            },
             ...(process.env.LIVE_GOOGLE_SEARCH === "off" ||
             /^gemini-[3-9]/i.test(LIVE_MODEL())
               ? []
@@ -1144,6 +1161,13 @@ function attachWs(server) {
       const v = Number(url.searchParams.get(k));
       return Number.isFinite(v) ? v : undefined;
     };
+    // Granted permissions ride on the socket URL, since live mode has no
+    // request body to post them in. Same names the SSE path receives.
+    const csv = (k) =>
+      String(url.searchParams.get(k) || "")
+        .split(",").map((x) => x.trim().slice(0, 40)).filter(Boolean).slice(0, 40);
+    const granted = csv("granted");
+    const denied = csv("denied");
     const deviceCtx = {
       lat: num("lat"),
       lng: num("lng"),
@@ -1151,6 +1175,9 @@ function attachWs(server) {
       tz: num("tz") ?? 330,
       platform:
         String(url.searchParams.get("platform") || "").toLowerCase() || null,
+      caps: granted.length || denied.length
+        ? { platform: "android", build: num("build") ?? 0, granted, denied }
+        : null,
     };
     wss.handleUpgrade(req, socket, head, (ws) => bridge(ws, user, room, deviceCtx));
   });

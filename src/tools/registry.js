@@ -77,7 +77,7 @@ function list() {
  * `only` optionally restricts the set (e.g. a channel that can't do device
  * actions shouldn't be offered them).
  */
-function declarations({ only = null, includeDeviceActions = true, userId = null } = {}) {
+function declarations({ only = null, includeDeviceActions = true, userId = null, deviceCaps = null } = {}) {
   const uid = userId === null || userId === undefined ? null : Number(userId);
   return list()
     .filter((t) => (only ? only.includes(t.name) : true))
@@ -98,6 +98,27 @@ function declarations({ only = null, includeDeviceActions = true, userId = null 
       }
     })
     .filter((t) => (includeDeviceActions ? true : !t.deviceAction))
+    // FEASIBILITY, DECLARED RATHER THAN DISCOVERED. A tool needing a
+    // permission the user has denied, or an app build too old to perform
+    // it, used to be offered anyway: the assistant said it was doing the
+    // thing and the phone silently dropped it. Hidden here, the model
+    // reaches for something that works — and can still explain the limit,
+    // because limitsFor() below says what was withheld and why.
+    .filter((t) => {
+      if (!deviceCaps) return true;
+      if (t.minAppBuild && Number(deviceCaps.build || 0) < t.minAppBuild) return false;
+      if (t.requiresPermission) {
+        const need = Array.isArray(t.requiresPermission)
+          ? t.requiresPermission : [t.requiresPermission];
+        const granted = new Set(deviceCaps.granted || []);
+        const denied = new Set(deviceCaps.denied || []);
+        // Only a KNOWN denial hides a tool. An unreported permission (an
+        // older app that posts nothing) must not silently remove half the
+        // assistant's abilities.
+        if (need.some((p) => denied.has(p) && !granted.has(p))) return false;
+      }
+      return true;
+    })
     // TENANT BOUNDARY: an MCP tool belongs to the user who configured that
     // server. Another user must never even SEE it in their declarations,
     // let alone be able to call it (§6).
@@ -110,6 +131,66 @@ function declarations({ only = null, includeDeviceActions = true, userId = null 
 }
 
 /** Gemini wants uppercase JSON-schema types and no unsupported keywords. */
+/**
+ * What was withheld from this device, and why — so the assistant can say
+ * "I need contacts permission for that" instead of failing at it, or
+ * going quiet about a capability it does have a name for.
+ */
+function limitsFor(deviceCaps) {
+  if (!deviceCaps) return [];
+  const denied = new Set(deviceCaps.denied || []);
+  const granted = new Set(deviceCaps.granted || []);
+  const build = Number(deviceCaps.build || 0);
+  const out = [];
+  for (const t of list()) {
+    if (t.requiresPermission) {
+      const need = Array.isArray(t.requiresPermission)
+        ? t.requiresPermission : [t.requiresPermission];
+      const missing = need.filter((p) => denied.has(p) && !granted.has(p));
+      if (missing.length) {
+        out.push({ tool: t.name, reason: "permission", missing });
+        continue;
+      }
+    }
+    if (t.minAppBuild && build && build < t.minAppBuild) {
+      out.push({ tool: t.name, reason: "app_too_old", needsBuild: t.minAppBuild });
+    }
+  }
+  return out;
+}
+
+/** One prompt line naming the real limits, in the user's terms. */
+function limitsBlock(deviceCaps) {
+  const limits = limitsFor(deviceCaps);
+  if (!limits.length) return "";
+  const byPermission = new Map();
+  const old = [];
+  for (const l of limits) {
+    if (l.reason === "permission") {
+      for (const p of l.missing) {
+        if (!byPermission.has(p)) byPermission.set(p, []);
+        byPermission.get(p).push(l.tool);
+      }
+    } else old.push(l.tool);
+  }
+  const lines = [];
+  for (const [perm, tools] of byPermission) {
+    lines.push(
+      `- ${perm.toUpperCase()} permission is NOT granted on this phone, so ` +
+      `${tools.join(", ")} cannot run. If the user asks for one of these, say ` +
+      `you need ${perm} permission and offer to open the settings page — do ` +
+      `NOT attempt it and do NOT say it is done.`
+    );
+  }
+  if (old.length) {
+    lines.push(
+      `- This phone's app version is too old for: ${old.join(", ")}. Say an ` +
+      `update is needed rather than trying.`
+    );
+  }
+  return "WHAT THIS PHONE CANNOT DO RIGHT NOW:\n" + lines.join("\n");
+}
+
 function normalizeSchema(schema) {
   if (!schema || typeof schema !== "object") {
     return { type: "OBJECT", properties: {} };
@@ -603,6 +684,8 @@ function audit(tool, args, res, ctx) {
 }
 
 module.exports = {
+  limitsFor,
+  limitsBlock,
   isWorldAction,
   WORLD_ACTIONS,
   register,

@@ -301,6 +301,9 @@ async function runViaAgent(s, req, userText) {
       // The HTTP request id, so a tool line in stdout can be tied back to
       // the request that caused it.
       rid: req.requestId || undefined,
+      // What the phone can do — so a tool whose permission was denied is
+      // never offered, and never promised.
+      deviceCaps: s.deviceCaps || null,
       // Fulfillment needs these: the caller's first name goes into the
       // script Hari speaks to a business, the platform decides whether a
       // deep link can use an Android intent:// URL, and the timezone turns
@@ -788,6 +791,32 @@ router.post("/:sid/message", async (req, res) => {
   res.status(202).json({ ok: true });
   emit(s, { type: "user_transcript", text });
   await runTurn(s, req, text);
+});
+
+/**
+ * POST /assistant/:sid/capabilities — what this install can actually do.
+ *
+ * The server knew only the app's build number. It had no idea whether the
+ * user had granted contacts, the phone or SMS, so it would offer the
+ * capability, the assistant would say it was doing it, and the denial
+ * surfaced afterwards as a failure the user had already been promised
+ * would not happen. Now the tools offered to the model are filtered
+ * against this, and a genuinely blocked one is explained instead of
+ * attempted.
+ */
+router.post("/:sid/capabilities", (req, res) => {
+  const s = getSession(req, res);
+  if (!s) return;
+  const granted = Array.isArray(req.body?.granted) ? req.body.granted : [];
+  const denied = Array.isArray(req.body?.denied) ? req.body.denied : [];
+  s.deviceCaps = {
+    platform: String(req.body?.platform || "android").slice(0, 20),
+    build: Math.max(0, Number(req.body?.build) || 0),
+    granted: granted.map((g) => String(g).slice(0, 40)).slice(0, 40),
+    denied: denied.map((g) => String(g).slice(0, 40)).slice(0, 40),
+    at: Date.now(),
+  };
+  res.json({ ok: true });
 });
 
 /**
