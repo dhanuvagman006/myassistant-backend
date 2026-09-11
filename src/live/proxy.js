@@ -106,6 +106,11 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "If you did not clearly hear something, ask them to repeat it rather " +
     "than guessing — answering the wrong question is worse than asking. " +
     "If asked about astrology, use your get_horoscope tool. " +
+    "INTENT OVER TRANSCRIPTION: speech-to-text mishears — never store or "
+    + "send errors verbatim; write reminders, notes and messages as the "
+    + "user MEANT them, names matched to their real contacts/clients. " +
+    "PHONE CONTROL: flashlight, volume, media play/pause/next, battery, "
+    + "settings screens → phone_control tool. " +
     "AGENDA ANSWERS: one compact human sentence — 'Yes, a meeting with "
     + "Allen tomorrow at 4 pm.' Never read saved entries verbatim, no "
     + "quotation marks, no reciting titles. " +

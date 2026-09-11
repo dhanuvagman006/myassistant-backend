@@ -1477,6 +1477,64 @@ function registerBuiltins() {
   });
 
   registry.register({
+    name: "phone_control",
+    description:
+      "Control the phone itself — what Siri/Gemini do on-device: " +
+      "'turn on the flashlight/torch', 'volume up / set volume to 40 / " +
+      "mute', 'pause/play/next song' (controls whatever app is playing), " +
+      "'battery level', 'open wifi/bluetooth/sound settings'. Runs ON the " +
+      "device; for battery, wait for the [SYSTEM] result before answering. " +
+      "If the device reports a failure, say so plainly.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["flashlight_on", "flashlight_off", "volume_set", "volume_up",
+                 "volume_down", "mute", "unmute", "media_play", "media_pause",
+                 "media_next", "media_previous", "battery", "open_settings"],
+        },
+        value: { type: "integer", description: "For volume_set: 0-100." },
+        panel: {
+          type: "string",
+          enum: ["wifi", "bluetooth", "sound", "display", "battery", "settings"],
+          description: "For open_settings: which settings screen.",
+        },
+      },
+      required: ["action"],
+    },
+    async execute(args) {
+      const speakBy = {
+        flashlight_on: "Flashlight on.",
+        flashlight_off: "Flashlight off.",
+        volume_set: `Setting volume to ${args.value ?? 50}.`,
+        volume_up: "Volume up.",
+        volume_down: "Volume down.",
+        mute: "Muted.",
+        unmute: "Unmuted.",
+        media_play: "Playing.",
+        media_pause: "Paused.",
+        media_next: "Next track.",
+        media_previous: "Previous track.",
+        battery: "Checking the battery.",
+        open_settings: "Opening settings.",
+      };
+      return {
+        ok: true,
+        deviceAction: {
+          type: "phone_control",
+          action: args.action,
+          value: args.value ?? null,
+          panel: args.panel || null,
+        },
+        speak: speakBy[args.action] || "Done.",
+      };
+    },
+  });
+
+  registry.register({
     name: "analyze_camera",
     description:
       "Open the phone camera, look at whatever is in front of the user, and answer a question about it. " +
