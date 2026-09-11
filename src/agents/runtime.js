@@ -199,6 +199,9 @@ function systemPrompt(extra = "") {
  * @returns {{ text, deviceActions[], toolResults[], needsConfirmation? }}
  */
 async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
+  // Response-time measurement for the admin panel: wall clock from the
+  // moment the turn enters the runtime to the moment its answer is ready.
+  const turnStartedAt = Date.now();
   // WHO the user is, WHO the assistant is, and the user's STANDING RULES
   // sit in front of every decision — this is the judgment layer (§13/§14).
   if (ctx.userId && ctx.extraSystem === undefined) {
@@ -288,8 +291,14 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
       {
         const finalText = spoken.join(" ").trim();
         const recent = require("../memory/recent");
-        recent.append(ctx.userId, "user", userText);
-        recent.append(ctx.userId, "assistant", finalText);
+        const meta = {
+          latencyMs: Date.now() - turnStartedAt,
+          source: ctx.source || (ctx.background ? "background" : "voice"),
+          tools: toolResults.map((t) => t.name).filter(Boolean),
+          appBuild: ctx.appBuild,
+        };
+        recent.append(ctx.userId, "user", userText, { ...meta, latencyMs: 0 });
+        recent.append(ctx.userId, "assistant", finalText, meta);
         return {
           text: finalText,
           deviceActions,
@@ -364,8 +373,14 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   const last = toolResults[toolResults.length - 1];
   const finalText = spoken.join(" ").trim() || (last && last.speak ? last.speak : "");
   const recent = require("../memory/recent");
-  recent.append(ctx.userId, "user", userText);
-  recent.append(ctx.userId, "assistant", finalText);
+  const meta = {
+    latencyMs: Date.now() - turnStartedAt,
+    source: ctx.source || (ctx.background ? "background" : "voice"),
+    tools: toolResults.map((t) => t.name).filter(Boolean),
+    appBuild: ctx.appBuild,
+  };
+  recent.append(ctx.userId, "user", userText, { ...meta, latencyMs: 0 });
+  recent.append(ctx.userId, "assistant", finalText, meta);
   return {
     text: finalText,
     deviceActions,

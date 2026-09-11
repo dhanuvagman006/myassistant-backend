@@ -33,6 +33,12 @@ async function migrate(exec) {
     -- "registration-token-not-registered"; this timestamp lets push.js
     -- tell that transient state apart from a genuinely dead token.
     ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token_at      BIGINT NOT NULL DEFAULT 0;
+    -- Which app build each user is actually running, and when they were
+    -- last seen. Reported by the app on every request (X-App-Build);
+    -- the admin panel needs it to tell "not updated yet" from "broken".
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS app_build         INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS app_build_at      BIGINT NOT NULL DEFAULT 0;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at      BIGINT NOT NULL DEFAULT 0;
     -- Nullable on purpose: NULL means "no verified number". A NOT NULL
     -- default of '' would put every unverified account on one shared value,
     -- which the uniqueness index in db.js could not tell apart from a real

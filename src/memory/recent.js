@@ -25,6 +25,14 @@ function migrate() {
         created_at BIGINT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_convturns_user ON conversation_turns(user_id, id DESC);
+      -- Analytics columns (admin panel): how long the answer took, which
+      -- surface it came from, which tools ran, and the app build that
+      -- asked. Added by ALTER so existing rows survive.
+      ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS latency_ms INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS source     TEXT NOT NULL DEFAULT '';
+      ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS tools      TEXT NOT NULL DEFAULT '';
+      ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS app_build  INTEGER NOT NULL DEFAULT 0;
+      CREATE INDEX IF NOT EXISTS idx_convturns_time ON conversation_turns(created_at DESC);
     `).catch((e) => {
       console.error("conversation_turns migration failed:", e.message);
       migrated = null;
@@ -33,10 +41,15 @@ function migrate() {
   return migrated;
 }
 
-const KEEP_PER_USER = 60;
+// Kept per user. The PROMPT only ever reads the newest dozen; the rest
+// is the admin panel's window into what testers actually asked.
+const KEEP_PER_USER = 400;
 
-/** Fire-and-forget append. System lines and empties are never stored. */
-function append(userId, role, text) {
+/**
+ * Fire-and-forget append. System lines and empties are never stored.
+ * @param meta {latencyMs, source: 'voice'|'live'|'chat', tools: string[], appBuild}
+ */
+function append(userId, role, text, meta = {}) {
   const uid = Number(userId);
   const t = String(text || "").trim().slice(0, 1200);
   if (!Number.isInteger(uid) || uid <= 0 || !t) return;
@@ -44,8 +57,19 @@ function append(userId, role, text) {
   (async () => {
     await migrate();
     await run(
-      "INSERT INTO conversation_turns (user_id, role, text, created_at) VALUES ($1,$2,$3,$4)",
-      [uid, role === "assistant" ? "assistant" : "user", t, Date.now()]
+      `INSERT INTO conversation_turns
+         (user_id, role, text, created_at, latency_ms, source, tools, app_build)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [
+        uid,
+        role === "assistant" ? "assistant" : "user",
+        t,
+        Date.now(),
+        Math.max(0, Math.round(Number(meta.latencyMs) || 0)),
+        String(meta.source || "").slice(0, 20),
+        (Array.isArray(meta.tools) ? meta.tools.join(", ") : String(meta.tools || "")).slice(0, 300),
+        Math.max(0, Number(meta.appBuild) || 0),
+      ]
     );
     await run(
       `DELETE FROM conversation_turns WHERE user_id = $1 AND id NOT IN
@@ -54,6 +78,83 @@ function append(userId, role, text) {
     );
   })().catch((e) => console.warn("recent append failed:", e.message));
 }
+
+/* ------------------------------------------------------------------ */
+/* ADMIN VIEWS — every turn, paired, with timings                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Question/answer pairs newest-first for the admin panel: each assistant
+ * turn joined to the user turn that preceded it, with the answer's
+ * latency, surface, tools and app build.
+ */
+async function adminConversations({ q, userId, source, minLatency, limit = 50, offset = 0 } = {}) {
+  await migrate();
+  const where = ["t.role = 'assistant'"];
+  const params = [];
+  if (q) {
+    params.push(`%${q}%`);
+    where.push(`(t.text ILIKE $${params.length} OR EXISTS (
+      SELECT 1 FROM conversation_turns p
+       WHERE p.user_id = t.user_id AND p.id < t.id AND p.role = 'user'
+         AND p.text ILIKE $${params.length}
+       ORDER BY p.id DESC LIMIT 1))`);
+  }
+  if (Number.isFinite(userId)) { params.push(userId); where.push(`t.user_id = $${params.length}`); }
+  if (source) { params.push(source); where.push(`t.source = $${params.length}`); }
+  if (Number.isFinite(minLatency) && minLatency > 0) {
+    params.push(minLatency); where.push(`t.latency_ms >= $${params.length}`);
+  }
+  const lim = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const off = Math.max(Number(offset) || 0, 0);
+  return query(
+    `SELECT t.id, t.user_id, u.name AS user_name, t.text AS answer,
+            t.latency_ms, t.source, t.tools, t.app_build, t.created_at,
+            (SELECT p.text FROM conversation_turns p
+              WHERE p.user_id = t.user_id AND p.id < t.id AND p.role = 'user'
+              ORDER BY p.id DESC LIMIT 1) AS question
+       FROM conversation_turns t LEFT JOIN users u ON u.id = t.user_id
+      WHERE ${where.join(" AND ")}
+      ORDER BY t.id DESC LIMIT ${lim} OFFSET ${off}`,
+    params
+  );
+}
+
+/** Response-time percentiles, volume by surface, and the busiest tools. */
+async function adminStats(days = 7) {
+  await migrate();
+  const since = Date.now() - days * 86400_000;
+  const [latency, bySource, byTool, byDay] = await Promise.all([
+    query(
+      `SELECT COUNT(*)::int AS turns,
+              ROUND(AVG(latency_ms))::int AS avg_ms,
+              PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY latency_ms)::int AS p50,
+              PERCENTILE_DISC(0.9) WITHIN GROUP (ORDER BY latency_ms)::int AS p90,
+              MAX(latency_ms)::int AS max_ms
+         FROM conversation_turns
+        WHERE role='assistant' AND latency_ms > 0 AND created_at > $1`, [since]),
+    query(
+      `SELECT COALESCE(NULLIF(source,''),'unknown') AS source, COUNT(*)::int AS n,
+              ROUND(AVG(NULLIF(latency_ms,0)))::int AS avg_ms
+         FROM conversation_turns
+        WHERE role='assistant' AND created_at > $1
+        GROUP BY 1 ORDER BY n DESC`, [since]),
+    query(
+      `SELECT trim(tool) AS tool, COUNT(*)::int AS n FROM (
+         SELECT unnest(string_to_array(tools, ',')) AS tool
+           FROM conversation_turns
+          WHERE role='assistant' AND tools <> '' AND created_at > $1) x
+        WHERE trim(tool) <> '' GROUP BY 1 ORDER BY n DESC LIMIT 12`, [since]),
+    query(
+      `SELECT to_char(to_timestamp(created_at/1000.0),'YYYY-MM-DD') AS d,
+              COUNT(*)::int AS count
+         FROM conversation_turns WHERE role='assistant' AND created_at > $1
+        GROUP BY d ORDER BY d`, [since]),
+  ]);
+  return { latency: latency[0] || {}, bySource, byTool, byDay };
+}
+
+
 
 /**
  * The conversation tail as a prompt block, oldest first — or "" when
@@ -92,4 +193,4 @@ async function recentBlock(userId, { maxTurns = 12, maxAgeMs = 48 * 3600_000, ma
   }
 }
 
-module.exports = { append, recentBlock };
+module.exports = { append, recentBlock, adminConversations, adminStats };

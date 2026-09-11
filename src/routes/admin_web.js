@@ -173,7 +173,7 @@ async function distinctPerDay(days) {
 
 const USER_COLS = `id, name, email, provider, created_at, status, gender,
   birthday, profession, organisation, location, preferred_language,
-  phone_number, phone_verified_at,
+  phone_number, phone_verified_at, app_build, app_build_at, last_seen_at,
   fcm_token IS NOT NULL AND fcm_token <> '' AS has_device`;
 
 /* ------------------------------------------------------------------ */
@@ -277,6 +277,11 @@ router.get("/api/users/:id", async (req, res) => {
     sq(`SELECT action, detail, created_at FROM actions_log
          WHERE user_id=$1 ORDER BY created_at DESC LIMIT 20`, [id]),
   ]);
+  // What this user actually said and what the assistant answered, with
+  // timings — the fastest way to see why a tester is unhappy.
+  const conversations = await require("../memory/recent")
+    .adminConversations({ userId: id, limit: 25 })
+    .catch(() => []);
 
   const [remindersAll, remindersOpen, commitsOpen, docs, memories, clients,
          finance, contacts, msgs, actionsTotal] = counts;
@@ -288,6 +293,7 @@ router.get("/api/users/:id", async (req, res) => {
     counts: { remindersAll, remindersOpen, commitsOpen, docs, memories,
               clients, finance, contacts, msgs, actionsTotal },
     recent,
+    conversations,
   });
 });
 
@@ -376,6 +382,28 @@ router.delete("/api/users/:id", async (req, res) => {
 /* Analytics                                                           */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Conversations — every question, answer and response time             */
+/* ------------------------------------------------------------------ */
+
+router.get("/api/conversations", async (req, res) => {
+  const recent = require("../memory/recent");
+  const userId = parseInt(req.query.user_id, 10);
+  const rows = await recent
+    .adminConversations({
+      q: String(req.query.q || "").trim() || null,
+      userId: Number.isFinite(userId) ? userId : undefined,
+      source: String(req.query.source || "").trim() || null,
+      minLatency: parseInt(req.query.min_ms, 10) || 0,
+      limit: parseInt(req.query.limit, 10) || 50,
+      offset: parseInt(req.query.offset, 10) || 0,
+    })
+    .catch(() => []);
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 7, 1), 90);
+  const stats = await recent.adminStats(days).catch(() => null);
+  res.json({ conversations: rows, stats });
+});
+
 router.get("/api/analytics", async (_req, res) => {
   const monthAgo = Date.now() - 30 * 86400_000;
   const [signups30, dau14, actions14, msgs14, topActions, topUsers] =
@@ -393,7 +421,24 @@ router.get("/api/analytics", async (_req, res) => {
            WHERE a.created_at > $1 GROUP BY a.user_id, u.name, u.email
            ORDER BY count DESC LIMIT 10`, [monthAgo]),
     ]);
-  res.json({ signups30, dau14, actions14, msgs14, topActions, topUsers });
+  const weekAgo = Date.now() - 7 * 86400_000;
+  const [versions, convStats, engagement] = await Promise.all([
+    // WHICH BUILD IS EVERYONE ON — updates landing or stalling.
+    sq(`SELECT COALESCE(NULLIF(app_build,0), 0) AS build, COUNT(*)::int AS users,
+               MAX(last_seen_at) AS last_seen
+          FROM users WHERE status='active' GROUP BY 1 ORDER BY build DESC`),
+    require("../memory/recent").adminStats(7).catch(() => null),
+    // OVERLAP / STICKINESS: how many distinct days each active user showed
+    // up in the last week, and how many came back at all.
+    sq(`SELECT days_active, COUNT(*)::int AS users FROM (
+          SELECT user_id, COUNT(DISTINCT to_char(to_timestamp(created_at/1000.0),'YYYY-MM-DD')) AS days_active
+            FROM actions_log WHERE created_at > $1 GROUP BY user_id) x
+        GROUP BY days_active ORDER BY days_active`, [weekAgo]),
+  ]);
+  res.json({
+    signups30, dau14, actions14, msgs14, topActions, topUsers,
+    versions, convStats, engagement,
+  });
 });
 
 /* ------------------------------------------------------------------ */

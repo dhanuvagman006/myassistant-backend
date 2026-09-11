@@ -212,6 +212,7 @@ const NAV = [
   ["#/", "Overview"],
   ["#/users", "Users"],
   ["#/analytics", "Analytics"],
+  ["#/conversations", "Conversations"],
   ["#/activity", "Activity"],
   ["#/outcomes", "Task outcomes"],
   ["#/broadcast", "Notifications"],
@@ -261,6 +262,7 @@ async function render() {
     if (userMatch) return await viewUserDetail(parseInt(userMatch[1], 10));
     if (hash.startsWith("#/users")) return await viewUsers();
     if (hash.startsWith("#/analytics")) return await viewAnalytics();
+    if (hash.startsWith("#/conversations")) return await viewConversations();
     if (hash.startsWith("#/activity")) return await viewActivity();
     if (hash.startsWith("#/outcomes")) return await viewOutcomes();
     if (hash.startsWith("#/broadcast")) return await viewBroadcast();
@@ -372,16 +374,20 @@ async function viewUsers() {
         h("td", {}, h("span", { class: "badge neutral" }, u.provider || "?")),
         h("td", {}, u.has_device ? h("span", { class: "badge accent" }, "push ok")
                                  : h("span", { class: "faint" }, "no device")),
+        h("td", {}, u.app_build
+          ? h("span", { class: "badge neutral" }, "build " + u.app_build)
+          : h("span", { class: "faint" }, "unknown")),
         h("td", {}, statusBadge(u)),
-        h("td", { class: "sub" }, fmtDate(u.created_at))
+        h("td", { class: "sub" }, u.last_seen_at ? timeAgo(u.last_seen_at) : fmtDate(u.created_at))
       ));
     tableWrap.replaceChildren(
       h("table", {},
         h("thead", {}, h("tr", {},
           h("th", {}, "User"), h("th", {}, "Phone"), h("th", {}, "Provider"),
-          h("th", {}, "Device"), h("th", {}, "Status"), h("th", {}, "Joined"))),
+          h("th", {}, "Device"), h("th", {}, "App version"), h("th", {}, "Status"),
+          h("th", {}, "Last seen"))),
         h("tbody", {}, rows.length ? rows
-          : h("tr", {}, h("td", { colspan: 6, class: "chart-empty" }, "No users match."))))
+          : h("tr", {}, h("td", { colspan: 7, class: "chart-empty" }, "No users match."))))
     );
   }
 
@@ -400,6 +406,25 @@ async function viewUsers() {
 /* ------------------------------------------------------------------ */
 /* User detail                                                         */
 /* ------------------------------------------------------------------ */
+
+/** A user's own recent exchanges, shown inside their detail page. */
+function conversationCard(rows) {
+  if (!rows || !rows.length) {
+    return h("div", { class: "card" }, h("h3", {}, "Recent conversation"),
+      h("div", { class: "chart-empty" }, "No conversations recorded yet."));
+  }
+  return h("div", { class: "card table-card" },
+    h("h3", { style: "padding:10px 12px 0;" }, "Recent conversation"),
+    h("table", {},
+      h("thead", {}, h("tr", {}, h("th", {}, "When"), h("th", {}, "Question"),
+        h("th", {}, "Answer"), h("th", {}, "Reply time"))),
+      h("tbody", {}, rows.map((c) =>
+        h("tr", {},
+          h("td", { class: "sub", style: "white-space:nowrap;" }, timeAgo(c.created_at)),
+          h("td", { style: "max-width:240px;" }, c.question || h("span", { class: "faint" }, "—")),
+          h("td", { class: "sub", style: "max-width:340px;" }, c.answer || ""),
+          h("td", {}, latencyPill(c.latency_ms)))))));
+}
 
 async function viewUserDetail(id) {
   shell("#/users", loading());
@@ -513,6 +538,7 @@ async function viewUserDetail(id) {
           h("h3", {}, "Phone ", h("span", { class: "hint" }, "setting a number here also marks it verified")),
           u.phone_number ? h("div", { style: "margin-bottom:10px;" }, "Current: ", h("strong", {}, u.phone_number)) : null,
           h("div", { class: "inline-form" }, phoneInput, phoneBtn)),
+        h("div", { class: "section-gap" }, conversationCard(d.conversations)),
         h("div", { class: "card section-gap" },
           h("h3", {}, "Recent activity"),
           d.recent.length ? d.recent.map((x) => h("div", { class: "feed-item" },
@@ -522,6 +548,14 @@ async function viewUserDetail(id) {
             : h("div", { class: "chart-empty" }, "No recorded activity."))),
       h("div", {},
         h("div", { class: "card" },
+          h("h3", {}, "App"),
+          h("div", { class: "stat-mini" }, h("span", { class: "k" }, "Version"),
+            h("span", { class: "v" }, u.app_build ? "build " + u.app_build : "unknown")),
+          h("div", { class: "stat-mini" }, h("span", { class: "k" }, "Reported"),
+            h("span", { class: "v" }, u.app_build_at ? timeAgo(u.app_build_at) : "—")),
+          h("div", { class: "stat-mini" }, h("span", { class: "k" }, "Last seen"),
+            h("span", { class: "v" }, u.last_seen_at ? timeAgo(u.last_seen_at) : "—"))),
+        h("div", { class: "card section-gap" },
           h("h3", {}, "Assistant"),
           asst ? [
             h("div", { class: "stat-mini" }, h("span", { class: "k" }, "Name"), h("span", { class: "v" }, asst.name || "Assistant")),
@@ -564,6 +598,28 @@ async function viewAnalytics() {
       h("div", { class: "card" }, h("h3", {}, "Messages relayed per day — last 14 days"), barChart(d.msgs14))),
     h("div", { class: "grid two-col section-gap" },
       h("div", { class: "card" },
+        h("h3", {}, "App versions in use ", h("span", { class: "hint" }, "is the update reaching everyone?")),
+        hbarList((d.versions || []).map((v) => ({
+          label: v.build ? "build " + v.build : "unknown", count: v.users })))),
+      h("div", { class: "card" },
+        h("h3", {}, "Days active per user — last 7 days ", h("span", { class: "hint" }, "stickiness")),
+        hbarList((d.engagement || []).map((e) => ({
+          label: e.days_active + (e.days_active === 1 ? " day" : " days"), count: e.users })))),
+      h("div", { class: "card" },
+        h("h3", {}, "Reply time — last 7 days"),
+        (() => {
+          const l = (d.convStats && d.convStats.latency) || {};
+          const ms = (v) => (v ? (v / 1000).toFixed(1) + "s" : "—");
+          return h("div", {},
+            h("div", { class: "stat-mini" }, h("span", { class: "k" }, "Turns"), h("span", { class: "v" }, String(l.turns || 0))),
+            h("div", { class: "stat-mini" }, h("span", { class: "k" }, "Median"), h("span", { class: "v" }, ms(l.p50))),
+            h("div", { class: "stat-mini" }, h("span", { class: "k" }, "90th percentile"), h("span", { class: "v" }, ms(l.p90))),
+            h("div", { class: "stat-mini" }, h("span", { class: "k" }, "Slowest"), h("span", { class: "v" }, ms(l.max_ms))));
+        })()),
+      h("div", { class: "card" },
+        h("h3", {}, "Tools used — last 7 days"),
+        hbarList(((d.convStats && d.convStats.byTool) || []).map((t) => ({ label: t.tool, count: t.n })))),
+      h("div", { class: "card" },
         h("h3", {}, "Top actions — last 30 days ", h("span", { class: "hint" }, "what people actually use")),
         hbarList(d.topActions.map((a) => ({ label: a.action, count: a.count })))),
       h("div", { class: "card table-card" },
@@ -576,6 +632,93 @@ async function viewAnalytics() {
                 h("td", {}, t.name), h("td", { class: "num" }, t.count)))
               : h("tr", {}, h("td", { colspan: 2, class: "chart-empty" }, "No data yet."))))))
   ));
+}
+
+/* ------------------------------------------------------------------ */
+/* Conversations — questions, answers, response times                   */
+/* ------------------------------------------------------------------ */
+
+/** Response-time pill: green under 2s, amber under 5s, red beyond. */
+function latencyPill(ms) {
+  if (!ms) return h("span", { class: "faint" }, "—");
+  const s = (ms / 1000).toFixed(1) + "s";
+  const cls = ms < 2000 ? "good" : ms < 5000 ? "warn" : "danger";
+  return h("span", { class: "badge " + cls }, s);
+}
+
+async function viewConversations() {
+  shell("#/conversations", loading());
+  let q = "", source = "", minMs = 0, offset = 0;
+  const body = h("tbody", {});
+  const statsRow = h("div", { style: "display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:16px;" });
+  const moreBtn = h("button", { class: "btn", style: "margin:12px;" }, "Load more");
+
+  const stat = (label, value, tone) =>
+    h("div", { class: "card", style: "padding:14px 16px;" },
+      h("div", { class: "sub", style: "font-size:12px;" }, label),
+      h("div", { style: `font-size:24px;font-weight:700;${tone ? "color:" + tone + ";" : ""}` }, String(value)));
+
+  async function load(append) {
+    const d = await api(
+      `/conversations?q=${encodeURIComponent(q)}&source=${source}&min_ms=${minMs}` +
+      `&offset=${offset}&limit=50&days=7`);
+    if (!append) {
+      const l = (d.stats && d.stats.latency) || {};
+      const ms = (v) => (v ? (v / 1000).toFixed(1) + "s" : "—");
+      statsRow.replaceChildren(
+        stat("Turns (7d)", l.turns || 0),
+        stat("Median reply", ms(l.p50)),
+        stat("90th percentile", ms(l.p90), l.p90 > 5000 ? "#b45309" : ""),
+        stat("Slowest", ms(l.max_ms), l.max_ms > 10000 ? "#b91c1c" : ""),
+        stat("Average", ms(l.avg_ms)));
+    }
+    const rows = d.conversations.map((c) =>
+      h("tr", {},
+        h("td", { class: "sub", style: "white-space:nowrap;" }, timeAgo(c.created_at)),
+        h("td", {}, c.user_id
+          ? h("a", { href: "#/user/" + c.user_id }, c.user_name || "#" + c.user_id)
+          : h("span", { class: "faint" }, "—")),
+        h("td", { style: "max-width:280px;" }, c.question || h("span", { class: "faint" }, "—")),
+        h("td", { class: "sub", style: "max-width:380px;" }, c.answer || ""),
+        h("td", {}, latencyPill(c.latency_ms)),
+        h("td", { class: "sub" }, c.tools || ""),
+        h("td", { class: "sub", style: "white-space:nowrap;" },
+          (c.source || "?") + (c.app_build ? " · b" + c.app_build : ""))));
+    if (!append) body.replaceChildren();
+    if (rows.length) body.append(...rows);
+    else if (!append) body.append(h("tr", {}, h("td", { colspan: 7, class: "chart-empty" }, "No conversations recorded yet.")));
+    moreBtn.disabled = d.conversations.length < 50;
+  }
+  moreBtn.addEventListener("click", () => { offset += 50; load(true).catch((e) => toast(e.message, true)); });
+
+  const reload = () => { offset = 0; load(false).catch((x) => toast(x.message, true)); };
+  const search = h("input", {
+    class: "input", style: "max-width:260px;", placeholder: "Search questions and answers…",
+    oninput: debounce((e) => { q = e.target.value.trim(); reload(); }, 300),
+  });
+  const sel = (opts, onchange) =>
+    h("select", { class: "input", style: "max-width:160px;", onchange: (e) => onchange(e.target.value) },
+      ...opts.map(([v, l]) => h("option", { value: v }, l)));
+  const sourceSel = sel([["", "All surfaces"], ["live", "Live voice"], ["voice", "Voice / chat"],
+    ["background", "Scheduled"]], (v) => { source = v; reload(); });
+  const slowSel = sel([["0", "Any speed"], ["3000", "Slower than 3s"], ["6000", "Slower than 6s"],
+    ["10000", "Slower than 10s"]], (v) => { minMs = parseInt(v, 10) || 0; reload(); });
+
+  shell("#/conversations", h("div", {},
+    h("div", { class: "page-head" },
+      h("div", {}, h("div", { class: "page-title" }, "Conversations"),
+        h("div", { class: "page-sub" }, "Every question asked, the assistant's answer, how long it took and which tools ran.")),
+      h("div", { style: "display:flex; gap:8px; flex-wrap:wrap;" }, search, sourceSel, slowSel)),
+    statsRow,
+    h("div", { class: "card table-card" },
+      h("table", {},
+        h("thead", {}, h("tr", {},
+          h("th", {}, "When"), h("th", {}, "User"), h("th", {}, "Question"),
+          h("th", {}, "Answer"), h("th", {}, "Reply time"), h("th", {}, "Tools"),
+          h("th", {}, "Surface"))),
+        body),
+      moreBtn)));
+  await load(false);
 }
 
 /* ------------------------------------------------------------------ */

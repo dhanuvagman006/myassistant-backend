@@ -400,18 +400,35 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     if (Number(user?.sub) > 0) {
       require("../commitments/service").extractAsync(Number(user.sub), t, { source: "voice" });
       require("../agents/memory").extractAndStore(Number(user.sub), t);
-      require("../memory/recent").append(Number(user.sub), "user", t);
+      require("../memory/recent").append(Number(user.sub), "user", t, {
+        source: "live",
+        appBuild: deviceCtx.build,
+      });
     }
   };
   // The model's spoken turn, accumulated the same way and flushed at the
   // turn boundary — this is what makes the NEXT session remember what
   // this one said ("you have a meeting with Allen…").
   let modelBuf = "";
+  // Admin analytics: how long the user waited for THIS reply and which
+  // tools ran inside it. turnLatency is stamped when the first reply
+  // signal arrives after the user stopped speaking (see repliedAt).
+  let turnLatency = 0;
+  let turnTools = [];
   const flushModelTurn = () => {
     const t = modelBuf.trim();
     modelBuf = "";
+    const latencyMs = turnLatency;
+    const tools = turnTools;
+    turnLatency = 0;
+    turnTools = [];
     if (t && Number(user?.sub) > 0) {
-      require("../memory/recent").append(Number(user.sub), "assistant", t);
+      require("../memory/recent").append(Number(user.sub), "assistant", t, {
+        latencyMs,
+        source: "live",
+        tools,
+        appBuild: deviceCtx.build,
+      });
     }
   };
   let pendingApproval = null;
@@ -655,6 +672,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         // tz/platform/location, weather fell back to nothing, deep links
         // never got their Android intent:// form, and "tomorrow at 8"
         // resolved in the wrong timezone — in live mode only.
+        turnTools.push(fc.name);
         const res = await require("../tools/registry").execute(fc.name, fc.args, {
           userId: user?.sub,
           userName,
@@ -797,6 +815,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     // where the wait actually is.
     if (activityEndAt && !repliedAt && (sc.modelTurn || sc.outputTranscription)) {
       repliedAt = Date.now();
+      turnLatency = repliedAt - activityEndAt;
       console.log(`live: FIRST REPLY ${repliedAt - activityEndAt}ms after activity_end`);
     }
     if (sc.turnComplete) {
