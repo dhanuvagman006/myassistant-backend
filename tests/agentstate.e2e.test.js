@@ -1280,19 +1280,27 @@ console.log("\nexecution record");
     assert.match(videogen, /haveFfmpeg/, "nothing checks the encoder exists");
   });
 
-  await atest("a video that cannot be made is not claimed", async () => {
-    // ffmpeg is absent on a dev box, which is exactly the degraded path.
-    const { haveFfmpeg } = require("../src/services/videogen");
-    if (await haveFfmpeg()) {
-      console.log("      (skipped — ffmpeg present, the happy path)");
-      return;
-    }
+  await atest("a video is started as a job and nothing is described yet", async () => {
+    // Measured in production: three keyframes plus the encode is about a
+    // hundred seconds. A voice turn cannot be held open that long, so the
+    // turn starts it and a push says when it lands.
     const res = await registry.execute("generate_video",
-      { prompt: "waves at sunset over Panambur beach" },
+      { prompt: "waves at sunset over Panambur beach", aspect: "wide" },
       { userId: USER_A, inputQuality: { quality: "clear" } });
-    assert.strictEqual(res.ok, false);
-    assert.ok(!res.deviceAction, "it announced a video it does not have");
-    assert.match(res.data.hint, /Do NOT claim a video exists/);
+    assert.strictEqual(res.ok, true, res.error || "");
+    assert.strictEqual(res.data.status, "started");
+    assert.ok(!res.deviceAction, "it announced a video that does not exist yet");
+    assert.strictEqual(res.speak, "", "it spoke about a video it has not seen");
+    assert.match(res.note, /Do NOT describe the video/i);
+  });
+
+  test("the video job is registered, so something will actually run it", () => {
+    const jobs = require("../src/infra/jobs");
+    require("../src/infra/handlers").install();
+    const names = jobs.HANDLERS instanceof Map
+      ? [...jobs.HANDLERS.keys()] : Object.keys(jobs.HANDLERS);
+    assert.ok(names.includes("generate_video"),
+      "a video request would be enqueued and never picked up");
   });
 
   test("something to look at gets a screen to appear on", () => {

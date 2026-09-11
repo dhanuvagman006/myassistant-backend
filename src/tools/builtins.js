@@ -2470,9 +2470,11 @@ function registerBuiltins() {
     name: "generate_video",
     description:
       "CREATE a short video clip from a description — 'make a video of " +
-      "waves at sunset', 'a clip of my café for Instagram'. Takes about a " +
-      "minute, so say you are making it and let it land; never promise a " +
-      "moment. Write a vivid prompt the way you would for an image.\n" +
+      "waves at sunset', 'a clip of my café for Instagram'. It is made in " +
+      "the background and takes a couple of minutes: say you are on it and " +
+      "that you will tell them when it lands in their documents, then carry " +
+      "on. Never wait for it and never describe what you have not seen. " +
+      "Write a vivid prompt the way you would for an image.\n" +
       "Tell the user what they are getting, because there are two kinds and " +
       "the result says which: `kind: \"veo\"` is fully synthesised video, " +
       "`kind: \"keyframes\"` is a cinematic sequence of generated frames " +
@@ -2506,62 +2508,32 @@ function registerBuiltins() {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
       const prompt = String(args.prompt || "").trim().slice(0, 1400);
       if (!prompt) return { ok: false, error: "describe the video" };
-      let vid;
       try {
-        vid = await require("../services/videogen").generateVideo(prompt, {
-          aspect: args.aspect || "wide",
-          seconds: Math.min(Math.max(Number(args.seconds) || 8, 5), 15),
-        });
+        await require("../infra/jobs").enqueue(
+          "generate_video",
+          {
+            userId: ctx.userId,
+            prompt,
+            aspect: args.aspect || "wide",
+            seconds: Math.min(Math.max(Number(args.seconds) || 8, 5), 15),
+          },
+          { userId: ctx.userId }
+        );
       } catch (e) {
-        console.error("generate_video:", e.message);
         return {
           ok: false,
-          error: `the video could not be made: ${String(e.message).slice(0, 120)}`,
-          data: {
-            hint:
-              "Say plainly that it failed and offer generate_image instead. " +
-              "Do NOT claim a video exists.",
-          },
+          error: `could not start the video: ${String(e.message).slice(0, 120)}`,
         };
       }
-      const docs = require("../docs/store");
-      const row = await docs.createDocument(ctx.userId, {
-        buffer: vid.buffer,
-        filename: `hari-video-${Date.now()}.mp4`,
-        mime: vid.mime,
-        note: prompt,
-      });
-      const updated = await docs
-        .setMetadata(ctx.userId, row.id, {
-          title: `Video — ${prompt.slice(0, 90)}`,
-          category: "other",
-          docDate: new Date().toISOString().slice(0, 10),
-          summary:
-            vid.kind === "veo"
-              ? `AI-generated video from: ${prompt}`
-              : `AI-generated clip (${vid.frames} generated frames, ` +
-                `crossfaded with a slow camera push) from: ${prompt}`,
-          tags: ["generated", "video"],
-          fullText: `AI-generated video. Prompt: ${prompt}`,
-        })
-        .catch(() => null);
       return {
         ok: true,
-        data: {
-          kind: vid.kind,
-          frames: vid.frames || null,
-          seconds: vid.seconds || null,
-        },
-        deviceAction: {
-          type: "show_video",
-          doc_id: row.id,
-          prompt,
-          document: docs.toClient(updated || row),
-        },
-        speak:
-          vid.kind === "veo"
-            ? "Your video is ready — it's on screen and saved to your files."
-            : "Your clip is ready — it's on screen and saved to your files.",
+        data: { prompt, status: "started" },
+        speak: "",
+        note:
+          "STARTED, not finished — this takes a couple of minutes and lands " +
+          "AFTER this conversation. Tell the user you are making it and that " +
+          "you will let them know when it is in their documents, then move " +
+          "on. Do NOT describe the video: you have not seen it.",
       };
     },
   });

@@ -446,10 +446,82 @@ async function deepResearch(payload = {}) {
   }
 }
 
+/**
+ * VIDEO GENERATION — a job, because it takes minutes.
+ *
+ * Measured in production: three keyframes at 1536x864 plus the encode is
+ * around a hundred seconds, and four is well past two minutes. A voice
+ * turn cannot be held open that long — the user sits in silence and
+ * concludes it crashed, which is the same failure deep research had. So
+ * the turn says it is being made, this makes it, and a push says it is
+ * ready.
+ */
+async function videoJob(payload = {}) {
+  const userId = Number(payload.userId);
+  const prompt = String(payload.prompt || "").trim();
+  if (!Number.isInteger(userId) || userId <= 0 || !prompt) return;
+
+  const store = require("../actions/store");
+  const started = Date.now();
+  const fail = async (why) => {
+    store.record(userId, {
+      tool: "generate_video", args: { prompt }, ok: false, world: false,
+      intent: prompt, detail: why, result: why, surface: "background",
+      decision: "ran", ms: Date.now() - started,
+    });
+    await notify(userId, "The video didn't finish", why);
+  };
+
+  let vid;
+  try {
+    vid = await require("../services/videogen").generateVideo(prompt, {
+      aspect: payload.aspect || "wide",
+      seconds: Math.min(Math.max(Number(payload.seconds) || 8, 5), 15),
+      frames: 3,
+    });
+  } catch (e) {
+    return fail(String(e.message).slice(0, 160));
+  }
+
+  try {
+    const docs = require("../docs/store");
+    const row = await docs.createDocument(userId, {
+      buffer: vid.buffer,
+      filename: `hari-video-${Date.now()}.mp4`,
+      mime: vid.mime,
+      note: prompt,
+    });
+    await docs
+      .setMetadata(userId, row.id, {
+        title: `Video — ${short(prompt)}`,
+        category: "other",
+        docDate: new Date().toISOString().slice(0, 10),
+        summary:
+          vid.kind === "veo"
+            ? `AI-generated video from: ${prompt}`
+            : `AI-generated clip (${vid.frames} generated frames, crossfaded ` +
+              `with a slow camera move) from: ${prompt}`,
+        tags: ["generated", "video"],
+        fullText: `AI-generated video. Prompt: ${prompt}`,
+      })
+      .catch(() => null);
+    store.record(userId, {
+      tool: "generate_video", args: { prompt }, ok: true, world: false,
+      intent: prompt, surface: "background", decision: "ran",
+      ms: Date.now() - started,
+      result: `${vid.kind}, ${vid.frames || "?"} frames, ${Math.round(vid.buffer.length / 1024)} kB → document ${row.id}`,
+    });
+    await notify(userId, "Your video is ready", short(prompt));
+  } catch (e) {
+    await fail(`the video was made but could not be saved: ${String(e.message).slice(0, 120)}`);
+  }
+}
+
 function install() {
   jobs.register("document.index", documentIndex);
   jobs.register("scheduled_task", scheduledTask);
   jobs.register("deep_research", deepResearch);
+  jobs.register("generate_video", videoJob);
 }
 
 module.exports = { install };
