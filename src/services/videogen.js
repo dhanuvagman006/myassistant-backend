@@ -148,13 +148,25 @@ async function generateVideo(prompt, { seconds = 8, frames = 4, aspect = "wide" 
     // across the oversized frame reads as a push rather than a slideshow.
     // crop with a `t` expression is plain and well-supported — zoompan
     // fights -loop/-t on still inputs and is where the first attempt broke.
+    //
+    // Two things learned the hard way against a real ffmpeg:
+    //  • setsar is its own filter. Written as `crop=…:setsar=1` it is
+    //    parsed as an option OF crop, and ffmpeg says "Option 'setsar' not
+    //    found". It needs the comma.
+    //  • the offset expression carries NO COMMA, deliberately. A comma
+    //    inside a filter argument separates filters unless it is escaped,
+    //    and the escaping then leaks into the expression evaluator. A
+    //    plain linear drift needs no min() and cannot be misparsed — and
+    //    it is bounded by construction, ending at three-quarters of the
+    //    slack rather than running off the edge.
     const dx = BIG_W - W;
     const dy = BIG_H - H;
+    const rateX = (dx / 2 / total).toFixed(4);
+    const rateY = (dy / 2 / total).toFixed(4);
     parts.push(
       `[${last}]crop=${W}:${H}:` +
-      `x='${dx}*min(t/${total.toFixed(2)},1)/2+${Math.round(dx / 4)}':` +
-      `y='${dy}*min(t/${total.toFixed(2)},1)/2':` +
-      `setsar=1[vout]`
+      `x='${Math.round(dx / 4)}+${rateX}*t':` +
+      `y='${rateY}*t',setsar=1[vout]`
     );
     const map = "[vout]";
 
