@@ -178,14 +178,31 @@ async function tryPollinations(prompt, { aspect, seed } = {}) {
 /* image generation.                                                   */
 /* ------------------------------------------------------------------ */
 
-/** Cloudflare Workers AI — flux-1-schnell on the free neuron allowance. */
-async function tryCloudflare(prompt, { aspect } = {}) {
+/**
+ * Cloudflare Workers AI — flux-1-schnell on the free neuron allowance.
+ *
+ * 10,000 neurons a day at no charge and no card. At 8 steps an image
+ * costs about 96 neurons, so roughly a hundred a day free — and it is
+ * FLUX rather than Sana, at full resolution, with nobody's watermark.
+ *
+ * TWO THINGS THE DOCS ARE SPECIFIC ABOUT, both of which the first draft
+ * of this function got wrong:
+ *  • it accepts prompt, steps and seed, and NOTHING ELSE. Sending width
+ *    and height is a validation error, not a hint — the output size is
+ *    fixed and the shape is cropped afterwards instead.
+ *  • steps maxes out at 8. That is the quality dial, so it is pinned to
+ *    the top: the free allowance is far larger than this app will use.
+ */
+async function tryCloudflare(prompt, { aspect, seed } = {}) {
   const acct = process.env.CF_ACCOUNT_ID;
   const token = process.env.CF_API_TOKEN;
   if (!acct || !token) return null;
   const model = process.env.CF_IMAGE_MODEL || "@cf/black-forest-labs/flux-1-schnell";
-  const { width, height } = shapeOf(aspect);
+  const steps = Math.min(Math.max(Number(process.env.CF_IMAGE_STEPS) || 8, 1), 8);
   try {
+    const body = { prompt: prompt.slice(0, 2000), steps };
+    // The video path fixes a seed so every keyframe is the same subject.
+    if (Number.isFinite(seed)) body.seed = Math.abs(Math.trunc(seed)) % 4294967295;
     const r = await fetch(
       `https://api.cloudflare.com/client/v4/accounts/${acct}/ai/run/${model}`,
       {
@@ -194,7 +211,7 @@ async function tryCloudflare(prompt, { aspect } = {}) {
           authorization: `Bearer ${token}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify({ prompt: prompt.slice(0, 1400), steps: 4, width, height }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(90_000),
       }
     );
@@ -219,15 +236,68 @@ async function tryCloudflare(prompt, { aspect } = {}) {
       return null;
     }
     if (buffer.length < 20 * 1024) return null;
-    const real = jpegSize(buffer);
+    // The model returns ONE fixed shape, so the aspect the caller asked
+    // for is produced by cropping rather than by requesting it. A poster
+    // that arrives square and gets used square was the original
+    // complaint; cropping a FLUX frame still beats a native Sana one.
+    const shaped = await cropToAspect(buffer, mime, aspect);
+    const real = jpegSize(shaped.buffer) || jpegSize(buffer);
     return {
-      buffer, mime, provider: "cloudflare",
-      width: real ? real.width : width,
-      height: real ? real.height : height,
+      buffer: shaped.buffer,
+      mime: shaped.mime,
+      provider: "cloudflare",
+      width: real ? real.width : 0,
+      height: real ? real.height : 0,
     };
   } catch (e) {
     console.warn("imagegen cloudflare:", e.message);
     return null;
+  }
+}
+
+/**
+ * Centre-crop an image to the requested shape with ffmpeg, which is in
+ * the runtime image for video generation anyway. Never throws: an image
+ * in the wrong shape is far better than no image, so any failure returns
+ * the original untouched.
+ */
+async function cropToAspect(buffer, mime, aspect) {
+  const want = shapeOf(aspect);
+  const ratio = want.width / want.height;
+  const got = jpegSize(buffer);
+  if (!got || Math.abs(got.width / got.height - ratio) < 0.02) {
+    return { buffer, mime };
+  }
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  const { execFile } = require("child_process");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hari-crop-"));
+  const inFile = path.join(dir, "in.jpg");
+  const outFile = path.join(dir, "out.jpg");
+  try {
+    fs.writeFileSync(inFile, buffer);
+    const w = got.width / got.height > ratio
+      ? Math.round(got.height * ratio) : got.width;
+    const h = got.width / got.height > ratio
+      ? got.height : Math.round(got.width / ratio);
+    await new Promise((resolve, reject) => {
+      execFile(
+        "ffmpeg",
+        ["-y", "-v", "error", "-i", inFile,
+         "-vf", `crop=${w}:${h}`, "-q:v", "2", outFile],
+        { timeout: 20_000 },
+        (err) => (err ? reject(err) : resolve())
+      );
+    });
+    const out = fs.readFileSync(outFile);
+    if (out.length < 10 * 1024) return { buffer, mime };
+    return { buffer: out, mime: "image/jpeg" };
+  } catch (e) {
+    console.warn("imagegen crop failed, keeping the original:", e.message);
+    return { buffer, mime };
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
   }
 }
 
