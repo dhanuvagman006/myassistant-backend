@@ -1268,6 +1268,33 @@ console.log("\nexecution record");
       "messages cannot be asked about by kind");
   });
 
+  test("a subject the image model gets wrong is described to it", () => {
+    // FLUX renders beautifully and knows nothing about Indian religious
+    // iconography: asked for Lord Krishna it produced a temple idol with
+    // RED skin and the flute pushed through his cheek. There is no
+    // negative prompt on flux-1-schnell, so the attributes have to be in.
+    const { withSubjectHints } = require("../src/services/imagegen");
+
+    const krishna = withSubjectHints("portrait of Lord Krishna, cinematic lighting");
+    assert.match(krishna, /BLUE skin/, "nothing corrects the skin colour");
+    assert.match(krishna, /peacock feather/);
+    assert.match(krishna, /BOTH HANDS/, "the flute-through-the-face pose is not addressed");
+    assert.ok(krishna.startsWith("portrait of Lord Krishna, cinematic lighting"),
+      "the user's own prompt was replaced rather than extended");
+
+    // \b is an ASCII word boundary, so a Devanagari or Kannada pattern
+    // written with one can never match. These must still hint.
+    for (const q of ["ಕೃಷ್ಣ", "भगवान गणेश", "ದುರ್ಗಾ ದೇವಿ"]) {
+      assert.notStrictEqual(withSubjectHints(q), q,
+        `"${q}" got no iconography hint`);
+    }
+
+    // And an ordinary subject is left completely alone.
+    for (const q of ["a Mercedes at sunset", "dramatic portrait"]) {
+      assert.strictEqual(withSubjectHints(q), q, `"${q}" was needlessly rewritten`);
+    }
+  });
+
   test("an image can be asked for in the shape it is for", () => {
     const g = registry.get("generate_image");
     assert.deepStrictEqual(g.inputSchema.properties.aspect.enum,

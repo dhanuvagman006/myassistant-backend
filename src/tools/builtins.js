@@ -2380,7 +2380,15 @@ function registerBuiltins() {
       "say the CRAFT out loud in the prompt: the lens or medium, the " +
       "lighting, the palette, what is in focus. A thin prompt gets a thin " +
       "picture; the quality of the result is mostly the quality of these " +
-      "words. Pick `aspect` from what it is for. The image appears on their " +
+      "words.\n" +
+      "SPELL OUT WHAT THE SUBJECT LOOKS LIKE when it has a canonical " +
+      "appearance the image model may not know — a deity, a saint, a " +
+      "regional dress, a specific temple, a cultural object. Asked for Lord " +
+      "Krishna with only 'divine aura, cinematic lighting', the model " +
+      "produced a red-skinned idol with the flute through his cheek. State " +
+      "the skin colour, the dress, what is held and how it is held. It " +
+      "cannot infer any of this, and there is no negative prompt to undo it " +
+      "with. Pick `aspect` from what it is for. The image appears on their " +
       "screen and is saved to their documents. Takes a few seconds — never " +
       "refuse a creative request.",
     risk: "low",

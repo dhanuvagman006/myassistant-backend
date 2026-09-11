@@ -392,14 +392,99 @@ function configuredProviders() {
   return out;
 }
 
+/* ------------------------------------------------------------------ */
+/* CANONICAL SUBJECTS                                                  */
+/*                                                                     */
+/* FLUX renders beautifully and knows almost nothing about Indian      */
+/* religious iconography. Asked for Lord Krishna it produced a temple  */
+/* idol with RED skin and the flute pushed through his cheek — good    */
+/* light, good jewellery, wrong deity. The model is not going to learn */
+/* this from "divine aura, cinematic lighting"; the attributes have to */
+/* be in the prompt, because Cloudflare's flux-1-schnell takes no      */
+/* negative prompt and no reference image.                             */
+/*                                                                     */
+/* Only the figures this app is actually asked for, and only the       */
+/* attributes that are canonical rather than stylistic. Getting these  */
+/* wrong in a product used daily across India is not a small miss.     */
+/* ------------------------------------------------------------------ */
+// NOTE ON THE PATTERNS: \b is an ASCII word boundary, so /\bगणेश\b/ can
+// never match — there is no ASCII word character beside Devanagari. Each
+// pattern therefore has a BOUNDED Latin half and an UNBOUNDED Indic half.
+const SUBJECT_HINTS = [
+  {
+    match: /\b(krishna|krsna|kanha|gopal|govinda)\b|ಕೃಷ್ಣ|कृष्ण/i,
+    hint:
+      "Lord Krishna with luminous BLUE skin, a peacock feather in his crown, " +
+      "a yellow silk dhoti, a vaijayanti flower garland, holding a bamboo " +
+      "flute with BOTH HANDS raised to his lips, gentle smile, serene youthful face",
+  },
+  {
+    match: /\b(shiva|siva|mahadev|nataraj|shankar)\b|ಶಿವ|शिव/i,
+    hint:
+      "Lord Shiva with pale ash-grey skin, matted jata hair holding a crescent " +
+      "moon and the Ganga, a third eye on his forehead, rudraksha beads, a " +
+      "serpent around his neck, a tiger skin, holding a trishula trident",
+  },
+  {
+    match: /\b(ganesh|ganesha|ganapati|vinayaka)\b|ಗಣೇಶ|गणेश/i,
+    hint:
+      "Lord Ganesha with an elephant head and one broken tusk, a rounded " +
+      "belly, four arms, holding a modak sweet and a lotus, a small mouse at " +
+      "his feet, red and gold silks",
+  },
+  {
+    match: /\b(hanuman|anjaneya|maruti)\b|ಹನುಮಂತ|हनुमान/i,
+    hint:
+      "Lord Hanuman as a powerful vanara with a monkey face, orange-red fur, " +
+      "a golden mace (gada) in hand, a long tail, devoted expression",
+  },
+  {
+    match: /\b(lakshmi|laxmi)\b|ಲಕ್ಷ್ಮಿ|लक्ष्मी/i,
+    hint:
+      "Goddess Lakshmi seated on a pink lotus, four arms, gold coins flowing " +
+      "from one palm, red and gold silk sari, heavy temple gold jewellery",
+  },
+  {
+    match: /\b(saraswati|sarasvati)\b|ಸರಸ್ವತಿ|सरस्वती/i,
+    hint:
+      "Goddess Saraswati in a white sari, seated on a white lotus, holding a " +
+      "veena, a white swan beside her, serene scholarly expression",
+  },
+  {
+    match: /\b(durga|amba|chamundeshwari)\b|ದುರ್ಗಾ|दुर्गा/i,
+    hint:
+      "Goddess Durga with many arms each holding a weapon, riding a lion, " +
+      "red and gold silks, fierce protective expression, ornate crown",
+  },
+  {
+    match: /\b(rama|ram lalla|shri ram)\b|ಶ್ರೀರಾಮ|राम/i,
+    hint:
+      "Lord Rama with blue-toned skin, a golden crown, holding a longbow and " +
+      "arrow, yellow silk dhoti, calm regal bearing",
+  },
+];
+
+/**
+ * Add canonical attributes when the prompt names a subject the image model
+ * is known to get wrong. Appended rather than substituted: whatever the
+ * user asked for — the style, the setting, the mood — is untouched.
+ */
+function withSubjectHints(prompt) {
+  const p = String(prompt || "");
+  const hits = SUBJECT_HINTS.filter((h) => h.match.test(p));
+  if (!hits.length) return p;
+  return `${p}. ${hits.map((h) => h.hint).join(". ")}.`;
+}
+
 /**
  * @param opts.aspect  square | portrait | landscape | wide
  * @param opts.seed    fixed seed — video frames share one so the subject
  *                     stays the same person/place from frame to frame.
  */
 async function generateImage(prompt, opts = {}) {
-  const p = String(prompt || "").trim();
-  if (!p) throw new Error("empty prompt");
+  const raw = String(prompt || "").trim();
+  if (!raw) throw new Error("empty prompt");
+  const p = withSubjectHints(raw);
   // Best first, each skipped in a breath when its key is absent.
   for (const provider of [tryGemini, tryCloudflare, tryHuggingFace, tryTogether]) {
     const out = await provider(p, opts);
@@ -471,4 +556,5 @@ async function tryVeoVideo(prompt) {
 
 module.exports = {
   generateImage, tryVeoVideo, jpegSize, shapeOf, configuredProviders,
+  withSubjectHints,
 };
