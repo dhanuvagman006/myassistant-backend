@@ -248,4 +248,28 @@ async function recentBlock(userId, { maxTurns = 12, maxAgeMs = 48 * 3600_000, ma
   }
 }
 
-module.exports = { append, recentBlock, adminConversations, adminStats };
+/**
+ * The conversation itself, queryable. "What did I just ask you?" and
+ * "when did I ask you to call Jeevan?" are questions about THIS store —
+ * they were being answered from remembered facts, which is why the
+ * answers were invented.
+ */
+async function turns(userId, { sessionId, sinceMs, role, match, limit = 20 } = {}) {
+  const uid = Number(userId);
+  if (!Number.isInteger(uid) || uid <= 0) return [];
+  await migrate();
+  const params = [uid];
+  let where = "user_id = $1";
+  if (sessionId) { params.push(String(sessionId).slice(0, 80)); where += ` AND session_id = $${params.length}`; }
+  if (sinceMs) { params.push(sinceMs); where += ` AND created_at >= $${params.length}`; }
+  if (role === "user" || role === "assistant") { params.push(role); where += ` AND role = $${params.length}`; }
+  if (match) { params.push(`%${String(match).slice(0, 80)}%`); where += ` AND text ILIKE $${params.length}`; }
+  params.push(Math.min(Math.max(Number(limit) || 20, 1), 100));
+  return query(
+    `SELECT role, text, created_at, tools, session_id FROM conversation_turns
+      WHERE ${where} ORDER BY id DESC LIMIT $${params.length}`,
+    params
+  );
+}
+
+module.exports = { append, recentBlock, turns, adminConversations, adminStats };

@@ -90,6 +90,11 @@ function systemPrompt(extra = "") {
     + "commentary about the content — they ARE the professional and it is "
     + "patronising. Disclaimers are acceptable ONLY when the user asks for "
     + "medical/legal advice for themselves personally.\n" +
+    "- WHAT WAS SAID: 'what did I just ask', 'what was my previous request', "
+    + "'when did I ask you to call X' → recall_conversation (the transcript). "
+    + "Never answer those from memory or impression.\n" +
+    "- WHERE THEY ARE: any location question → get_current_location. Never "
+    + "open settings to answer one.\n" +
     "- WHAT YOU DID: 'did you call X', 'why did settings open', 'what "
     + "did I just ask', 'when did I ask you to call X' → check_recent_actions. "
     + "That tool is the record of what really ran; recall_memory is NOT. "
@@ -243,6 +248,43 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   // panel can never pair an answer with somebody else's question.
   const turnId = require("crypto").randomUUID();
 
+  // ── SPEECH GATE ───────────────────────────────────────────────────
+  // The model writes its prose and its tool calls in the SAME breath,
+  // and the prose reaches the user's ear first. "Opening Instagram…"
+  // was therefore spoken before — and sometimes instead of — any tool
+  // running. A sentence that ASSERTS a world action is held until the
+  // matching tool has actually run; narration streams as before, so
+  // nothing slows down. Held sentences are released in order, corrected
+  // if the action never happened.
+  const held = [];
+  let holding = false;
+  const emitSentence = (text) => {
+    if (!text || !text.trim()) return;
+    const family = require("./claimCheck").classify(text);
+    if (!holding && !family) {
+      onEvent("sentence", { text });
+      return;
+    }
+    holding = true;
+    held.push({ text, family });
+  };
+  const flushHeld = (executed) => {
+    if (!held.length) {
+      holding = false;
+      return;
+    }
+    const claimCheck = require("./claimCheck");
+    for (const item of held) {
+      let line = item.text;
+      if (item.family && !claimCheck.satisfied(item.family, executed)) {
+        line = claimCheck.honestFor(item.family, item.text);
+      }
+      onEvent("sentence", { text: line });
+    }
+    held.length = 0;
+    holding = false;
+  };
+
   // ── TURN STATE ────────────────────────────────────────────────────
   // Five separate things, never mixed: this turn, the conversation, the
   // remembered facts, what is pending, what has run. A session that did
@@ -332,7 +374,7 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
     // call — is still generating. This is what turns "wait five seconds,
     // then hear everything" into a conversation.
     const splitter = sentenceSplitter((sentence) =>
-      onEvent("sentence", { text: sentence })
+      emitSentence(sentence)
     );
     let out;
     try {
@@ -357,6 +399,7 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
 
     if (!out.functionCalls.length) {
       {
+        flushHeld(state ? sessionState.executedThisTurn(state) : []);
         let finalText = spoken.join(" ").trim();
         // THE REPLY MAY NOT CLAIM WHAT DID NOT RUN. Checked against this
         // turn's executed actions, not against the model's recollection.
@@ -445,11 +488,15 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
         functionResponse: { name: call.name, response: payload },
       });
     }
+    // The round's actions have run — anything held may now be spoken,
+    // corrected against what actually executed.
+    flushHeld(state ? sessionState.executedThisTurn(state) : []);
     contents.push({ role: "user", parts: responseParts });
   }
 
   // Ran out of rounds — answer with whatever was said/produced rather
   // than looping forever.
+  flushHeld(state ? sessionState.executedThisTurn(state) : []);
   const last = toolResults[toolResults.length - 1];
   let finalText = spoken.join(" ").trim() || (last && last.speak ? last.speak : "");
   if (state) {

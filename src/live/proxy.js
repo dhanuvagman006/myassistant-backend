@@ -121,7 +121,10 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "If you did not clearly hear something, ask them to repeat it rather " +
     "than guessing — answering the wrong question is worse than asking. " +
     "If asked about astrology, use your get_horoscope tool. " +
-    "WHAT YOU DID: 'did you call X', 'why did settings open', 'what did I "
+    "WHAT WAS SAID: 'what did I just ask', 'what was my previous request' → "
+    + "recall_conversation, the transcript — never memory. WHERE THEY ARE: "
+    + "location questions → get_current_location, never by opening settings. "
+    + "WHAT YOU DID: 'did you call X', 'why did settings open', 'what did I "
     + "just ask' → check_recent_actions, which is the record of what really "
     + "ran; recall_memory is for durable facts only. Never claim an action it "
     + "does not show; never deny one it does. "

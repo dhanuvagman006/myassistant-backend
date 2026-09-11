@@ -80,6 +80,62 @@ function sentences(text) {
 }
 
 /**
+ * Which action family a single sentence ASSERTS, or null when it asserts
+ * nothing (narration, an offer, a question). The stream gate uses this to
+ * decide whether a sentence is safe to speak before the tools have run.
+ */
+function classify(sentence) {
+  const s = String(sentence || "");
+  if (!s.trim() || NOT_A_CLAIM.test(s)) return null;
+  const family = FAMILIES.find((f) => f.claim.test(s));
+  return family ? family.id : null;
+}
+
+/** The honest replacement for a sentence of this family. */
+function honestFor(familyId, sentence) {
+  const f = FAMILIES.find((x) => x.id === familyId);
+  return f ? f.honest(sentence) : sentence;
+}
+
+/** Did a tool of this family run (successfully) in the given list? */
+function satisfied(familyId, executed = []) {
+  const f = FAMILIES.find((x) => x.id === familyId);
+  if (!f) return true;
+  const ranOk = new Set(
+    (executed || []).filter((e) => e && e.ok !== false).map((e) => e.tool)
+  );
+  return f.tools.some((t) => ranOk.has(t));
+}
+
+/**
+ * Which action family a single sentence ASSERTS, or null when it asserts
+ * nothing (narration, an offer, a question). The stream gate uses this to
+ * decide whether a sentence is safe to speak before the tools have run.
+ */
+function classify(sentence) {
+  const s = String(sentence || "");
+  if (!s.trim() || NOT_A_CLAIM.test(s)) return null;
+  const family = FAMILIES.find((f) => f.claim.test(s));
+  return family ? family.id : null;
+}
+
+/** The honest replacement for a sentence of this family. */
+function honestFor(familyId, sentence) {
+  const f = FAMILIES.find((x) => x.id === familyId);
+  return f ? f.honest(sentence) : sentence;
+}
+
+/** Did a tool of this family run (successfully) in the given list? */
+function satisfied(familyId, executed = []) {
+  const f = FAMILIES.find((x) => x.id === familyId);
+  if (!f) return true;
+  const ranOk = new Set(
+    (executed || []).filter((e) => e && e.ok !== false).map((e) => e.tool)
+  );
+  return f.tools.some((t) => ranOk.has(t));
+}
+
+/**
  * @param replyText   what the model wants to say
  * @param executed    [{tool, ok}] from THIS turn
  * @returns {{ok:boolean, text:string, violations:string[]}}
@@ -139,4 +195,4 @@ function familiesAskedAbout(question) {
   return hit.length ? hit.flatMap((f) => f.tools) : FAMILIES.flatMap((f) => f.tools);
 }
 
-module.exports = { check, familiesAskedAbout, FAMILIES };
+module.exports = { check, classify, honestFor, satisfied, familiesAskedAbout, FAMILIES };

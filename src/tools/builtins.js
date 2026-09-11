@@ -4334,6 +4334,127 @@ function registerBuiltins() {
   });
 
   registry.register({
+    name: "recall_conversation",
+    description:
+      "Read back what was actually SAID in this conversation (or a recent " +
+      "one) — 'what did I just ask you?', 'what was my previous request?', " +
+      "'when did I ask you to call Jeevan?', 'what did you say about that?'. " +
+      "This is the transcript, so it is the truth about the exchange. Use it " +
+      "instead of recall_memory for anything about the conversation itself, " +
+      "and answer only from what it returns. If it shows nothing, say so.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        about: { type: "string", description: "Optional words to search for, e.g. 'Jeevan', 'reminder'." },
+        mine_only: { type: "boolean", description: "Only what the USER said. Default false." },
+        minutes: { type: "integer", description: "How far back. Default 180." },
+      },
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const recent = require("../memory/recent");
+      const minutes = Math.min(Math.max(Number(args.minutes) || 180, 1), 60 * 24 * 3);
+      const rows = await recent.turns(ctx.userId, {
+        sinceMs: Date.now() - minutes * 60_000,
+        role: args.mine_only ? "user" : undefined,
+        match: args.about || undefined,
+        limit: 20,
+      });
+      if (!rows.length) {
+        return {
+          ok: true,
+          data: [],
+          speak:
+            "Nothing in the conversation record matches that. Say so plainly — " +
+            "do not invent what was said.",
+        };
+      }
+      const fmt = (r) => {
+        const when = new Date(Number(r.created_at)).toLocaleString("en-IN", {
+          hour: "numeric", minute: "2-digit", day: "numeric", month: "short",
+          timeZone: "Asia/Kolkata",
+        });
+        const who = r.role === "assistant" ? "you said" : "they said";
+        const sameSession = ctx.sessionId && r.session_id === ctx.sessionId;
+        return `${when} (${sameSession ? "this conversation" : "an earlier conversation"}) ${who}: ${String(r.text).slice(0, 200)}`;
+      };
+      return {
+        ok: true,
+        data: rows.map((r) => ({
+          role: r.role,
+          text: r.text,
+          at: Number(r.created_at),
+          thisSession: Boolean(ctx.sessionId && r.session_id === ctx.sessionId),
+        })),
+        speak: rows.slice(0, 6).map(fmt).join(". "),
+      };
+    },
+  });
+
+  registry.register({
+    name: "get_current_location",
+    description:
+      "Where the user is right now — 'where am I', 'what is my location', " +
+      "'which area is this'. The phone sends its coordinates with every " +
+      "request, so answer from this tool. NEVER open settings to answer a " +
+      "location question; if this tool says location is unavailable, say so " +
+      "and offer to guide them to turn it on.",
+    risk: "low",
+    inputSchema: { type: "object", properties: {} },
+    async execute(_args, ctx) {
+      const lat = Number(ctx.lat);
+      const lng = Number(ctx.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return {
+          ok: false,
+          error: "no_location",
+          data: {
+            hint:
+              "The phone has not shared a location this session — usually the " +
+              "location permission is off. Say that plainly and OFFER to open " +
+              "the location settings; do not open anything unasked.",
+          },
+        };
+      }
+      const key = process.env.GOOGLE_PLACES_API_KEY;
+      if (key) {
+        try {
+          const r = await fetch(
+            `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${key}`,
+            { signal: AbortSignal.timeout(6000) }
+          );
+          const j = await r.json();
+          const best = (j.results || [])[0];
+          if (best && best.formatted_address) {
+            const parts = (best.address_components || []);
+            const pick = (type) =>
+              (parts.find((p) => (p.types || []).includes(type)) || {}).long_name;
+            const area = pick("sublocality") || pick("locality") || "";
+            const city = pick("locality") || pick("administrative_area_level_2") || "";
+            return {
+              ok: true,
+              data: { lat, lng, address: best.formatted_address, area, city },
+              speak: area && city && area !== city
+                ? `They are in ${area}, ${city}.`
+                : `They are at ${best.formatted_address}.`,
+            };
+          }
+        } catch (e) {
+          console.warn("reverse geocode failed:", e.message);
+        }
+      }
+      return {
+        ok: true,
+        data: { lat, lng },
+        speak:
+          `The phone reports ${lat.toFixed(3)}, ${lng.toFixed(3)} — give that as ` +
+          "an approximate position and offer to open Maps for the exact place.",
+      };
+    },
+  });
+
+  registry.register({
     name: "check_recent_actions",
     description:
       "What the assistant ACTUALLY did, from its execution record — the only " +

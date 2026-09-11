@@ -342,6 +342,86 @@ console.log("\nexecution record");
     assert.ok(!blockA.includes("Dikshit"), "another user's conversation leaked in");
   });
 
+  /* ================================================================ */
+  /* 7. THE SPOKEN WORD IS GATED TOO                                  */
+  /*    A false claim must never be SPOKEN, not merely corrected      */
+  /*    afterwards in the final text.                                 */
+  /* ================================================================ */
+  console.log("\nspeech gate");
+
+  test("a sentence asserting an action is recognised as a claim", () => {
+    assert.strictEqual(claimCheck.classify("Opening Instagram for you now."), "open");
+    assert.strictEqual(claimCheck.classify("Calling Jeevan now."), "call");
+    assert.strictEqual(claimCheck.classify("What would you like to hear?"), null);
+    assert.strictEqual(claimCheck.classify("Shall I call him?"), null);
+  });
+
+  test("a held claim is released unchanged once its tool has run", () => {
+    assert.strictEqual(claimCheck.satisfied("open", [{ tool: "open_app", ok: true }]), true);
+    assert.strictEqual(claimCheck.satisfied("open", [{ tool: "open_app", ok: false }]), false);
+    assert.strictEqual(claimCheck.satisfied("open", []), false);
+    assert.match(claimCheck.honestFor("open", "Opening Instagram."), /couldn't open/i);
+  });
+
+  /* ================================================================ */
+  /* 8. THE CONVERSATION IS READABLE                                  */
+  /*    Tester log: "What was my previous request before this?"       */
+  /* ================================================================ */
+  console.log("\nconversation recall");
+
+  await atest("recall_conversation answers from the transcript", async () => {
+    recent.append(USER_A, "user", "Call Jeevan B2", { sessionId: "s-recall", turnId: "r1" });
+    recent.append(USER_A, "assistant", "Looking up Jeevan B2…", { sessionId: "s-recall", turnId: "r1" });
+    await settle();
+    const res = await registry.execute(
+      "recall_conversation",
+      { about: "Jeevan" },
+      { userId: USER_A, sessionId: "s-recall", inputQuality: { quality: "clear" } }
+    );
+    assert.strictEqual(res.ok, true);
+    assert.ok(res.data.length > 0, "the transcript query found nothing");
+    assert.match(res.speak, /Jeevan/);
+  });
+
+  await atest("recall_conversation refuses to invent when there is nothing", async () => {
+    const res = await registry.execute(
+      "recall_conversation",
+      { about: "zzzznothinglikethis" },
+      { userId: USER_A, sessionId: "s-recall", inputQuality: { quality: "clear" } }
+    );
+    assert.strictEqual(res.data.length, 0);
+    assert.match(res.speak, /do not invent/i);
+  });
+
+  /* ================================================================ */
+  /* 9. LOCATION IS ANSWERED, NOT DEFLECTED INTO SETTINGS             */
+  /*    Tester log: "What is the current location I am located?" →    */
+  /*    the assistant opened the location settings screen.            */
+  /* ================================================================ */
+  console.log("\nlocation");
+
+  await atest("a location question is answered from the phone's coordinates", async () => {
+    const res = await registry.execute(
+      "get_current_location",
+      {},
+      { userId: USER_A, lat: 12.8697, lng: 74.8431, inputQuality: { quality: "clear" } }
+    );
+    assert.strictEqual(res.ok, true);
+    assert.ok(res.speak && res.speak.length > 0);
+  });
+
+  await atest("without coordinates it says so instead of opening settings", async () => {
+    const res = await registry.execute(
+      "get_current_location",
+      {},
+      { userId: USER_A, inputQuality: { quality: "clear" } }
+    );
+    assert.strictEqual(res.ok, false);
+    assert.strictEqual(res.error, "no_location");
+    assert.ok(!res.deviceAction, "it tried to open something on the phone");
+    assert.match(res.data.hint, /OFFER/);
+  });
+
   /* ---------------------------------------------------------------- */
   console.log("");
   for (const uid of [USER_A, USER_B]) {
