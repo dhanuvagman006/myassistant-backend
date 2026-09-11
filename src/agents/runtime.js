@@ -103,6 +103,14 @@ function systemPrompt(extra = "") {
     + "the real people in their contacts/clients ('Alen lobo' → the saved "
     + "'Allen Lobo'). When a correction changes meaning, keep the user's "
     + "wording; when it is obviously a typo or mishearing, just fix it.\n" +
+    "- RECORD BOOKS: 'manage my horse race accounts', dictated figures "
+    + "('race 1 minus 4.5'), corrections ('no, minus 4.5') and totals "
+    + "('what am I down?') → record_entry / amend_last_entry / "
+    + "list_entries. Keep using the SAME topic across the conversation.\n" +
+    "- DOWNLOADING DOCUMENTS: 'download that judgment/PDF' → web_search "
+    + "for it, then save_web_document with the PDF link so it lands in "
+    + "their documents. If the link is a web page, say so and offer to "
+    + "open it — never claim a download that did not happen.\n" +
     "- RECORDING vs MESSAGING: when the user dictates figures, results or "
     + "notes ABOUT someone ('race 1 minus 4.5 for Hariraj', 'Ramesh paid "
     + "500'), RECORD it — record_patient_payment for money, add_person_note "

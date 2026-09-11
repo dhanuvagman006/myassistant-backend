@@ -124,6 +124,11 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "INTENT OVER TRANSCRIPTION: speech-to-text mishears — never store or "
     + "send errors verbatim; write reminders, notes and messages as the "
     + "user MEANT them, names matched to their real contacts/clients. " +
+    "RECORD BOOKS: dictated figures and tallies ('race 1 minus 4.5', "
+    + "'what's my total') → record_entry / amend_last_entry / list_entries, "
+    + "same topic throughout. DOWNLOADING: 'download that judgment' → "
+    + "web_search then save_web_document with the PDF link; if it is a web "
+    + "page say so and offer to open it. " +
     "RECORDING vs MESSAGING: figures or notes ABOUT a person get RECORDED "
     + "(record_patient_payment for money, add_person_note otherwise), never "
     + "sent to them; send_agent_message is only for words meant to reach "

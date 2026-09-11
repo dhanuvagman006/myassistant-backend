@@ -4086,6 +4086,199 @@ function registerBuiltins() {
   });
 
   registry.register({
+    name: "record_entry",
+    description:
+      "Log an entry in the user's own record book — the running accounts and " +
+      "tallies they dictate: 'race 1 minus 4.5', 'log 2000 for site expenses', " +
+      "'today's collection 15,600'. USE THIS whenever the user dictates a " +
+      "figure or result to be KEPT. Never send such a figure to anyone as a " +
+      "message. Amount is signed: losses negative, gains positive. Topic " +
+      "groups the book ('horse race accounts'); reuse the topic already in use.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        topic: { type: "string", description: "Which book, e.g. 'horse race accounts'." },
+        label: { type: "string", description: "What this entry is, e.g. 'Race 1'." },
+        amount: { type: "number", description: "Signed number: -4.5 for a loss of 4.5." },
+        note: { type: "string", description: "Anything extra the user said." },
+      },
+      required: ["topic"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const records = require("../records/store");
+      try {
+        const row = await records.add(ctx.userId, args);
+        const { total } = await records.list(ctx.userId, { topic: args.topic, limit: 200 });
+        const amt = row.amount === null ? null : Number(row.amount);
+        return {
+          ok: true,
+          data: { entry: records.toClient(row), total },
+          speak:
+            (args.label ? `${args.label}: ` : "") +
+            (amt === null ? "noted" : `${amt}`) +
+            `. Total ${total}.`,
+        };
+      } catch (e) {
+        return { ok: false, error: String(e.message).slice(0, 160) };
+      }
+    },
+  });
+
+  registry.register({
+    name: "amend_last_entry",
+    description:
+      "Correct the MOST RECENT entry in a record book — 'no, that should be " +
+      "minus 4.5', 'change it to 3', 'that was race 2'. Use whenever the user " +
+      "corrects a figure they just gave.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        topic: { type: "string", description: "Which book. Omit for the newest entry overall." },
+        amount: { type: "number" },
+        label: { type: "string" },
+        note: { type: "string" },
+      },
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const records = require("../records/store");
+      const row = await records.amendLatest(ctx.userId, args);
+      if (!row) return { ok: false, error: "no entry to correct" };
+      const { total } = await records.list(ctx.userId, { topic: row.topic, limit: 200 });
+      return {
+        ok: true,
+        data: { entry: records.toClient(row), total },
+        speak: `Corrected to ${row.amount}. Total ${total}.`,
+      };
+    },
+  });
+
+  registry.register({
+    name: "list_entries",
+    description:
+      "Read back a record book with its total — 'what's my race account', " +
+      "'show today's entries', 'how much am I down'. Answer ONLY from what " +
+      "this returns. Omit topic to list the books the user keeps.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        topic: { type: "string", description: "Which book. Omit to list all books." },
+        period: { type: "string", enum: ["today", "week", "month", "all"] },
+      },
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const records = require("../records/store");
+      if (!args.topic) {
+        const books = await records.topics(ctx.userId);
+        if (!books.length) return { ok: true, data: [], speak: "You have no record books yet." };
+        return {
+          ok: true,
+          data: books,
+          speak: books
+            .map((b) => `${b.topic}: ${Math.round(Number(b.total) * 100) / 100} over ${b.entries} entries`)
+            .join(". "),
+        };
+      }
+      const sinceMs =
+        args.period === "today" ? Date.now() - 86400000 :
+        args.period === "week" ? Date.now() - 7 * 86400000 :
+        args.period === "month" ? Date.now() - 30 * 86400000 : undefined;
+      const { rows, total } = await records.list(ctx.userId, { topic: args.topic, sinceMs });
+      if (!rows.length) return { ok: true, data: [], speak: `Nothing recorded in ${args.topic} yet.` };
+      const lines = rows.slice(0, 10).map((r) =>
+        `${r.label || "entry"} ${r.amount === null ? "" : Number(r.amount)}`.trim());
+      return {
+        ok: true,
+        data: { entries: rows.map(records.toClient), total },
+        speak: `${lines.join(", ")}. Total ${total}.`,
+      };
+    },
+  });
+
+  registry.register({
+    name: "save_web_document",
+    description:
+      "Download a document from the web INTO the user's documents — a court " +
+      "judgment PDF, a form, a report: 'download that judgment', 'save this " +
+      "PDF'. Pass the direct file URL (from a web_search result). Only real " +
+      "PDFs and images can be saved; if the link is a web page, say so and " +
+      "offer to open it instead — never claim a download that did not happen.",
+    risk: "medium",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Direct URL of the PDF or image." },
+        title: { type: "string", description: "What to call it." },
+        client_name: { type: "string", description: "File it under this client instead of My Documents." },
+      },
+      required: ["url"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const url = String(args.url || "").trim();
+      if (!/^https?:\/\//i.test(url)) return { ok: false, error: "need a full http(s) URL" };
+      let buf, mime;
+      try {
+        const r = await fetch(url, {
+          redirect: "follow",
+          headers: { "user-agent": "Mozilla/5.0 (Android) MyAssistant/1.0" },
+          signal: AbortSignal.timeout(20000),
+        });
+        if (!r.ok) return { ok: false, error: `the site returned ${r.status}` };
+        mime = String(r.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+        const OK = new Set(["application/pdf", "image/jpeg", "image/png", "image/webp"]);
+        if (!OK.has(mime)) {
+          return {
+            ok: false,
+            error: `that link is a web page (${mime || "unknown type"}), not a downloadable file`,
+            data: { hint: "offer to OPEN it with open_webpage instead; do not claim it was saved" },
+          };
+        }
+        buf = Buffer.from(await r.arrayBuffer());
+        if (!buf.length) return { ok: false, error: "the file came back empty" };
+        if (buf.length > 18 * 1024 * 1024) return { ok: false, error: "that file is too large to save (18 MB max)" };
+      } catch (e) {
+        return { ok: false, error: `could not download it: ${String(e.message).slice(0, 120)}` };
+      }
+      const docsStore = require("../docs/store");
+      const people = require("../clients/store");
+      const title = String(args.title || "").trim() || "Downloaded document";
+      let row;
+      try {
+        row = await docsStore.createDocument(ctx.userId, {
+          buffer: buf,
+          filename: title.replace(/[\\/:*?"<>|]+/g, " ").slice(0, 80) +
+            (mime === "application/pdf" ? ".pdf" : ".jpg"),
+          mime,
+          note: title,
+        });
+      } catch (e) {
+        return { ok: false, error: `could not save it: ${String(e.message).slice(0, 120)}` };
+      }
+      let filedUnder = null;
+      if (args.client_name) {
+        const rc = await people.resolveByName(ctx.userId, args.client_name);
+        if (rc.client && (await people.linkDocument(ctx.userId, row.id, rc.client.id))) {
+          filedUnder = rc.client.name;
+        }
+      }
+      const saved = (await docsStore.getDocument(ctx.userId, row.id)) || row;
+      const shape = docsStore.toClient(saved);
+      return {
+        ok: true,
+        data: { document: shape, filedUnder },
+        deviceAction: { type: "documents", documents: [shape] },
+        speak: filedUnder ? `Saved to ${filedUnder}'s file.` : "Saved to your documents.",
+      };
+    },
+  });
+
+  registry.register({
     name: "check_task_outcomes",
     description:
       "The REAL result of things the user asked the assistant to do on the " +
