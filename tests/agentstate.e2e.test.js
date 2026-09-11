@@ -1404,53 +1404,39 @@ console.log("\nexecution record");
       "nothing tells the model the image exists");
   });
 
-  test("one result is presented once, not twice", () => {
-    // A recalled document opened the full-screen gallery AND pushed the
-    // conversation view over Home behind it.
+  test("one result is presented once, and on the screen the user is on", () => {
+    const APP = "../../myassistant-flutter/lib";
     const engine = fs.readFileSync(
-      require.resolve("../../myassistant-flutter/lib/features/assistant/state/assistant_engine.dart"),
-      "utf8");
-    assert.match(engine, /_shownFullScreen = onShowDocuments/,
-      "the gallery result is not remembered");
-    assert.match(engine, /!_shownFullScreen &&/,
-      "something already on screen can still force a second presentation");
-    assert.match(engine, /_resetTurn\(\) \{\s*\n\s*_shownFullScreen = false;/,
-      "the flag is never cleared, so later turns would stop escalating");
-    // A generated image goes straight to full screen, with no prompt caption.
+      require.resolve(`${APP}/features/assistant/state/assistant_engine.dart`), "utf8");
+
+    // A generated image goes straight to the full-screen gallery — no
+    // half-height card, no prompt caption printed under it.
     const imgCase = engine.slice(
       engine.indexOf("case 'show_image':"),
       engine.indexOf("case 'translator':"));
     assert.match(imgCase, /onShowDocuments\?\.call\(\[doc\]\)/,
       "a generated image does not open full screen");
-    assert.ok(!/generatedImagePrompt = e\['prompt'\] as String\? \?\? '';\s*\n\s*\}\s*\n\s*break;/.test(imgCase),
-      "the prompt caption is still the default presentation");
-  });
 
-  test("something to look at gets a screen to appear on", () => {
-    // "Your image is on the screen" while the user was on Home with the
-    // orb, where no card is rendered.
-    const engine = fs.readFileSync(
-      require.resolve("../../myassistant-flutter/lib/features/assistant/state/assistant_engine.dart"),
-      "utf8");
-    assert.match(engine, /bool get hasVisualResult/,
-      "the app cannot tell whether a turn produced anything visible");
-    // A spoken web answer must NOT throw a screen over Home — only the
-    // things the assistant says are "on your screen" do.
-    const g = /bool get hasVisualResult =>([\s\S]{0,240}?);/.exec(engine);
-    assert.ok(g, "could not read the getter");
-    assert.ok(!/searchResults/.test(g[1]),
-      "a spoken search answer still forces the conversation screen open");
-    const shell = fs.readFileSync(
-      require.resolve("../../myassistant-flutter/lib/shell/home_shell.dart"), "utf8");
-    assert.match(shell, /engine\.hasVisualResult/,
-      "Home still only escalates for a tappable confirmation");
-    assert.match(shell, /engine\.inlineVoice \|\| engine\.liveActive/,
-      "live mode — where every complaint came from — is still excluded");
-    const cards = fs.readFileSync(
-      require.resolve("../../myassistant-flutter/lib/features/assistant/widgets/action_cards.dart"),
-      "utf8");
-    assert.match(cards, /VideoPlayer\(_video!\)/,
-      "a generated video still renders as a static icon");
+    // The old conversation screen is gone, and nothing may reference it.
+    assert.throws(
+      () => fs.readFileSync(require.resolve(`${APP}/features/assistant/assistant_screen.dart`)),
+      "the old voice-to-voice screen still exists");
+    for (const f of ["shell/home_shell.dart", "main.dart"]) {
+      const src = fs.readFileSync(require.resolve(`${APP}/${f}`), "utf8");
+      assert.ok(!/\bconst AssistantScreen\(\)/.test(src),
+        `${f} still builds the deleted screen`);
+    }
+
+    // Its cards moved to Home rather than being dropped with it — a call
+    // still has something to tap.
+    const overlay = fs.readFileSync(
+      require.resolve(`${APP}/widgets/assistant_result_overlay.dart`), "utf8");
+    for (const card of ["ConfirmationCard", "CallStatusCard", "ScriptCard", "SearchResultCard"]) {
+      assert.ok(overlay.includes(card), `${card} was lost with the old screen`);
+    }
+    const shell = fs.readFileSync(require.resolve(`${APP}/shell/home_shell.dart`), "utf8");
+    assert.match(shell, /const AssistantResultOverlay\(\)/,
+      "Home does not render the cards the old screen used to");
   });
 
   /* ---------------------------------------------------------------- */
