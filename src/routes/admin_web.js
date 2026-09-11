@@ -552,11 +552,15 @@ router.get("/api/users/:id/documents", async (req, res) => {
        FROM documents WHERE user_id = $1 GROUP BY category ORDER BY n DESC`,
     [id]
   );
+  const cats = byCategory.map((r) => ({ category: r.category, n: r.n, bytes: Number(r.bytes) }));
   res.json({
     documents,
-    total: documents.length,
-    byCategory: byCategory.map((r) => ({ category: r.category, n: r.n, bytes: Number(r.bytes) })),
-    totalBytes: byCategory.reduce((a, r) => a + Number(r.bytes), 0),
+    shown: documents.length,
+    // The true count, not the page size — a user with 12 saved documents
+    // and a limit of 3 must not be reported as having 3.
+    total: cats.reduce((a, r) => a + r.n, 0),
+    byCategory: cats,
+    totalBytes: cats.reduce((a, r) => a + r.bytes, 0),
   });
 });
 

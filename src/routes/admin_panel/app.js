@@ -744,7 +744,8 @@ function documentsCard(userId, count) {
       const unanalysed = d.documents.filter((x) => !x.analyzed).length;
       body.replaceWith(h("div", {},
         h("div", { class: "doc-meta", style: "margin-bottom:10px;" },
-          h("span", {}, d.documents.length + (d.documents.length === 1 ? " document" : " documents")),
+          h("span", {}, d.total + (d.total === 1 ? " document" : " documents")
+            + (d.shown < d.total ? ` (showing ${d.shown})` : "")),
           h("span", {}, "·"),
           h("span", {}, fmtBytes(d.totalBytes)),
           ...d.byCategory.map((c) =>
