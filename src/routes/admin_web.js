@@ -404,6 +404,66 @@ router.get("/api/conversations", async (req, res) => {
   res.json({ conversations: rows, stats });
 });
 
+/**
+ * CSV of the Conversations view — same rows, same filters, as a
+ * spreadsheet: every question, the answer, how long it took, which tools
+ * ran and from which app build. Opens straight into Excel or Sheets.
+ */
+router.get("/api/conversations.csv", async (req, res) => {
+  const recent = require("../memory/recent");
+  const userId = parseInt(req.query.user_id, 10);
+  const rows = await recent
+    .adminConversations({
+      q: String(req.query.q || "").trim() || null,
+      userId: Number.isFinite(userId) ? userId : undefined,
+      source: String(req.query.source || "").trim() || null,
+      minLatency: parseInt(req.query.min_ms, 10) || 0,
+      limit: Math.min(parseInt(req.query.limit, 10) || 2000, 5000),
+      offset: 0,
+    })
+    .catch(() => []);
+
+  // Excel-safe quoting: double the quotes, wrap every field. A leading
+  // =, +, - or @ is prefixed with a quote so a spreadsheet cannot execute
+  // a pasted answer as a formula.
+  const cell = (v) => {
+    let t = v === null || v === undefined ? "" : String(v);
+    if (/^[=+\-@]/.test(t)) t = "'" + t;
+    return '"' + t.replace(/"/g, '""') + '"';
+  };
+  const when = (ms) => {
+    const d = new Date(Number(ms) || 0);
+    return Number.isFinite(d.getTime()) ? d.toISOString().replace("T", " ").slice(0, 19) : "";
+  };
+  const header = [
+    "when_utc", "user_id", "user", "question", "answer",
+    "reply_seconds", "reply_ms", "tools", "surface", "app_build",
+  ];
+  const lines = [header.map(cell).join(",")];
+  for (const r of rows) {
+    lines.push([
+      when(r.created_at),
+      r.user_id,
+      r.user_name || "",
+      r.question || "",
+      r.answer || "",
+      r.latency_ms ? (Number(r.latency_ms) / 1000).toFixed(2) : "",
+      r.latency_ms || "",
+      r.tools || "",
+      r.source || "",
+      r.app_build || "",
+    ].map(cell).join(","));
+  }
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="conversations-${stamp}.csv"`
+  );
+  // BOM so Excel opens UTF-8 (Kannada, Hindi, Tulu) correctly.
+  res.send("\uFEFF" + lines.join("\n"));
+});
+
 router.get("/api/analytics", async (_req, res) => {
   const monthAgo = Date.now() - 30 * 86400_000;
   const [signups30, dau14, actions14, msgs14, topActions, topUsers] =
@@ -575,10 +635,13 @@ router.post("/api/broadcast", async (req, res) => {
   const seen = new Set();
   let sent = 0, stale = 0, failed = 0;
   const results = [];
+  const pending = require("../services/pendingPush");
   for (const r of rows) {
     const who = { id: r.id, name: r.name || `#${r.id}` };
     if (!r.fcm_token) {
-      results.push({ ...who, outcome: "no_device" });
+      // No device registered right now — queue it rather than dropping it.
+      await pending.queue(r.id, title, body, { type: "announcement" }).catch(() => {});
+      results.push({ ...who, outcome: "queued_no_device" });
       continue;
     }
     if (seen.has(r.fcm_token)) {
@@ -588,10 +651,16 @@ router.post("/api/broadcast", async (req, res) => {
     seen.add(r.fcm_token);
     const out = await push.send(r.fcm_token, title, body, { type: "announcement" });
     if (out.ok) { sent++; results.push({ ...who, outcome: "sent" }); }
-    else if (out.stale) { stale++; results.push({ ...who, outcome: "stale" }); }
     else if (out.skipped) {
       return res.status(503).json({ error: "Push is not configured on this server." });
-    } else { failed++; results.push({ ...who, outcome: "failed", error: out.error || "" }); }
+    } else {
+      // A dead or not-yet-active token (every app update produces one for
+      // a few minutes) must not lose the message: park it and deliver on
+      // the device's next registration.
+      await pending.queue(r.id, title, body, { type: "announcement" }).catch(() => {});
+      if (out.stale) { stale++; results.push({ ...who, outcome: "queued_stale" }); }
+      else { failed++; results.push({ ...who, outcome: "queued", error: out.error || "" }); }
+    }
   }
   res.json({
     ok: true, sent, stale, failed, devices: seen.size,

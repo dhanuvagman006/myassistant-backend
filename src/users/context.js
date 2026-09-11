@@ -152,6 +152,12 @@ async function updateProfile(userId, fields = {}) {
     } catch (e) {
       console.warn("push: could not release token from other accounts:", e.message);
     }
+    // The device is reachable again — deliver anything that failed while
+    // it was not. An app update replaces the token, and notifications sent
+    // in that window used to be lost outright.
+    setTimeout(() => {
+      require("../services/pendingPush").flush(userId).catch(() => {});
+    }, 60_000);
   }
   return getProfile(userId);
 }

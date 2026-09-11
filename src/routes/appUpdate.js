@@ -86,15 +86,12 @@ async function publish({ tmpPath, versionCode, versionName, changelog }) {
   };
   writeMeta(meta);
 
-  // ANNOUNCE the release. An app that has been sitting in memory for days
-  // may not run its update check for a long time — the push wakes every
-  // registered device so the user opens the app and gets the offer.
-  // AWAITED: the publish script's node process exits right after publish()
-  // resolves, so a fire-and-forget loop was killed before a single send.
-  // A push hiccup still never fails the publish.
-  await announceUpdate(meta).catch((e) =>
-    console.warn("update announce failed (publish unaffected):", e.message)
-  );
+  // NO RELEASE NOTIFICATION. Testers carry this app on their personal
+  // phones, and a push for every build is noise they did not ask for.
+  // The app offers the update itself when they next open it (it checks on
+  // launch and on every foreground return), which is enough.
+  // announceUpdate() is kept for a deliberate, rare "everyone must update
+  // now" — it is not called automatically.
   return meta;
 }
 
@@ -115,6 +112,16 @@ async function announceUpdate(meta) {
         { kind: "app_update", versionCode: String(meta.versionCode) }
       );
       if (r.ok) sent++;
+      else {
+        // Queue it: a phone whose token died in the last update learns
+        // about this one when it registers again.
+        require("../services/pendingPush")
+          .queue(u.id, `Update ready — version ${meta.versionName}`,
+            (Array.isArray(meta.changelog) && meta.changelog[0]) ||
+              "Open the app to install the latest version.",
+            { kind: "app_update", versionCode: String(meta.versionCode) })
+          .catch(() => {});
+      }
     } catch (_) {}
   }
   console.log(`update ${meta.versionName}: announced to ${sent}/${rows.length} device(s)`);

@@ -408,13 +408,22 @@ async function viewUsers() {
 /* ------------------------------------------------------------------ */
 
 /** A user's own recent exchanges, shown inside their detail page. */
-function conversationCard(rows) {
+function conversationCard(rows, userId) {
   if (!rows || !rows.length) {
     return h("div", { class: "card" }, h("h3", {}, "Recent conversation"),
       h("div", { class: "chart-empty" }, "No conversations recorded yet."));
   }
   return h("div", { class: "card table-card" },
-    h("h3", { style: "padding:10px 12px 0;" }, "Recent conversation"),
+    h("div", {
+      style: "display:flex; align-items:center; gap:10px; padding:10px 12px 0;",
+    },
+      h("h3", { style: "margin:0;" }, "Recent conversation"),
+      h("div", { style: "flex:1;" }),
+      userId ? h("button", {
+        class: "btn",
+        onclick: () => window.open(
+          `/admin-panel/api/conversations.csv?user_id=${userId}&limit=2000`, "_blank"),
+      }, "Download CSV") : null),
     h("table", {},
       h("thead", {}, h("tr", {}, h("th", {}, "When"), h("th", {}, "Question"),
         h("th", {}, "Answer"), h("th", {}, "Reply time"))),
@@ -538,7 +547,7 @@ async function viewUserDetail(id) {
           h("h3", {}, "Phone ", h("span", { class: "hint" }, "setting a number here also marks it verified")),
           u.phone_number ? h("div", { style: "margin-bottom:10px;" }, "Current: ", h("strong", {}, u.phone_number)) : null,
           h("div", { class: "inline-form" }, phoneInput, phoneBtn)),
-        h("div", { class: "section-gap" }, conversationCard(d.conversations)),
+        h("div", { class: "section-gap" }, conversationCard(d.conversations, id)),
         h("div", { class: "card section-gap" },
           h("h3", {}, "Recent activity"),
           d.recent.length ? d.recent.map((x) => h("div", { class: "feed-item" },
@@ -704,11 +713,21 @@ async function viewConversations() {
   const slowSel = sel([["0", "Any speed"], ["3000", "Slower than 3s"], ["6000", "Slower than 6s"],
     ["10000", "Slower than 10s"]], (v) => { minMs = parseInt(v, 10) || 0; reload(); });
 
+  // Downloads exactly what the filters are showing, as a spreadsheet.
+  const csvBtn = h("button", {
+    class: "btn",
+    onclick: () => {
+      const qs = `q=${encodeURIComponent(q)}&source=${source}&min_ms=${minMs}&limit=2000`;
+      window.open(`/admin-panel/api/conversations.csv?${qs}`, "_blank");
+    },
+  }, "Download CSV");
+
   shell("#/conversations", h("div", {},
     h("div", { class: "page-head" },
       h("div", {}, h("div", { class: "page-title" }, "Conversations"),
         h("div", { class: "page-sub" }, "Every question asked, the assistant's answer, how long it took and which tools ran.")),
-      h("div", { style: "display:flex; gap:8px; flex-wrap:wrap;" }, search, sourceSel, slowSel)),
+      h("div", { style: "display:flex; gap:8px; flex-wrap:wrap;" },
+        search, sourceSel, slowSel, csvBtn)),
     statsRow,
     h("div", { class: "card table-card" },
       h("table", {},
