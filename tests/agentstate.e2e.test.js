@@ -1550,6 +1550,65 @@ console.log("\nexecution record");
     }
   });
 
+  /* ================================================================ */
+  /* 20. SEARCH IS DOWN — ANSWER WHAT WE CAN, ADMIT THE REST          */
+  /* ================================================================ */
+  console.log("\nlive facts");
+
+  await atest("weather is answered from the forecast, not a search", async () => {
+    const res = await registry.execute("web_search",
+      { query: "what is the weather in Mangalore today" },
+      { userId: USER_A, inputQuality: { quality: "clear" } });
+    assert.strictEqual(res.ok, true, res.error || "");
+    assert.strictEqual(res.provider, "open-meteo", "it went to the search chain");
+    // "Mangalore" resolves to a town in TASMANIA, population 421, and
+    // "Bangalore" resolves to nothing at all — both cities are indexed
+    // under their current names.
+    assert.match(res.speak, /Mangaluru/, "it answered for the wrong Mangalore");
+    assert.match(res.speak, /°C/);
+  });
+
+  await atest("an old city name still finds the right city", async () => {
+    const res = await registry.execute("web_search",
+      { query: "weather in Bangalore tomorrow" },
+      { userId: USER_A, inputQuality: { quality: "clear" } });
+    assert.strictEqual(res.ok, true, res.error || "");
+    assert.match(res.speak, /Bengaluru/, '"Bangalore" found nothing');
+  });
+
+  await atest("a currency question is answered from the reference rate", async () => {
+    const res = await registry.execute("web_search", { query: "dollar rate today" },
+      { userId: USER_A, inputQuality: { quality: "clear" } });
+    assert.strictEqual(res.ok, true, res.error || "");
+    assert.match(res.speak, /1 USD = [\d.]+ INR/, "no rate came back");
+    assert.match(res.note, /not a bank's buy\/sell rate/i,
+      "nothing stops it being quoted as what they would be charged");
+  });
+
+  test("a live question is not answered from an encyclopedia", () => {
+    // With every provider's quota spent the chain lands on Wikipedia, and
+    // "gold rate today India" came back as the Reserve Bank of India's
+    // article — which is how the assistant ended up telling a user to go
+    // and check the airline themselves.
+    const src = fs.readFileSync(require.resolve("../src/tools/webSearch.js"), "utf8");
+    assert.match(src, /used === "wikipedia" && LIVE_QUESTION\.test\(q\)/,
+      "an encyclopedia answer can still be served for a live question");
+    assert.match(src, /search_unavailable/);
+    assert.match(src, /do NOT tell them to go and/i,
+      "the failure still hands the user homework");
+  });
+
+  test("one question does not spend two search quotas", () => {
+    // One turn ran "flights from Noida to Bangalore tomorrow" AND the same
+    // query with "time and price 2026-09-12" bolted on — two of a very
+    // small daily allowance for one question.
+    const src = fs.readFileSync(require.resolve("../src/tools/webSearch.js"), "utf8");
+    assert.match(src, /function fingerprint/,
+      "near-duplicate queries are not collapsed");
+    assert.match(src, /v\.shape === shape/,
+      "the cache is not consulted by question shape");
+  });
+
   /* ---------------------------------------------------------------- */
   console.log("");
   for (const uid of [USER_A, USER_B]) {

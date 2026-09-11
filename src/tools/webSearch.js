@@ -36,6 +36,29 @@ function providerChain() {
   return chain;
 }
 
+/**
+ * The shape of a question, ignoring the decorations a model bolts on:
+ * stop words, dates and numbers. "flights from Noida to Bangalore
+ * tomorrow" and "flights from Noida to Bangalore tomorrow time and price
+ * 2026-09-12" share one shape, and should share one search.
+ */
+const FP_STOP = new Set(
+  ("the a an of for from to in on at and or with what when how much many " +
+   "is are was were do does did please tell me my i you it this that today " +
+   "tomorrow now current currently latest time times price prices cost").split(" ")
+);
+function fingerprint(q) {
+  return [
+    ...new Set(
+      String(q).toLowerCase()
+        .replace(/\d{4}-\d{2}-\d{2}/g, " ")
+        .replace(/[^\p{L}\p{N}\s]/gu, " ")
+        .split(/\s+/)
+        .filter((w) => w.length >= 3 && !FP_STOP.has(w))
+    ),
+  ].sort().join(" ");
+}
+
 /** Kept for callers/diagnostics that ask "what will be used first". */
 function provider() {
   return providerChain()[0] || null;
@@ -44,17 +67,42 @@ function provider() {
 // Successful searches are cached briefly: the same question asked twice in
 // a conversation ("who is the PM of India?" ×3 in one minute, observed)
 // must not burn a second unit of the tiny free-tier quota.
+/**
+ * Questions whose answer changes by the day or the hour. An encyclopedia
+ * article is never an answer to one of these.
+ */
+const LIVE_QUESTION =
+  /\b(today|tonight|tomorrow|now|current|currently|latest|live|price|prices|rate|rates|cost|fare|fares|flight|flights|weather|forecast|news|score|scores|open|closing|stock|share|gold|petrol|diesel|exchange|traffic|timing|timings|schedule|available|availability)\b/i;
+
 const RESULT_TTL = 10 * 60_000;
 const resultCache = new Map(); // normalized query -> { ts, out }
 
-async function run(query) {
+async function run(query, ctx = {}) {
   const chain = providerChain();
   const q = String(query || "").trim().slice(0, 300);
   if (!q) return { ok: false, error: "empty query" };
 
+  // SPECIALISTS FIRST. Weather and exchange rates have keyless sources
+  // that are better than a grounded search for their own questions — a
+  // forecast from the meteorological service beats a model's summary of a
+  // weather page — and answering them here leaves the tiny search quota
+  // for the questions that genuinely need a search engine.
+  const specialist = await require("./liveFacts").tryLiveFact(q, ctx);
+  if (specialist) return specialist;
+
   const cacheKey = q.toLowerCase();
   const hit = resultCache.get(cacheKey);
   if (hit && Date.now() - hit.ts < RESULT_TTL) return hit.out;
+
+  // NEAR-DUPLICATES COUNT AS THE SAME QUESTION. One turn asking about
+  // flights ran two searches — "flights from Noida to Bangalore tomorrow"
+  // and the same thing with "time and price 2026-09-12" bolted on — which
+  // spends two of a very small daily allowance to answer one question,
+  // and the second, over-specific one is usually the worse of the two.
+  const shape = fingerprint(q);
+  for (const [, v] of resultCache) {
+    if (v.shape === shape && Date.now() - v.ts < RESULT_TTL) return v.out;
+  }
 
   let results = [];
   let lastError = "";
@@ -75,6 +123,32 @@ async function run(query) {
   }
   if (!results.length) {
     return { ok: false, error: `search failed (${lastError || "no provider"})` };
+  }
+
+  // A LIVE QUESTION DESERVES A REAL ANSWER OR A STRAIGHT NO.
+  //
+  // When every real provider is spent, the chain lands on Wikipedia — and
+  // "gold rate today India" comes back as the Reserve Bank of India's
+  // article. That is not an answer to a question about today, and handing
+  // it over as one is how the assistant ended up telling a user to go and
+  // check IndiGo themselves. If the question is plainly about something
+  // that CHANGES and all we have is an encyclopedia, say so.
+  if (used === "wikipedia" && LIVE_QUESTION.test(q)) {
+    return {
+      ok: false,
+      error: "search_unavailable",
+      data: {
+        query: q,
+        hint:
+          "Live web search is unavailable right now (the provider's quota is " +
+          "spent), and an encyclopedia cannot answer a question about prices, " +
+          "times, rates, weather or news TODAY. Say in ONE short line that " +
+          "you cannot look that up at the moment, and offer to open the page " +
+          "on their phone. Do NOT guess the figure, do NOT answer from " +
+          "memory as though it were current, and do NOT tell them to go and " +
+          "search for it themselves.",
+      },
+    };
   }
   try {
     // AN ENCYCLOPEDIA IS NOT A WEB SEARCH, and the model has to be told.
@@ -107,7 +181,7 @@ async function run(query) {
           }
         : {}),
     };
-    resultCache.set(cacheKey, { ts: Date.now(), out });
+    resultCache.set(cacheKey, { ts: Date.now(), out, shape });
     if (resultCache.size > 200) {
       resultCache.delete(resultCache.keys().next().value);
     }

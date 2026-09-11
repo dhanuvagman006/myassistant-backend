@@ -2787,16 +2787,21 @@ function registerBuiltins() {
     available: () => Boolean(require("./webSearch").provider()),
     description:
       "Search the live web for current information the assistant would not " +
-      "otherwise know: today's events, prices, company news, facts that change.",
+      "otherwise know: today's events, prices, company news, facts that " +
+      "change. Weather and currency rates are answered from their own " +
+      "sources through this same tool, so ask it for those too rather than " +
+      "answering from memory.",
     risk: "low",
     inputSchema: {
       type: "object",
       properties: { query: { type: "string", description: "Search query" } },
       required: ["query"],
     },
-    async execute(args) {
+    async execute(args, ctx) {
       const search = require("./webSearch");
-      return search.run(args.query);
+      // ctx carries the user's coordinates, so "what's the weather" with no
+      // place named answers for where they actually are.
+      return search.run(args.query, { lat: ctx.lat, lng: ctx.lng });
     },
   });
   /* ---------------------------------------------------------------- */
