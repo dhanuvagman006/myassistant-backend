@@ -1311,6 +1311,12 @@ console.log("\nexecution record");
       "utf8");
     assert.match(engine, /bool get hasVisualResult/,
       "the app cannot tell whether a turn produced anything visible");
+    // A spoken web answer must NOT throw a screen over Home — only the
+    // things the assistant says are "on your screen" do.
+    const g = /bool get hasVisualResult =>([\s\S]{0,240}?);/.exec(engine);
+    assert.ok(g, "could not read the getter");
+    assert.ok(!/searchResults/.test(g[1]),
+      "a spoken search answer still forces the conversation screen open");
     const shell = fs.readFileSync(
       require.resolve("../../myassistant-flutter/lib/shell/home_shell.dart"), "utf8");
     assert.match(shell, /engine\.hasVisualResult/,
