@@ -1283,6 +1283,33 @@ console.log("\nexecution record");
       "a truncated image still counts as a success");
   });
 
+  test("the image provider chain is inert without keys, and ordered", () => {
+    const imagegen = require("../src/services/imagegen");
+    const now = imagegen.configuredProviders();
+    assert.ok(now[now.length - 1].startsWith("pollinations"),
+      "the keyless provider is not the last resort");
+    // Adding a free key must be one environment variable and nothing else.
+    const src = fs.readFileSync(require.resolve("../src/services/imagegen.js"), "utf8");
+    for (const fn of ["tryCloudflare", "tryHuggingFace", "tryTogether"]) {
+      assert.match(src, new RegExp(`async function ${fn}\\(`), `${fn} is missing`);
+    }
+    assert.match(src,
+      /for \(const provider of \[tryGemini, tryCloudflare, tryHuggingFace, tryTogether\]\)/,
+      "the chain does not try the keyed providers in order");
+  });
+
+  test("the image size reported is the one that came back", () => {
+    // The free tier downscales: 1536x864 returns 1024x576. Reporting the
+    // REQUESTED size made the ledger claim a resolution nobody received.
+    const { jpegSize } = require("../src/services/imagegen");
+    const src = fs.readFileSync(require.resolve("../src/services/imagegen.js"), "utf8");
+    assert.match(src, /width: real \? real\.width : width/,
+      "the requested width is still reported as the result");
+    assert.strictEqual(jpegSize(Buffer.from([0, 1, 2])), null,
+      "a non-JPEG should measure as null, not throw");
+    assert.strictEqual(jpegSize(null), null);
+  });
+
   test("video generation exists rather than being declined", () => {
     const v = registry.get("generate_video");
     assert.ok(v, "generate_video is not registered");

@@ -161,6 +161,167 @@ async function tryPollinations(prompt, { aspect, seed } = {}) {
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* KEYED PROVIDERS — all optional, all inert until a key exists.       */
+/*                                                                     */
+/* The keyless tier is Sana at ~1024px with someone else's watermark.  */
+/* Every provider below is a real step up and none of them requires    */
+/* billing: each issues an API key on a free account. They are tried   */
+/* in order and skipped silently when their key is absent, so adding   */
+/* one is a single environment variable and nothing else changes.      */
+/*                                                                     */
+/* UNVERIFIED UNTIL A KEY EXISTS. These request shapes come from each  */
+/* provider's documentation, not from a call that was actually made —  */
+/* there is no key here to make one with. The first real call may need */
+/* a correction; the chain is built so that a provider which fails or  */
+/* 4xxs simply falls through to the next one rather than breaking      */
+/* image generation.                                                   */
+/* ------------------------------------------------------------------ */
+
+/** Cloudflare Workers AI — flux-1-schnell on the free neuron allowance. */
+async function tryCloudflare(prompt, { aspect } = {}) {
+  const acct = process.env.CF_ACCOUNT_ID;
+  const token = process.env.CF_API_TOKEN;
+  if (!acct || !token) return null;
+  const model = process.env.CF_IMAGE_MODEL || "@cf/black-forest-labs/flux-1-schnell";
+  const { width, height } = shapeOf(aspect);
+  try {
+    const r = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${acct}/ai/run/${model}`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ prompt: prompt.slice(0, 1400), steps: 4, width, height }),
+        signal: AbortSignal.timeout(90_000),
+      }
+    );
+    if (!r.ok) {
+      console.warn(`imagegen cloudflare: ${r.status}`);
+      return null;
+    }
+    const type = String(r.headers.get("content-type") || "");
+    // flux-1-schnell answers with base64 in JSON; the SDXL models answer
+    // with raw image bytes. Handle both rather than assuming one.
+    let buffer;
+    let mime = "image/jpeg";
+    if (type.includes("application/json")) {
+      const j = await r.json();
+      const b64 = j?.result?.image;
+      if (!b64) return null;
+      buffer = Buffer.from(b64, "base64");
+    } else if (type.startsWith("image/")) {
+      buffer = Buffer.from(await r.arrayBuffer());
+      mime = type.split(";")[0];
+    } else {
+      return null;
+    }
+    if (buffer.length < 20 * 1024) return null;
+    const real = jpegSize(buffer);
+    return {
+      buffer, mime, provider: "cloudflare",
+      width: real ? real.width : width,
+      height: real ? real.height : height,
+    };
+  } catch (e) {
+    console.warn("imagegen cloudflare:", e.message);
+    return null;
+  }
+}
+
+/** Hugging Face Inference — FLUX.1-schnell on a free account token. */
+async function tryHuggingFace(prompt, { aspect } = {}) {
+  const token = process.env.HF_TOKEN;
+  if (!token) return null;
+  const model = process.env.HF_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell";
+  const { width, height } = shapeOf(aspect);
+  try {
+    const r = await fetch(`https://router.huggingface.co/hf-inference/models/${model}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        inputs: prompt.slice(0, 1400),
+        parameters: { width, height },
+      }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    // 503 means the model is warming up — worth one wait, not a chain exit.
+    if (r.status === 503) {
+      console.warn("imagegen huggingface: model loading");
+      return null;
+    }
+    if (!r.ok) {
+      console.warn(`imagegen huggingface: ${r.status}`);
+      return null;
+    }
+    const mime = String(r.headers.get("content-type") || "image/jpeg").split(";")[0];
+    if (!mime.startsWith("image/")) return null;
+    const buffer = Buffer.from(await r.arrayBuffer());
+    if (buffer.length < 20 * 1024) return null;
+    const real = jpegSize(buffer);
+    return {
+      buffer, mime, provider: "huggingface",
+      width: real ? real.width : width,
+      height: real ? real.height : height,
+    };
+  } catch (e) {
+    console.warn("imagegen huggingface:", e.message);
+    return null;
+  }
+}
+
+/** Together AI — FLUX.1-schnell-Free. */
+async function tryTogether(prompt, { aspect } = {}) {
+  const key = process.env.TOGETHER_API_KEY;
+  if (!key) return null;
+  const model = process.env.TOGETHER_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell-Free";
+  const { width, height } = shapeOf(aspect);
+  try {
+    const r = await fetch("https://api.together.xyz/v1/images/generations", {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model,
+        prompt: prompt.slice(0, 1400),
+        width, height, steps: 4, n: 1,
+        response_format: "b64_json",
+      }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!r.ok) {
+      console.warn(`imagegen together: ${r.status}`);
+      return null;
+    }
+    const j = await r.json();
+    const b64 = j?.data?.[0]?.b64_json;
+    if (!b64) return null;
+    const buffer = Buffer.from(b64, "base64");
+    if (buffer.length < 20 * 1024) return null;
+    const real = jpegSize(buffer);
+    return {
+      buffer, mime: "image/jpeg", provider: "together",
+      width: real ? real.width : width,
+      height: real ? real.height : height,
+    };
+  } catch (e) {
+    console.warn("imagegen together:", e.message);
+    return null;
+  }
+}
+
+/** Which keyed providers this deployment could use, for the health probe. */
+function configuredProviders() {
+  const out = [];
+  if (process.env.GEMINI_API_KEY) out.push("gemini (needs billing)");
+  if (process.env.CF_ACCOUNT_ID && process.env.CF_API_TOKEN) out.push("cloudflare");
+  if (process.env.HF_TOKEN) out.push("huggingface");
+  if (process.env.TOGETHER_API_KEY) out.push("together");
+  out.push("pollinations (keyless, Sana, watermarked)");
+  return out;
+}
+
 /**
  * @param opts.aspect  square | portrait | landscape | wide
  * @param opts.seed    fixed seed — video frames share one so the subject
@@ -169,8 +330,11 @@ async function tryPollinations(prompt, { aspect, seed } = {}) {
 async function generateImage(prompt, opts = {}) {
   const p = String(prompt || "").trim();
   if (!p) throw new Error("empty prompt");
-  const viaGemini = await tryGemini(p);
-  if (viaGemini) return viaGemini;
+  // Best first, each skipped in a breath when its key is absent.
+  for (const provider of [tryGemini, tryCloudflare, tryHuggingFace, tryTogether]) {
+    const out = await provider(p, opts);
+    if (out) return out;
+  }
   try {
     return await tryPollinations(p, opts);
   } catch (e) {
@@ -235,4 +399,6 @@ async function tryVeoVideo(prompt) {
   }
 }
 
-module.exports = { generateImage, tryVeoVideo, jpegSize, shapeOf };
+module.exports = {
+  generateImage, tryVeoVideo, jpegSize, shapeOf, configuredProviders,
+};
