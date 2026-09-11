@@ -811,6 +811,15 @@ function registerBuiltins() {
           description:
             "True ONLY if the user asked to be woken or said it must not be missed. Rings like an alarm through silent mode.",
         },
+        repeat: {
+          type: "string",
+          enum: ["daily", "weekly", "monthly", "yearly"],
+          description:
+            "For a reminder that comes back: 'every morning' → daily, 'every " +
+            "Monday' → weekly, 'on the 1st of every month' → monthly, " +
+            "birthdays and anniversaries → yearly. Needs due_at as well — " +
+            "the first occurrence sets the time the series keeps.",
+        },
       },
       required: ["text"],
     },
@@ -818,12 +827,27 @@ function registerBuiltins() {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
       const due = parseUserTime(args.due_at, ctx.tzOffsetMin);
       const ring = args.wake_me === true ? "alarm" : "gentle";
-      const r = await reminders.create(ctx.userId, args.text, due, ring);
+      const repeat = String(args.repeat || "");
+      if (repeat && !due) {
+        return {
+          ok: false,
+          error: "a repeating reminder needs a time",
+          data: { hint: "Ask what time it should come back at each time." },
+        };
+      }
+      const r = await reminders.create(ctx.userId, args.text, due, ring, {
+        repeat,
+        tzOffsetMin: ctx.tzOffsetMin,
+      });
       if (!r) return { ok: false, error: "could not save the reminder" };
+      const every = { daily: "every day", weekly: "every week",
+                      monthly: "every month", yearly: "every year" }[r.repeat];
       return {
         ok: true,
         data: r,
-        speak: ring === "alarm" ? "Set — it'll ring like an alarm." : "Saved.",
+        speak: every
+          ? `Saved — ${every}.`
+          : ring === "alarm" ? "Set — it'll ring like an alarm." : "Saved.",
       };
     },
   });
@@ -1509,7 +1533,14 @@ function registerBuiltins() {
       "mute', 'pause/play/next song' (controls whatever app is playing), " +
       "'battery level', 'open wifi/bluetooth/sound settings'. Runs ON the " +
       "device; for battery, wait for the [SYSTEM] result before answering. " +
-      "If the device reports a failure, say so plainly.",
+      "If the device reports a failure, say so plainly.\n" +
+      "CLOSING AN APP: Android does not let one app close another, and you " +
+      "must never claim you did. What you CAN do: action 'go_home' leaves " +
+      "the app the user is in, which is what most people mean by 'close " +
+      "it'; action 'app_info' with app_package opens that app's settings " +
+      "page, one tap from Force stop. Offer the closer thing plainly — " +
+      "'I can\'t close it for you, but I can take you Home, or open its " +
+      "settings so you can force stop it.'",
     risk: "low",
     deviceAction: true,
     inputSchema: {
@@ -1519,9 +1550,16 @@ function registerBuiltins() {
           type: "string",
           enum: ["flashlight_on", "flashlight_off", "volume_set", "volume_up",
                  "volume_down", "mute", "unmute", "media_play", "media_pause",
-                 "media_next", "media_previous", "battery", "open_settings"],
+                 "media_next", "media_previous", "battery", "open_settings",
+                 "go_home", "app_info"],
         },
         value: { type: "integer", description: "For volume_set: 0-100." },
+        app_package: {
+          type: "string",
+          description:
+            "For app_info: the Android package, e.g. com.instagram.android. " +
+            "If you only know the app's name, call open_app's lookup first.",
+        },
         panel: {
           type: "string",
           enum: ["wifi", "bluetooth", "sound", "display", "battery", "settings"],
@@ -1531,6 +1569,44 @@ function registerBuiltins() {
       required: ["action"],
     },
     async execute(args) {
+      // go_home and app_info are INTENTS, not device controls — the same
+      // deep-link route set_alarm uses, so they need no app change.
+      if (args.action === "go_home") {
+        return {
+          ok: true,
+          deviceAction: {
+            type: "open_url",
+            url: "intent://#Intent;action=android.intent.action.MAIN;" +
+                 "category=android.intent.category.HOME;end",
+          },
+          speak: "Taking you Home.",
+          note:
+            "This leaves the app they were in; it does NOT close it. Do not " +
+            "say you closed anything.",
+        };
+      }
+      if (args.action === "app_info") {
+        const pkg = String(args.app_package || "").trim();
+        if (!/^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/i.test(pkg)) {
+          return {
+            ok: false,
+            error: "need the app's package name for that",
+            data: { hint: "Ask which app, or resolve the package first." },
+          };
+        }
+        return {
+          ok: true,
+          deviceAction: {
+            type: "open_url",
+            url: `intent://${pkg}#Intent;scheme=package;` +
+                 `action=android.settings.APPLICATION_DETAILS_SETTINGS;end`,
+          },
+          speak: "Opening its settings — Force stop is on that screen.",
+          note:
+            "You have opened a settings page. The app is NOT closed; the user " +
+            "has to tap Force stop themselves. Say exactly that.",
+        };
+      }
       const speakBy = {
         flashlight_on: "Flashlight on.",
         flashlight_off: "Flashlight off.",
@@ -1545,6 +1621,8 @@ function registerBuiltins() {
         media_previous: "Previous track.",
         battery: "Checking the battery.",
         open_settings: "Opening settings.",
+        go_home: "Taking you Home.",
+        app_info: "Opening its settings.",
       };
       return {
         ok: true,
@@ -1838,6 +1916,52 @@ function registerBuiltins() {
         speak: `Setting a clock alarm for ${hh}:${mm}.`,
       };
     }
+  });
+
+  registry.register({
+    name: "set_timer",
+    description:
+      "Start a countdown in the phone's clock app — 'set a timer for ten " +
+      "minutes', 'remind me in 20 minutes', 'time this for 2 hours'. " +
+      "Different from set_alarm, which rings at a TIME of day; a timer " +
+      "counts DOWN from now. It rings even if this app is closed.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        minutes: { type: "number", description: "How long, in minutes. Use decimals for seconds (0.5 = 30s)." },
+        label: { type: "string", description: "What the timer is for, e.g. 'pasta'." },
+      },
+      required: ["minutes"],
+    },
+    async execute(args) {
+      const minutes = Number(args.minutes);
+      if (!Number.isFinite(minutes) || minutes <= 0) {
+        return { ok: false, error: "how long should the timer run?" };
+      }
+      const seconds = Math.round(Math.min(minutes, 24 * 60) * 60);
+      const label = args.label
+        ? `S.android.intent.extra.alarm.MESSAGE=${encodeURIComponent(String(args.label).slice(0, 60))};`
+        : "";
+      // Same route as set_alarm: the phone's own clock app, via an intent
+      // deep link. SKIP_UI starts it without making the user finish a form.
+      const url =
+        `intent://#Intent;action=android.intent.action.SET_TIMER;` +
+        `i.android.intent.extra.alarm.LENGTH=${seconds};` +
+        `B.android.intent.extra.alarm.SKIP_UI=true;${label}end`;
+      const human =
+        seconds % 3600 === 0 && seconds >= 3600
+          ? `${seconds / 3600} hour${seconds === 3600 ? "" : "s"}`
+          : seconds >= 60
+            ? `${Math.round(seconds / 60)} minute${Math.round(seconds / 60) === 1 ? "" : "s"}`
+            : `${seconds} seconds`;
+      return {
+        ok: true,
+        deviceAction: { type: "open_url", url },
+        speak: `Timer set for ${human}.`,
+      };
+    },
   });
 
   registry.register({

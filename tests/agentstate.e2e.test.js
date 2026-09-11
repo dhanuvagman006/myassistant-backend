@@ -976,6 +976,85 @@ console.log("\nexecution record");
       "nothing would ever run the research job");
   });
 
+  console.log("\ntimers, repeats, honest limits");
+
+  await atest("a timer counts down; an alarm rings at a time", async () => {
+    const t = await registry.execute("set_timer", { minutes: 10, label: "pasta" },
+      { userId: USER_A, inputQuality: { quality: "clear" } });
+    assert.strictEqual(t.ok, true);
+    assert.match(t.deviceAction.url, /action=android\.intent\.action\.SET_TIMER/);
+    assert.match(t.deviceAction.url, /LENGTH=600\b/, "ten minutes is not 600 seconds");
+    assert.match(t.speak, /10 minutes/);
+    const bad = await registry.execute("set_timer", { minutes: 0 },
+      { userId: USER_A, inputQuality: { quality: "clear" } });
+    assert.strictEqual(bad.ok, false, "a zero-length timer was accepted");
+  });
+
+  await atest("closing an app offers the closest real thing, never a lie", async () => {
+    // Android does not let one app close another. The old behaviour was
+    // for the model to claim it had.
+    const home = await registry.execute("phone_control", { action: "go_home" },
+      { userId: USER_A, inputQuality: { quality: "clear" } });
+    assert.strictEqual(home.ok, true);
+    assert.match(home.deviceAction.url, /category=android\.intent\.category\.HOME/);
+    assert.match(home.note, /does NOT close it/i);
+
+    const info = await registry.execute("phone_control",
+      { action: "app_info", app_package: "com.instagram.android" },
+      { userId: USER_A, inputQuality: { quality: "clear" } });
+    assert.match(info.deviceAction.url, /APPLICATION_DETAILS_SETTINGS/);
+    assert.match(info.note, /app is NOT closed/i);
+
+    const nopkg = await registry.execute("phone_control", { action: "app_info" },
+      { userId: USER_A, inputQuality: { quality: "clear" } });
+    assert.strictEqual(nopkg.ok, false, "it opened settings for nothing");
+  });
+
+  test("a monthly series keeps its day instead of drifting", () => {
+    const rec = require("../src/reminders/recurrence");
+    const tz = 330;
+    let t = Date.parse("2026-01-31T09:00:00+05:30");
+    const days = [];
+    for (let i = 0; i < 4; i++) {
+      t = rec.nextOccurrence(t, "monthly", { tzOffsetMin: tz, anchorDay: 31 });
+      days.push(new Date(t + tz * 60_000).toISOString().slice(0, 10));
+    }
+    // Naive month addition turns the 31st into 3 March and never recovers.
+    assert.deepStrictEqual(days,
+      ["2026-02-28", "2026-03-31", "2026-04-30", "2026-05-31"]);
+    assert.strictEqual(rec.nextOccurrence(t, "", {}), 0, "a one-off repeated");
+  });
+
+  await atest("a repeating reminder rolls forward and survives being ticked off", async () => {
+    const reminders = require("../src/reminders/store");
+    await db.run("DELETE FROM reminders WHERE user_id = $1", [USER_B]).catch(() => {});
+    const past = Date.now() - 3 * 86_400_000;
+    const row = await reminders.create(USER_B, "take the tablets", past, "gentle",
+      { repeat: "daily", tzOffsetMin: 330 });
+    assert.strictEqual(row.repeat, "daily");
+
+    // Three days of missed occurrences must not become three overdue rows.
+    const list = await reminders.list(USER_B, { tzOffsetMin: 330 });
+    assert.strictEqual(list.length, 1, "missed occurrences piled up");
+    assert.ok(Number(list[0].due_at) > Date.now(), "it stayed overdue");
+
+    // Ticking off today's occurrence moves the series on; it does not end it.
+    const before = Number(list[0].due_at);
+    await reminders.setDone(USER_B, row.id, true, { tzOffsetMin: 330 });
+    const after = await db.one("SELECT due_at, done FROM reminders WHERE id = $1", [row.id]);
+    assert.strictEqual(Number(after.done), 0, "the series was closed by one occurrence");
+    assert.ok(Number(after.due_at) > before, "it did not move on");
+    await db.run("DELETE FROM reminders WHERE user_id = $1", [USER_B]).catch(() => {});
+  });
+
+  await atest("a repeating reminder with no time is refused, not silently one-off", async () => {
+    const res = await registry.execute("create_reminder",
+      { text: "water the plants", repeat: "weekly" },
+      { userId: USER_A, tzOffsetMin: 330, inputQuality: { quality: "clear" } });
+    assert.strictEqual(res.ok, false);
+    assert.match(res.error, /needs a time/i);
+  });
+
   /* ---------------------------------------------------------------- */
   console.log("");
   for (const uid of [USER_A, USER_B]) {

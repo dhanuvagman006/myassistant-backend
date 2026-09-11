@@ -154,6 +154,13 @@ async function init() {
     -- 'alarm' when the user asked to be WOKEN — an app that blares at
     -- midnight uninvited gets uninstalled.
     ALTER TABLE reminders ADD COLUMN IF NOT EXISTS ring TEXT NOT NULL DEFAULT 'gentle';
+    -- REPEATS. "every morning at 7" used to produce one reminder that
+    -- fired once and then sat in the list as done. '' means it happens
+    -- once. anchor_day carries the day-of-month a monthly series belongs
+    -- to, so the 31st clamps to 28 February and comes back to 31 March
+    -- instead of drifting to the 3rd.
+    ALTER TABLE reminders ADD COLUMN IF NOT EXISTS repeat TEXT NOT NULL DEFAULT '';
+    ALTER TABLE reminders ADD COLUMN IF NOT EXISTS anchor_day INTEGER NOT NULL DEFAULT 0;
 
     -- AGENT MEMORY (multi-agent phase): durable per-user facts the
     -- conversational agent has learned ("name is Dhanya", "vegetarian",

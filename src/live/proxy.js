@@ -157,6 +157,8 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     + "meeting gets missed. Answer in one compact human sentence — 'Yes, a "
     + "meeting with Allen tomorrow at 4 pm.' Never read saved entries "
     + "verbatim, no quotation marks, no reciting titles. "
+    + "TIMERS: 'for N minutes' counts down → set_timer; 'at 6am' → "
+    + "set_alarm; 'every morning/Monday/1st' → create_reminder with repeat. "
     + "READING A PAGE: 'summarise this' / 'what does this article say' → "
     + "read_webpage with the URL, then answer from the text it returns. "
     + "open_webpage only shows it to them and tells you nothing. " +

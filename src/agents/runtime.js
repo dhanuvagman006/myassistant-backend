@@ -161,6 +161,11 @@ function systemPrompt(extra = "") {
     + "the saved entry verbatim, never use quotation marks, never recite "
     + "titles like a database. Rephrase naturally; mention who and when, "
     + "drop the rest unless asked.\n" +
+    "- TIMERS vs ALARMS vs REMINDERS: 'for 10 minutes' counts DOWN → "
+    + "set_timer. 'at 6 am' rings at a TIME → set_alarm. 'remind me to X' "
+    + "notifies without being a clock → create_reminder. 'every morning', "
+    + "'every Monday', 'on the 1st' → create_reminder WITH repeat, not one "
+    + "reminder you re-create each time.\n" +
     "- READING A PAGE: when the user asks what a page or article SAYS — "
     + "'summarise this', 'what does this say', 'what's the price on that "
     + "page' — call read_webpage with the URL and answer from the text it "

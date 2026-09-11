@@ -174,23 +174,13 @@ async function reenqueueIfRecurring(job) {
   }
 }
 
+// One definition of "when next", shared with reminders — the month-end
+// arithmetic is easy to get subtly wrong twice.
 function nextOccurrence(fromMs, repeat, payload) {
-  if (repeat === "daily") return fromMs + 86_400_000;
-  if (repeat === "weekly") return fromMs + 7 * 86_400_000;
-  // monthly: same LOCAL day-of-month and time. The anchor day survives
-  // clamping (scheduled for the 31st → 28 Feb → back to 31 Mar).
-  const tz = Number.isFinite(payload?.tzOffsetMin) ? payload.tzOffsetMin : 330;
-  const local = new Date(fromMs + tz * 60_000);
-  const anchor = Number(payload?.anchorDay) || local.getUTCDate();
-  const m = local.getUTCMonth() + 1;
-  const target = new Date(local);
-  target.setUTCDate(1); // avoid rollover while changing the month
-  target.setUTCMonth(m);
-  const daysInMonth = new Date(
-    Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)
-  ).getUTCDate();
-  target.setUTCDate(Math.min(anchor, daysInMonth));
-  return target.getTime() - tz * 60_000;
+  return require("../reminders/recurrence").nextOccurrence(fromMs, repeat, {
+    tzOffsetMin: payload?.tzOffsetMin,
+    anchorDay: payload?.anchorDay,
+  });
 }
 
 /**
