@@ -2374,10 +2374,21 @@ function registerBuiltins() {
       // Web URLs, not app-scheme links: Android hands these to the installed
       // app when it is there and to the browser when it is not, so the user
       // never lands on a dead "can't open" screen.
+      // INSTAGRAM has no deep link for a SEARCH — handing it a search URL
+      // just opens the app's home feed, which is what testers saw ("it
+      // only opens Instagram"). A profile URL does open the profile in
+      // the app, so: an explicit handle goes straight there, while a
+      // person's name (which we cannot resolve to a handle) goes to
+      // image results limited to instagram.com, which is what "show me
+      // photos of X from Instagram" actually asks for.
+      const looksLikeHandle = /^@?[a-z0-9._]{2,30}$/i.test(q) && !/\s/.test(q);
+      const instagram = !q
+        ? "https://www.instagram.com/"
+        : looksLikeHandle
+          ? `https://www.instagram.com/${q.replace(/^@/, "")}/`
+          : `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(q + " site:instagram.com")}`;
       const URLS = {
-        instagram: q
-          ? `https://www.instagram.com/explore/search/keyword/?q=${enc}`
-          : "https://www.instagram.com/",
+        instagram,
         facebook: q ? `https://www.facebook.com/search/top?q=${enc}` : "https://www.facebook.com/",
         x: q ? `https://x.com/search?q=${enc}` : "https://x.com/",
         linkedin: q ? `https://www.linkedin.com/search/results/all/?keywords=${enc}` : "https://www.linkedin.com/",
@@ -2392,10 +2403,19 @@ function registerBuiltins() {
       const url = URLS[args.app];
       if (!url) return { ok: false, error: `unknown app ${args.app}` };
       const label = args.app === "google_images" ? "image search" : args.app;
+      // Say what will ACTUALLY appear. Promising "Neha Shetty on
+      // Instagram" and delivering the app's home feed is the kind of small
+      // lie that erodes trust.
+      const viaSearch = args.app === "instagram" && q && !looksLikeHandle;
       return {
         ok: true,
+        data: { url, viaSearch },
         deviceAction: { type: "open_url", url },
-        speak: q ? `Opening ${label} for ${q}.` : `Opening ${label}.`,
+        speak: viaSearch
+          ? `Instagram can't be searched from outside the app, so here are ${q}'s Instagram photos.`
+          : q
+            ? `Opening ${label} for ${q}.`
+            : `Opening ${label}.`,
       };
     },
   });
