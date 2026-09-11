@@ -1314,8 +1314,10 @@ function registerBuiltins() {
       "service is configured, the assistant places the call itself and " +
       "speaks the message so the user doesn't have to talk; otherwise the " +
       "phone dials the contact directly for the user to speak. " +
-      "IMPORTANT: this tool only ASKS the phone to try — the contact may " +
-      "not exist or permissions may be off. NEVER say the call was made or " +
+      "IMPORTANT: this tool only ASKS the phone to try — the contact is " +
+      "not even looked up yet, so NEVER say 'calling X now'; say you are " +
+      "finding them. The contact may not exist or permissions may be off. " +
+      "NEVER say the call was made or " +
       "delivered until a [SYSTEM] message confirms it; if a [SYSTEM] " +
       "message reports an ERROR, tell the user plainly that the call " +
       "FAILED and why.",
@@ -1359,12 +1361,15 @@ function registerBuiltins() {
           message: args.message || null,
           agent_available: agentAvailable,
         },
-        // Deliberately NOT "I called them" — nothing has dialled yet.
+        // NOT "calling X now": the contact has not even been looked up
+        // yet. Testers were told "Calling Dikshit Pujari now" and then, a
+        // beat later, that no such contact exists — the phone reports the
+        // truth on /call_result and the model speaks THAT.
         speak: relaying
-          ? `Alright — I'll call ${args.name} and pass that on, then tell you how it went.`
+          ? `Let me find ${args.name} and call them — I'll tell you how it goes.`
           : args.message
-            ? `I can't speak on calls myself on this setup, so I'm connecting you to ${args.name} directly.`
-            : `Calling ${args.name}…`,
+            ? `I can't speak on calls myself on this setup, so I'll connect you to ${args.name} directly.`
+            : `Looking up ${args.name}…`,
       };
     },
   });
@@ -2335,6 +2340,63 @@ function registerBuiltins() {
         console.error("generate_video:", e.message);
         return { ok: false, error: "Video generation failed — offer an image instead." };
       }
+    },
+  });
+
+  registry.register({
+    name: "open_app",
+    description:
+      "Open an app on the user's phone, optionally at a profile or search — " +
+      "'open Instagram', 'show me Neha Shetty's Instagram', 'open WhatsApp', " +
+      "'show me images of X' (use instagram/google_images as fitting). " +
+      "This DOES open the app on their phone; say you're opening it.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        app: {
+          type: "string",
+          enum: ["instagram", "facebook", "x", "linkedin", "whatsapp", "maps",
+                 "gmail", "google_images", "google", "youtube", "spotify"],
+        },
+        query: {
+          type: "string",
+          description: "A profile name, or what to search for. Omit to just open the app.",
+        },
+      },
+      required: ["app"],
+    },
+    async execute(args) {
+      const q = String(args.query || "").trim();
+      const enc = encodeURIComponent(q);
+      const handle = q.replace(/\s+/g, "").toLowerCase();
+      // Web URLs, not app-scheme links: Android hands these to the installed
+      // app when it is there and to the browser when it is not, so the user
+      // never lands on a dead "can't open" screen.
+      const URLS = {
+        instagram: q
+          ? `https://www.instagram.com/explore/search/keyword/?q=${enc}`
+          : "https://www.instagram.com/",
+        facebook: q ? `https://www.facebook.com/search/top?q=${enc}` : "https://www.facebook.com/",
+        x: q ? `https://x.com/search?q=${enc}` : "https://x.com/",
+        linkedin: q ? `https://www.linkedin.com/search/results/all/?keywords=${enc}` : "https://www.linkedin.com/",
+        whatsapp: "https://web.whatsapp.com/",
+        maps: q ? `https://www.google.com/maps/search/${enc}` : "https://www.google.com/maps",
+        gmail: "https://mail.google.com/",
+        google_images: `https://www.google.com/search?tbm=isch&q=${enc}`,
+        google: `https://www.google.com/search?q=${enc}`,
+        youtube: q ? `https://www.youtube.com/results?search_query=${enc}` : "https://www.youtube.com/",
+        spotify: q ? `https://open.spotify.com/search/${enc}` : "https://open.spotify.com/",
+      };
+      const url = URLS[args.app];
+      if (!url) return { ok: false, error: `unknown app ${args.app}` };
+      const label = args.app === "google_images" ? "image search" : args.app;
+      return {
+        ok: true,
+        deviceAction: { type: "open_url", url },
+        speak: q ? `Opening ${label} for ${q}.` : `Opening ${label}.`,
+      };
     },
   });
 

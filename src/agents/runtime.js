@@ -103,6 +103,15 @@ function systemPrompt(extra = "") {
     + "the real people in their contacts/clients ('Alen lobo' → the saved "
     + "'Allen Lobo'). When a correction changes meaning, keep the user's "
     + "wording; when it is obviously a typo or mishearing, just fix it.\n" +
+    "- RECORDING vs MESSAGING: when the user dictates figures, results or "
+    + "notes ABOUT someone ('race 1 minus 4.5 for Hariraj', 'Ramesh paid "
+    + "500'), RECORD it — record_patient_payment for money, add_person_note "
+    + "or remember_fact otherwise. Do NOT send it to that person with "
+    + "send_agent_message; messaging is only for words meant to REACH "
+    + "them ('tell Ravi I'm late').\n" +
+    "- OPENING APPS: 'open Instagram', 'show me X's profile', 'show me "
+    + "images of X' → open_app. It really opens on their phone, so say you "
+    + "are opening it; never claim you cannot.\n" +
     "- PHONE CONTROL: flashlight, volume, media play/pause/next, battery "
     + "level and settings screens → phone_control. Report battery only "
     + "from its [SYSTEM] result.\n" +

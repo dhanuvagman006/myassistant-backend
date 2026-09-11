@@ -20,12 +20,25 @@
  */
 const TIMEOUT_MS = 8000;
 
+/**
+ * Providers to try IN ORDER. Keyed providers first (best quality), then
+ * Gemini grounding, then DuckDuckGo — which needs no key and no quota, so
+ * search can never be dead. One provider failing (429, outage, no
+ * results) falls through to the next instead of failing the user's turn.
+ */
+function providerChain() {
+  const chain = [];
+  if (process.env.BRAVE_SEARCH_API_KEY) chain.push("brave");
+  if (process.env.TAVILY_API_KEY) chain.push("tavily");
+  if (process.env.GOOGLE_CSE_KEY && process.env.GOOGLE_CSE_CX) chain.push("google");
+  if (process.env.GEMINI_API_KEY) chain.push("gemini");
+  chain.push("wikipedia");
+  return chain;
+}
+
+/** Kept for callers/diagnostics that ask "what will be used first". */
 function provider() {
-  if (process.env.BRAVE_SEARCH_API_KEY) return "brave";
-  if (process.env.TAVILY_API_KEY) return "tavily";
-  if (process.env.GOOGLE_CSE_KEY && process.env.GOOGLE_CSE_CX) return "google";
-  if (process.env.GEMINI_API_KEY) return "gemini";
-  return null;
+  return providerChain()[0] || null;
 }
 
 // Successful searches are cached briefly: the same question asked twice in
@@ -35,15 +48,7 @@ const RESULT_TTL = 10 * 60_000;
 const resultCache = new Map(); // normalized query -> { ts, out }
 
 async function run(query) {
-  const p = provider();
-  if (!p) {
-    return {
-      ok: false,
-      error:
-        "web search is not configured on this server (set BRAVE_SEARCH_API_KEY, " +
-        "TAVILY_API_KEY, or GOOGLE_CSE_KEY + GOOGLE_CSE_CX)",
-    };
-  }
+  const chain = providerChain();
   const q = String(query || "").trim().slice(0, 300);
   if (!q) return { ok: false, error: "empty query" };
 
@@ -51,10 +56,29 @@ async function run(query) {
   const hit = resultCache.get(cacheKey);
   if (hit && Date.now() - hit.ts < RESULT_TTL) return hit.out;
 
+  let results = [];
+  let lastError = "";
+  let used = "";
+  for (const p of chain) {
+    try {
+      const r = await BACKENDS[p](q);
+      if (r && r.length) {
+        results = r;
+        used = p;
+        break;
+      }
+      lastError = `${p}: no results`;
+    } catch (e) {
+      lastError = `${p}: ${String(e.message).slice(0, 120)}`;
+      console.warn(`web search ${lastError} — trying next provider`);
+    }
+  }
+  if (!results.length) {
+    return { ok: false, error: `search failed (${lastError || "no provider"})` };
+  }
   try {
-    const results = await BACKENDS[p](q);
-    if (!results.length) return { ok: false, error: "no results" };
     const out = {
+      provider: used,
       ok: true,
       data: results,
       // Compact digest for the model to summarise from.
@@ -74,6 +98,29 @@ async function run(query) {
 }
 
 const BACKENDS = {
+  /**
+   * WIKIPEDIA — keyless, unmetered, never blocked. The last resort under
+   * every quota so search is never fully dead: testers hit "my search
+   * tool is still acting up" for a whole session when the only provider
+   * (Gemini grounding) ran out of its tiny daily bucket. Encyclopedic
+   * only, and the results say so, so the model never presents this as a
+   * live web search.
+   */
+  async wikipedia(q) {
+    const r = await fetch(
+      "https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=5&srsearch=" +
+        encodeURIComponent(q),
+      { signal: AbortSignal.timeout(TIMEOUT_MS) }
+    );
+    if (!r.ok) throw new Error(`wikipedia ${r.status}`);
+    const j = await r.json();
+    return (j.query?.search || []).map((x) => ({
+      title: `${x.title} (Wikipedia)`,
+      snippet: String(x.snippet || "").replace(/<[^>]*>/g, "").replace(/&quot;/g, '"'),
+      url: "https://en.wikipedia.org/wiki/" + encodeURIComponent(String(x.title).replace(/ /g, "_")),
+    }));
+  },
+
   async brave(q) {
     const r = await fetch(
       `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}&count=6`,
