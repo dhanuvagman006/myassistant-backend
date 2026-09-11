@@ -420,6 +420,13 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
           turnId,
           sessionId: sid,
         };
+        // CLOSE THE LEDGER. Every action this turn took now carries the
+        // answer the user actually received, so one row shows the whole
+        // chain: what was asked, what ran with which arguments, what came
+        // back, and what was said.
+        try {
+          require("../actions/store").attachReply(ctx.userId, turnId, finalText);
+        } catch (_) {}
         recent.append(ctx.userId, "user", userText, { ...meta, latencyMs: 0 });
         recent.append(ctx.userId, "assistant", finalText, meta);
         return {
@@ -493,6 +500,7 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
             latencyMs: Date.now() - turnStartedAt,
             tools: [res.tool],
           });
+          require("../actions/store").attachReply(ctx.userId, turnId, question);
         } catch (_) {}
         return {
           text: "",
@@ -553,6 +561,9 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
     turnId,
     sessionId: sid,
   };
+  try {
+    require("../actions/store").attachReply(ctx.userId, turnId, finalText);
+  } catch (_) {}
   recent.append(ctx.userId, "user", userText, { ...meta, latencyMs: 0 });
   recent.append(ctx.userId, "assistant", finalText, meta);
   return {

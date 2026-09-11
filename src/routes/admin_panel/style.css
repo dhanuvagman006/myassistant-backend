@@ -229,3 +229,16 @@ td .sub { color: var(--faint); font-size: 12px; }
 .doc-chips { display: flex; gap: 4px; flex-wrap: wrap; }
 .doc-filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
 .doc-filters .input { width: auto; }
+
+/* Action ledger */
+.ledger-turn { border-bottom: 1px solid var(--border); padding: 10px 0; }
+.ledger-turn:last-child { border-bottom: 0; }
+.ledger-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.ledger-when { font-size: 11.5px; color: var(--faint); white-space: nowrap; }
+.ledger-intent { font-size: 13px; font-weight: 600; color: var(--ink); }
+.ledger-steps { margin: 6px 0 4px 0; display: flex; flex-direction: column; gap: 4px; }
+.ledger-step { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; font-size: 12px; }
+.ledger-tool { font-size: 11.5px; background: var(--bg); padding: 1px 6px; border-radius: 4px; color: var(--ink); }
+.ledger-args { font-size: 11px; color: var(--muted); background: var(--bg); padding: 1px 6px; border-radius: 4px; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ledger-result { font-size: 12px; color: var(--muted); }
+.ledger-reply { font-size: 12.5px; color: var(--muted); padding-left: 2px; }

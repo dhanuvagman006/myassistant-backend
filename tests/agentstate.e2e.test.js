@@ -611,6 +611,70 @@ console.log("\nexecution record");
     sessionState.end(USER_A, "confirm-2");
   });
 
+  /* ================================================================ */
+  /* 12. THE LEDGER: requested -> tool -> arguments -> result -> reply */
+  /*     The record showed WHICH tool ran and whether it worked. The   */
+  /*     middle — what the user asked, what arguments the model chose, */
+  /*     what came back — was the span every failure lived in.        */
+  /* ================================================================ */
+  console.log("\nledger");
+
+  await atest("a turn is recorded end to end", async () => {
+    const st = sessionState.begin(USER_A, "s-ledger", { surface: "voice" });
+    sessionState.beginTurn(st, {
+      turnId: "L1", text: "open instagram and find neha shetty", quality: "clear",
+    });
+    await registry.execute(
+      "open_app",
+      { app: "instagram", query: "nehashetty" },
+      { userId: USER_A, session: st, sessionId: "s-ledger", turnId: "L1",
+        inputQuality: { quality: "clear" } }
+    );
+    actions.attachReply(USER_A, "L1", "Opening Instagram for you.");
+    await settle();
+
+    const turns = await actions.ledger(USER_A, { sessionId: "s-ledger" });
+    assert.strictEqual(turns.length, 1, "the turn was not grouped into one entry");
+    const t = turns[0];
+    assert.match(t.intent, /instagram/i, "the request was not recorded");
+    assert.strictEqual(t.surface, "voice");
+    assert.ok(t.steps.length >= 1, "no tool step recorded");
+    const step = t.steps.find((x) => x.tool === "open_app");
+    assert.ok(step, "the tool that ran is missing from the ledger");
+    assert.match(step.args, /nehashetty/, "the arguments the model chose were not kept");
+    assert.strictEqual(step.ok, true);
+    assert.ok(step.result.length > 0, "nothing recorded about what came back");
+    assert.match(t.reply, /Opening Instagram/, "the final response was not attached");
+    sessionState.end(USER_A, "s-ledger");
+  });
+
+  await atest("a failure is recorded as a failure, with its reason", async () => {
+    const st = sessionState.begin(USER_A, "s-ledger-fail", { surface: "voice" });
+    sessionState.beginTurn(st, { turnId: "L2", text: "where am I", quality: "clear" });
+    const res = await registry.execute(
+      "get_current_location",
+      {},
+      { userId: USER_A, session: st, sessionId: "s-ledger-fail", turnId: "L2",
+        inputQuality: { quality: "clear" } }
+    );
+    assert.strictEqual(res.ok, false, "precondition: no coordinates were given");
+    await settle();
+    const turns = await actions.ledger(USER_A, { sessionId: "s-ledger-fail" });
+    const step = turns[0] && turns[0].steps[0];
+    assert.ok(step, "the failed call left no ledger row");
+    assert.strictEqual(step.ok, false, "a failure was recorded as a success");
+    assert.match(step.result, /no_location|error/i, "the reason was not kept");
+    sessionState.end(USER_A, "s-ledger-fail");
+  });
+
+  test("arguments are redacted before they are stored", () => {
+    // The ledger is rendered in the admin panel; a token pasted into a
+    // tool argument must not be what lands there.
+    const text = actions.argsText({ query: "weather", api_key: "sk-secret-value" });
+    assert.match(text, /weather/);
+    assert.ok(!text.includes("sk-secret-value"), "a secret reached the ledger");
+  });
+
   /* ---------------------------------------------------------------- */
   console.log("");
   for (const uid of [USER_A, USER_B]) {

@@ -37,6 +37,21 @@ function migrate() {
         surface    TEXT NOT NULL DEFAULT '',
         created_at BIGINT NOT NULL
       );
+      -- THE LEDGER (requested_action -> tool_selected -> tool_arguments ->
+      -- execution_result -> final_response). The table recorded WHICH tool
+      -- ran and whether it worked; the three questions that actually come
+      -- up when a turn goes wrong — what did the user ask, what arguments
+      -- did the model choose, what did we say back — were spread across
+      -- two tables or nowhere at all.
+      ALTER TABLE executed_actions ADD COLUMN IF NOT EXISTS intent TEXT NOT NULL DEFAULT '';
+      ALTER TABLE executed_actions ADD COLUMN IF NOT EXISTS args TEXT NOT NULL DEFAULT '';
+      ALTER TABLE executed_actions ADD COLUMN IF NOT EXISTS result TEXT NOT NULL DEFAULT '';
+      ALTER TABLE executed_actions ADD COLUMN IF NOT EXISTS reply TEXT NOT NULL DEFAULT '';
+      -- Every tool execution is written now, not only the ones that reach
+      -- into the world: "why did you answer that?" needs the lookup that
+      -- produced the answer. The world flag keeps the two apart, so questions
+      -- that mean "what did you DO" still get actions, not every search.
+      ALTER TABLE executed_actions ADD COLUMN IF NOT EXISTS world INTEGER NOT NULL DEFAULT 1;
       CREATE INDEX IF NOT EXISTS idx_exec_user ON executed_actions(user_id, id DESC);
       CREATE INDEX IF NOT EXISTS idx_exec_session ON executed_actions(session_id, id DESC);
       -- Repeat suppression looks up (user, tool, target) inside a short
@@ -52,7 +67,7 @@ function migrate() {
   return migrated;
 }
 
-const KEEP_PER_USER = 300;
+const KEEP_PER_USER = 800; // every execution lands here now, not only world actions
 const clean = (s, n) => String(s ?? "").trim().slice(0, n);
 
 /**
@@ -77,33 +92,82 @@ function targetOf(tool, args = {}) {
   return s === '""' ? "" : s;
 }
 
+/**
+ * The arguments the model chose, as stored text. Secrets never belong in
+ * a trail that the admin panel renders, so the same redaction the metrics
+ * logger uses is applied first.
+ */
+function argsText(args) {
+  try {
+    const redacted = require("../infra/observability").redact(args || {});
+    return clean(JSON.stringify(redacted), 1000);
+  } catch (_) {
+    try { return clean(JSON.stringify(args || {}), 1000); } catch (_) { return ""; }
+  }
+}
+
+/** A one-line, human-readable form of what the tool returned. */
+function resultText(res) {
+  if (!res || typeof res !== "object") return clean(res, 300);
+  if (res.error) return clean("error: " + res.error, 300);
+  if (res.speak) return clean(res.speak, 300);
+  if (res.repeated) return "suppressed as a repeat";
+  if (res.deviceAction) return clean("device action: " + (res.deviceAction.type || "?"), 300);
+  try { return clean(JSON.stringify(res.data ?? ""), 300); } catch (_) { return ""; }
+}
+
+/**
+ * Writes for ONE user run in order. record() and attachReply() are both
+ * fire-and-forget, and the reply landed first often enough to matter: the
+ * UPDATE ran against rows that did not exist yet, so the turn's answer was
+ * simply missing from the ledger.
+ */
+const writeChains = new Map();
+function serialize(uid, fn) {
+  const prev = writeChains.get(uid) || Promise.resolve();
+  const next = prev.then(fn).catch((e) =>
+    console.warn("executed_actions write failed:", e.message)
+  );
+  writeChains.set(uid, next);
+  next.finally(() => {
+    if (writeChains.get(uid) === next) writeChains.delete(uid);
+  });
+  return next;
+}
+
 /** Record one tool execution. Never throws — logging must not break a turn. */
-function record(userId, { sessionId, turnId, tool, args, ok, detail, surface }) {
+function record(userId, { sessionId, turnId, tool, args, ok, detail, surface, intent, result, world }) {
   const uid = Number(userId);
   if (!Number.isInteger(uid) || uid <= 0 || !tool) return;
-  (async () => {
+  return serialize(uid, async () => {
     await migrate();
     await run(
       `INSERT INTO executed_actions
-         (user_id, session_id, turn_id, tool, target, ok, detail, surface, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+         (user_id, session_id, turn_id, tool, target, ok, detail, surface,
+          created_at, intent, args, result, world)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
       [uid, clean(sessionId, 80), clean(turnId, 40), clean(tool, 60),
        targetOf(tool, args), ok === false ? 0 : 1, clean(detail, 300),
-       clean(surface, 20), Date.now()]
+       clean(surface, 20), Date.now(),
+       clean(intent, 400), argsText(args),
+       typeof result === "string" ? clean(result, 300) : resultText(result),
+       world === false ? 0 : 1]
     );
     await run(
       `DELETE FROM executed_actions WHERE user_id = $1 AND id NOT IN
          (SELECT id FROM executed_actions WHERE user_id = $1 ORDER BY id DESC LIMIT $2)`,
       [uid, KEEP_PER_USER]
     );
-  })().catch((e) => console.warn("executed_actions write failed:", e.message));
+  });
 }
 
 /** Recent actions for a user, newest first. */
-async function recent(userId, { limit = 12, sinceMs, sessionId, tool } = {}) {
+async function recent(userId, { limit = 12, sinceMs, sessionId, tool, includeLookups = false } = {}) {
   await migrate();
   const params = [Number(userId)];
-  let where = "user_id = $1";
+  // "Did you call her?" and "why did settings open?" mean world actions.
+  // A lookup is an execution, not something the user thinks of as done.
+  let where = includeLookups ? "user_id = $1" : "user_id = $1 AND world = 1";
   if (sinceMs) { params.push(sinceMs); where += ` AND created_at >= $${params.length}`; }
   if (sessionId) { params.push(clean(sessionId, 80)); where += ` AND session_id = $${params.length}`; }
   if (tool) { params.push(clean(tool, 60)); where += ` AND tool = $${params.length}`; }
@@ -165,6 +229,74 @@ async function invalidate(userId, tool, target, { windowMs = 10 * 60_000, detail
     .catch((e) => { console.warn("invalidate failed:", e.message); return 0; });
 }
 
+/**
+ * Close the ledger for a turn: every action it took gets the answer the
+ * user finally received. Without it a row ends at "the tool succeeded"
+ * and cannot show what was actually said — which is the half of the
+ * record that told us the assistant had claimed things it never did.
+ */
+function attachReply(userId, turnId, reply) {
+  const uid = Number(userId);
+  const t = clean(turnId, 40);
+  if (!Number.isInteger(uid) || uid <= 0 || !t || !reply) return;
+  // Queued behind this user's inserts — see serialize(). Unqueued, the
+  // update ran before the rows it was meant to update existed.
+  return serialize(uid, async () => {
+    await migrate();
+    await run(
+      "UPDATE executed_actions SET reply = $1 WHERE user_id = $2 AND turn_id = $3 AND reply = ''",
+      [clean(reply, 600), uid, t]
+    );
+  });
+}
+
+/**
+ * One turn end to end: what was asked, which tools were chosen with which
+ * arguments, what each returned, and what was said back.
+ */
+async function ledger(userId, { limit = 40, sessionId, turnId } = {}) {
+  await migrate();
+  const params = [Number(userId)];
+  let where = "user_id = $1";
+  if (sessionId) { params.push(clean(sessionId, 80)); where += ` AND session_id = $${params.length}`; }
+  if (turnId) { params.push(clean(turnId, 40)); where += ` AND turn_id = $${params.length}`; }
+  params.push(Math.min(Math.max(Number(limit) || 40, 1), 200));
+  const rows = await query(
+    `SELECT * FROM executed_actions WHERE ${where} ORDER BY id DESC LIMIT $${params.length}`,
+    params
+  );
+  // Group by turn so one request reads as one entry, however many tools
+  // it took — the model often calls three in a breath.
+  const turns = new Map();
+  for (const r of rows) {
+    const key = r.turn_id || `row:${r.id}`;
+    if (!turns.has(key)) {
+      turns.set(key, {
+        turnId: r.turn_id || "",
+        sessionId: r.session_id || "",
+        at: Number(r.created_at),
+        intent: r.intent || "",
+        reply: r.reply || "",
+        surface: r.surface || "",
+        steps: [],
+      });
+    }
+    const t = turns.get(key);
+    if (!t.intent && r.intent) t.intent = r.intent;
+    if (!t.reply && r.reply) t.reply = r.reply;
+    t.steps.unshift({
+      tool: r.tool,
+      target: r.target || "",
+      args: r.args || "",
+      ok: Number(r.ok) === 1,
+      result: r.result || "",
+      detail: r.detail || "",
+      at: Number(r.created_at),
+    });
+  }
+  return [...turns.values()];
+}
+
 /** Plain-language line for one record — what the assistant tells the user. */
 function describe(r) {
   const when = new Date(Number(r.created_at)).toLocaleString("en-IN", {
@@ -192,4 +324,7 @@ function describe(r) {
   return `${when}: ${r.ok ? "" : "FAILED — "}${verb}${what}`.trim();
 }
 
-module.exports = { migrate, record, recent, didRun, findRecent, invalidate, describe, targetOf };
+module.exports = {
+  migrate, record, recent, didRun, findRecent, invalidate, attachReply,
+  ledger, describe, targetOf, argsText,
+};

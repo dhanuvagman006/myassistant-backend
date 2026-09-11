@@ -214,7 +214,7 @@ function noteSuppressed(state, { turnId, tool, args }) {
 }
 
 /** Record an execution both in the session and durably. */
-function recordExecution(state, { turnId, tool, args, ok, detail }) {
+function recordExecution(state, { turnId, tool, args, ok, detail, result }) {
   const entry = {
     turnId: turnId || (state && state.turn && state.turn.id) || "",
     tool,
@@ -242,6 +242,11 @@ function recordExecution(state, { turnId, tool, args, ok, detail }) {
       ok: entry.ok,
       detail,
       surface: state.surface,
+      // THE LEDGER'S FIRST FIELD. The request that led here — otherwise a
+      // row says "place_phone_call failed" with no way to see what the
+      // user actually asked for.
+      intent: (state.turn && state.turn.text) || "",
+      result,
     });
   }
   return entry;

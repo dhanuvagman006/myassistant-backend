@@ -471,8 +471,27 @@ async function execute(name, rawArgs, ctx = {}) {
  */
 function recordExecution(name, args, res, ctx) {
   try {
-    if (!ctx.userId || !isWorldAction(name)) return;
+    if (!ctx.userId) return;
     const sessionState = require("../agents/sessionState");
+    // A LOOKUP IS STILL AN EXECUTION. Only world actions belong in the
+    // session's claim-checking list — a search does not make "I called
+    // him" true — but every tool call belongs in the durable ledger, or
+    // "why did you answer that?" has nothing to read.
+    if (!isWorldAction(name)) {
+      require("../actions/store").record(ctx.userId, {
+        sessionId: ctx.sessionId || (ctx.session && ctx.session.sessionId) || "",
+        turnId: ctx.turnId || "",
+        tool: name,
+        args,
+        ok: res.ok !== false,
+        detail: res.error || "",
+        surface: ctx.background ? "background" : ctx.source || (ctx.session && ctx.session.surface) || "",
+        intent: ctx.intent || (ctx.session && ctx.session.turn && ctx.session.turn.text) || "",
+        result: res,
+        world: false,
+      });
+      return;
+    }
     if (ctx.session) {
       sessionState.recordExecution(ctx.session, {
         turnId: ctx.turnId,
@@ -480,6 +499,7 @@ function recordExecution(name, args, res, ctx) {
         args,
         ok: res.ok !== false,
         detail: res.error || (res.speak ? String(res.speak).slice(0, 160) : ""),
+        result: res,
       });
       return;
     }
@@ -493,6 +513,8 @@ function recordExecution(name, args, res, ctx) {
       ok: res.ok !== false,
       detail: res.error || "",
       surface: ctx.background ? "background" : ctx.source || "",
+      intent: ctx.intent || "",
+      result: res,
     });
   } catch (e) {
     console.warn("execution record failed:", e.message);

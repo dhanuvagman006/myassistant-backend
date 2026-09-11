@@ -542,6 +542,9 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     turnLatency = 0;
     turnTools = [];
     if (t && Number(user?.sub) > 0) {
+      try {
+        require("../actions/store").attachReply(Number(user.sub), currentTurnId, t);
+      } catch (_) {}
       require("../memory/recent").append(Number(user.sub), "assistant", t, {
         latencyMs,
         source: "live",

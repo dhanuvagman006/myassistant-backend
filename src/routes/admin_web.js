@@ -465,6 +465,66 @@ router.get("/api/conversations.csv", async (req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
+/* Action ledger — one turn, end to end                                */
+/*                                                                     */
+/* The panel could show what a user asked and what was answered, and    */
+/* separately that a tool ran. It could not show the middle: which tool */
+/* the model picked, with which arguments, and what came back. That is  */
+/* precisely the span where the failures lived — a call placed to the   */
+/* wrong contact, a settings page opened instead of an answer, an       */
+/* action claimed that never ran.                                       */
+/* ------------------------------------------------------------------ */
+
+router.get("/api/users/:id/ledger", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: "bad user id" });
+  const turns = await require("../actions/store")
+    .ledger(id, {
+      limit: Math.min(parseInt(req.query.limit, 10) || 60, 200),
+      sessionId: String(req.query.session_id || "").trim() || undefined,
+      turnId: String(req.query.turn_id || "").trim() || undefined,
+    })
+    .catch((e) => {
+      console.warn("ledger read failed:", e.message);
+      return [];
+    });
+  res.json({ turns, total: turns.length });
+});
+
+/** The ledger as a spreadsheet — one row per tool step. */
+router.get("/api/users/:id/ledger.csv", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: "bad user id" });
+  const turns = await require("../actions/store")
+    .ledger(id, { limit: 500 }).catch(() => []);
+  const cell = (v) => {
+    let t = v === null || v === undefined ? "" : String(v);
+    if (/^[=+\-@]/.test(t)) t = "'" + t;
+    return '"' + t.replace(/"/g, '""') + '"';
+  };
+  const when = (ms) => {
+    const d = new Date(Number(ms) || 0);
+    return Number.isFinite(d.getTime()) ? d.toISOString().replace("T", " ").slice(0, 19) : "";
+  };
+  const header = ["when_utc", "turn_id", "surface", "requested_action",
+    "tool_selected", "tool_arguments", "target", "execution_result",
+    "succeeded", "final_response"];
+  const lines = [header.map(cell).join(",")];
+  for (const t of turns) {
+    for (const st of t.steps) {
+      lines.push([
+        when(st.at), t.turnId, t.surface, t.intent, st.tool, st.args,
+        st.target, st.result || st.detail, st.ok ? "yes" : "no", t.reply,
+      ].map(cell).join(","));
+    }
+  }
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="ledger-${id}-${stamp}.csv"`);
+  res.send("\uFEFF" + lines.join("\n"));
+});
+
+/* ------------------------------------------------------------------ */
 /* Saved documents — what users have actually filed                    */
 /*                                                                     */
 /* The panel could say "Documents: 14" and nothing more. Seeing the     */

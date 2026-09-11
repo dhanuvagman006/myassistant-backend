@@ -550,6 +550,7 @@ async function viewUserDetail(id) {
           u.phone_number ? h("div", { style: "margin-bottom:10px;" }, "Current: ", h("strong", {}, u.phone_number)) : null,
           h("div", { class: "inline-form" }, phoneInput, phoneBtn)),
         h("div", { class: "section-gap" }, conversationCard(d.conversations, id)),
+        h("div", { class: "section-gap" }, ledgerCard(id)),
         h("div", { class: "section-gap" }, documentsCard(id, c.docs)),
         h("div", { class: "card section-gap" },
           h("h3", {}, "Recent activity"),
@@ -644,6 +645,59 @@ async function viewAnalytics() {
                 h("td", {}, t.name), h("td", { class: "num" }, t.count)))
               : h("tr", {}, h("td", { colspan: 2, class: "chart-empty" }, "No data yet."))))))
   ));
+}
+
+/* ------------------------------------------------------------------ */
+/* Action ledger — the middle of a turn, which nothing else showed     */
+/* ------------------------------------------------------------------ */
+
+/** requested_action -> tool -> arguments -> result -> final_response. */
+function ledgerCard(userId) {
+  const body = h("div", { class: "chart-empty" }, "Loading the action ledger…");
+  const card = h("div", { class: "card" },
+    h("div", { style: "display:flex; align-items:center; gap:10px; margin-bottom:12px;" },
+      h("h3", { style: "margin:0;" }, "Action ledger ",
+        h("span", { class: "hint" }, "what was asked, what ran, what came back")),
+      h("div", { style: "flex:1;" }),
+      h("button", {
+        class: "btn sm",
+        onclick: () => window.open(`/admin-panel/api/users/${userId}/ledger.csv`, "_blank"),
+      }, "Download CSV")),
+    body);
+
+  api(`/users/${userId}/ledger?limit=40`)
+    .then((d) => {
+      if (!d.turns.length) {
+        body.replaceWith(h("div", { class: "chart-empty" }, "No actions recorded yet."));
+        return;
+      }
+      body.replaceWith(h("div", {}, d.turns.map((t) =>
+        h("div", { class: "ledger-turn" },
+          h("div", { class: "ledger-head" },
+            h("span", { class: "ledger-when" }, timeAgo(t.at)),
+            t.surface ? h("span", { class: "badge neutral" }, t.surface) : null,
+            h("span", { class: "ledger-intent" },
+              t.intent || h("span", { class: "faint" }, "(no request recorded)"))),
+          h("div", { class: "ledger-steps" }, t.steps.map((st) =>
+            h("div", { class: "ledger-step" },
+              h("span", { class: "badge " + (st.ok ? "good" : "danger") },
+                st.ok ? "ran" : "failed"),
+              h("code", { class: "ledger-tool" }, st.tool),
+              st.args && st.args !== "{}"
+                ? h("code", { class: "ledger-args" }, st.args)
+                : null,
+              h("span", { class: "ledger-result" }, st.result || st.detail || "")))),
+          t.reply
+            ? h("div", { class: "ledger-reply" }, "↳ ", t.reply)
+            : h("div", { class: "ledger-reply faint" }, "↳ no reply recorded")))));
+    })
+    .catch((e) => {
+      if (e.message !== "signed out") {
+        body.replaceWith(h("div", { class: "chart-empty" }, "Could not load the ledger: " + e.message));
+      }
+    });
+
+  return card;
 }
 
 /* ------------------------------------------------------------------ */
