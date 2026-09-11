@@ -108,24 +108,34 @@ async function generateVideo(prompt, { seconds = 8, frames = 4, aspect = "wide" 
       inputs.push("-loop", "1", "-t", per.toFixed(2), "-i", f);
     });
 
-    // Each frame gets a slow push in (Ken Burns), then they are crossfaded
-    // in sequence. scale+crop first so every input is the same size — xfade
-    // refuses mismatched frames, and the provider can return a pixel or two
-    // off the size asked for.
-    const W = 1280, H = 720;
+    // NORMALISE FIRST, THEN CROSSFADE, THEN MOVE.
+    //
+    // xfade refuses inputs that differ in size, pixel format or SAR, and
+    // the provider can return a frame a pixel or two off what was asked
+    // for — so every still is scaled-to-cover and cropped to exactly the
+    // same box before anything else touches it.
+    //
+    // Every dimension here is an integer. The first version computed
+    // `scale=1280*1.12` and handed ffmpeg "scale=1433.6:806.4", which it
+    // rejected with "Invalid argument" halfway through the graph.
+    const W = 1280;
+    const H = 720;
+    const OVER = 1.14; // how much bigger than the frame, to have room to pan
+    const BIG_W = Math.round(W * OVER);
+    const BIG_H = Math.round(H * OVER);
+    const total = per * images.length - fade * (images.length - 1);
+
     const parts = [];
     images.forEach((_, i) => {
       parts.push(
-        `[${i}:v]scale=${W * 1.12}:${H * 1.12}:force_original_aspect_ratio=increase,` +
-        `crop=${Math.round(W * 1.12)}:${Math.round(H * 1.12)},` +
-        `zoompan=z='min(zoom+0.0009,1.12)':d=${Math.round(per * 25)}:` +
-        `x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${W}x${H}:fps=25,` +
-        `setsar=1,format=yuv420p[v${i}]`
+        `[${i}:v]scale=${BIG_W}:${BIG_H}:force_original_aspect_ratio=increase,` +
+        `crop=${BIG_W}:${BIG_H},setsar=1,fps=25,format=yuv420p[v${i}]`
       );
     });
+
     let last = "v0";
     for (let i = 1; i < images.length; i++) {
-      const out = i === images.length - 1 ? "vout" : `x${i}`;
+      const out = `x${i}`;
       const offset = (per - fade) * i;
       parts.push(
         `[${last}][v${i}]xfade=transition=fade:duration=${fade.toFixed(2)}:` +
@@ -133,7 +143,20 @@ async function generateVideo(prompt, { seconds = 8, frames = 4, aspect = "wide" 
       );
       last = out;
     }
-    const map = images.length > 1 ? "[vout]" : "[v0]";
+
+    // THE CAMERA MOVE, once, over the finished sequence. A slow drift
+    // across the oversized frame reads as a push rather than a slideshow.
+    // crop with a `t` expression is plain and well-supported — zoompan
+    // fights -loop/-t on still inputs and is where the first attempt broke.
+    const dx = BIG_W - W;
+    const dy = BIG_H - H;
+    parts.push(
+      `[${last}]crop=${W}:${H}:` +
+      `x='${dx}*min(t/${total.toFixed(2)},1)/2+${Math.round(dx / 4)}':` +
+      `y='${dy}*min(t/${total.toFixed(2)},1)/2':` +
+      `setsar=1[vout]`
+    );
+    const map = "[vout]";
 
     const out = path.join(dir, "out.mp4");
     await run([
