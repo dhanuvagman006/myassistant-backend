@@ -186,6 +186,22 @@ function describe(r) {
         case "dialing": return `the phone is dialing ${who}`;
         default: return `the call to ${who} was requested but no result has come back yet`;
       }
+    case "message":
+      // A message row read as "message Allen: completed" — technically the
+      // truth and useless to speak. The detail says HOW it got there, which
+      // is the part a user asking "did it send?" actually wants.
+      switch (r.status) {
+        case "completed":
+          // The detail is written to continue this sentence, so it reads as
+          // one line rather than a label and a restatement.
+          return `the message to ${who} was delivered${r.detail ? ` ${r.detail}` : ""}`;
+        case "failed":
+          return `the message to ${who} FAILED${r.reason ? ` — ${r.reason}` : ""}`;
+        case "requested":
+          return `the message to ${who} was handed over but nothing has confirmed it yet`;
+        default:
+          return `the message to ${who} is ${r.status}`;
+      }
     case "document":
       if (r.status === "completed") return `document ${r.detail || "saved"}${who ? ` (${who})` : ""}`;
       if (r.status === "failed") return `document save FAILED${r.reason ? ` — ${r.reason}` : ""}`;

@@ -34,8 +34,18 @@ FROM node:20-slim
 # HTTPS calls to BeyondPresence succeed while the LiveKit connection dies
 # with "no native root CA certificates found" — the avatar fails and
 # nothing else does. Keep this even if the image is slimmed further.
+#
+# ffmpeg is for VIDEO GENERATION. Veo produces real video but only on a
+# paid Gemini key; until billing is enabled the assistant could only say
+# "video isn't available on this plan", which is a capability the product
+# claims and does not have. With ffmpeg it builds a genuine MP4 out of
+# generated keyframes — a slow push with crossfades, honestly described
+# as that rather than passed off as synthesised video. The moment billing
+# lands, Veo takes over the same code path.
+#
+# ffmpeg here is the headless Debian build (no X, no GUI deps).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

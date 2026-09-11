@@ -2376,9 +2376,13 @@ function registerBuiltins() {
       "CREATE an image from a description — 'draw a poster for my café', " +
       "'make a picture of a beach house at sunset', 'design a birthday " +
       "card for amma', 'generate a logo'. Write a vivid, detailed prompt " +
-      "from what the user asked (style, colors, mood, composition). The " +
-      "image appears on their screen and is saved to their documents. " +
-      "Takes a few seconds — never refuse a creative request.",
+      "from what the user asked (style, colors, mood, composition) — and " +
+      "say the CRAFT out loud in the prompt: the lens or medium, the " +
+      "lighting, the palette, what is in focus. A thin prompt gets a thin " +
+      "picture; the quality of the result is mostly the quality of these " +
+      "words. Pick `aspect` from what it is for. The image appears on their " +
+      "screen and is saved to their documents. Takes a few seconds — never " +
+      "refuse a creative request.",
     risk: "low",
     deviceAction: true,
     inputSchema: {
@@ -2395,6 +2399,17 @@ function registerBuiltins() {
           type: "string",
           description: "Short human title ('Café poster') for the saved file.",
         },
+        aspect: {
+          type: "string",
+          enum: ["square", "portrait", "landscape", "wide"],
+          description:
+            "The SHAPE the subject wants, and it matters — a poster, a " +
+            "greeting card or a phone wallpaper is portrait; a banner, a " +
+            "scene or a desktop wallpaper is landscape; a logo or a feed " +
+            "post is square; wide is 16:9. Choose it from what they asked " +
+            "for rather than defaulting: everything used to come out square " +
+            "and posters were cropped into a box.",
+        },
       },
       required: ["prompt"],
     },
@@ -2404,7 +2419,7 @@ function registerBuiltins() {
       if (!prompt) return { ok: false, error: "describe what to draw" };
       try {
         const { generateImage } = require("../services/imagegen");
-        const img = await generateImage(prompt);
+        const img = await generateImage(prompt, { aspect: args.aspect });
         const docs = require("../docs/store");
         const ext = img.mime === "image/png" ? "png" : "jpg";
         const row = await docs.createDocument(ctx.userId, {
@@ -2455,9 +2470,15 @@ function registerBuiltins() {
     name: "generate_video",
     description:
       "CREATE a short video clip from a description — 'make a video of " +
-      "waves at sunset'. If video isn't enabled on the current plan it " +
-      "says so; then OFFER to create it as an image instead (generate_image " +
-      "always works).",
+      "waves at sunset', 'a clip of my café for Instagram'. Takes about a " +
+      "minute, so say you are making it and let it land; never promise a " +
+      "moment. Write a vivid prompt the way you would for an image.\n" +
+      "Tell the user what they are getting, because there are two kinds and " +
+      "the result says which: `kind: \"veo\"` is fully synthesised video, " +
+      "`kind: \"keyframes\"` is a cinematic sequence of generated frames " +
+      "crossfaded with a slow camera push — a real moving clip, but not " +
+      "synthesised motion. Describe the second one as that honestly if " +
+      "asked; never call it something it is not.",
     risk: "low",
     deviceAction: true,
     inputSchema: {
@@ -2467,6 +2488,17 @@ function registerBuiltins() {
           type: "string",
           description: "Rich visual description of the video to create.",
         },
+        aspect: {
+          type: "string",
+          enum: ["wide", "portrait", "square"],
+          description:
+            "wide (16:9) for a normal clip, portrait for a Reel or Story, " +
+            "square for a feed post. Default wide.",
+        },
+        seconds: {
+          type: "integer",
+          description: "Roughly how long, 5-15. Default 8.",
+        },
       },
       required: ["prompt"],
     },
@@ -2474,41 +2506,63 @@ function registerBuiltins() {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
       const prompt = String(args.prompt || "").trim().slice(0, 1400);
       if (!prompt) return { ok: false, error: "describe the video" };
+      let vid;
       try {
-        const { tryVeoVideo } = require("../services/imagegen");
-        const vid = await tryVeoVideo(prompt);
-        if (!vid) {
-          return {
-            ok: true,
-            data: {
-              result:
-                "Video generation is not enabled on the current plan yet. " +
-                "Tell the user video is coming soon, and offer to create " +
-                "this as a stunning image right now instead (generate_image).",
-            },
-          };
-        }
-        const docs = require("../docs/store");
-        const row = await docs.createDocument(ctx.userId, {
-          buffer: vid.buffer,
-          filename: `hari-video-${Date.now()}.mp4`,
-          mime: vid.mime,
-          note: prompt,
+        vid = await require("../services/videogen").generateVideo(prompt, {
+          aspect: args.aspect || "wide",
+          seconds: Math.min(Math.max(Number(args.seconds) || 8, 5), 15),
         });
-        return {
-          ok: true,
-          deviceAction: {
-            type: "show_video",
-            doc_id: row.id,
-            prompt,
-            document: docs.toClient(row),
-          },
-          speak: "Your video is ready — it's saved in your files.",
-        };
       } catch (e) {
         console.error("generate_video:", e.message);
-        return { ok: false, error: "Video generation failed — offer an image instead." };
+        return {
+          ok: false,
+          error: `the video could not be made: ${String(e.message).slice(0, 120)}`,
+          data: {
+            hint:
+              "Say plainly that it failed and offer generate_image instead. " +
+              "Do NOT claim a video exists.",
+          },
+        };
       }
+      const docs = require("../docs/store");
+      const row = await docs.createDocument(ctx.userId, {
+        buffer: vid.buffer,
+        filename: `hari-video-${Date.now()}.mp4`,
+        mime: vid.mime,
+        note: prompt,
+      });
+      const updated = await docs
+        .setMetadata(ctx.userId, row.id, {
+          title: `Video — ${prompt.slice(0, 90)}`,
+          category: "other",
+          docDate: new Date().toISOString().slice(0, 10),
+          summary:
+            vid.kind === "veo"
+              ? `AI-generated video from: ${prompt}`
+              : `AI-generated clip (${vid.frames} generated frames, ` +
+                `crossfaded with a slow camera push) from: ${prompt}`,
+          tags: ["generated", "video"],
+          fullText: `AI-generated video. Prompt: ${prompt}`,
+        })
+        .catch(() => null);
+      return {
+        ok: true,
+        data: {
+          kind: vid.kind,
+          frames: vid.frames || null,
+          seconds: vid.seconds || null,
+        },
+        deviceAction: {
+          type: "show_video",
+          doc_id: row.id,
+          prompt,
+          document: docs.toClient(updated || row),
+        },
+        speak:
+          vid.kind === "veo"
+            ? "Your video is ready — it's on screen and saved to your files."
+            : "Your clip is ready — it's on screen and saved to your files.",
+      };
     },
   });
 
@@ -3341,7 +3395,41 @@ function registerBuiltins() {
         })
         .catch((e) => console.warn("inbound hook:", e.message));
 
-      return { ok: true, data: "Message sent.", speak: `I have sent the message directly to ${args.contact_name}'s assistant.` };
+      // ONE RECORD, NOT TWO STORIES. This path wrote nothing to
+      // task_outcomes, so the two stores the assistant consults about a
+      // send disagreed: check_recent_actions saw send_agent_message ok=1
+      // and said it went, check_task_outcomes saw nothing and said there
+      // was no record. A tester got three contradictory answers about one
+      // message in four turns — "yes, sent directly to Allen's assistant",
+      // then "I can't actually send messages to Allen's assistant", then
+      // "my mistake, it looks like the message went through after all".
+      //
+      // The SMS rung has always produced an outcome row, because the phone
+      // posts one. The successful rung produced none.
+      const delivered = Boolean(appUser.fcm_token);
+      require("../outcomes/store")
+        .create(ctx.userId, {
+          kind: "message",
+          target: args.contact_name,
+          status: "completed",
+          path: "agent",
+          // Phrased to CONTINUE "the message to X was delivered …" — see
+          // outcomes/store.describe.
+          detail: delivered
+            ? "through their assistant, with a notification"
+            : "into their inbox, but they have no device registered yet, so they will hear it when they next open the app",
+        })
+        .catch((e) => console.warn("message outcome write failed:", e.message));
+
+      return {
+        ok: true,
+        data: { channel: "agent", delivered, to: args.contact_name },
+        speak: delivered
+          ? `I have sent the message directly to ${args.contact_name}'s assistant.`
+          : `It is in ${args.contact_name}'s inbox — their assistant will read ` +
+            `it out when they next open the app. They have no device registered ` +
+            `for a notification yet.`,
+      };
     }
   });
 
@@ -5109,16 +5197,23 @@ function registerBuiltins() {
   registry.register({
     name: "check_task_outcomes",
     description:
-      "The REAL result of things the user asked the assistant to do on the " +
-      "phone — did the call to X connect or fail (and why), was the document " +
-      "filed. Use for 'did my call go through', 'did you call Allen', 'what " +
-      "happened with that call', 'was that saved'. Answer ONLY from this data; " +
-      "a status of requested/dialing means the result is not known yet.",
+      "The REAL result of things the user asked the assistant to do — did " +
+      "the call to X connect or fail (and why), did the message reach them, " +
+      "was the document filed. Use for 'did my call go through', 'did you " +
+      "call Allen', 'did that message send', 'what happened with that call', " +
+      "'was that saved'. Answer ONLY from this data; a status of " +
+      "requested/dialing means the result is not known yet.\n" +
+      "IF THERE IS NO ROW for what they are asking about, say the record " +
+      "shows nothing rather than concluding it worked — and do not then " +
+      "contradict yourself a turn later. When this and check_recent_actions " +
+      "seem to disagree, THIS one is about whether it ARRIVED and the other " +
+      "is about whether the assistant TRIED; say both plainly in one " +
+      "sentence instead of picking one and reversing it.",
     risk: "low",
     inputSchema: {
       type: "object",
       properties: {
-        kind: { type: "string", enum: ["call", "document", "all"], description: "Default all." },
+        kind: { type: "string", enum: ["call", "message", "document", "all"], description: "Default all." },
         limit: { type: "integer", description: "How many recent tasks (default 5)." },
       },
     },
@@ -5128,6 +5223,7 @@ function registerBuiltins() {
       const max = Math.min(Number(args.limit) || 5, 20);
       let rows = await outcomes.list(ctx.userId, { limit: max * 3 });
       if (args.kind === "call") rows = rows.filter((r) => r.kind === "call" || r.kind === "agent_call");
+      else if (args.kind === "message") rows = rows.filter((r) => r.kind === "message");
       else if (args.kind === "document") rows = rows.filter((r) => r.kind === "document");
       rows = rows.slice(0, max);
       if (!rows.length) return { ok: true, data: [], speak: "I don't have any recorded tasks yet." };

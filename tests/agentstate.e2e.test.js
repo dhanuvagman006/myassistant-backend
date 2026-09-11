@@ -1208,6 +1208,114 @@ console.log("\nexecution record");
     assert.match(res.data.hint, /must not say it was/i);
   });
 
+  /* ================================================================ */
+  /* 18. ONE STORY ABOUT A SEND, AND MEDIA YOU CAN ACTUALLY SEE       */
+  /* ================================================================ */
+  console.log("\nmessages and media");
+
+  test("a delivered agent message leaves an outcome row to read", () => {
+    // The tester got three contradictory answers about one message in four
+    // turns, because check_recent_actions saw the tool run and
+    // check_task_outcomes saw nothing: the successful rung wrote no outcome.
+    const src = fs.readFileSync(require.resolve("../src/tools/builtins.js"), "utf8");
+    const i = src.indexOf('name: "send_agent_message"');
+    assert.ok(i > 0);
+    const body = src.slice(i, src.indexOf('name: "send_document"', i));
+    assert.match(body, /outcomes\/store[\s\S]{0,200}kind: "message"/,
+      "the app-user delivery path still records no outcome");
+  });
+
+  test("a message outcome reads as a sentence, not a status code", () => {
+    const outcomes = require("../src/outcomes/store");
+    const line = outcomes.describe({
+      kind: "message", target: "Allen Lobo", status: "completed",
+      detail: "through their assistant, with a notification",
+    });
+    assert.strictEqual(line,
+      "the message to Allen Lobo was delivered through their assistant, with a notification");
+    assert.match(
+      outcomes.describe({ kind: "message", target: "Alan", status: "failed",
+        reason: "SMS permission not granted" }),
+      /FAILED — SMS permission/);
+  });
+
+  test("the two record tools are told how to disagree without reversing", () => {
+    const t = registry.get("check_task_outcomes");
+    assert.match(t.description, /IF THERE IS NO ROW/,
+      "nothing stops it concluding a send worked from an absent row");
+    assert.match(t.description, /say both plainly/);
+    assert.ok(t.inputSchema.properties.kind.enum.includes("message"),
+      "messages cannot be asked about by kind");
+  });
+
+  test("an image can be asked for in the shape it is for", () => {
+    const g = registry.get("generate_image");
+    assert.deepStrictEqual(g.inputSchema.properties.aspect.enum,
+      ["square", "portrait", "landscape", "wide"]);
+    // Everything used to come back 1024 square, so a poster was cropped.
+    const imagegen = fs.readFileSync(
+      require.resolve("../src/services/imagegen.js"), "utf8");
+    assert.ok(!/width=1024&height=1024/.test(imagegen),
+      "images are still hard-coded to 1024 square");
+    assert.match(imagegen, /enhance=true/,
+      "the provider's prompt enhancer is still off");
+    assert.match(imagegen, /buffer\.length < 20 \* 1024/,
+      "a truncated image still counts as a success");
+  });
+
+  test("video generation exists rather than being declined", () => {
+    const v = registry.get("generate_video");
+    assert.ok(v, "generate_video is not registered");
+    assert.ok(!/not enabled on the current plan/i.test(v.description),
+      "the tool still only explains why it cannot work");
+    assert.ok(v.inputSchema.properties.aspect, "no aspect for a Reel or a post");
+    // The two kinds must stay distinguishable: calling a crossfaded
+    // sequence of stills "synthesised video" is the same class of lie as
+    // claiming an alarm was set.
+    assert.match(v.description, /keyframes/,
+      "the model is not told the result says which kind it got");
+    const videogen = fs.readFileSync(
+      require.resolve("../src/services/videogen.js"), "utf8");
+    assert.match(videogen, /tryVeoVideo/, "Veo is not tried first");
+    assert.match(videogen, /haveFfmpeg/, "nothing checks the encoder exists");
+  });
+
+  await atest("a video that cannot be made is not claimed", async () => {
+    // ffmpeg is absent on a dev box, which is exactly the degraded path.
+    const { haveFfmpeg } = require("../src/services/videogen");
+    if (await haveFfmpeg()) {
+      console.log("      (skipped — ffmpeg present, the happy path)");
+      return;
+    }
+    const res = await registry.execute("generate_video",
+      { prompt: "waves at sunset over Panambur beach" },
+      { userId: USER_A, inputQuality: { quality: "clear" } });
+    assert.strictEqual(res.ok, false);
+    assert.ok(!res.deviceAction, "it announced a video it does not have");
+    assert.match(res.data.hint, /Do NOT claim a video exists/);
+  });
+
+  test("something to look at gets a screen to appear on", () => {
+    // "Your image is on the screen" while the user was on Home with the
+    // orb, where no card is rendered.
+    const engine = fs.readFileSync(
+      require.resolve("../../myassistant-flutter/lib/features/assistant/state/assistant_engine.dart"),
+      "utf8");
+    assert.match(engine, /bool get hasVisualResult/,
+      "the app cannot tell whether a turn produced anything visible");
+    const shell = fs.readFileSync(
+      require.resolve("../../myassistant-flutter/lib/shell/home_shell.dart"), "utf8");
+    assert.match(shell, /engine\.hasVisualResult/,
+      "Home still only escalates for a tappable confirmation");
+    assert.match(shell, /engine\.inlineVoice \|\| engine\.liveActive/,
+      "live mode — where every complaint came from — is still excluded");
+    const cards = fs.readFileSync(
+      require.resolve("../../myassistant-flutter/lib/features/assistant/widgets/action_cards.dart"),
+      "utf8");
+    assert.match(cards, /VideoPlayer\(_video!\)/,
+      "a generated video still renders as a static icon");
+  });
+
   /* ---------------------------------------------------------------- */
   console.log("");
   for (const uid of [USER_A, USER_B]) {
