@@ -211,10 +211,17 @@ async function recentBlock(userId, { maxTurns = 12, maxAgeMs = 48 * 3600_000, ma
     }
     lines.reverse();
     return (
-      "RECENT CONVERSATION (earlier exchanges, possibly minutes ago in a " +
-      "previous session — oldest first). Treat this as things already said: " +
-      "never re-ask for details present here, and carry them forward.\n" +
-      lines.join("\n")
+      "EARLIER CONVERSATION — ALREADY FINISHED AND ALREADY ACTED ON.\n" +
+      "This is a transcript of past exchanges (possibly from an earlier " +
+      "session), given ONLY so you remember what was discussed. Every " +
+      "request in it was already handled at the time.\n" +
+      "RULES: never repeat or re-run any action from these lines — no " +
+      "calls, messages, reminders, searches or app openings. Never treat " +
+      "the last line here as a pending instruction. When the user now says " +
+      "something unrelated (even just 'hello'), respond to THAT and nothing " +
+      "else. Use this only to avoid re-asking for details already given.\n" +
+      lines.join("\n") +
+      "\n--- end of earlier conversation; the user's NEW message follows ---"
     );
   } catch (e) {
     console.warn("recentBlock failed:", e.message);

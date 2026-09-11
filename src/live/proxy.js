@@ -383,6 +383,15 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         personalContext = [ctxBlock, memBlock, recentBlock]
           .filter(Boolean)
           .join("\n");
+        if (recentBlock) {
+          // A fresh session must not inherit the last session's ORDERS.
+          // Without this, opening the orb and saying "hello" re-ran the
+          // previous session's "call Jeevan".
+          personalContext +=
+            "\nThis is a NEW conversation. Anything above is history that " +
+            "was already acted on — start from the user's next words, and " +
+            "never re-execute an earlier request.";
+        }
       } catch (_) {}
       
 
