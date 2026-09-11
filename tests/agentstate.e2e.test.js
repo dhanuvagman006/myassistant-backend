@@ -1439,6 +1439,90 @@ console.log("\nexecution record");
       "Home does not render the cards the old screen used to");
   });
 
+  /* ================================================================ */
+  /* 19. MEMORY IS CONTEXT, AND THE USER IS NOT AN ASSISTANT          */
+  /* ================================================================ */
+  console.log("\nmemory writes and homework");
+
+  await atest("a flight question does not rewrite the profile", async () => {
+    // "Tell me the times. And the price." came back having also written
+    // remember_fact "prefers speaking English, not Hindi" and rewritten
+    // the profile language. Nothing in the turn said anything of the kind:
+    // the model had two contradictory language facts injected and decided
+    // to tidy them up mid-turn — memory acting as its own instruction.
+    const st = sessionState.begin(USER_A, "s-memgate", {});
+    sessionState.beginTurn(st, {
+      turnId: "m1", text: "Tell me the times. And the price.", quality: "clear",
+    });
+    const ctx = { userId: USER_A, session: st, turnId: "m1",
+      inputQuality: { quality: "clear" } };
+
+    const fact = await registry.execute("remember_fact",
+      { fact: "prefers speaking English, not Hindi", importance: 3 }, ctx);
+    assert.strictEqual(fact.ok, false, "it recorded a fact nobody stated");
+    assert.strictEqual(fact.error, "not_in_this_turn");
+    assert.match(fact.data.hint, /never correct it\s+silently|never correct it silently/i);
+
+    const prof = await registry.execute("update_my_profile",
+      { name: "Hariraj Shetty", preferred_language: "English" }, ctx);
+    assert.strictEqual(prof.ok, false, "it rewrote the profile on a flight question");
+
+    // The refusal is a decision, so it is observable.
+    await settle();
+    const turns = await actions.ledger(USER_A, { sessionId: "s-memgate" });
+    const decisions = turns.flatMap((t) => t.steps.map((x) => x.decision));
+    assert.ok(decisions.includes("refused"), "the refusal left no trace");
+    sessionState.end(USER_A, "s-memgate");
+  });
+
+  await atest("something the user actually said is still remembered", async () => {
+    // The gate must not break the feature it protects.
+    const st = sessionState.begin(USER_A, "s-memok", {});
+    sessionState.beginTurn(st, {
+      turnId: "m2", text: "I am vegetarian, no meat please.", quality: "clear",
+    });
+    const ok = await registry.execute("remember_fact",
+      { fact: "is vegetarian", importance: 4 },
+      { userId: USER_A, session: st, turnId: "m2", inputQuality: { quality: "clear" } });
+    assert.strictEqual(ok.ok, true, ok.error || "a stated fact was refused");
+
+    // And an explicit instruction is honoured even when the wording differs.
+    const st2 = sessionState.begin(USER_A, "s-memok2", {});
+    sessionState.beginTurn(st2, {
+      turnId: "m3", text: "Remember that for me.", quality: "clear",
+    });
+    const asked = await registry.execute("remember_fact",
+      { fact: "prefers window seats", importance: 2 },
+      { userId: USER_A, session: st2, turnId: "m3", inputQuality: { quality: "clear" } });
+    assert.strictEqual(asked.ok, true, "an explicit 'remember that' was refused");
+    sessionState.end(USER_A, "s-memok");
+    sessionState.end(USER_A, "s-memok2");
+  });
+
+  test("an encyclopedia fallback is never passed off as a live answer", () => {
+    // Asked for flight times and prices, the Wikipedia fallback returned
+    // five Delhi Metro articles. Handed over as plain numbered results
+    // they read as a failed search, and the reply told the user to go
+    // check IndiGo themselves.
+    const src = fs.readFileSync(require.resolve("../src/tools/webSearch.js"), "utf8");
+    assert.match(src, /used === "wikipedia"/,
+      "the fallback is not distinguished from a real web search");
+    assert.match(src, /THESE ARE WIKIPEDIA ARTICLES/,
+      "nothing tells the model these are not live results");
+    assert.match(src, /Never tell them to go and look it up themselves/,
+      "the fallback does not forbid handing the user homework");
+  });
+
+  test("both surfaces forbid telling the user to go do it themselves", () => {
+    for (const f of ["../src/agents/runtime.js", "../src/live/proxy.js"]) {
+      const src = fs.readFileSync(require.resolve(f), "utf8");
+      assert.match(src, /HAND THE USER HOMEWORK/,
+        `${f} does not forbid instructing the user to do it themselves`);
+      assert.match(src, /RECORD ONLY WHAT THEY JUST SAID/,
+        `${f} does not scope memory writes to the current turn`);
+    }
+  });
+
   /* ---------------------------------------------------------------- */
   console.log("");
   for (const uid of [USER_A, USER_B]) {

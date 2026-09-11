@@ -77,6 +77,13 @@ async function run(query) {
     return { ok: false, error: `search failed (${lastError || "no provider"})` };
   }
   try {
+    // AN ENCYCLOPEDIA IS NOT A WEB SEARCH, and the model has to be told.
+    // Asked for flight times and prices, the Wikipedia fallback returned
+    // five Delhi Metro articles; handed over as plain numbered results
+    // they read as a failed search, and the reply told the user to go
+    // check IndiGo themselves. Naming the fallback lets the answer be
+    // "I can't get live prices" instead of a shrug dressed as research.
+    const fallback = used === "wikipedia";
     const out = {
       provider: used,
       ok: true,
@@ -86,6 +93,19 @@ async function run(query) {
         .slice(0, 5)
         .map((r, i) => `${i + 1}. ${r.title} — ${r.snippet}`)
         .join("\n"),
+      ...(fallback
+        ? {
+            note:
+              "THESE ARE WIKIPEDIA ARTICLES, not live web results — the web " +
+              "search providers were unavailable, so this is the last-resort " +
+              "encyclopedia. They will NOT contain prices, timetables, " +
+              "availability or anything else that changes. If that is what " +
+              "was asked for, say in ONE line that you cannot get live " +
+              "prices or times right now, and offer to open the site for " +
+              "them. Never tell them to go and look it up themselves, and " +
+              "never present these articles as an answer to a live question.",
+          }
+        : {}),
     };
     resultCache.set(cacheKey, { ts: Date.now(), out });
     if (resultCache.size > 200) {

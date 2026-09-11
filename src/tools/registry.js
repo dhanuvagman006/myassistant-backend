@@ -281,6 +281,23 @@ function isWorldAction(name) {
 }
 
 /**
+ * Tools that WRITE to durable memory or the user's profile. These are the
+ * ones that must be grounded in the current turn — see GATE 0.
+ */
+const MEMORY_WRITES = new Set([
+  "remember_fact", "update_my_profile", "remember_person", "add_person_note",
+  "add_instruction",
+]);
+
+/** Words too common to count as grounding. */
+const MEM_STOP = new Set(
+  ("that this they them their there then than with from about have has had " +
+   "would could should will shall want wants need needs like likes user " +
+   "assistant please thanks thank okay yeah yes no not prefers prefer " +
+   "speaking speak message messaging name").split(" ")
+);
+
+/**
  * REPEAT-GUARDED (same breath, same socket) — world actions where firing
  * twice in one turn is a double-fire, not a second request. Broad on
  * purpose: launching an app twice in the same breath is always a bug.
@@ -326,6 +343,65 @@ const CALL_TOOLS = new Set(["place_phone_call", "book_by_calling_business"]);
 async function execute(name, rawArgs, ctx = {}) {
   const tool = get(name);
   if (!tool) return { ok: false, error: `unknown tool "${name}"` };
+
+  // ── GATE 0: REMEMBER WHAT THEY SAID, NOT WHAT YOU INFERRED ────────
+  //
+  // "Tell me the times. And the price." — a question about flights —
+  // came back having also written `remember_fact: "prefers speaking
+  // English, not Hindi"` and rewritten the profile's language. Nothing in
+  // the turn said anything of the kind. The model had two contradictory
+  // language facts in its injected memory and decided to tidy them up
+  // mid-turn, which is memory acting as its own instruction: the one
+  // thing this architecture is supposed to prevent.
+  //
+  // A memory WRITE must be grounded in the words just spoken. The test is
+  // deliberately crude — does the thing being recorded share any real
+  // word with what the user just said — because the failure it catches is
+  // not subtle. "I'm vegetarian" → "is vegetarian" passes. A flight
+  // question producing a claim about language does not.
+  if (MEMORY_WRITES.has(name) && !ctx.approved) {
+    const turnText = String(
+      (ctx.session && ctx.session.turn && ctx.session.turn.text) || ctx.intent || ""
+    );
+    if (turnText.trim()) {
+      const words = (t) =>
+        new Set(
+          String(t).toLowerCase()
+            .replace(/[^\p{L}\p{N}\s]/gu, " ")
+            .split(/\s+/)
+            .filter((w) => w.length >= 4 && !MEM_STOP.has(w))
+        );
+      const said = words(turnText);
+      const writing = words(
+        Object.values(rawArgs || {})
+          .filter((v) => typeof v === "string" || typeof v === "number")
+          .join(" ")
+      );
+      const overlap = [...writing].some((w) => said.has(w));
+      // An explicit instruction to remember is always honoured, even when
+      // the wording shares nothing ("note that down for me").
+      const askedToRemember =
+        /\b(remember|note that|make a note|save that|don'?t forget|my name is|call me)\b/i
+          .test(turnText);
+      if (writing.size && !overlap && !askedToRemember) {
+        noteDecision(name, rawArgs, ctx, "refused",
+          `nothing in "${turnText.slice(0, 60)}" says this`);
+        return {
+          ok: false,
+          error: "not_in_this_turn",
+          data: {
+            heard: turnText.slice(0, 120),
+            hint:
+              "Do NOT record this: the user did not say it in this turn, and " +
+              "a fact you inferred from an earlier conversation is not theirs " +
+              "to have written down. Answer what they actually asked. If a " +
+              "remembered fact looks wrong, say so and ask — never correct it " +
+              "silently mid-turn.",
+          },
+        };
+      }
+    }
+  }
 
   // ── GATE 1: DO NOT ACT ON WHAT WE DID NOT HEAR ────────────────────
   // The model, handed a fragment like "con" or a bare phone number, will
