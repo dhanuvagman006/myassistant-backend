@@ -425,9 +425,11 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     if (Number(user?.sub) > 0) {
       require("../commitments/service").extractAsync(Number(user.sub), t, { source: "voice" });
       require("../agents/memory").extractAndStore(Number(user.sub), t);
+      currentTurnId = require("crypto").randomUUID();
       require("../memory/recent").append(Number(user.sub), "user", t, {
         source: "live",
         appBuild: deviceCtx.build,
+        turnId: currentTurnId,
       });
     }
   };
@@ -440,6 +442,8 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   // signal arrives after the user stopped speaking (see repliedAt).
   let turnLatency = 0;
   let turnTools = [];
+  // Shared by the user's line and the reply it produced (see recent.js).
+  let currentTurnId = "";
   const flushModelTurn = () => {
     const t = modelBuf.trim();
     modelBuf = "";
@@ -453,6 +457,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         source: "live",
         tools,
         appBuild: deviceCtx.build,
+        turnId: currentTurnId,
       });
     }
   };

@@ -219,6 +219,9 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   // Response-time measurement for the admin panel: wall clock from the
   // moment the turn enters the runtime to the moment its answer is ready.
   const turnStartedAt = Date.now();
+  // One id shared by this turn's question and its answer, so the admin
+  // panel can never pair an answer with somebody else's question.
+  const turnId = require("crypto").randomUUID();
   // WHO the user is, WHO the assistant is, and the user's STANDING RULES
   // sit in front of every decision — this is the judgment layer (§13/§14).
   if (ctx.userId && ctx.extraSystem === undefined) {
@@ -313,6 +316,7 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
           source: ctx.source || (ctx.background ? "background" : "voice"),
           tools: toolResults.map((t) => t.name).filter(Boolean),
           appBuild: ctx.appBuild,
+          turnId,
         };
         recent.append(ctx.userId, "user", userText, { ...meta, latencyMs: 0 });
         recent.append(ctx.userId, "assistant", finalText, meta);
@@ -395,6 +399,7 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
     source: ctx.source || (ctx.background ? "background" : "voice"),
     tools: toolResults.map((t) => t.name).filter(Boolean),
     appBuild: ctx.appBuild,
+    turnId,
   };
   recent.append(ctx.userId, "user", userText, { ...meta, latencyMs: 0 });
   recent.append(ctx.userId, "assistant", finalText, meta);
