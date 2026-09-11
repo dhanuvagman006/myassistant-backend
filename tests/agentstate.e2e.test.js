@@ -1283,6 +1283,37 @@ console.log("\nexecution record");
       "a truncated image still counts as a success");
   });
 
+  await atest("a celebrity profile opens the profile, not a search", async () => {
+    // "open Neha Shetty's Instagram" opened image results, because a name
+    // with a space never looked like a handle and Instagram has no
+    // external search deep link at all.
+    const ctx = { userId: USER_A, inputQuality: { quality: "clear" } };
+    const byHandle = await registry.execute("open_app",
+      { app: "instagram", handle: "nehashetty" }, ctx);
+    assert.strictEqual(byHandle.data.mode, "profile");
+    assert.strictEqual(byHandle.data.url, "https://www.instagram.com/nehashetty/");
+    assert.match(byHandle.speak, /profile/i);
+
+    // A bare one-word query IS a handle — that shape must still work.
+    const bare = await registry.execute("open_app",
+      { app: "instagram", query: "nehashetty" }, ctx);
+    assert.strictEqual(bare.data.mode, "profile");
+
+    // Other platforms get real profile URLs too, not just Instagram.
+    const x = await registry.execute("open_app", { app: "x", handle: "imVkohli" }, ctx);
+    assert.strictEqual(x.data.url, "https://x.com/imVkohli");
+    const yt = await registry.execute("open_app", { app: "youtube", handle: "MrBeast" }, ctx);
+    assert.strictEqual(yt.data.url, "https://www.youtube.com/@MrBeast");
+
+    // A NAME with no handle still falls back to search — but says so, and
+    // tells the model how to do better rather than silently pretending.
+    const byName = await registry.execute("open_app",
+      { app: "instagram", query: "Neha Shetty" }, ctx);
+    assert.strictEqual(byName.data.mode, "search");
+    assert.match(byName.note, /call this again with handle set/i);
+    assert.match(byName.speak, /can't be searched/i);
+  });
+
   test("the image provider chain is inert without keys, and ordered", () => {
     const imagegen = require("../src/services/imagegen");
     const now = imagegen.configuredProviders();

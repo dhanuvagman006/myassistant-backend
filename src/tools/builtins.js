@@ -2541,10 +2541,18 @@ function registerBuiltins() {
   registry.register({
     name: "open_app",
     description:
-      "Open an app on the user's phone, optionally at a profile or search — " +
-      "'open Instagram', 'show me Neha Shetty's Instagram', 'open WhatsApp', " +
-      "'show me images of X' (use instagram/google_images as fitting). " +
-      "This DOES open the app on their phone; say you're opening it.",
+      "Open an app on the user's phone, optionally straight at a PERSON'S " +
+      "PROFILE or a search — 'open Instagram', 'open Neha Shetty's " +
+      "Instagram', 'show me Virat Kohli on X', 'open WhatsApp'. This DOES " +
+      "open the app on their phone; say you're opening it.\n" +
+      "OPENING SOMEONE'S PROFILE: pass `handle`, not `query`. You know most " +
+      "public figures' usernames — Neha Shetty is nehashetty, Virat Kohli is " +
+      "virat.kohli, Shah Rukh Khan is iamsrk — and a handle opens their " +
+      "actual profile. `query` only searches, and Instagram cannot be " +
+      "searched from outside the app at all, so a name in `query` lands on " +
+      "image results instead of the person. Use your own knowledge of the " +
+      "handle; if you genuinely do not know it, say so and offer to search " +
+      "rather than guessing one.",
     risk: "low",
     deviceAction: true,
     inputSchema: {
@@ -2555,9 +2563,19 @@ function registerBuiltins() {
           enum: ["instagram", "facebook", "x", "linkedin", "whatsapp", "maps",
                  "gmail", "google_images", "google", "youtube", "spotify"],
         },
+        handle: {
+          type: "string",
+          description:
+            "The person's USERNAME on that platform, without the @ — " +
+            "'nehashetty', 'virat.kohli', 'iamsrk'. This opens their profile " +
+            "directly. Prefer it over query whenever the request names a " +
+            "person and you know their handle.",
+        },
         query: {
           type: "string",
-          description: "A profile name, or what to search for. Omit to just open the app.",
+          description:
+            "What to SEARCH for. Use only when there is no specific person, " +
+            "or when you do not know their handle.",
         },
       },
       required: ["app"],
@@ -2565,52 +2583,101 @@ function registerBuiltins() {
     async execute(args) {
       const q = String(args.query || "").trim();
       const enc = encodeURIComponent(q);
-      const handle = q.replace(/\s+/g, "").toLowerCase();
+      // A handle the model supplied wins. Failing that, a single-token
+      // query IS a handle — "open instagram nehashetty" arrives that way.
+      const raw = String(args.handle || "").trim().replace(/^@/, "");
+      const handle = /^[a-z0-9._]{2,30}$/i.test(raw)
+        ? raw
+        : /^@?[a-z0-9._]{2,30}$/i.test(q) && !/\s/.test(q)
+          ? q.replace(/^@/, "")
+          : "";
+
       // Web URLs, not app-scheme links: Android hands these to the installed
       // app when it is there and to the browser when it is not, so the user
       // never lands on a dead "can't open" screen.
-      // INSTAGRAM has no deep link for a SEARCH — handing it a search URL
-      // just opens the app's home feed, which is what testers saw ("it
-      // only opens Instagram"). A profile URL does open the profile in
-      // the app, so: an explicit handle goes straight there, while a
-      // person's name (which we cannot resolve to a handle) goes to
-      // image results limited to instagram.com, which is what "show me
-      // photos of X from Instagram" actually asks for.
-      const looksLikeHandle = /^@?[a-z0-9._]{2,30}$/i.test(q) && !/\s/.test(q);
-      const instagram = !q
-        ? "https://www.instagram.com/"
-        : looksLikeHandle
-          ? `https://www.instagram.com/${q.replace(/^@/, "")}/`
-          : `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(q + " site:instagram.com")}`;
-      const URLS = {
-        instagram,
-        facebook: q ? `https://www.facebook.com/search/top?q=${enc}` : "https://www.facebook.com/",
-        x: q ? `https://x.com/search?q=${enc}` : "https://x.com/",
-        linkedin: q ? `https://www.linkedin.com/search/results/all/?keywords=${enc}` : "https://www.linkedin.com/",
-        whatsapp: "https://web.whatsapp.com/",
-        maps: q ? `https://www.google.com/maps/search/${enc}` : "https://www.google.com/maps",
-        gmail: "https://mail.google.com/",
-        google_images: `https://www.google.com/search?tbm=isch&q=${enc}`,
-        google: `https://www.google.com/search?q=${enc}`,
-        youtube: q ? `https://www.youtube.com/results?search_query=${enc}` : "https://www.youtube.com/",
-        spotify: q ? `https://open.spotify.com/search/${enc}` : "https://open.spotify.com/",
+      //
+      // A PROFILE URL OPENS THE PROFILE; a search URL mostly does not.
+      // Instagram has no external search deep link at all — handing it one
+      // opens the home feed, which is what testers kept reporting as "it
+      // only opens Instagram". So every platform that has a profile URL
+      // shape now gets one when a handle is known, and only falls back to
+      // search when it is not.
+      const PROFILE = {
+        instagram: (h) => `https://www.instagram.com/${h}/`,
+        x: (h) => `https://x.com/${h}`,
+        facebook: (h) => `https://www.facebook.com/${h}`,
+        linkedin: (h) => `https://www.linkedin.com/in/${h}`,
+        youtube: (h) => `https://www.youtube.com/@${h}`,
+        spotify: null, // spotify handles are opaque ids, not usernames
       };
-      const url = URLS[args.app];
-      if (!url) return { ok: false, error: `unknown app ${args.app}` };
-      const label = args.app === "google_images" ? "image search" : args.app;
-      // Say what will ACTUALLY appear. Promising "Neha Shetty on
-      // Instagram" and delivering the app's home feed is the kind of small
-      // lie that erodes trust.
-      const viaSearch = args.app === "instagram" && q && !looksLikeHandle;
+      const SEARCH = {
+        instagram: (t) =>
+          // No external search exists, so this is deliberately image
+          // results scoped to the site rather than a pretend search.
+          `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(t + " site:instagram.com")}`,
+        facebook: (t) => `https://www.facebook.com/search/top?q=${encodeURIComponent(t)}`,
+        x: (t) => `https://x.com/search?q=${encodeURIComponent(t)}`,
+        linkedin: (t) => `https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(t)}`,
+        maps: (t) => `https://www.google.com/maps/search/${encodeURIComponent(t)}`,
+        google_images: (t) => `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(t)}`,
+        google: (t) => `https://www.google.com/search?q=${encodeURIComponent(t)}`,
+        youtube: (t) => `https://www.youtube.com/results?search_query=${encodeURIComponent(t)}`,
+        spotify: (t) => `https://open.spotify.com/search/${encodeURIComponent(t)}`,
+      };
+      const HOME = {
+        instagram: "https://www.instagram.com/",
+        facebook: "https://www.facebook.com/",
+        x: "https://x.com/",
+        linkedin: "https://www.linkedin.com/",
+        whatsapp: "https://web.whatsapp.com/",
+        maps: "https://www.google.com/maps",
+        gmail: "https://mail.google.com/",
+        google_images: "https://www.google.com/",
+        google: "https://www.google.com/",
+        youtube: "https://www.youtube.com/",
+        spotify: "https://open.spotify.com/",
+      };
+
+      const app = args.app;
+      if (!HOME[app]) return { ok: false, error: `unknown app ${app}` };
+
+      let url;
+      let mode;
+      if (handle && PROFILE[app]) {
+        url = PROFILE[app](handle);
+        mode = "profile";
+      } else if (q && SEARCH[app]) {
+        url = SEARCH[app](q);
+        mode = "search";
+      } else {
+        url = HOME[app];
+        mode = "home";
+      }
+
+      const label = app === "google_images" ? "image search" : app;
+      // Say what will ACTUALLY appear. Promising "Neha Shetty on Instagram"
+      // and delivering the app's home feed is the kind of small lie that
+      // erodes trust.
+      const speak =
+        mode === "profile"
+          ? `Opening ${handle}'s ${label} profile.`
+          : mode === "search"
+            ? app === "instagram"
+              ? `Instagram can't be searched from outside the app, so here are ${q}'s Instagram photos.`
+              : `Opening ${label} for ${q}.`
+            : `Opening ${label}.`;
+
       return {
         ok: true,
-        data: { url, viaSearch },
+        data: { url, mode, handle: handle || null },
         deviceAction: { type: "open_url", url },
-        speak: viaSearch
-          ? `Instagram can't be searched from outside the app, so here are ${q}'s Instagram photos.`
-          : q
-            ? `Opening ${label} for ${q}.`
-            : `Opening ${label}.`,
+        speak,
+        note:
+          mode === "search" && PROFILE[app]
+            ? `This is a SEARCH, not ${q}'s profile — no handle was given. If ` +
+              `you know their username, call this again with handle set and it ` +
+              `will open the real profile.`
+            : undefined,
       };
     },
   });

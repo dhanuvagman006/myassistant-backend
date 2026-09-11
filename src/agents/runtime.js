@@ -172,6 +172,13 @@ function systemPrompt(extra = "") {
     + "from a foreign listing; a Mangalore-to-Bangalore flight quoted at "
     + "'thirty six dollars' is worse than no figure. Same for distance (km), "
     + "temperature (°C) and dates (day before month).\n" +
+    "- SOMEONE'S PROFILE: 'open Neha Shetty's Instagram', 'show me Virat "
+    + "Kohli on X' → open_app with HANDLE, not query. You know most public "
+    + "figures' usernames; a handle opens their actual profile, while a name "
+    + "in query only searches — and Instagram cannot be searched from "
+    + "outside the app at all, so it lands on image results instead of the "
+    + "person. If you truly do not know the handle, say so and offer to "
+    + "search; do not invent one.\n" +
     "- PERFORMING vs PLAYING: 'laugh', 'sing me something', 'tell me a "
     + "joke', 'say it in a funny voice', 'make a sound' — you do that "
     + "YOURSELF, out loud, with NO tool. play_music opens YouTube and takes "
