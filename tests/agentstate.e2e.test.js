@@ -897,6 +897,85 @@ console.log("\nexecution record");
     assert.strictEqual(actions.intentKindOf("recall_memory"), "recall");
   });
 
+  /* ================================================================ */
+  /* 15. CAPABILITIES THAT DID NOT EXIST                              */
+  /*     Reading a page, changing the calendar, real research.        */
+  /* ================================================================ */
+  console.log("\nnew capabilities");
+
+  await atest("read_webpage returns the page's real text", async () => {
+    const res = await registry.execute(
+      "read_webpage",
+      { url: "https://example.com" },
+      { userId: USER_A, inputQuality: { quality: "clear" } }
+    );
+    assert.strictEqual(res.ok, true, res.error || "");
+    assert.match(res.data.title, /Example/i);
+    assert.match(res.data.text, /domain/i, "the body text was not extracted");
+    assert.ok(!/<[a-z]/i.test(res.data.text), "markup leaked into the text");
+  });
+
+  await atest("read_webpage refuses a URL it cannot read, without inventing", async () => {
+    const bad = await registry.execute(
+      "read_webpage",
+      { url: "not-a-url" },
+      { userId: USER_A, inputQuality: { quality: "clear" } }
+    );
+    assert.strictEqual(bad.ok, false);
+    assert.match(bad.error, /http/i);
+  });
+
+  test("the calendar can be changed, not only read", () => {
+    for (const name of ["list_calendar_events", "create_calendar_event",
+                        "update_calendar_event", "delete_calendar_event"]) {
+      assert.ok(registry.get(name), `${name} is not registered`);
+    }
+    // Cancelling the wrong meeting cannot be undone from here.
+    assert.strictEqual(registry.get("delete_calendar_event").risk, "high",
+      "deleting an event does not ask first");
+    assert.strictEqual(typeof registry.get("delete_calendar_event").confirmSummary,
+      "function", "the confirmation card has nothing to say");
+  });
+
+  await atest("the calendar says it is not connected rather than guessing", async () => {
+    // USER_A has no Google link. The failure has to be legible, not a
+    // silent empty list that reads as "your day is free".
+    const res = await registry.execute(
+      "list_calendar_events", {},
+      { userId: USER_A, inputQuality: { quality: "clear" } }
+    );
+    assert.strictEqual(res.ok, false);
+    assert.strictEqual(res.error, "google_not_linked");
+    assert.match(res.data.hint, /do NOT invent/i);
+  });
+
+  await atest("deep_research starts a job and claims nothing yet", async () => {
+    const tool = registry.get("deep_research");
+    if (!tool || (tool.available && tool.available() === false)) {
+      console.log("      (skipped — no search provider configured)");
+      return;
+    }
+    const res = await registry.execute(
+      "deep_research",
+      { question: "compare the cost of running k3s versus managed kubernetes" },
+      { userId: USER_A, inputQuality: { quality: "clear" } }
+    );
+    assert.strictEqual(res.ok, true, res.error || "");
+    assert.strictEqual(res.data.status, "started");
+    assert.strictEqual(res.speak, "", "it spoke findings it does not have");
+    assert.match(res.note, /Do NOT state any findings/i);
+  });
+
+  test("deep_research runs out of the turn, on the job queue", () => {
+    const jobs = require("../src/infra/jobs");
+    require("../src/infra/handlers").install();
+    const names = jobs.HANDLERS instanceof Map
+      ? [...jobs.HANDLERS.keys()]
+      : Object.keys(jobs.HANDLERS);
+    assert.ok(names.includes("deep_research"),
+      "nothing would ever run the research job");
+  });
+
   /* ---------------------------------------------------------------- */
   console.log("");
   for (const uid of [USER_A, USER_B]) {

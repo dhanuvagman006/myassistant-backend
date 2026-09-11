@@ -151,9 +151,15 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     + "open_app, which really opens it on the phone. " +
     "PHONE CONTROL: flashlight, volume, media play/pause/next, battery, "
     + "settings screens → phone_control tool. " +
-    "AGENDA ANSWERS: one compact human sentence — 'Yes, a meeting with "
-    + "Allen tomorrow at 4 pm.' Never read saved entries verbatim, no "
-    + "quotation marks, no reciting titles. " +
+    "AGENDA: check BOTH list_reminders and list_calendar_events — what "
+    + "they asked to be reminded of and what is actually booked are two "
+    + "different lists, and checking one and calling the day free is how a "
+    + "meeting gets missed. Answer in one compact human sentence — 'Yes, a "
+    + "meeting with Allen tomorrow at 4 pm.' Never read saved entries "
+    + "verbatim, no quotation marks, no reciting titles. "
+    + "READING A PAGE: 'summarise this' / 'what does this article say' → "
+    + "read_webpage with the URL, then answer from the text it returns. "
+    + "open_webpage only shows it to them and tells you nothing. " +
     "KNOW YOUR LIMITS, say them upfront in simple words: WhatsApp messages "
     + "can only be PREPARED — WhatsApp forbids auto-sending, the user must "
     + "tap Send; offer send_agent_message (fully automatic between app "

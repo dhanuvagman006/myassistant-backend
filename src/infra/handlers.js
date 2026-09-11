@@ -323,9 +323,143 @@ async function notify(userId, title, body) {
   }
 }
 
+/**
+ * DEEP RESEARCH — a question worth more than one search.
+ *
+ * Runs as a JOB, never inside a turn. Six searches and a synthesis take
+ * thirty to sixty seconds, and a voice conversation cannot be held open
+ * that long: the user would sit in silence and conclude it had crashed.
+ * So the turn says it is working on it, this produces a written brief,
+ * saves it to their documents, and a push tells them it is ready.
+ *
+ * Every claim in the brief carries the source it came from. A research
+ * brief that blends the model's own recollection into cited findings is
+ * worse than no brief, because it reads as if it were all sourced.
+ */
+async function deepResearch(payload = {}) {
+  const userId = Number(payload.userId);
+  const question = String(payload.question || "").trim();
+  if (!Number.isInteger(userId) || userId <= 0 || !question) return;
+
+  const search = require("../tools/webSearch");
+  const ai = require("../services/ai/router");
+  const store = require("../actions/store");
+  const started = Date.now();
+
+  const fail = async (why) => {
+    store.record(userId, {
+      tool: "deep_research", args: { question }, ok: false, world: false,
+      intent: question, detail: why, result: why, surface: "background",
+      decision: "ran", ms: Date.now() - started,
+    });
+    await notify(userId, "Research didn't finish", why);
+  };
+
+  try {
+    // 1. Break the question up. Several angles find things one query does
+    //    not — and the search cache is keyed on the query, so varied
+    //    sub-questions also mean genuinely fresh results.
+    let subs = [];
+    try {
+      const { reply } = await ai.generateReply(
+        [{ role: "user", content:
+          `Break this research question into 3 to 6 distinct web search ` +
+          `queries that together answer it. Cover different angles, not ` +
+          `rephrasings.\n\nQuestion: "${question}"\n\n` +
+          `Reply with ONLY a JSON object: {"queries":["...","..."]}` }],
+        { system: "You plan web research. You reply with JSON and nothing else." }
+      );
+      const m = /\{[\s\S]*\}/.exec(String(reply || ""));
+      const plan = m ? JSON.parse(m[0]) : null;
+      subs = Array.isArray(plan?.queries) ? plan.queries.filter(Boolean).slice(0, 6) : [];
+    } catch (_) {}
+    if (!subs.length) subs = [question];
+
+    // 2. Search them all at once.
+    const results = await Promise.all(
+      subs.map((q) =>
+        search.run(q).then((r) => ({ q, r })).catch(() => ({ q, r: null }))
+      )
+    );
+    const sources = [];
+    for (const { q, r } of results) {
+      // webSearch.run returns its hits as `data` directly — an array, not
+      // an envelope. Reading data.results would have found nothing.
+      const items = r && r.ok && Array.isArray(r.data) ? r.data : [];
+      for (const it of items.slice(0, 5)) {
+        const url = it && (it.url || it.link);
+        if (!url) continue;
+        sources.push({
+          query: q,
+          title: String(it.title || "").slice(0, 200),
+          snippet: String(it.snippet || it.description || "").slice(0, 400),
+          url: String(url).slice(0, 400),
+        });
+      }
+    }
+    if (!sources.length) {
+      return fail("No search provider returned anything for that question.");
+    }
+
+    // 3. One synthesis over everything found.
+    const numbered = sources
+      .map((sc, i) => `[${i + 1}] ${sc.title}\n${sc.snippet}\n${sc.url}`)
+      .join("\n\n");
+    const { reply: brief } = await ai.generateReply(
+      [{ role: "user", content:
+      `Write a research brief answering: "${question}"\n\n` +
+      `Use ONLY the sources below. Cite them inline as [1], [2] and so on. ` +
+      `Where sources disagree, say so and cite both. Where the sources do ` +
+      `not answer part of the question, say that plainly instead of filling ` +
+      `the gap from your own knowledge — an unsourced sentence in a cited ` +
+      `brief is worse than an admitted gap.\n\n` +
+      `Structure: a two-sentence answer first, then the findings as short ` +
+      `paragraphs, then "Sources" listing each number with its URL.\n\n` +
+      `SOURCES:\n${numbered}` }],
+      { system:
+        "You write sourced research briefs. Every claim carries the number " +
+        "of the source it came from. You never add a fact the sources do " +
+        "not contain." }
+    );
+    const text = String(brief || "").trim();
+    if (text.length < 80) return fail("The research came back empty.");
+
+    // 4. Keep it where they keep everything else.
+    const docs = require("../docs/store");
+    const stamp = new Date().toISOString().slice(0, 10);
+    const title = `Research: ${short(question)}`;
+    const row = await docs.createDocument(userId, {
+      buffer: Buffer.from(
+        `${title}\n${stamp}\n\n${text}\n`, "utf8"
+      ),
+      filename: `research-${stamp}.txt`,
+      mime: "text/plain",
+      note: question,
+    });
+    try {
+      await docs.setMetadata(userId, row.id, {
+        title, category: "other", docDate: stamp,
+        summary: text.slice(0, 1000), tags: "research", fullText: text,
+      });
+    } catch (_) {}
+
+    store.record(userId, {
+      tool: "deep_research", args: { question }, ok: true, world: false,
+      intent: question, surface: "background", decision: "ran",
+      ms: Date.now() - started,
+      result: `${sources.length} sources across ${subs.length} searches → document ${row.id}`,
+      reply: text.slice(0, 600),
+    });
+    await notify(userId, "Your research is ready", short(question));
+  } catch (e) {
+    await fail(String(e.message).slice(0, 160));
+  }
+}
+
 function install() {
   jobs.register("document.index", documentIndex);
   jobs.register("scheduled_task", scheduledTask);
+  jobs.register("deep_research", deepResearch);
 }
 
 module.exports = { install };

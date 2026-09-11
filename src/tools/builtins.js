@@ -2551,6 +2551,384 @@ function registerBuiltins() {
       return search.run(args.query);
     },
   });
+  /* ---------------------------------------------------------------- */
+  /* CALENDAR                                                          */
+  /*                                                                   */
+  /* Creating an event used to be a REGEX INTENT wired into the SSE    */
+  /* path alone, so the app's main screen — live mode — could not put  */
+  /* anything in the diary at all. Nothing could change or cancel an   */
+  /* event, and "what's on today" read the reminders table and never   */
+  /* the calendar, so a meeting the user could see in Google was       */
+  /* invisible to the assistant that was supposed to know their day.   */
+  /*                                                                   */
+  /* Editing and cancelling resolve the event FIRST and refuse when    */
+  /* more than one matches — the same discipline update_reminder uses. */
+  /* Guessing which meeting to delete is not a recoverable mistake.    */
+  /* ---------------------------------------------------------------- */
+
+  const googleLinked = async (userId) => {
+    try {
+      return Boolean(await require("../google/tokens").accessToken(userId));
+    } catch (_) {
+      return false;
+    }
+  };
+  const NOT_LINKED = {
+    ok: false,
+    error: "google_not_linked",
+    data: {
+      hint:
+        "Their Google account is not connected, so the calendar cannot be " +
+        "reached. Say that plainly and offer to set it up in Settings — do " +
+        "NOT invent what is on their calendar.",
+    },
+  };
+
+  /** Match an upcoming event by what the user called it. */
+  async function findEvent(userId, { title, day }) {
+    const gapi = require("../google/api");
+    const events = (await gapi.upcomingEvents(userId, { days: 30, max: 50 })) || [];
+    const q = String(title || "").trim().toLowerCase();
+    let pool = events;
+    if (day) {
+      const d = String(day).slice(0, 10);
+      pool = pool.filter((e) => String(e.start || "").slice(0, 10) === d);
+    }
+    if (q) {
+      const exact = pool.filter((e) => e.title.toLowerCase() === q);
+      pool = exact.length ? exact : pool.filter((e) => e.title.toLowerCase().includes(q));
+    }
+    return pool;
+  }
+
+  registry.register({
+    name: "list_calendar_events",
+    description:
+      "The user's actual CALENDAR — meetings and appointments from Google. " +
+      "list_reminders covers what they asked to be reminded of; this covers " +
+      "what is booked. For 'what does my day look like', 'am I free at 4', " +
+      "'what's my schedule tomorrow', check BOTH.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        days: { type: "integer", description: "How many days ahead to look (default 7)." },
+      },
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      if (!(await googleLinked(ctx.userId))) return NOT_LINKED;
+      const gapi = require("../google/api");
+      const days = Math.min(Math.max(Number(args.days) || 7, 1), 60);
+      const events = await gapi.upcomingEvents(ctx.userId, { days, max: 25 });
+      if (events === null) return NOT_LINKED;
+      return {
+        ok: true,
+        data: { events, days },
+        speak: events.length ? "" : "Nothing on the calendar for that stretch.",
+        note: "Answer ONLY from these entries. An empty list means nothing is booked.",
+      };
+    },
+  });
+
+  registry.register({
+    name: "create_calendar_event",
+    description:
+      "Put a meeting or appointment in the user's Google Calendar. Use for " +
+      "'book', 'schedule', 'put in my diary', 'add a meeting'. For something " +
+      "they just want to be reminded about, use create_reminder instead.",
+    risk: "medium",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "What the event is called." },
+        start: { type: "string", description: "Start, ISO 8601 with the user's offset, e.g. 2026-09-12T16:00:00+05:30." },
+        end: { type: "string", description: "End, same format. Defaults to an hour after the start." },
+        location: { type: "string" },
+        description: { type: "string" },
+      },
+      required: ["title", "start"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      if (!(await googleLinked(ctx.userId))) return NOT_LINKED;
+      const startMs = Date.parse(args.start);
+      if (!Number.isFinite(startMs)) {
+        return { ok: false, error: "I could not read that start time" };
+      }
+      const endMs = Date.parse(args.end);
+      const gapi = require("../google/api");
+      let ev;
+      try {
+        ev = await gapi.createEvent(ctx.userId, {
+          title: args.title,
+          startMs,
+          endMs: Number.isFinite(endMs) ? endMs : startMs + 36e5,
+          location: args.location,
+          description: args.description,
+        });
+      } catch (e) {
+        return { ok: false, error: String(e.message).slice(0, 160) };
+      }
+      if (!ev) return NOT_LINKED;
+      return { ok: true, data: { event: ev, title: args.title, start: args.start } };
+    },
+  });
+
+  registry.register({
+    name: "update_calendar_event",
+    description:
+      "Move or change an existing calendar event — 'push the 4 o'clock to 5', " +
+      "'rename tomorrow's meeting', 'change where it is'. Identify it by what " +
+      "the user calls it; if more than one matches you will be told, and you " +
+      "must ask which one rather than picking.",
+    risk: "medium",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "What the event is called, or part of it." },
+        day: { type: "string", description: "The event's date as YYYY-MM-DD, to narrow it down." },
+        new_title: { type: "string" },
+        new_start: { type: "string", description: "New start, ISO 8601 with offset." },
+        new_end: { type: "string", description: "New end, ISO 8601 with offset." },
+        new_location: { type: "string" },
+      },
+      required: ["title"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      if (!(await googleLinked(ctx.userId))) return NOT_LINKED;
+      const matches = await findEvent(ctx.userId, { title: args.title, day: args.day });
+      if (!matches.length) {
+        return {
+          ok: false,
+          error: "no_such_event",
+          data: { hint: "Nothing upcoming matches that. Say so; do not invent an event." },
+        };
+      }
+      if (matches.length > 1) {
+        return {
+          ok: false,
+          error: "ambiguous_event",
+          data: {
+            matches: matches.slice(0, 5),
+            hint: "ASK which one. Do NOT change any of them until they say.",
+          },
+        };
+      }
+      const ev = matches[0];
+      const patch = {};
+      if (args.new_title) patch.summary = String(args.new_title).slice(0, 200);
+      if (args.new_location) patch.location = String(args.new_location).slice(0, 200);
+      const s2 = Date.parse(args.new_start);
+      const e2 = Date.parse(args.new_end);
+      if (Number.isFinite(s2)) patch.start = { dateTime: new Date(s2).toISOString() };
+      if (Number.isFinite(e2)) patch.end = { dateTime: new Date(e2).toISOString() };
+      else if (Number.isFinite(s2)) {
+        // Moving the start alone would otherwise leave the old end behind
+        // and produce a meeting that ends before it begins.
+        const oldLen = ev.end && ev.start
+          ? Math.max(Date.parse(ev.end) - Date.parse(ev.start), 0) : 36e5;
+        patch.end = { dateTime: new Date(s2 + (oldLen || 36e5)).toISOString() };
+      }
+      if (!Object.keys(patch).length) {
+        return { ok: false, error: "nothing to change — say what should be different" };
+      }
+      try {
+        await require("../google/api").updateEvent(ctx.userId, ev.id, patch);
+      } catch (e) {
+        return { ok: false, error: String(e.message).slice(0, 160) };
+      }
+      return { ok: true, data: { was: ev, changed: patch } };
+    },
+  });
+
+  registry.register({
+    name: "delete_calendar_event",
+    description:
+      "Cancel an event in the user's calendar — 'cancel tomorrow's dentist', " +
+      "'drop the 3pm'. Identify it by what they call it. If more than one " +
+      "matches you must ask which, never guess: cancelling the wrong meeting " +
+      "cannot be undone from here.",
+    risk: "high",
+    confirmSummary: (a) => `Cancel "${a.title}"${a.day ? ` on ${a.day}` : ""}?`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "What the event is called, or part of it." },
+        day: { type: "string", description: "The event's date as YYYY-MM-DD, to narrow it down." },
+      },
+      required: ["title"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      if (!(await googleLinked(ctx.userId))) return NOT_LINKED;
+      const matches = await findEvent(ctx.userId, { title: args.title, day: args.day });
+      if (!matches.length) {
+        return {
+          ok: false,
+          error: "no_such_event",
+          data: { hint: "Nothing upcoming matches that. Say so; do not invent an event." },
+        };
+      }
+      if (matches.length > 1) {
+        return {
+          ok: false,
+          error: "ambiguous_event",
+          data: {
+            matches: matches.slice(0, 5),
+            hint: "ASK which one. Nothing has been cancelled.",
+          },
+        };
+      }
+      const ev = matches[0];
+      try {
+        await require("../google/api").deleteEvent(ctx.userId, ev.id);
+      } catch (e) {
+        return { ok: false, error: String(e.message).slice(0, 160) };
+      }
+      return { ok: true, data: { cancelled: ev }, speak: `Cancelled ${ev.title}.` };
+    },
+  });
+
+  registry.register({
+    name: "deep_research",
+    // Pointless without a search provider — hide it rather than promise it.
+    available: () => Boolean(require("./webSearch").provider()),
+    description:
+      "Research a question properly: several searches from different angles, " +
+      "then a written brief with its sources, saved to the user's documents. " +
+      "Use for 'research X', 'find out everything about Y', 'compare A and B' " +
+      "— questions where one search result is not an answer. It takes about a " +
+      "minute and finishes AFTER this conversation: tell the user it is being " +
+      "worked on and that you will let them know, then move on. Never wait " +
+      "for it and never describe findings you have not been given.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        question: { type: "string", description: "The research question, in full." },
+      },
+      required: ["question"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const question = String(args.question || "").trim();
+      if (question.length < 8) {
+        return { ok: false, error: "that is too short to research — what exactly should I look into?" };
+      }
+      try {
+        await require("../infra/jobs").enqueue(
+          "deep_research", { userId: ctx.userId, question }, { userId: ctx.userId }
+        );
+      } catch (e) {
+        return { ok: false, error: `could not start the research: ${String(e.message).slice(0, 120)}` };
+      }
+      return {
+        ok: true,
+        data: { question, status: "started" },
+        speak: "",
+        note:
+          "STARTED, not finished. Tell the user you are researching it and " +
+          "will put a brief in their documents in a minute or so. Do NOT " +
+          "state any findings — you have none yet.",
+      };
+    },
+  });
+
+  registry.register({
+    name: "read_webpage",
+    description:
+      "Read the actual TEXT of a web page so you can summarise it, answer a " +
+      "question about it, pull a figure out of it, or translate it. Use this " +
+      "whenever the user asks what a page or article SAYS — 'summarise this', " +
+      "'what does this article say', 'what's the price on that page'. " +
+      "web_search gives you titles and snippets; this gives you the page. " +
+      "open_webpage only puts it on their screen and tells you nothing.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Full http(s) URL of the page to read." },
+      },
+      required: ["url"],
+    },
+    async execute(args) {
+      const url = String(args.url || "").trim();
+      if (!/^https?:\/\//i.test(url)) {
+        return { ok: false, error: "need a full http(s) URL" };
+      }
+      let html, mime;
+      try {
+        const r = await fetch(url, {
+          redirect: "follow",
+          headers: {
+            "user-agent": "Mozilla/5.0 (Android) MyAssistant/1.0",
+            accept: "text/html,application/xhtml+xml",
+          },
+          signal: AbortSignal.timeout(20000),
+        });
+        if (!r.ok) return { ok: false, error: `the site returned ${r.status}` };
+        mime = String(r.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+        if (mime && !/^text\/(html|plain)$|xhtml/.test(mime)) {
+          return {
+            ok: false,
+            error: `that link is a ${mime} file, not a readable page`,
+            data: {
+              hint: mime === "application/pdf"
+                ? "offer save_web_document to keep the PDF instead"
+                : "say plainly that it is not a page you can read",
+            },
+          };
+        }
+        // Cap the DOWNLOAD, not just the extract: a 50 MB page must not
+        // be pulled into memory to produce 8 kB of text.
+        const reader = r.body.getReader();
+        const chunks = [];
+        let size = 0;
+        while (size < 3 * 1024 * 1024) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          size += value.length;
+        }
+        try { await reader.cancel(); } catch (_) {}
+        html = Buffer.concat(chunks.map(Buffer.from)).toString("utf8");
+      } catch (e) {
+        return { ok: false, error: `could not read it: ${String(e.message).slice(0, 120)}` };
+      }
+
+      const text = extractReadableText(html);
+      if (text.length < 40) {
+        return {
+          ok: false,
+          error: "that page had almost no readable text",
+          data: {
+            hint:
+              "It is probably rendered by JavaScript or behind a login. Say so " +
+              "plainly and offer to open it on their screen instead — do NOT " +
+              "summarise it from the title or from memory.",
+          },
+        };
+      }
+      const title = (/<title[^>]*>([\s\S]{1,300}?)<\/title>/i.exec(html) || [])[1];
+      return {
+        ok: true,
+        data: {
+          url,
+          title: decodeEntities(String(title || "").trim()).slice(0, 200),
+          text: text.slice(0, 8000),
+          truncated: text.length > 8000,
+        },
+        speak: "",
+        note:
+          "This is the page's real text. Answer from IT, not from what you " +
+          "already believed about the page. If it does not contain the answer, " +
+          "say that rather than filling the gap.",
+      };
+    },
+  });
+
   registry.register({
     name: "get_horoscope",
     description: "Get daily astrological horoscope predictions for a given zodiac sign using an external astrology API.",
@@ -4615,6 +4993,45 @@ function parseWhenMs(when, tzOffsetMin) {
   } catch (_) {
     return null;
   }
+}
+
+
+/**
+ * Readable text out of an HTML document, without a parser dependency.
+ *
+ * Deliberately crude and deliberately ordered: script, style, nav, header,
+ * footer and aside go FIRST, because their content is the noise that
+ * otherwise dominates a news page and pushes the article out of the 8 kB
+ * budget. What remains collapses to paragraphs.
+ */
+function extractReadableText(html) {
+  let h = String(html || "");
+  h = h.replace(/<!--[\s\S]*?-->/g, " ");
+  h = h.replace(/<(script|style|noscript|svg|iframe|form|template)\b[\s\S]*?<\/\1>/gi, " ");
+  h = h.replace(/<(nav|header|footer|aside)\b[\s\S]*?<\/\1>/gi, " ");
+  // Block edges become line breaks so sentences do not fuse across them.
+  h = h.replace(/<\/(p|div|section|article|li|h[1-6]|tr|blockquote)>/gi, "\n");
+  h = h.replace(/<br\s*\/?>/gi, "\n");
+  h = h.replace(/<[^>]+>/g, " ");
+  h = decodeEntities(h);
+  return h
+    .split("\n")
+    .map((line) => line.replace(/[ \t\u00a0]+/g, " ").trim())
+    .filter((line) => line.length > 1)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function decodeEntities(t) {
+  return String(t || "")
+    .replace(/&(amp|lt|gt|quot|#39|apos|nbsp|mdash|ndash|hellip|rsquo|lsquo|ldquo|rdquo);/g,
+      (_, e) => ({
+        amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'", apos: "'",
+        nbsp: " ", mdash: "—", ndash: "–", hellip: "…",
+        rsquo: "\u2019", lsquo: "\u2018", ldquo: "\u201c", rdquo: "\u201d",
+      })[e] || " ")
+    .replace(/&#x?[0-9a-f]+;/gi, " ");
 }
 
 module.exports = { registerBuiltins };

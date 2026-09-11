@@ -142,13 +142,17 @@ async function gsend(userId, url, method, body) {
     method,
     headers: {
       authorization: `Bearer ${at}`,
-      "content-type": "application/json",
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
     },
-    body: JSON.stringify(body),
+    // A DELETE carries no body, and Google rejects one that does.
+    body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(TIMEOUT),
   });
   if (r.status === 403) throw new Error("google scope missing (reconnect Google to grant it)");
+  if (r.status === 404) throw new Error("that event no longer exists");
   if (!r.ok) throw new Error(`google api ${r.status}`);
+  // 204 No Content is what a successful delete returns.
+  if (r.status === 204 || !r.headers.get("content-type")) return { ok: true };
   return r.json();
 }
 
@@ -226,13 +230,23 @@ async function createEvent(userId, { title, startMs, endMs, location, descriptio
   return j === null ? null : { id: j.id, htmlLink: j.htmlLink || "" };
 }
 
-/** D3 — edit (patch) or delete an event the user created. */
+/** D3 — edit (patch) an event the user created. */
 async function updateEvent(userId, eventId, patch) {
   return gsend(
     userId,
     `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`,
     "PATCH",
     patch
+  );
+}
+
+/** Cancel an event outright. */
+async function deleteEvent(userId, eventId) {
+  return gsend(
+    userId,
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`,
+    "DELETE",
+    undefined
   );
 }
 
@@ -311,6 +325,6 @@ function describeMeetingPrep(prep, tzOffsetMin) {
 
 module.exports = {
   recentEmails, upcomingEvents, describeEmails, describeEvents,
-  createDraft, messageMeta, createEvent, updateEvent,
+  createDraft, messageMeta, createEvent, updateEvent, deleteEvent,
   meetingPrep, describeMeetingPrep,
 };
