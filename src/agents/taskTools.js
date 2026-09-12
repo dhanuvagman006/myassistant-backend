@@ -72,7 +72,14 @@ function registerTaskTools() {
       }
 
       // ── PLAN ────────────────────────────────────────────────────────
-      const planned = await planner.plan(ctx.userId, goal, ctx);
+      // The live surface cannot carry a confirmation for one step of a
+      // plan (see planner.js) — so a plan made there contains no step
+      // that would stop to ask.
+      const onLive = ctx.source === "live";
+      const planned = await planner.plan(ctx.userId, goal, {
+        ...ctx,
+        excludeHighRisk: onLive,
+      });
       if (!planned.ok) {
         // A refusal to plan is NOT a failure of the request. The model
         // should go and do the thing directly, so the error says so
@@ -123,6 +130,23 @@ function registerTaskTools() {
       // approval can be applied to THIS STEP of THIS PLAN and the rest of
       // the work can carry on — re-running the tool on its own would
       // leave the task blocked forever.
+      // On live, a parked step must NOT come back as a confirmation
+      // request: the model's only way to act on one is to call start_task
+      // again, which would re-plan and redo the finished steps. It is told
+      // plainly that the plan is waiting and that the remaining step is
+      // its own to do, once, in the ordinary way.
+      if (waiting && onLive) {
+        return {
+          ok: false,
+          speak,
+          error:
+            `${speak} That step (${waiting.tool}) needs the user's permission, ` +
+            `which this plan cannot ask for. Do NOT call start_task again — ` +
+            `the finished steps would be repeated. Ask the user out loud and ` +
+            `then do that one step yourself.`,
+          data: taskPayload(finished),
+        };
+      }
       if (waiting && waiting.outcome === contract.OUTCOME.NEEDS_USER && waiting.result) {
         const pendingSummary =
           (waiting.result.data && waiting.result.data.summary) ||

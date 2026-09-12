@@ -181,7 +181,7 @@ async function plan(userId, goal, ctx = {}) {
   const text = String(goal || "").trim();
   if (!text) return { ok: false, code: "empty_goal", reason: "no goal was given" };
 
-  const declarations = registry.declarations({
+  let declarations = registry.declarations({
     userId,
     deviceCaps: ctx.deviceCaps || null,
     // A device action inside a plan parks the step until the phone sends a
@@ -189,6 +189,25 @@ async function plan(userId, goal, ctx = {}) {
     // one, so the caller decides.
     includeDeviceActions: ctx.includeDeviceActions !== false,
   }).filter((d) => !NEVER_PLANNABLE.has(d.name));
+
+  // NO HIGH-RISK STEP ON A SURFACE THAT CANNOT ASK.
+  //
+  // Live mode is a voice call, not a form: it has no confirmation card,
+  // and its spoken-approval handshake works by the model calling THE SAME
+  // TOOL AGAIN with the same arguments once the user has said yes. That
+  // cannot express "approve step 3 of the plan you already started" — the
+  // model's only move is to call start_task again, which would build a
+  // second plan and redo the steps that already ran. So on that surface a
+  // plan is built from tools that will not stop to ask. Multi-step work
+  // still happens there; it just cannot include the consequential steps,
+  // which the model is free to do itself in the ordinary way, one at a
+  // time, through the handshake that does work.
+  if (ctx.excludeHighRisk) {
+    declarations = declarations.filter((d) => {
+      const t = registry.get(d.name);
+      return !t || t.risk !== "high";
+    });
+  }
 
   if (!declarations.length) {
     return { ok: false, code: "no_tools", reason: "no tools are available to this user" };

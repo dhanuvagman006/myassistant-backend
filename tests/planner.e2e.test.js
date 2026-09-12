@@ -50,7 +50,7 @@ async function atest(name, fn) {
 
 /* ---- fake tools, registered for this test only ---- */
 const CALLS = [];
-const FAKES = ["p_search", "p_write", "p_risky", "p_risky2", "p_device"];
+const FAKES = ["p_search", "p_write", "p_risky", "p_risky2", "p_device", "p_needs_args"];
 
 function fakeTools() {
   registry.register({
@@ -91,6 +91,15 @@ function fakeTools() {
     execute: (a) => {
       CALLS.push(["p_risky2", a]);
       return { ok: true, data: { did: a.what } };
+    },
+  });
+  registry.register({
+    name: "p_needs_args",
+    description: "Stops because something is missing.",
+    inputSchema: { type: "object", properties: { x: { type: "string" } } },
+    execute: () => {
+      CALLS.push(["p_needs_args", {}]);
+      return { ok: false, needsArgs: ["x"] };
     },
   });
   registry.register({
@@ -363,6 +372,70 @@ function stubPlan(steps, decline) {
     // And it picks up exactly where it stopped.
     const rest = await driver.runWithin(USER, t.id, {});
     assert.strictEqual(rest.task.status, tasks.STATUS.DONE);
+  });
+
+  console.log("\nthe live surface cannot ask, so it is not given anything that asks");
+
+  await atest("a live plan is built without high-risk tools", async () => {
+    let sawCatalogue = "";
+    router.generateWithTools = async ({ system }) => {
+      sawCatalogue = system;
+      return { functionCalls: [{ name: "submit_plan", args: { steps: [
+        { tool: "p_search", args_json: "{}", why: "a" },
+        { tool: "p_write", args_json: "{}", why: "b" },
+      ] } }], text: "" };
+    };
+    await planner.plan(USER, "do a thing", { excludeHighRisk: true });
+    assert.ok(sawCatalogue.includes("p_search"), "safe tools must still be offered");
+    assert.ok(!sawCatalogue.includes("p_risky"),
+      "a tool that would stop to ask must not be offered where nothing can ask");
+  });
+
+  await atest("the same plan on a normal surface DOES get the high-risk tools", async () => {
+    let sawCatalogue = "";
+    router.generateWithTools = async ({ system }) => {
+      sawCatalogue = system;
+      return { functionCalls: [{ name: "submit_plan", args: { steps: [
+        { tool: "p_search", args_json: "{}", why: "a" },
+        { tool: "p_write", args_json: "{}", why: "b" },
+      ] } }], text: "" };
+    };
+    await planner.plan(USER, "do a thing", {});
+    assert.ok(sawCatalogue.includes("p_risky"),
+      "the voice/chat surfaces have a confirmation card and must keep the full set");
+  });
+
+  await atest("a live plan naming a high-risk tool is refused outright", async () => {
+    stubPlan([
+      { tool: "p_search", args: { q: "x" }, why: "look" },
+      { tool: "p_risky", args: { what: "thing" }, why: "do", dependsOn: [0] },
+    ]);
+    const res = await registry.execute(
+      "start_task", { goal: "look then do" }, { userId: USER, source: "live" }
+    );
+    assert.strictEqual(res.ok, false);
+    assert.match(res.error, /p_risky/, res.error);
+    assert.notStrictEqual(res.needsConfirmation, true,
+      "nothing on live may raise a card that surface cannot route");
+  });
+
+  await atest("a live plan parked on a missing argument never invites a restart", async () => {
+    // Not every park is a confirmation: a step can also stop because an
+    // argument is missing, and that is low-risk, so it reaches live.
+    stubPlan([
+      { tool: "p_search", args: { q: "x" }, why: "look" },
+      { tool: "p_needs_args", args: {}, why: "then this", dependsOn: [0] },
+    ]);
+    const res = await registry.execute(
+      "start_task", { goal: "look then stall" }, { userId: USER, source: "live" }
+    );
+    assert.strictEqual(res.ok, false);
+    assert.notStrictEqual(res.needsConfirmation, true);
+    assert.match(res.error, /Do NOT call start_task again/i, res.error);
+    assert.match(res.error, /repeated/i,
+      "the model must be told WHY calling again is wrong, not just that it is");
+    assert.strictEqual(res.data.steps[0].status, tasks.STEP.DONE,
+      "the step that already ran must still be reported as done");
   });
 
   console.log("\nstart_task");
