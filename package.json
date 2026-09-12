@@ -1,30 +1,24 @@
 {
   "name": "myassistant-backend",
   "version": "0.1.0",
-  "description": "MYASSISTANT backend \u2014 AI routing, remote config, user services",
+  "description": "MYASSISTANT backend — AI routing, remote config, user services",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "test:manifest": "node scripts/check-test-manifest.js",
+    "test:all": "npm run test:manifest && npm run test && npm run test:fulfillment && npm run test:legal && npm run test:knowledge && npm run test:professional && npm run test:integrations && npm run test:state && npm run test:studio && npm run test:contract && npm run test:tasks && npm run test:planner",
     "test": "node scripts/smoke-test.js",
-    "test:clients": "node scripts/clients-test.js",
-    "test:agents": "node scripts/agents-test.js",
-    "test:e2e": "node tests/memory.e2e.test.js",
-    "test:mcp": "node tests/mcp.e2e.test.js",
     "test:fulfillment": "node scripts/fulfillment-test.js",
     "test:legal": "node scripts/legal-test.js",
     "test:knowledge": "node scripts/knowledge-test.js",
     "test:professional": "node scripts/professional-test.js",
     "test:integrations": "node scripts/integrations-test.js",
-    "test:all": "npm run test && npm run test:e2e && npm run test:mcp && npm run test:docs && npm run test:infra && npm run test:context && npm run test:avatar && npm run test:state && npm run test:studio && npm run test:contract && npm run test:tasks",
-    "test:docs": "node tests/documents.e2e.test.js",
-    "test:infra": "node tests/infra.e2e.test.js",
-    "test:context": "node tests/usercontext.e2e.test.js",
-    "test:avatar": "node tests/avatar.e2e.test.js",
     "test:state": "node tests/agentstate.e2e.test.js",
     "test:studio": "node tests/studio.e2e.test.js",
     "test:contract": "node tests/toolcontract.e2e.test.js",
-    "test:tasks": "node tests/tasks.e2e.test.js"
+    "test:tasks": "node tests/tasks.e2e.test.js",
+    "test:planner": "node tests/planner.e2e.test.js"
   },
   "engines": {
     "node": ">=20"

@@ -15,18 +15,43 @@ const deeplinks = require("../src/fulfillment/deeplinks");
 const youtube = require("../src/fulfillment/youtube");
 
 let passed = 0;
+
+// The old harness called fn() and never awaited it. Six of the tests below
+// are async, so their assertions resolved AFTER the try/catch had already
+// counted them as passed — they printed "ok" without having been checked.
+// When one finally did fail, the rejection had nowhere to go: it killed the
+// process as an unhandled rejection and took the seven tests after it with
+// it. Queue everything, then run it in order and wait for each one.
+const queue = [];
 function test(name, fn) {
-  try {
-    fn();
-    passed++;
-    console.log(`  ok  ${name}`);
-  } catch (e) {
-    console.error(`  FAIL ${name}\n       ${e.message}`);
-    process.exitCode = 1;
-  }
+  queue.push({ name, fn });
+}
+function section(title) {
+  queue.push({ title });
 }
 
-console.log("\ndeep links");
+async function run() {
+  for (const item of queue) {
+    if (item.title) {
+      console.log(`\n${item.title}`);
+      continue;
+    }
+    try {
+      await item.fn();
+      passed++;
+      console.log(`  ok  ${item.name}`);
+    } catch (e) {
+      console.error(`  FAIL ${item.name}\n       ${e.message}`);
+      process.exitCode = 1;
+    }
+  }
+  console.log(
+    `\n${passed}/${queue.filter((q) => q.fn).length} passed` +
+      `${process.exitCode ? " — with failures above" : ""}\n`
+  );
+}
+
+section("deep links");
 
 test("android food link targets the Swiggy package with a browser fallback", () => {
   const l = deeplinks.food({ provider: "swiggy", dish: "biryani", platform: "android" });
@@ -74,7 +99,7 @@ test("unknown shop provider returns null rather than a broken link", () => {
   assert.strictEqual(deeplinks.shop({ provider: "nosuchapp", query: "x" }), null);
 });
 
-console.log("\nhonesty invariants");
+section("honesty invariants");
 
 test("every handoff sentence tells the user THEY finish the payment", () => {
   const search = deeplinks.speakFor({ precision: "search", providerLabel: "Swiggy", what: "biryani" });
@@ -124,7 +149,7 @@ test("booking by phone refuses honestly when telephony is unconfigured", async (
   assert.ok(/not configured|isn't configured/i.test(res.error), res.error);
 });
 
-console.log("\ncalling a business Hari looked up");
+section("calling a business Hari looked up");
 
 test("a result must actually match the name before we dial it", () => {
   const { nameMatches } = require("../src/fulfillment/service");
@@ -194,7 +219,7 @@ test("no listed number means no confirmation card, just the truth", async () => 
   }
 });
 
-console.log("\nwhatsapp");
+section("whatsapp");
 
 test("a group opens the chooser with the message already written", async () => {
   const registry = require("../src/tools/registry");
@@ -254,7 +279,7 @@ test("youtube watch link points at the video, which is what makes it play", () =
   assert.ok(youtube.watchUrl("abc123").includes("watch?v=abc123"));
 });
 
-// The async test above resolves after this line; give it a tick, then report.
-setTimeout(() => {
-  console.log(`\n${passed} passed${process.exitCode ? " — with failures above" : ""}\n`);
-}, 250);
+// Everything above only REGISTERED a test. This is what runs them, in
+// order, each one awaited — replacing a 250 ms setTimeout that reported a
+// total before the async tests had finished producing it.
+run();
