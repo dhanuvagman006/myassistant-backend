@@ -30,6 +30,9 @@
  * the backend must never claim it dialled a phone it cannot dial.
  */
 
+const contract = require("./contract");
+const capabilities = require("./capabilities");
+
 const REGISTRY = new Map();
 
 /** Registers a tool. Throws on duplicate/invalid — fail at boot, not in a turn. */
@@ -46,12 +49,17 @@ function register(tool) {
   if (REGISTRY.has(tool.name)) {
     throw new Error(`tool ${tool.name}: already registered`);
   }
-  REGISTRY.set(tool.name, {
+  // THE CONTRACT. Fills in what the tool did not state, and throws on a
+  // declaration that contradicts itself — a malformed capability must fail
+  // the boot, never a user's turn. A tool that declares no `effects` is a
+  // legacy tool and passes through untouched but for the shape checks, so
+  // the seed lists below continue to govern it.
+  REGISTRY.set(tool.name, contract.normalize({
     risk: "low",
     deviceAction: false,
     inputSchema: { type: "object", properties: {} },
     ...tool,
-  });
+  }));
   return tool.name;
 }
 
@@ -104,20 +112,18 @@ function declarations({ only = null, includeDeviceActions = true, userId = null,
     // thing and the phone silently dropped it. Hidden here, the model
     // reaches for something that works — and can still explain the limit,
     // because limitsFor() below says what was withheld and why.
+    // ONE RESOLVER for every kind of prerequisite — a permission, an app
+    // build, a signed-in user, a configured third party, a platform. It
+    // replaces the two-field special case that came before it and behaves
+    // identically for the tools that only used those two fields.
+    //
+    // A per-user integration (a Google OAuth link) resolves as DEFERRED and
+    // does not hide the tool: withholding the calendar from someone whose
+    // link we have not checked yet is worse than letting the call come back
+    // with an honest "their Google account is not connected".
     .filter((t) => {
-      if (!deviceCaps) return true;
-      if (t.minAppBuild && Number(deviceCaps.build || 0) < t.minAppBuild) return false;
-      if (t.requiresPermission) {
-        const need = Array.isArray(t.requiresPermission)
-          ? t.requiresPermission : [t.requiresPermission];
-        const granted = new Set(deviceCaps.granted || []);
-        const denied = new Set(deviceCaps.denied || []);
-        // Only a KNOWN denial hides a tool. An unreported permission (an
-        // older app that posts nothing) must not silently remove half the
-        // assistant's abilities.
-        if (need.some((p) => denied.has(p) && !granted.has(p))) return false;
-      }
-      return true;
+      if (!t.requires || !t.requires.length) return true;
+      return capabilities.resolveSync(t, { userId: uid, deviceCaps, forDeclaration: true }).available;
     })
     // TENANT BOUNDARY: an MCP tool belongs to the user who configured that
     // server. Another user must never even SEE it in their declarations,
@@ -263,7 +269,7 @@ function missingRequired(tool, args) {
  * Everything else (lookups, reads, brief, memory recall) is harmless to
  * run on a poor transcript — at worst the answer is unhelpful.
  */
-const WORLD_ACTIONS = new Set([
+const SEED_WORLD = new Set([
   "place_phone_call", "send_agent_message", "send_whatsapp_message",
   "send_document", "send_patient_document", "book_by_calling_business",
   "arrange_meeting_with", "order_food", "book_ride", "book_movie_tickets",
@@ -274,19 +280,38 @@ const WORLD_ACTIONS = new Set([
   "record_entry", "amend_last_entry", "record_patient_payment",
   "file_document_under_client", "associate_document", "save_web_document",
   "forget_memory", "start_interpreter_mode", "generate_image", "generate_video",
+  "try_a_look",
+  // ADDED after a drift audit found these absent. Each of them changes
+  // something outside the conversation, and being missing here meant three
+  // separate protections silently did not apply: the claim checker had no
+  // evidence they ran (so a reply could assert or deny them freely), GATE 2
+  // never suppressed a duplicate, and recordExecution filed them in the
+  // ledger with world:0 — i.e. as though they were lookups.
+  // delete_calendar_event is the worst of them: high risk and irreversible
+  // on a third party's service.
+  "create_calendar_event", "update_calendar_event", "delete_calendar_event",
+  "set_timer", "complete_commitment", "configure_assistant",
+  "remove_finance_item", "remove_standing_instruction", "set_morning_brief",
 ]);
 
 function isWorldAction(name) {
-  return WORLD_ACTIONS.has(name);
+  return EFFECTIVE.world.has(name);
 }
 
 /**
  * Tools that WRITE to durable memory or the user's profile. These are the
  * ones that must be grounded in the current turn — see GATE 0.
  */
-const MEMORY_WRITES = new Set([
+const SEED_MEMORY = new Set([
   "remember_fact", "update_my_profile", "remember_person", "add_person_note",
-  "add_instruction",
+  // WAS "add_instruction" — a tool that does not exist. The real name is
+  // add_standing_instruction, so for as long as the typo stood, the ONE
+  // tool that writes a permanent behaviour rule into every future prompt
+  // had no GATE 0 grounding check at all. drift() below now fails the boot
+  // on a name that matches no registered tool, so this cannot recur.
+  "add_standing_instruction",
+  // Also durable writes, also absent.
+  "remember_case", "remember_event", "remember_person_date",
 ]);
 
 /** Words too common to count as grounding. */
@@ -307,12 +332,15 @@ const MEM_STOP = new Set(
  * reminders about "the meeting", two payments logged for one client — and
  * suppressing those would invent a bug in place of the one being fixed.
  */
-const REPEAT_GUARDED = new Set([
+const SEED_REPEAT = new Set([
   "place_phone_call", "book_by_calling_business", "send_agent_message",
   "send_whatsapp_message", "send_document", "send_patient_document",
   "arrange_meeting_with", "order_food", "book_ride", "book_movie_tickets",
   "collect_payment", "open_app", "open_webpage", "open_service_app",
   "start_navigation", "play_music",
+  // Every look costs money at a paid image model, so a stutter must not
+  // buy two of them. An intentional "try that again" lands after 20 s.
+  "try_a_look",
 ]);
 
 /**
@@ -331,11 +359,150 @@ const REPEAT_GUARDED = new Set([
  * retry of a call that never happened. Calls are guarded by the in-flight
  * tier below, which reads the outcome's real state instead.
  */
-const DURABLE_GUARDED = new Set([
+const SEED_DURABLE = new Set([
   "send_agent_message", "send_whatsapp_message", "send_document",
   "send_patient_document", "order_food", "book_ride", "book_movie_tickets",
   "collect_payment",
 ]);
+
+const SEED_UNATTENDED = new Set([
+    "collect_payment", "book_by_calling_business", "forget_memory",
+    "arrange_meeting_with",
+  ]);
+
+/* ------------------------------------------------------------------ */
+/* THE SEALED UNION — seeds ∪ what the tools declared                   */
+/*                                                                     */
+/* The five sets above are SEEDS: they govern the tools that have not   */
+/* yet declared `effects`, which on the day this landed was all of them.*/
+/* seal() recomputes the union from the live registry, so a tool that   */
+/* declares its own effects no longer needs a human to remember to add  */
+/* its name in five places — and drift() fails the boot if a seed names */
+/* a tool that does not exist, which is how a missing memory gate stood */
+/* unnoticed in production.                                             */
+/*                                                                     */
+/* Starts as a copy of the seeds so the registry is correct BEFORE      */
+/* seal() runs: a require-order accident must not silently disarm every */
+/* gate at once.                                                        */
+/* ------------------------------------------------------------------ */
+const EFFECTIVE = {
+  world: new Set(SEED_WORLD),
+  memoryWrites: new Set(SEED_MEMORY),
+  repeatGuarded: new Set(SEED_REPEAT),
+  durableGuarded: new Set(SEED_DURABLE),
+  unattendedBlocked: new Set(SEED_UNATTENDED),
+  byOutcome: new Set(),
+};
+
+const SEEDS = {
+  WORLD_ACTIONS: SEED_WORLD,
+  MEMORY_WRITES: SEED_MEMORY,
+  REPEAT_GUARDED: SEED_REPEAT,
+  DURABLE_GUARDED: SEED_DURABLE,
+  UNATTENDED_BLOCKED: SEED_UNATTENDED,
+};
+
+let sealed = null;
+
+/**
+ * Recompute the union and report drift. Call once after all tools are
+ * registered (server.js does, right after registerBuiltins). Idempotent,
+ * and safe to call again after MCP tools arrive.
+ *
+ * @param {object} o
+ * @param {boolean} o.strict  throw on a phantom instead of warning.
+ *   Defaults on outside production so a typo fails a test run, and warns
+ *   in production so a bad deploy degrades rather than refusing to boot.
+ * @returns {{phantoms:Array, contradictions:Array, counts:object}}
+ */
+function seal({ strict = process.env.NODE_ENV !== "production" } = {}) {
+  const tools = list();
+  const registeredNames = new Set(tools.map((t) => t.name));
+  const derived = contract.derive(tools);
+
+  for (const [key, set] of Object.entries(derived)) {
+    if (!EFFECTIVE[key]) continue;
+    for (const n of set) EFFECTIVE[key].add(n);
+  }
+
+  const report = contract.drift({ registeredNames, seedLists: SEEDS, derived });
+
+  // A phantom is a protection that silently applies to nothing.
+  if (report.phantoms.length) {
+    const lines = report.phantoms.map((p) => `${p.list} names "${p.name}", which is not a registered tool`);
+    const msg = "tool contract drift — a safety list protects nothing:\n  " + lines.join("\n  ");
+    if (strict) throw new Error(msg);
+    console.error("WARNING: " + msg);
+  }
+  if (report.contradictions.length) {
+    console.warn(
+      "tool contract: " + report.contradictions.length +
+      " tool(s) declare membership a seed list does not list (the union covers it): " +
+      report.contradictions.map((c) => `${c.name}→${c.list}`).join(", ")
+    );
+  }
+
+  sealed = {
+    ...report,
+    counts: Object.fromEntries(Object.entries(EFFECTIVE).map(([k, v]) => [k, v.size])),
+    tools: tools.length,
+  };
+  return sealed;
+}
+
+/** What seal() concluded, for the admin panel and the tests. */
+function contractReport() {
+  return sealed;
+}
+
+/**
+ * Everything the registry knows about one tool, in a shape safe to render.
+ * This is the discovery surface a planner needs: it can read what a tool
+ * costs, what it needs configured, whether it may be retried and whether it
+ * must be confirmed, without importing the registry's internals.
+ */
+function describe(name) {
+  const t = get(name);
+  if (!t) return null;
+  return {
+    name: t.name,
+    description: t.description || "",
+    risk: t.risk || "low",
+    effects: t.effects,
+    declaredEffects: t.declaredEffects,
+    // THE EFFECTIVE POLICY, not the contract default. For a legacy tool
+    // (no declared effects) the seed lists are what actually govern it, so
+    // reporting `dedupe: "never"` for place_phone_call — which is in fact
+    // guarded by outcome and by repeat — would be a lie to whatever reads
+    // this next, which is exactly the class of bug the contract exists to
+    // end.
+    dedupe: EFFECTIVE.byOutcome.has(t.name) || CALL_TOOLS.has(t.name)
+      ? "by-outcome"
+      : EFFECTIVE.durableGuarded.has(t.name)
+        ? "durable"
+        : EFFECTIVE.repeatGuarded.has(t.name)
+          ? "per-turn"
+          : t.declaredEffects ? t.dedupe : "never",
+    declaredDedupe: t.dedupe,
+    unattendedEffective: !EFFECTIVE.unattendedBlocked.has(t.name),
+    deviceAction: !!t.deviceAction,
+    requires: t.requires,
+    timeoutMs: t.timeoutMs,
+    retry: t.retry,
+    unattended: t.unattended,
+    inputSchema: t.inputSchema,
+    outputSchema: t.outputSchema || null,
+    world: EFFECTIVE.world.has(t.name),
+    memoryWrite: EFFECTIVE.memoryWrites.has(t.name),
+    confirmable: typeof t.confirmSummary === "function",
+    source: t.source || "builtin",
+  };
+}
+
+/** The whole catalogue, for the admin panel and for tool-discovery. */
+function catalogue() {
+  return list().map((t) => describe(t.name));
+}
 
 /** Tools that put a call on a line — guarded by outcome, not by clock. */
 const CALL_TOOLS = new Set(["place_phone_call", "book_by_calling_business"]);
@@ -359,7 +526,7 @@ async function execute(name, rawArgs, ctx = {}) {
   // word with what the user just said — because the failure it catches is
   // not subtle. "I'm vegetarian" → "is vegetarian" passes. A flight
   // question producing a claim about language does not.
-  if (MEMORY_WRITES.has(name) && !ctx.approved) {
+  if (EFFECTIVE.memoryWrites.has(name) && !ctx.approved) {
     const turnText = String(
       (ctx.session && ctx.session.turn && ctx.session.turn.text) || ctx.intent || ""
     );
@@ -440,9 +607,29 @@ async function execute(name, rawArgs, ctx = {}) {
     return { ok: false, error: `unknown tool "${name}"` };
   }
 
+  // ── REQUIREMENTS, BEFORE ANYTHING ELSE ────────────────────────────
+  // A tool whose credential is absent must not be able to pretend. This is
+  // the one place that decides, and it names the missing variable for the
+  // operator while telling the model to give the USER a plain sentence and
+  // no homework. Legacy tools declare nothing here and are unaffected.
+  if (tool.requires && tool.requires.length) {
+    const verdict = await capabilities.resolve(tool, {
+      userId: ctx.userId, deviceCaps: ctx.deviceCaps, platform: ctx.platform,
+    });
+    if (!verdict.available) {
+      const res = capabilities.unavailable(verdict.blockers);
+      const opDetail = res.data && res.data.operatorDetail;
+      if (opDetail) console.warn(`tool ${name} unavailable — ${opDetail}`);
+      noteDecision(name, rawArgs, ctx, "refused",
+        verdict.blockers.map((b) => b.reason).join("; ").slice(0, 300));
+      res.status = contract.OUTCOME.FAILED;
+      return res;
+    }
+  }
+
   const args = coerceArgs(tool, rawArgs);
   const missing = missingRequired(tool, args);
-  if (missing.length) return { ok: false, needsArgs: missing };
+  if (missing.length) return { ok: false, needsArgs: missing, status: contract.OUTCOME.NEEDS_USER };
 
   // High-risk actions need explicit approval unless it has already been
   // granted for THIS call (the confirm endpoint replays with approved:true).
@@ -450,11 +637,9 @@ async function execute(name, rawArgs, ctx = {}) {
   // consented when they scheduled it — but that consent covers the TASK,
   // not open-ended access to every dangerous tool. Money, third-party
   // business calls and memory deletion stay human-attended, always.
-  const UNATTENDED_BLOCKED = new Set([
-    "collect_payment", "book_by_calling_business", "forget_memory",
-    "arrange_meeting_with",
-  ]);
-  if (ctx.background && UNATTENDED_BLOCKED.has(name)) {
+  // (hoisted to module scope as SEED_UNATTENDED so it can be sealed)
+
+  if (ctx.background && EFFECTIVE.unattendedBlocked.has(name)) {
     return {
       ok: false,
       error:
@@ -549,7 +734,7 @@ async function execute(name, rawArgs, ctx = {}) {
       // runs even on the approved path: confirming the same call twice, on
       // two surfaces, is exactly the failure. Time does not decide it; the
       // task's own status does.
-      if (CALL_TOOLS.has(name)) {
+      if (CALL_TOOLS.has(name) || EFFECTIVE.byOutcome.has(name)) {
         try {
           const live = await require("../outcomes/store").findInFlight(
             ctx.userId, ["call", "agent_call"], target
@@ -569,7 +754,7 @@ async function execute(name, rawArgs, ctx = {}) {
 
       // The remaining tiers are about a REQUEST repeating. An approved
       // replay is the same request continuing, so it passes through.
-      if (!ctx.approved && REPEAT_GUARDED.has(name)) {
+      if (!ctx.approved && EFFECTIVE.repeatGuarded.has(name)) {
         // TIER 2 — SAME BREATH, SAME SOCKET. The session's own list is in
         // memory and therefore instantaneous; the durable record below is
         // written fire-and-forget and would not yet exist for two calls
@@ -589,7 +774,7 @@ async function execute(name, rawArgs, ctx = {}) {
         // TIER 3 — ANY SURFACE, LAST 45 SECONDS. This is how one request
         // repeated across the live and voice paths got two different
         // answers. Only for things that have already left the device.
-        if (DURABLE_GUARDED.has(name)) {
+        if (EFFECTIVE.durableGuarded.has(name)) {
           try {
             const prior = await store.findRecent(ctx.userId, name, target, 45_000);
             if (prior && (prior.ok === 1 || prior.ok === true)) {
@@ -609,24 +794,109 @@ async function execute(name, rawArgs, ctx = {}) {
   }
 
   const started = Date.now();
-  try {
-    const out = await tool.execute(args, ctx);
-    const res = out && typeof out === "object" ? out : { ok: true, data: out };
-    res.ms = Date.now() - started;
-    audit(tool, args, res, ctx);
-    recordExecution(name, args, res, ctx);
-    return res;
-  } catch (e) {
-    // §28: report the actual failure; never fabricate success.
-    const res = {
-      ok: false,
-      error: String((e && e.message) || e).slice(0, 300),
-      ms: Date.now() - started,
-    };
-    audit(tool, args, res, ctx);
-    recordExecution(name, args, res, ctx);
-    return res;
+  const res = await runWithPolicy(tool, args, ctx);
+  res.ms = Date.now() - started;
+  // THE OUTCOME, recorded rather than inferred later. "Done" and "handed to
+  // the phone and never heard about again" used to be the same value.
+  res.status = contract.outcomeOf(res);
+  audit(tool, args, res, ctx);
+  recordExecution(name, args, res, ctx);
+  return res;
+}
+
+/**
+ * Run a tool under its declared execution policy: a deadline, and retries
+ * where retrying cannot double the effect.
+ *
+ * TWO THINGS HERE ARE DELIBERATE AND EASY TO GET WRONG.
+ *
+ * 1. A TIMEOUT IS NOT A FAILURE — it is the end of our patience. We cannot
+ *    cancel work already in flight, so for a tool whose effect leaves the
+ *    system the honest answer is "we do not know whether that happened",
+ *    not "it failed". Reporting a timed-out message send as a failure is
+ *    how a user gets told nothing was sent and then sends it again.
+ *
+ * 2. RETRY IS OPT-IN, NEVER INFERRED. A legacy tool (no declared `retry`)
+ *    gets exactly one attempt, so nothing changes for the tools that
+ *    existed before this policy did. The contract already refuses to let a
+ *    consequential tool declare a retry without asserting idempotency.
+ */
+async function runWithPolicy(tool, args, ctx) {
+  const attempts = tool.retry ? tool.retry.attempts : 1;
+  const backoff = tool.retry ? tool.retry.backoffMs : 0;
+  let last = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    let timer = null;
+    try {
+      const out = await Promise.race([
+        Promise.resolve().then(() => tool.execute(args, ctx)),
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(Object.assign(new Error(`timed out after ${tool.timeoutMs} ms`), { timedOut: true })),
+            tool.timeoutMs
+          );
+        }),
+      ]);
+      const res = out && typeof out === "object" ? out : { ok: true, data: out };
+      // A tool that failed for a transient reason may be retried; one that
+      // failed because the request was wrong may not.
+      if (res.ok === false && attempt < attempts && isTransient(res.error)) {
+        last = res;
+        await sleep(backoff * attempt);
+        continue;
+      }
+      if (attempt > 1) res.attempts = attempt;
+      return res;
+    } catch (e) {
+      const timedOut = e && e.timedOut === true;
+      if (timedOut && isWorldAction(tool.name)) {
+        // Unknown, and said so. `partial` keeps it out of both "it worked"
+        // and "it failed", and the note tells the model not to guess.
+        return {
+          ok: false,
+          partial: true,
+          error: `no answer within ${tool.timeoutMs} ms — it may still be happening`,
+          timedOut: true,
+          note:
+            "We stopped waiting; we did NOT confirm this failed and we did not " +
+            "confirm it succeeded. Tell the user you are not sure it went " +
+            "through and offer to check, and do NOT repeat the action.",
+        };
+      }
+      const res = {
+        ok: false,
+        error: String((e && e.message) || e).slice(0, 300),
+        ...(timedOut ? { timedOut: true } : {}),
+      };
+      if (attempt < attempts && (timedOut || isTransient(res.error))) {
+        last = res;
+        await sleep(backoff * attempt);
+        continue;
+      }
+      if (attempt > 1) res.attempts = attempt;
+      return res;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
+  return last || { ok: false, error: "no attempt produced a result" };
+}
+
+/**
+ * Is this failure worth another go? Conservative on purpose: an unrecognised
+ * error is treated as permanent, because retrying a real error wastes the
+ * user's time and a paid API call.
+ */
+function isTransient(error) {
+  const e = String(error || "").toLowerCase();
+  if (!e) return false;
+  return /\b(429|500|502|503|504|econnreset|etimedout|enotfound|eai_again|socket hang up|fetch failed|network|temporarily|rate.?limit|overloaded|unavailable|timed out)\b/
+    .test(e);
+}
+
+function sleep(ms) {
+  return ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve();
 }
 
 /**
@@ -763,7 +1033,14 @@ module.exports = {
   limitsFor,
   limitsBlock,
   isWorldAction,
-  WORLD_ACTIONS,
+  WORLD_ACTIONS: SEED_WORLD,
+  seal,
+  contractReport,
+  integrationStatus: capabilities.integrationStatus,
+  resolveRequires: capabilities.resolve,
+  describe,
+  catalogue,
+  EFFECTIVE,
   register,
   get,
   unregister,

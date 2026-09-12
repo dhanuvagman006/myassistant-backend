@@ -292,6 +292,12 @@ app.use("/vision", appAuth, perUserLimit, require("./routes/vision"));
 // them and pulls them back up from a voice request (see routes/docs.js).
 app.use("/docs", appAuth, require("./routes/docs"));
 
+// STYLE STUDIO — "show me how I'd look": outfit and hairstyle try-on on
+// the user's own photo, professional headshots, spec-correct passport
+// photos, old-photo restoration. Paid image models sit behind this, so it
+// carries its own per-user daily cap and its own consent record.
+app.use("/studio", appAuth, perUserLimit, require("./routes/studio"));
+
 // PROFESSIONAL MODE — per-client/patient case files (doctor, lawyer…):
 // profile + dated notes + linked documents, recalled by voice
 // ("pull up patient Ramesh's file"). See routes/clients.js.
@@ -338,9 +344,22 @@ app.use("/mcp", appAuth, require("./mcp/routes"));
 // it simply said it was unable to do those things, because as far as it knew
 // it was. Registering here makes the tool set identical on both paths.
 require("./agents/runtime");
-console.log(
-  `  tools: ${require("./tools/registry").declarations().length} registered`
-);
+// SEAL THE CONTRACT once every tool is registered: derive the safety sets
+// from what the tools declared about themselves, and report any list that
+// names a tool which does not exist. That last check is not theoretical —
+// MEMORY_WRITES named "add_instruction" for months, a tool that has never
+// existed, so the grounding gate on permanent behaviour rules protected
+// nothing. In production this warns loudly rather than refusing to boot;
+// outside production it throws, so a typo fails a test run instead.
+{
+  const registry = require("./tools/registry");
+  const sealed = registry.seal();
+  console.log(
+    `  tools: ${registry.declarations().length} registered` +
+    ` (${sealed.counts.world} world, ${sealed.counts.memoryWrites} memory-write,` +
+    ` ${sealed.counts.repeatGuarded} repeat-guarded)`
+  );
+}
 
 const live = require("./live/proxy");
 // Avatar routes mount FIRST: Express matches in order, and /live's probe

@@ -2559,6 +2559,187 @@ function registerBuiltins() {
     },
   });
 
+  /* ------------------------------------------------------------------ */
+  /* STYLE STUDIO — "show me how I'd look ..."                           */
+  /*                                                                     */
+  /* One tool for every recipe rather than ten near-identical ones: the  */
+  /* model picks a recipe id and fills its parameters, which is the same  */
+  /* decision it would make choosing between ten tools, with ten times   */
+  /* less schema in front of it.                                         */
+  /* ------------------------------------------------------------------ */
+  registry.register({
+    name: "try_a_look",
+    description:
+      "SHOW THE USER HOW THEY WOULD LOOK — on their own photo. 'how would " +
+      "I look in a navy suit', 'show me with short hair', 'what about a " +
+      "beard', 'make me a LinkedIn photo', 'I need a passport photo', " +
+      "'restore this old photo of my father', 'put me in front of an " +
+      "office background', 'dress me for my cousin's wedding'.\n" +
+      "It uses the photo they saved in Style Studio, edits it, and the " +
+      "result appears full-screen on their phone and is saved to their " +
+      "files. Takes ten to sixty seconds — say you're on it, then let the " +
+      "result speak. Never describe what the picture looks like: you have " +
+      "not seen it. Say it is on their screen.\n" +
+      "PICK THE RECIPE from what they asked for:\n" +
+      "  outfit    clothes — a suit, a saree, a kurta, a jacket\n" +
+      "  hair      a haircut or hair colour\n" +
+      "  beard     facial hair, or clean-shaven\n" +
+      "  eyewear   spectacles or sunglasses\n" +
+      "  jewellery a necklace, earrings, bangles\n" +
+      "  headshot  a professional / LinkedIn / corporate portrait\n" +
+      "  idphoto   a passport, visa, PAN or Aadhaar photograph\n" +
+      "  restore   repairing an old, damaged or faded photograph\n" +
+      "  backdrop  changing only the background\n" +
+      "  occasion  a complete look for a named event\n" +
+      "WRITE THE PARAMETERS PROPERLY — the quality of the picture is mostly " +
+      "the quality of these words. 'a navy suit' is thin; 'a sharply " +
+      "tailored navy-blue two-piece suit with a white shirt and a dark " +
+      "silk tie' is what they asked for. Name the fabric, the cut and the " +
+      "colour. For Indian clothing name the type exactly — Kanjivaram silk " +
+      "saree, ivory sherwani with gold zardozi, cotton chikankari kurta.\n" +
+      "If it says they have no photo saved yet, tell them to add one in " +
+      "Style Studio — once — and that every look afterwards uses it.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        recipe: {
+          type: "string",
+          enum: ["outfit", "hair", "beard", "eyewear", "jewellery",
+                 "headshot", "idphoto", "restore", "backdrop", "occasion"],
+          description: "Which kind of look to make.",
+        },
+        outfit: {
+          type: "string",
+          description:
+            "recipe=outfit: the garment, described richly — fabric, cut, " +
+            "colour, detailing. Also used for the `occasion` recipe's dress " +
+            "direction if given.",
+        },
+        style: {
+          type: "string",
+          description:
+            "recipe=hair: the haircut ('a chin-length blunt bob with a side " +
+            "parting'). recipe=beard: the facial hair ('a neat French beard').",
+        },
+        colour: {
+          type: "string",
+          description:
+            "recipe=hair: the hair colour, or omit to keep their own — " +
+            "'Natural black', 'Dark brown', 'Burgundy', 'Salt and pepper', " +
+            "'Caramel highlights', 'Silver'.",
+        },
+        frame: { type: "string", description: "recipe=eyewear: the frames." },
+        piece: { type: "string", description: "recipe=jewellery: the piece." },
+        attire: {
+          type: "string",
+          description:
+            "recipe=headshot: 'Business suit', 'Formal shirt', 'Smart " +
+            "casual', 'Kurta', 'Saree', \"Doctor's coat\", or \"Keep what " +
+            "I'm wearing\". recipe=idphoto: clothing for the document photo.",
+        },
+        backdrop: {
+          type: "string",
+          description:
+            "recipe=headshot: 'Studio grey', 'Modern office', 'Library', " +
+            "'Garden light', 'City at night', 'Pure white'.",
+        },
+        scene: {
+          type: "string",
+          description: "recipe=backdrop: the new background, described.",
+        },
+        spec: {
+          type: "string",
+          enum: ["India passport", "PAN / Aadhaar", "US visa / DV",
+                 "Schengen visa", "UK passport"],
+          description:
+            "recipe=idphoto: WHICH document. Required — each has a different " +
+            "size, background colour and head-height rule, and a photo made " +
+            "to the wrong one is rejected at the counter. Ask if unclear.",
+        },
+        occasion: {
+          type: "string",
+          description:
+            "recipe=occasion: the event, in their words ('my cousin's " +
+            "wedding reception', 'a job interview'). Also usable with " +
+            "recipe=outfit to steer footwear and accessories.",
+        },
+        notes: { type: "string", description: "Anything else they said that matters." },
+        colourise: {
+          type: "string",
+          enum: ["Add natural colour", "Keep it black and white"],
+          description: "recipe=restore only.",
+        },
+      },
+      required: ["recipe"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const recipe = String(args.recipe || "").trim();
+      const params = {};
+      for (const k of ["outfit", "style", "colour", "frame", "piece", "attire",
+                       "backdrop", "scene", "spec", "occasion", "notes",
+                       "colourise", "fit", "length"]) {
+        const v = String(args[k] || "").trim();
+        if (v) params[k] = v;
+      }
+      // The occasion recipe reads `occasion`; an outfit description handed
+      // to it belongs in its notes rather than being dropped.
+      if (recipe === "occasion" && params.outfit) {
+        params.notes = [params.notes, `dress direction: ${params.outfit}`]
+          .filter(Boolean).join("; ");
+        delete params.outfit;
+      }
+
+      try {
+        const out = await require("../studio/run").runRecipe(ctx.userId, {
+          recipeId: recipe, params, surface: "voice",
+        });
+        return {
+          ok: true,
+          // A data field, so the live path summarises this as FINISHED. An
+          // empty one is what made a generated image get announced as
+          // still on its way and then, a turn later, as having failed.
+          data: {
+            generated: true,
+            recipe,
+            documentId: out.document.id,
+            size: `${out.width}x${out.height}`,
+            note:
+              "The picture EXISTS, is on the user's screen now and is saved " +
+              "to their files. Do not say it is still being made, do not " +
+              "say it failed, and do not describe what is in it.",
+          },
+          deviceAction: {
+            type: "show_image",
+            doc_id: out.document.id,
+            title: out.document.title,
+            document: out.document,
+          },
+          speak:
+            recipe === "idphoto"
+              ? `Here it is — made to the ${params.spec || "document"} spec and saved to your files.`
+              : "Here you go — it's on your screen and saved to your files.",
+        };
+      } catch (e) {
+        // Every one of these is a sentence worth saying out loud as-is:
+        // "add a photo first", "that's today's limit", "it needs setting up".
+        const code = e.code || "";
+        if (code === "no_model_photo" || code === "daily_cap" ||
+            code === "no_provider" || code === "edit_failed" ||
+            code === "missing_photo" || code === "missing_file") {
+          return { ok: false, error: e.message, data: { code } };
+        }
+        console.error("try_a_look:", e.stack || e.message);
+        return {
+          ok: false,
+          error: "That didn't come out — ask me to try it again in a moment.",
+        };
+      }
+    },
+  });
+
   registry.register({
     name: "open_app",
     description:
@@ -2856,6 +3037,12 @@ function registerBuiltins() {
 
   registry.register({
     name: "list_calendar_events",
+    // DECLARED, not discovered. Each of these four used to re-check
+    // googleLinked() by hand and return the same NOT_LINKED constant, so
+    // the model learned the account was unlinked only by calling the tool
+    // and failing. Declaring it means the tool is not offered at all when
+    // it cannot work, and limitsBlock() can say why.
+    requires: [{ kind: "auth" }, { kind: "integration", id: "google_oauth" }],
     description:
       "The user's actual CALENDAR — meetings and appointments from Google. " +
       "list_reminders covers what they asked to be reminded of; this covers " +
@@ -2886,6 +3073,12 @@ function registerBuiltins() {
 
   registry.register({
     name: "create_calendar_event",
+    // DECLARED, not discovered. Each of these four used to re-check
+    // googleLinked() by hand and return the same NOT_LINKED constant, so
+    // the model learned the account was unlinked only by calling the tool
+    // and failing. Declaring it means the tool is not offered at all when
+    // it cannot work, and limitsBlock() can say why.
+    requires: [{ kind: "auth" }, { kind: "integration", id: "google_oauth" }],
     description:
       "Put a meeting or appointment in the user's Google Calendar. Use for " +
       "'book', 'schedule', 'put in my diary', 'add a meeting'. For something " +
@@ -2930,6 +3123,12 @@ function registerBuiltins() {
 
   registry.register({
     name: "update_calendar_event",
+    // DECLARED, not discovered. Each of these four used to re-check
+    // googleLinked() by hand and return the same NOT_LINKED constant, so
+    // the model learned the account was unlinked only by calling the tool
+    // and failing. Declaring it means the tool is not offered at all when
+    // it cannot work, and limitsBlock() can say why.
+    requires: [{ kind: "auth" }, { kind: "integration", id: "google_oauth" }],
     description:
       "Move or change an existing calendar event — 'push the 4 o'clock to 5', " +
       "'rename tomorrow's meeting', 'change where it is'. Identify it by what " +
@@ -2998,6 +3197,12 @@ function registerBuiltins() {
 
   registry.register({
     name: "delete_calendar_event",
+    // DECLARED, not discovered. Each of these four used to re-check
+    // googleLinked() by hand and return the same NOT_LINKED constant, so
+    // the model learned the account was unlinked only by calling the tool
+    // and failing. Declaring it means the tool is not offered at all when
+    // it cannot work, and limitsBlock() can say why.
+    requires: [{ kind: "auth" }, { kind: "integration", id: "google_oauth" }],
     description:
       "Cancel an event in the user's calendar — 'cancel tomorrow's dentist', " +
       "'drop the 3pm'. Identify it by what they call it. If more than one " +

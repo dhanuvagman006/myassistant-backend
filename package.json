@@ -16,12 +16,15 @@
     "test:knowledge": "node scripts/knowledge-test.js",
     "test:professional": "node scripts/professional-test.js",
     "test:integrations": "node scripts/integrations-test.js",
-    "test:all": "npm run test && npm run test:e2e && npm run test:mcp && npm run test:docs && npm run test:infra && npm run test:context && npm run test:avatar && npm run test:state",
+    "test:all": "npm run test && npm run test:e2e && npm run test:mcp && npm run test:docs && npm run test:infra && npm run test:context && npm run test:avatar && npm run test:state && npm run test:studio && npm run test:contract && npm run test:tasks",
     "test:docs": "node tests/documents.e2e.test.js",
     "test:infra": "node tests/infra.e2e.test.js",
     "test:context": "node tests/usercontext.e2e.test.js",
     "test:avatar": "node tests/avatar.e2e.test.js",
-    "test:state": "node tests/agentstate.e2e.test.js"
+    "test:state": "node tests/agentstate.e2e.test.js",
+    "test:studio": "node tests/studio.e2e.test.js",
+    "test:contract": "node tests/toolcontract.e2e.test.js",
+    "test:tasks": "node tests/tasks.e2e.test.js"
   },
   "engines": {
     "node": ">=20"

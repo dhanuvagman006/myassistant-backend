@@ -940,13 +940,27 @@ console.log("\nexecution record");
   await atest("the calendar says it is not connected rather than guessing", async () => {
     // USER_A has no Google link. The failure has to be legible, not a
     // silent empty list that reads as "your day is free".
+    //
+    // This asserts the GUARANTEE, not the error code. The capability gate
+    // now intercepts the call before the tool runs and answers with
+    // `integration_unavailable`; the tool's own `google_not_linked` is the
+    // older path. Both are correct, and pinning one string made an
+    // improvement look like a break — the gate's message is the better of
+    // the two because it also offers the fix. What must never change is
+    // that the turn fails loudly, names the missing connection, and
+    // forbids the model from inventing a day's events.
     const res = await registry.execute(
       "list_calendar_events", {},
       { userId: USER_A, inputQuality: { quality: "clear" } }
     );
-    assert.strictEqual(res.ok, false);
-    assert.strictEqual(res.error, "google_not_linked");
+    assert.strictEqual(res.ok, false, "an unlinked calendar must not return a successful empty day");
+    assert.ok(
+      ["google_not_linked", "integration_unavailable"].includes(res.error),
+      `unexpected failure code: ${res.error}`
+    );
     assert.match(res.data.hint, /do NOT invent/i);
+    assert.match(res.data.hint, /google|connect/i,
+      "the reason must name the missing connection, or the user cannot act on it");
   });
 
   await atest("deep_research starts a job and claims nothing yet", async () => {
