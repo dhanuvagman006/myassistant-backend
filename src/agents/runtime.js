@@ -24,6 +24,12 @@ const {
 const { sentenceSplitter } = require("./sentences");
 
 registerBuiltins();
+// The multi-step task tool registers alongside the builtins so both agent
+// surfaces — the classic turn loop and the live proxy — are offered the
+// same set. Registering it anywhere later would have declared it on one
+// path and not the other, which is the exact bug the comment in server.js
+// records about registerBuiltins itself.
+require("./taskTools").registerTaskTools();
 
 const MAX_TOOL_ROUNDS = 3; // guards against a tool-calling loop
 
@@ -648,6 +654,12 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
             tool: res.tool,
             args: res.args,
             summary: res.summary,
+            // WHICH PLAN THIS BELONGS TO, when it belongs to one.
+            // A step of a multi-step task stops here like any other
+            // high-risk action, but approving it must resume the TASK —
+            // re-running the tool on its own would leave the remaining
+            // steps blocked forever with no way to reach them.
+            task: res.task || undefined,
           },
           deviceActions,
           toolResults,

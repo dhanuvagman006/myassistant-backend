@@ -375,6 +375,10 @@ async function runViaAgent(s, req, userText) {
         tool: out.needsConfirmation.tool,
         args: out.needsConfirmation.args,
         summary: out.needsConfirmation.summary,
+        // Set when this question came from a step of a running plan.
+        // Approving it resumes that plan at that step rather than firing
+        // the tool in isolation.
+        task: out.needsConfirmation.task || null,
         askedAt: Date.now(),
         // THE LEDGER HAS TO SURVIVE THE APPROVAL. The replay used to run
         // with the bare ctx built for the turn — no turn id, no intent, no
@@ -1334,6 +1338,37 @@ router.post("/:sid/confirm", (req, res) => {
     } catch (e) {
       console.warn("decline invalidate failed:", e.message);
     }
+    // A DECLINED STEP ENDS ITS PLAN. Without this the task stays BLOCKED
+    // on a step the user has just refused — invisible, unreachable, and
+    // counted as open work forever. Cancelling says what actually
+    // happened: the steps that ran, ran; nothing after this one will.
+    if (pending.task && pending.task.id) {
+      (async () => {
+        const driver = require("../agents/taskDriver");
+        const uidNum = Number(s.userSub) > 0 ? Number(s.userSub) : null;
+        let said = "Okay, cancelled.";
+        try {
+          if (uidNum) {
+            const task = await driver.declineStep(
+              uidNum, pending.task.id, pending.task.stepIndex, "you said no to this step"
+            );
+            if (task) {
+              const done = (task.steps || []).filter((x) => x.status === "done").length;
+              said = done
+                ? `Okay — stopped there. The ${done} step${done === 1 ? "" : "s"} before it had already gone through.`
+                : "Okay, cancelled — nothing ran.";
+              emit(s, { type: "task_update", task });
+            }
+          }
+        } catch (e) {
+          console.warn("task decline failed:", e.message);
+        }
+        state(s, "speaking");
+        emit(s, { type: "assistant_message", text: said });
+        state(s, "completed");
+      })();
+      return;
+    }
     state(s, "speaking");
     emit(s, { type: "assistant_message", text: "Okay, cancelled." });
     state(s, "completed");
@@ -1360,6 +1395,48 @@ router.post("/:sid/confirm", (req, res) => {
       s.pendingCallOutcomeId = outcomeId;
       emit(s, { type: "call_status", status: "dialing", contact_name: who, outcome_id: outcomeId });
       state(s, "in_call");
+      state(s, "completed");
+    })();
+    return;
+  }
+
+  // A step of a RUNNING PLAN. The approval belongs to that step, so it is
+  // applied through the task machinery: the step is resumed, re-executed
+  // with approval scoped to it alone, its result recorded against the
+  // plan, and the remaining steps carry on. Firing the tool directly here
+  // would run the action but leave the task blocked on a step that, as
+  // far as it knew, was still waiting.
+  if (pending.action === "tool" && pending.task && pending.task.id) {
+    (async () => {
+      const driver = require("../agents/taskDriver");
+      const uidNum = Number(s.userSub) > 0 ? Number(s.userSub) : null;
+      if (!uidNum) {
+        state(s, "completed");
+        return;
+      }
+      try {
+        state(s, "using_tool");
+        emit(s, { type: "tool_started", name: pending.tool, tool: pending.tool });
+        const out = await driver.approveStep(
+          uidNum,
+          pending.task.id,
+          pending.task.stepIndex,
+          { ...(pending.ctx || {}), sessionId: s.sid }
+        );
+        const said = out
+          ? driver.summarise(out.task, { exhausted: out.exhausted })
+          : "I couldn't find that task any more.";
+        emit(s, { type: "task_update", task: out ? out.task : null });
+        state(s, "speaking");
+        emit(s, { type: "assistant_message", text: said });
+      } catch (e) {
+        console.warn("task approval failed:", e.message);
+        state(s, "speaking");
+        emit(s, {
+          type: "assistant_message",
+          text: "That step didn't go through. Nothing after it ran.",
+        });
+      }
       state(s, "completed");
     })();
     return;

@@ -327,11 +327,21 @@ async function step(userId, taskId, ctx = {}) {
   await save(userId, taskId, steps, STATUS.RUNNING, task.error);
 
   const registry = require("../tools/registry");
+  // AN APPROVAL AUTHORISES ONE STEP, NOT THE REST OF THE PLAN.
+  //
+  // When the user taps yes on the step a task stopped for, the driver
+  // resumes with `approvedStep: <that index>` rather than a blanket
+  // `approved: true`. A plan may hold two high-risk steps — pay the
+  // invoice, then delete the record — and one tap must not clear both.
+  // ctx.approved is still honoured on its own, because a scheduled
+  // background run legitimately carries it for the whole task.
+  const approved = ctx.approved === true || ctx.approvedStep === s.i;
   // Execute through the ORDINARY path: every gate, guard, confirmation and
   // audit line that applies in a conversation applies here too. A task must
   // not be a way around the safety machinery.
   const res = await registry.execute(s.tool, args, {
     ...ctx,
+    approved,
     userId,
     taskId,
     stepIndex: s.i,
