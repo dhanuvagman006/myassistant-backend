@@ -35,30 +35,12 @@ function registerTaskTools() {
   registry.register({
     name: "start_task",
 
-    // ── DARK, 2026-09-13, after breaking the phone's actions in production.
-    //
-    // A plan step's deviceAction NEVER REACHES THE PHONE. tasks.js keeps
-    // only `{type}` of the envelope (compactResult) and there is no path
-    // from a step's result to the client — the runtime only forwards
-    // deviceActions from the tool THE MODEL called, and that tool is
-    // start_task, whose own result carries none.
-    //
-    // So 26 of 97 tools — order_food, open_service_app, play_music,
-    // start_navigation, present_text, generate_image among them — did
-    // nothing at all inside a plan, and then blocked it forever waiting
-    // for a receipt: the step goes DISPATCHED, and nothing in the app
-    // calls POST /tasks/:id/ack. Reported as "not opening swiggy",
-    // "repeated the same errors" and "said it out loud five times", which
-    // is exactly what a hung plan plus a retrying model produces.
-    //
-    // The stepper, planner, driver, routes and 27 checks all stay. What is
-    // missing is delivery, and it is not a small piece: a step's envelope
-    // has to reach whichever surface started the plan, the phone has to
-    // ack it against the task, and the ack has to turn the crank. Until
-    // that exists end to end and is verified ON THE DEVICE, this tool is
-    // not offered — `available` is what registry.declarations() filters
-    // on, so the model cannot see or select it.
-    available: () => false,
+    // Re-enabled once plans were restricted to tools that finish on the
+    // SERVER. The reason it went dark was that a step's deviceAction never
+    // reached the phone — it did nothing and then blocked the plan waiting
+    // for a receipt. planner.js now refuses to put such a tool in a plan,
+    // so every step a plan contains is one it can actually complete and
+    // verify. See the note there before widening it again.
 
     description:
       "Take on a piece of work that needs SEVERAL actions in order, and " +

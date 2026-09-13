@@ -440,21 +440,52 @@ function stubPlan(steps, decline) {
 
   console.log("\nstart_task");
 
-  await atest("start_task is registered, low risk, and NOT offered to the model", async () => {
+  await atest("start_task is offered, and is low risk itself", async () => {
     const t = registry.get("start_task");
     assert.ok(t, "the tool must exist");
     assert.strictEqual(t.risk, "low",
       "the STEPS carry the risk; asking a user to approve 'a plan' approves nothing they can judge");
-    // DARK until a plan step's deviceAction can actually reach the phone.
-    // It could not, so 26 tools did nothing inside a plan and then hung it
-    // waiting for a receipt no one sends. This assertion is the guard: it
-    // fails the moment someone re-offers the tool, which must not happen
-    // until delivery works and has been checked on a real device.
-    assert.strictEqual(t.available(), false,
-      "start_task must stay dark while plan steps cannot drive the phone");
     const declared = registry.declarations({ userId: USER }).map((d) => d.name);
-    assert.ok(!declared.includes("start_task"),
-      "an unavailable tool must never be declared to the model");
+    assert.ok(declared.includes("start_task"), "the model must be able to reach it");
+  });
+
+  await atest("a plan can never contain a device action", async () => {
+    // THE REASON IT WAS DARK. A step's deviceAction never reaches the
+    // phone — tasks.js keeps only `{type}` and there is no path from a
+    // step's result to the client — so such a step does nothing visible
+    // and then blocks the plan waiting for a receipt nobody sends.
+    let sawCatalogue = "";
+    router.generateWithTools = async ({ system }) => {
+      sawCatalogue = system;
+      return { functionCalls: [{ name: "submit_plan", args: { steps: [
+        { tool: "p_search", args_json: "{}", why: "a" },
+        { tool: "p_write", args_json: "{}", why: "b" },
+      ] } }], text: "" };
+    };
+    await planner.plan(USER, "do a thing", {});
+    assert.ok(sawCatalogue.includes("p_search"), "server-side tools must still be offered");
+    assert.ok(!sawCatalogue.includes("p_device"),
+      "a device action must never be offered to the planner");
+  });
+
+  await atest("the planner is told the date, so a datetime is usable", async () => {
+    // It wrote due_at: "tomorrow 10:00 AM" into a field documented as
+    // ISO-8601. The tool could not parse it and the reminder was stored
+    // with NO time — created, visible, and never going to fire.
+    let sawCatalogue = "";
+    router.generateWithTools = async ({ system }) => {
+      sawCatalogue = system;
+      return { functionCalls: [{ name: "submit_plan", args: { steps: [
+        { tool: "p_search", args_json: "{}", why: "a" },
+        { tool: "p_write", args_json: "{}", why: "b" },
+      ] } }], text: "" };
+    };
+    await planner.plan(USER, "remind me tomorrow", { tzOffsetMin: 330 });
+    assert.match(sawCatalogue, /Current date and time for this user/,
+      "the planner must know what 'tomorrow' means");
+    assert.match(sawCatalogue, /ISO-8601/);
+    assert.match(sawCatalogue, /NEVER write words like/i,
+      "and be told plainly not to write prose into a datetime field");
   });
 
   await atest("a goal the planner declines is reported as 'do it directly', not as failure", async () => {

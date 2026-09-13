@@ -102,8 +102,32 @@ const PLAN_DECLARATION = {
   },
 };
 
-function planningSystemPrompt(catalogue) {
+/**
+ * The planner has to know what "tomorrow at 10" IS.
+ *
+ * Without this it wrote due_at: "tomorrow 10:00 AM" into a field
+ * documented as ISO-8601, the tool could not parse it, and the reminder
+ * was stored with no time at all — created, visible, and never going to
+ * fire. The same shape the live prompt uses, for the same reason.
+ */
+function nowLine(tzOffsetMin) {
+  const tz = Number.isFinite(tzOffsetMin) ? tzOffsetMin : 330;
+  const sign = tz < 0 ? "-" : "+";
+  const abs = Math.abs(tz);
+  const off = `${sign}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`;
+  const local = new Date(Date.now() + tz * 60_000).toISOString().replace("T", " ").slice(0, 16);
   return (
+    `Current date and time for this user: ${local} (UTC${off}). ` +
+    `Any datetime argument must be a full ISO-8601 string in the user's ` +
+    `local time with this offset — e.g. 2026-09-14T10:00:00${off}. ` +
+    `NEVER write words like "tomorrow 10am" into a datetime field: the ` +
+    `tool cannot read them and the reminder is saved with no time.\n\n`
+  );
+}
+
+function planningSystemPrompt(catalogue, tzOffsetMin) {
+  return (
+    nowLine(tzOffsetMin) +
     "You are the planning stage of a personal assistant. You are given a " +
     "user's goal and the complete list of tools that user can run right " +
     "now. You produce an ordered plan and nothing else — you never speak " +
@@ -190,6 +214,24 @@ async function plan(userId, goal, ctx = {}) {
     includeDeviceActions: ctx.includeDeviceActions !== false,
   }).filter((d) => !NEVER_PLANNABLE.has(d.name));
 
+  // NO DEVICE ACTION IN A PLAN.
+  //
+  // A step's deviceAction never reaches the phone: tasks.js keeps only
+  // `{type}` of the envelope and there is no path from a step's result to
+  // the client. So a plan containing one does nothing visible and then
+  // blocks forever waiting for a receipt nobody sends — which is why this
+  // tool was dark. Sixty-five server-side tools remain, and everything
+  // they do (research, reminders, memory, documents, calendar, places)
+  // completes entirely on the server, where a plan can actually verify it.
+  //
+  // Lifting this needs a step's envelope delivered to whichever surface
+  // started the plan, plus an ack from the phone. Until that exists and is
+  // checked ON A DEVICE, a plan is built from what it can finish.
+  declarations = declarations.filter((d) => {
+    const t = registry.get(d.name);
+    return !t || !t.deviceAction;
+  });
+
   // NO HIGH-RISK STEP ON A SURFACE THAT CANNOT ASK.
   //
   // Live mode is a voice call, not a form: it has no confirmation card,
@@ -217,7 +259,7 @@ async function plan(userId, goal, ctx = {}) {
   try {
     out = await router.generateWithTools({
       contents: [{ role: "user", parts: [{ text: `GOAL: ${text}` }] }],
-      system: planningSystemPrompt(catalogueFor(declarations)),
+      system: planningSystemPrompt(catalogueFor(declarations), ctx.tzOffsetMin),
       declarations: [PLAN_DECLARATION],
     });
   } catch (e) {
