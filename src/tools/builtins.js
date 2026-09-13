@@ -3319,6 +3319,86 @@ function registerBuiltins() {
   });
 
   /* ---------------------------------------------------------------- */
+  /* NEWS                                                              */
+  /*                                                                   */
+  /* Ten headlines read aloud takes over a minute and nobody remembers */
+  /* the fourth. The list goes ON SCREEN, scrollable, while the voice  */
+  /* covers only the top few — and tapping one opens that story for it */
+  /* to actually read. The panel is the answer; the narration is the   */
+  /* summary of the answer.                                            */
+  /* ---------------------------------------------------------------- */
+
+  registry.register({
+    name: "show_news",
+    deviceAction: true,
+    available: () => Boolean(process.env.BRAVE_SEARCH_API_KEY),
+    description:
+      "Show today's headlines on the user's screen and read out the top " +
+      "few. USE THIS whenever they ask for the news, headlines, what is " +
+      "happening today, or news about a particular subject — do NOT use " +
+      "web_search for that and do NOT read a long list aloud. Pass a topic " +
+      "only if they named one ('sports news', 'news about the budget'); " +
+      "leave it empty for general headlines.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        topic: {
+          type: "string",
+          description:
+            "Optional subject, only if the user named one. Empty for " +
+            "general headlines.",
+        },
+      },
+    },
+    async execute(args) {
+      const news = require("./news");
+      try {
+        const out = await news.headlines({
+          topic: String(args.topic || "").trim(),
+          count: 10,
+        });
+        if (!out.items.length) {
+          return {
+            ok: false,
+            error: "no_headlines",
+            note:
+              "Say you could not get the headlines just now — NOT that " +
+              "there is no news — and offer to try again.",
+          };
+        }
+        // Only the top three are spoken. The rest are on screen, which is
+        // the whole point of the panel.
+        const spoken = out.items.slice(0, 3)
+          .map((x, i) => `${i + 1}. ${x.title}`)
+          .join(" ");
+        return {
+          ok: true,
+          deviceAction: { type: "show_news", topic: out.topic, items: out.items },
+          speak: spoken,
+          note:
+            "THE HEADLINES ARE NOW ON THEIR SCREEN. Say in ONE short line " +
+            "that today's headlines are up, then read out ONLY the top two " +
+            "or three in your own words. Do NOT list all ten, do NOT read " +
+            "URLs or source names, and do NOT ask which one they want — " +
+            "they can see the list and will tap one. Tapping a headline " +
+            "opens the full story for you to read, so there is nothing for " +
+            "them to do first.",
+        };
+      } catch (e) {
+        return {
+          ok: false,
+          error: `news failed: ${String(e.message).slice(0, 160)}`,
+          note:
+            "Say you could not fetch the headlines at the moment. Never " +
+            "invent a headline or recite news from memory as if it were " +
+            "today's.",
+        };
+      }
+    },
+  });
+
+  /* ---------------------------------------------------------------- */
   /* INDIAN LAW                                                        */
   /*                                                                   */
   /* One source - Indian Kanoon - split into two tools, because a      */
@@ -3368,8 +3448,12 @@ function registerBuiltins() {
       try {
         // doctypes:laws confines the search to Central Acts and Rules, so
         // "section 302" returns the PROVISION rather than the ten thousand
-        // judgments that happen to cite it.
-        const out = await ik.research(q, { doctypes: "laws", depth: 2 });
+        // judgments that happen to cite it. statuteQuery then turns what
+        // the user actually said into what this index wants — measured on
+        // the live API, "can you tell me what section 420 says" returned
+        // the Police Regulations, Bengal, 1943 until it did.
+        const prepared = ik.statuteQuery(q);
+        const out = await ik.research(prepared, { doctypes: "laws", depth: 2 });
         if (!out.docs.length) {
           return {
             ok: false,
@@ -3452,7 +3536,10 @@ function registerBuiltins() {
       const q = String(args.query || "").trim();
       if (!q) return { ok: false, error: "empty query" };
       try {
-        const out = await ik.research(q, { doctypes: "judgments" });
+        // Filler stripped, but NOT pinned to the title: a judgment is
+        // titled by its parties, so title: would exclude every case that
+        // discusses the point without naming it.
+        const out = await ik.research(ik.stripFiller(q), { doctypes: "judgments" });
         if (!out.docs.length) {
           return {
             ok: false,

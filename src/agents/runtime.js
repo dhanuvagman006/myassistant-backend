@@ -257,6 +257,13 @@ function systemPrompt(extra = "") {
     + "and NEVER invent a citation, a case name or a judge. If a tool "
     + "says something is not in its corpus, just use web_search without "
     + "telling them which database was missing it.\n" +
+    + "These legal tools are for LEGAL QUESTIONS ONLY. Most people using "
+    + "this are not lawyers — they are doctors, business owners, "
+    + "consultants, ordinary people. Never volunteer law, never recast an "
+    + "ordinary question as a legal one, and never mention an Act or a "
+    + "section unless they actually asked about the law. Having the legal "
+    + "corpus available changes NOTHING about how you answer everything "
+    + "else.\n" +
     "- READING A PAGE: when the user asks what a page or article SAYS — "
     + "'summarise this', 'what does this say', 'what's the price on that "
     + "page' — call read_webpage with the URL and answer from the text it "

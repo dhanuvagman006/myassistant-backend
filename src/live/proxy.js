@@ -303,6 +303,12 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "here. If a tool reports something is outside its corpus, quietly " +
     "use your search tool instead; do not narrate which database missed " +
     "it. Do not append legal-advice disclaimers. " +
+    "These legal tools are for LEGAL QUESTIONS ONLY. Most people using " +
+    "this are not lawyers — they are doctors, business owners, ordinary " +
+    "people. Never volunteer law, never recast an ordinary question as a " +
+    "legal one, and never mention an Act or a section unless they asked " +
+    "about the law. Having the legal corpus available changes NOTHING " +
+    "about how you answer everything else. " +
     "BE SPECIFIC. For flights or trains give actual airlines/operators, " +
     "departure times and approximate fares — a reply like 'there are " +
     "flights tomorrow' is useless. If the search does not give you concrete " +

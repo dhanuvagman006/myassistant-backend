@@ -83,6 +83,87 @@ const key = (kind, ...parts) =>
   `ik:${kind}:${parts.join(":").toLowerCase().replace(/\s+/g, " ").trim()}`;
 
 /**
+ * TURN WHAT SOMEBODY SAID INTO WHAT THE INDEX WANTS.
+ *
+ * This is a keyword search, and conversational filler is not neutral — it
+ * competes. Measured against the live API: "can you tell me what section
+ * 420 says" returned the Police Regulations, Bengal, 1943, because "can",
+ * "tell" and "says" outweighed the citation. "what is the punishment for
+ * murder" returned section 303 rather than 302.
+ *
+ * A CITATION IS THE STRONG CASE and worth special handling: section titles
+ * in this corpus are literally "Section 420 in The Indian Penal Code,
+ * 1860", so title:"Section 420" pins the search to the provision itself
+ * instead of every document that mentions the number. Adding the Act, when
+ * the speaker named one, resolves the rest — 420 also exists in the CrPC
+ * and the Companies Act.
+ *
+ * The user is not going to learn a query syntax, and should not be asked
+ * to. This is the layer that means they do not have to.
+ */
+const ACTS = [
+  [/\bipc\b|indian penal code|penal code/i, "The Indian Penal Code"],
+  [/\bbnss\b|nagarik suraksha/i, "Bharatiya Nagarik Suraksha Sanhita"],
+  [/\bbns\b|nyaya sanhita/i, "Bharatiya Nyaya Sanhita"],
+  [/\bbsa\b|sakshya adhiniyam/i, "Bharatiya Sakshya Adhiniyam"],
+  [/\bcr\.?p\.?c\.?\b|code of criminal procedure|criminal procedure/i, "The Code of Criminal Procedure"],
+  [/\bc\.?p\.?c\.?\b|code of civil procedure|civil procedure/i, "The Code of Civil Procedure"],
+  [/\bn\.?i\.?\s*act\b|negotiable instrument/i, "The Negotiable Instruments Act"],
+  [/evidence act/i, "The Indian Evidence Act"],
+  [/contract act/i, "The Indian Contract Act"],
+  [/companies act/i, "The Companies Act"],
+  [/\bconstitution\b/i, "Constitution of India"],
+];
+
+// Words that carry no legal meaning and only dilute the ranking.
+const FILLER = new Set(
+  ("what whats what's is are was were the a an of for in on to do does did " +
+   "can could would should will you your me my i we us please tell say says " +
+   "said about know explain mean means meaning give show find look up under " +
+   "any some it its this that there here how when why who and or but if then " +
+   "kya hai ka ki ke ko").split(" ")
+);
+
+function statuteQuery(text) {
+  const t = String(text || "").trim();
+  if (!t) return "";
+
+  const act = (ACTS.find(([rx]) => rx.test(t)) || [])[1] || "";
+  // "section 420", "s. 138", "u/s 498A", "article 21" — the suffix letter
+  // counts only when attached ("498A"), never across a space.
+  const m =
+    /\b(article|art\.?|section|sec\.?|s\.?|u\/s)\s*\.?\s*([0-9]{1,4}[A-Za-z]{0,2})\b/i.exec(t) ||
+    (act ? /\b([0-9]{1,4}[A-Za-z]{0,2})\b/.exec(t) : null);
+
+  if (m) {
+    const num = (m[2] || m[1]).toUpperCase();
+    const unit = /^art/i.test(m[1] || "") || /\bconstitution\b/i.test(t) ? "Article" : "Section";
+    // The Act pins which "420" is meant; without one the index returns the
+    // IPC first anyway, then the other statutes, which the model can read.
+    return act
+      ? `title:"${unit} ${num} in ${act}"`
+      : `title:"${unit} ${num}"`;
+  }
+
+  // No citation: a concept question. Drop the filler and keep the law.
+  return stripFiller(t);
+}
+
+/**
+ * Conversational filler removed, nothing else changed. Case law uses this
+ * WITHOUT the title: form above — a judgment is titled "Anup Majee vs
+ * Directorate Of Enforcement", so pinning to the title would exclude every
+ * judgment that discusses the point without naming it.
+ */
+function stripFiller(t) {
+  const kept = String(t || "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter((w) => w && !FILLER.has(w.toLowerCase()));
+  return (kept.length ? kept : String(t || "").split(/\s+/)).join(" ").trim();
+}
+
+/**
  * Judgments matching a query. Rs 0.50 — the expensive call, so it is
  * cached for a day and deduplicated by the exact question asked.
  */
@@ -211,4 +292,5 @@ async function research(q, { depth = 3, doctypes = "" } = {}) {
 
 module.exports = {
   available, search, fragment, meta, document, research, PRICE, plain,
+  statuteQuery, stripFiller,
 };
