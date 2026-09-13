@@ -1678,6 +1678,55 @@ console.log("\nexecution record");
     assert.strictEqual(v.ok, false, "the check must not be weakened into uselessness");
   });
 
+  console.log("\nthe same reminder said twice is one reminder");
+
+  await atest("asking for a ring after a quiet one updates it, not duplicates", async () => {
+    const store = require("../src/reminders/store");
+    const U = 99091;
+    await db.run("DELETE FROM reminders WHERE user_id = $1", [U]).catch(() => {});
+    const due = Date.now() + 3_600_000;
+    // Observed: "remind me about the meeting at 4" then "make that ring"
+    // left TWO rows for 16:00, one gentle and one alarm, and both fired.
+    const first = await store.create(U, "Important Meeting", due, "gentle", {});
+    const second = await store.create(U, "Important Meeting", due, "alarm", {});
+    assert.strictEqual(second.id, first.id, "the second must update the first");
+    assert.strictEqual(second.ring, "alarm",
+      "asking for a ring is an upgrade; keeping it gentle ignores what was asked");
+    const rows = await db.query("SELECT id FROM reminders WHERE user_id = $1", [U]);
+    assert.strictEqual(rows.length, 1, "one intention, one row");
+    await db.run("DELETE FROM reminders WHERE user_id = $1", [U]).catch(() => {});
+  });
+
+  await atest("genuinely different reminders still stand on their own", async () => {
+    const store = require("../src/reminders/store");
+    const U = 99092;
+    await db.run("DELETE FROM reminders WHERE user_id = $1", [U]).catch(() => {});
+    const due = Date.now() + 3_600_000;
+    await store.create(U, "Call the dentist", due, "gentle", {});
+    await store.create(U, "Pay the electricity bill", due, "gentle", {});
+    // Same text an hour apart is two reminders, not one restated.
+    await store.create(U, "Call the dentist", due + 3_600_000, "gentle", {});
+    const rows = await db.query("SELECT id FROM reminders WHERE user_id = $1", [U]);
+    assert.strictEqual(rows.length, 3, "merging these would lose a reminder");
+    await db.run("DELETE FROM reminders WHERE user_id = $1", [U]).catch(() => {});
+  });
+
+  await atest("a reminder set moments before it is due still arms its alarm", () => {
+    const fs = require("fs");
+    const engine = fs.readFileSync(
+      __dirname + "/../../myassistant-flutter/lib/features/assistant/state/assistant_engine.dart",
+      "utf8"
+    );
+    // Alarms were only re-armed inside BriefService.refresh, which is
+    // throttled 5s in the engine and 2 minutes in the service. Three
+    // reminders inside a minute meant the last one was throttled away and
+    // never scheduled — set at 12:39:52 for 12:40, it did not ring.
+    assert.match(engine, /_remindersTouchedBy/,
+      "the engine must re-arm alarms when a reminder tool reports back");
+    assert.match(engine, /'create_reminder',/);
+    assert.match(engine, /ReminderNotifications\.instance\.sync\(\)/);
+  });
+
   console.log("\na voice change has to be heard, not just recorded");
 
   await atest("changing gender asks the app to rebuild the live session", async () => {

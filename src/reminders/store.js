@@ -53,10 +53,46 @@ async function create(userId, text, dueAt = null, ring = "gentle", opts = {}) {
   // not a series, it is a note.
   const anchorDay = repeat && dueAt
     ? recurrence.anchorDayOf(dueAt, opts.tzOffsetMin) : 0;
+  const wantRing = ring === "alarm" ? "alarm" : "gentle";
+
+  // THE SAME REMINDER, SAID TWICE, IS ONE REMINDER.
+  //
+  // "Remind me about the meeting at 4" followed by "make that one ring"
+  // produced TWO rows for 16:00 — one gentle, one alarm — and both fired.
+  // The second utterance is a correction of the first, not a new thing to
+  // be reminded of, so it updates rather than inserts.
+  //
+  // Matched on the same text at close to the same time. A two-minute
+  // window absorbs the re-parse of a spoken time without merging
+  // reminders that were genuinely meant to be separate; identical text at
+  // an identical minute is one intention expressed twice.
+  const WINDOW_MS = 120_000;
+  const existing = await one(
+    `SELECT * FROM reminders
+      WHERE user_id = $1 AND done = 0 AND lower(text) = lower($2)
+        AND ((due_at IS NULL AND $3::bigint IS NULL)
+             OR (due_at IS NOT NULL AND $3::bigint IS NOT NULL
+                 AND abs(due_at - $3::bigint) <= $4))
+      ORDER BY id DESC LIMIT 1`,
+    [userId, t, dueAt || null, WINDOW_MS]
+  );
+  if (existing) {
+    // Take the LOUDER of the two: asking for a ring after a quiet one is
+    // an upgrade, and silently keeping the gentle setting would ignore
+    // what they just asked for.
+    const nextRing = wantRing === "alarm" || existing.ring === "alarm" ? "alarm" : "gentle";
+    return one(
+      `UPDATE reminders SET due_at = $3, ring = $4, repeat = $5, anchor_day = $6
+        WHERE user_id = $1 AND id = $2 RETURNING *`,
+      [userId, existing.id, dueAt || existing.due_at, nextRing,
+       dueAt ? repeat : existing.repeat, anchorDay || existing.anchor_day]
+    );
+  }
+
   return one(
     `INSERT INTO reminders (user_id, text, due_at, created_at, ring, repeat, anchor_day)
      VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-    [userId, t, dueAt || null, Date.now(), ring === "alarm" ? "alarm" : "gentle",
+    [userId, t, dueAt || null, Date.now(), wantRing,
      dueAt ? repeat : "", anchorDay]
   );
 }
