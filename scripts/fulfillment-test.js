@@ -870,6 +870,46 @@ test("open_app verifies against the live profile, never a remembered name", () =
   assert.match(sh, /og:title/, "verification reads the page's own claim about itself");
 });
 
+test("profile lookup works on every platform that has profiles", () => {
+  const sh = require("../src/tools/socialHandles");
+  // The user picks the platform, not us. Facebook was missing, so a
+  // request naming it got no verification at all and fell through.
+  for (const p of ["instagram", "facebook", "x", "youtube", "linkedin"]) {
+    assert.ok(sh.PROFILE_RX[p], `${p} must have a profile URL shape`);
+  }
+  const src = require("fs").readFileSync(__dirname + "/../src/tools/socialHandles.js", "utf8");
+  for (const p of ["instagram", "facebook", "x", "youtube", "linkedin"]) {
+    assert.ok(new RegExp(`^\\s*${p}:`, "m").test(src.split("PROFILE_URL")[1] || ""),
+      `${p} must be verifiable against its live page`);
+  }
+});
+
+test("follower counts survive a page served in another language", () => {
+  const sh = require("../src/tools/socialHandles");
+  // "Followers" is only there in English. A localised page puts the same
+  // number in front of a word this code cannot read.
+  assert.strictEqual(sh.followerCount("1M Followers, 1,275 Following"), 1000000);
+  assert.ok(sh.followerCount("63,085,445 ಇಷ್ಟಗಳು") >= 63000000,
+    "a localised count must still be read");
+  assert.strictEqual(sh.followerCount(""), 0);
+});
+
+test("nobody is hardcoded — the lookup is built from the name given", () => {
+  const sh = require("../src/tools/socialHandles");
+  // Whatever name arrives, the candidates are derived from it. A person
+  // baked into the source would mean it only works for that person.
+  const a = sh.candidatesFrom("Narendra Modi");
+  const b = sh.candidatesFrom("Some Otherperson");
+  assert.ok(a.includes("narendramodi"));
+  assert.ok(b.includes("someotherperson"));
+  assert.ok(!a.some((h) => b.includes(h)), "candidates must come from the name alone");
+  for (const f of ["socialHandles.js", "builtins.js"]) {
+    const src = require("fs").readFileSync(__dirname + "/../src/tools/" + f, "utf8");
+    assert.doesNotMatch(src, /nehashetty|iamnehashetty/i,
+      `${f} must not carry a specific person's handle`);
+  }
+});
+
 // Everything above only REGISTERED a test. This is what runs them, in
 // order, each one awaited — replacing a 250 ms setTimeout that reported a
 // total before the async tests had finished producing it.

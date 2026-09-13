@@ -2,21 +2,18 @@
  * WHOSE PROFILE IS THIS, ACTUALLY?
  * ----------------------------------------------------------------------
  * open_app used to take a handle the MODEL remembered. For a globally
- * famous account that is usually right; for a regional one it is a guess
- * dressed as a fact. Asked for the actor Neha Shetty — Kannada and Telugu
- * films — it opened a different Neha Shetty's account, four times running,
- * while the user rephrased and tried again.
+ * famous account that recall is often right; for anyone else it is a guess
+ * dressed as a fact, and a guessed handle is worse than none — it opens a
+ * stranger's account while saying the person's name aloud.
  *
- * A guessed handle is worse than no handle: it opens a stranger's profile
- * and says the person's name while doing it. So the handle is LOOKED UP
- * instead, from the search results' own URLs. The web already knows which
- * account belongs to which person; the model's recall of a username does
- * not need to be the source of truth.
+ * So the handle is established rather than recalled, for anybody the user
+ * names, on any platform they name. Candidates come from a web search and
+ * from the shapes usernames ordinarily take; each is then CHECKED against
+ * the live profile page, which states who it belongs to.
  *
- * Nothing here invents a handle. If the search does not produce a profile
- * URL for the platform asked about, this returns null and the caller falls
- * back to a search page — which shows the user a choice rather than
- * confidently opening the wrong person.
+ * Nothing here invents a handle. When no candidate's page carries the
+ * person's name, this returns null and the caller falls back to a search —
+ * showing a choice rather than confidently opening the wrong person.
  */
 const webSearch = require("./webSearch");
 
@@ -52,11 +49,11 @@ function norm(s) {
 /**
  * Strip what describes the person from what IS their name.
  *
- * The model passes what the user said, and the user says "open actor Neha
- * Shetty's Instagram". Scoring then demanded the handle contain "actor"
- * too, so @iamnehashetty — her real account — scored below the threshold
- * and the whole thing fell through to opening Instagram's home feed. The
- * describing word is not part of anybody's username.
+ * The model passes what the user said, and people say "open actor X's
+ * Instagram" or "the cricketer Y". Scoring then demanded the handle
+ * contain the describing word too, which pushed real accounts below the
+ * threshold and fell through to the platform's home feed. A role is not
+ * part of anybody's username.
  */
 const ROLE_WORDS = new Set([
   "actor", "actress", "singer", "cricketer", "player", "star", "celebrity",
@@ -88,9 +85,9 @@ function score(handle, name) {
   const parts = cleanName(name).trim().split(/\s+/).map(norm).filter((p) => p.length > 1);
   if (!parts.length) return 0;
   const joined = parts.join("");
-  if (h === joined) return 100;                       // nehashetty
-  if (h.replace(/[0-9_.]/g, "") === joined) return 90; // neha_shetty, neha.shetty
-  if (h.startsWith(joined)) return 70;                // nehashettyofficial
+  if (h === joined) return 100;                        // firstlast
+  if (h.replace(/[0-9_.]/g, "") === joined) return 90; // first_last, first.last
+  if (h.startsWith(joined)) return 70;                 // firstlastofficial
   const hit = parts.filter((p) => h.includes(p)).length;
   if (hit === parts.length) return 60;                // all name parts present
 
@@ -150,11 +147,10 @@ async function resolve(name, platform, ctx = {}) {
   }
   if (!res || !res.ok || !Array.isArray(res.data)) return null;
   // THE ENCYCLOPEDIA CANNOT ANSWER THIS. When the search providers are
-  // rate-limited, webSearch falls back to Wikipedia — and asked for "Neha
-  // Shetty official instagram profile" it returned articles about Neha
-  // Kakkar, a different person. Those pages never carry the handle, and
-  // the names are close enough that a lax match would open the wrong
-  // account, which is the whole failure this module exists to prevent.
+  // rate-limited, webSearch falls back to Wikipedia, which returns
+  // articles about whoever has the nearest matching name. Those pages
+  // never carry a handle, and a near-miss on a name is exactly how the
+  // wrong person's account gets opened.
   if (res.provider === "wikipedia") return null;
 
   const seen = new Map(); // handle -> best score
@@ -196,24 +192,26 @@ async function resolve(name, platform, ctx = {}) {
 /* ------------------------------------------------------------------ *
  * VERIFY, DON'T TRUST
  *
- * A profile page states who it belongs to:
+ * A profile page states who it belongs to, in its own metadata:
  *
- *   <meta property="og:title" content="Neha Sshetty (@iamnehashetty) …">
+ *   <meta property="og:title"       content="Full Name (@handle) …">
+ *   <meta property="og:description" content="1M Followers, …">
  *
- * That turns "which account is hers?" from a question about memory into a
- * question with an answer we can check. A handle only opens if the page it
- * points at says the person's name — so a remembered-but-wrong username
- * is caught rather than opened, which is the whole failure here.
+ * That turns "which account is theirs?" from a question about memory into
+ * one with a checkable answer. A handle only opens if the page it points
+ * at carries the person's name, so a remembered-but-wrong username is
+ * caught instead of opened.
  *
- * It also means the lookup no longer depends on the search quota, which
- * was rate-limited and falling back to Wikipedia articles about a
- * different woman entirely.
+ * It also means the lookup does not depend on the search quota, which is
+ * small and rate-limits in ordinary use.
  * ------------------------------------------------------------------ */
 
 const PROFILE_URL = {
   instagram: (h) => `https://www.instagram.com/${h}/`,
+  facebook: (h) => `https://www.facebook.com/${h}`,
   x: (h) => `https://x.com/${h}`,
   youtube: (h) => `https://www.youtube.com/@${h}`,
+  linkedin: (h) => `https://www.linkedin.com/in/${h}`,
 };
 
 /** Names a person plausibly uses, in the order they are worth trying. */
@@ -233,14 +231,33 @@ function candidatesFrom(name) {
   return [...new Set(out)].filter((h) => h.length >= 3 && h.length <= 30);
 }
 
-/** "1M" / "12.3K" / "1,275" as a number. */
+/**
+ * How many people follow this account: "1M", "12.3K", "1,275".
+ *
+ * The word "Followers" is only there in English. A page served in the
+ * viewer's own language puts the same number in front of a word this code
+ * cannot read — so when the labelled form is absent, the largest number on
+ * the line is taken instead. Followers outnumber posts and following on
+ * any account this ranking has to decide between.
+ */
 function followerCount(text) {
-  const m = String(text || "").match(/([\d.,]+)\s*([KMB])?\s*Followers/i);
-  if (!m) return 0;
-  const n = Number(String(m[1]).replace(/,/g, ""));
-  if (!Number.isFinite(n)) return 0;
-  const mult = { k: 1e3, m: 1e6, b: 1e9 }[String(m[2] || "").toLowerCase()] || 1;
-  return Math.round(n * mult);
+  const t = String(text || "");
+  const m = t.match(/([\d.,]+)\s*([KMB])?\s*Followers/i);
+  if (m) {
+    const n = Number(String(m[1]).replace(/,/g, ""));
+    if (Number.isFinite(n)) {
+      const mult = { k: 1e3, m: 1e6, b: 1e9 }[String(m[2] || "").toLowerCase()] || 1;
+      return Math.round(n * mult);
+    }
+  }
+  let best = 0;
+  for (const g of t.matchAll(/([\d][\d.,]*)\s*([KMB])?\b/gi)) {
+    const n = Number(String(g[1]).replace(/,/g, ""));
+    if (!Number.isFinite(n)) continue;
+    const mult = { k: 1e3, m: 1e6, b: 1e9 }[String(g[2] || "").toLowerCase()] || 1;
+    best = Math.max(best, Math.round(n * mult));
+  }
+  return best;
 }
 
 /**
@@ -299,12 +316,11 @@ async function resolveVerified(name, platform, ctx = {}) {
   // THE BIGGEST MATCHING ACCOUNT WINS.
   //
   // Several real people share a name, and checking the name alone cannot
-  // tell them apart. For "Neha Shetty" the live pages say:
-  //   @nehashetty     67 followers, no display name  ← the model's guess
-  //   @neha.shetty    205 followers
-  //   @iamnehashetty  1M followers                   ← the actress
-  // Asked for a public figure, the public figure is who is meant. For an
-  // uncommon name there is only one match and the count decides nothing.
+  // tell them apart — a namesake with a handful of followers reads exactly
+  // like the public figure. When someone asks for a person by name, the
+  // account the world means is the one the world follows, so matches are
+  // ranked by reach. For an uncommon name there is a single match and the
+  // ranking decides nothing.
   const checked = await Promise.all(
     tries.map(async (h) => {
       const got = await inspect(h, platform);

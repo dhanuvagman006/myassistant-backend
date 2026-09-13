@@ -2770,14 +2770,15 @@ function registerBuiltins() {
     name: "open_app",
     description:
       "Open an app on the user's phone, optionally straight at a PERSON'S " +
-      "PROFILE or a search — 'open Instagram', 'open Neha Shetty's " +
+      "PROFILE or a search — 'open Instagram', 'open the Prime Minister's " +
       "Instagram', 'show me Virat Kohli on X', 'open WhatsApp'. This DOES " +
       "open the app on their phone; say you're opening it.\n" +
-      "OPENING SOMEONE'S PROFILE: put their NAME in `person` — 'Neha " +
-      "Shetty', 'Virat Kohli'. The handle is then looked up from the web, " +
-      "which is what makes it THEIR account rather than someone with the " +
-      "same name. DO NOT GUESS A HANDLE. Asked for the actor Neha Shetty, a " +
-      "remembered username opened a different Neha Shetty four times over.\n" +
+      "OPENING SOMEONE'S PROFILE: put their NAME in `person`, exactly as " +
+      "the user said it. Works for ANYONE — a head of state, a cricketer, " +
+      "a regional actor, a friend. The handle is established from the live " +
+      "profile page, which is what makes it THEIR account and not a " +
+      "namesake's. DO NOT GUESS A HANDLE: a remembered username opens a " +
+      "stranger's profile while saying the person's name.\n" +
       "Only pass `handle` when the USER themselves said the username " +
       "('open @virat.kohli'). If the lookup cannot find them the tool falls " +
       "back to a search page, which is correct — showing a choice beats " +
@@ -2799,9 +2800,9 @@ function registerBuiltins() {
         person: {
           type: "string",
           description:
-            "The PERSON'S NAME as the user said it — 'Neha Shetty', " +
-            "'Virat Kohli'. Preferred over handle: the real username is " +
-            "looked up, so it opens the right person and not a namesake.",
+            "The PERSON'S NAME as the user said it. Preferred over " +
+            "handle: the real username is established from the profile " +
+            "page, so it opens the right person and not a namesake.",
         },
         handle: {
           type: "string",
@@ -2822,7 +2823,7 @@ function registerBuiltins() {
       const q = String(args.query || "").trim();
       const enc = encodeURIComponent(q);
       // A handle the USER typed or spoke wins. Failing that, a single-token
-      // query IS a handle — "open instagram nehashetty" arrives that way.
+      // query IS a handle — "open instagram someusername" arrives that way.
       const raw = String(args.handle || "").trim().replace(/^@/, "");
       let handle = /^[a-z0-9._]{2,30}$/i.test(raw)
         ? raw
@@ -2919,9 +2920,9 @@ function registerBuiltins() {
       //
       // This used to require `query`, which the model does not send when
       // it sends `person` — so a failed lookup opened Instagram's HOME
-      // FEED. "It just opens Instagram, but I'm not able to find Neha
-      // Shetty's profile" is exactly that: the fallback threw away the one
-      // thing the user had told us, the person's name.
+      // FEED — reported as "it just opens Instagram, but I can't find
+      // their profile". The fallback was throwing away the one thing the
+      // user had told us: the person's name.
       const searchFor = q || require("./socialHandles").cleanName(person || "");
       if (handle && PROFILE[app]) {
         url = PROFILE[app](handle);
@@ -2935,7 +2936,7 @@ function registerBuiltins() {
       }
 
       const label = app === "google_images" ? "image search" : app;
-      // Say what will ACTUALLY appear. Promising "Neha Shetty on Instagram"
+      // Say what will ACTUALLY appear. Promising "their profile"
       // and delivering the app's home feed is the kind of small lie that
       // erodes trust.
       // `searchFor`, not `q`: when the lookup failed we searched for the
@@ -2963,7 +2964,7 @@ function registerBuiltins() {
         speak,
         // The old note told the model to "call this again with handle set
         // if you know their username" — i.e. to guess, which is what
-        // opened a different Neha Shetty's account. It must not retry from
+        // opened a namesake's account. It must not retry from
         // memory; the lookup already tried and could not confirm.
         note:
           mode === "search" && PROFILE[app]
