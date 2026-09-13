@@ -26,7 +26,7 @@ function haversineKm(lat1, lng1, lat2, lng2) {
 const PRICE = { PRICE_LEVEL_INEXPENSIVE: "₹", PRICE_LEVEL_MODERATE: "₹₹",
   PRICE_LEVEL_EXPENSIVE: "₹₹₹", PRICE_LEVEL_VERY_EXPENSIVE: "₹₹₹₹" };
 
-async function googlePlaces(q, lat, lng) {
+async function googlePlaces(q, lat, lng, near) {
   const key = process.env.GOOGLE_PLACES_API_KEY;
   if (!key) return null;
   const r = await fetch("https://places.googleapis.com/v1/places:searchText", {
@@ -42,9 +42,17 @@ async function googlePlaces(q, lat, lng) {
         "places.nationalPhoneNumber,places.photos",
     },
     body: JSON.stringify({
-      textQuery: q,
+      textQuery: near ? `${q} near ${near}` : q,
       maxResultCount: 10,
-      ...(Number.isFinite(lat) && Number.isFinite(lng)
+      // BIAS TO WHERE THEY ARE ONLY WHEN THEY DID NOT SAY WHERE.
+      //
+      // A 5 km circle around the user was applied to EVERY search, so
+      // "wine shop near the KSRTC bus stand in Bejai, Mangalore" was
+      // looked for within 5 km of a phone in another city and answered
+      // "I'm not finding any" — three times in one session, for places
+      // that plainly exist. When the request names a locality, the text
+      // query is the location and a bias somewhere else only fights it.
+      ...(!near && Number.isFinite(lat) && Number.isFinite(lng)
         ? { locationBias: { circle: { center: { latitude: lat, longitude: lng }, radius: 5000 } } }
         : {}),
     }),
@@ -88,18 +96,22 @@ async function osmPlaces(q, lat, lng) {
   }));
 }
 
-async function searchPlaces({ q, lat, lng }) {
-  const key = `${q.toLowerCase()}:${(lat || 0).toFixed(3)}:${(lng || 0).toFixed(3)}`;
+async function searchPlaces({ q, lat, lng, near = "" }) {
+  const where = String(near || "").trim();
+  const key = `${q.toLowerCase()}|${where.toLowerCase()}:${(lat || 0).toFixed(3)}:${(lng || 0).toFixed(3)}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.ts < TTL) return hit.data;
 
   let list;
   try {
-    list = (await googlePlaces(q, lat, lng)) ?? (await osmPlaces(q, lat, lng));
+    list = (await googlePlaces(q, lat, lng, where)) ?? (await osmPlaces(q, lat, lng));
   } catch (_) {
     list = await osmPlaces(q, lat, lng); // Google down → OSM still answers
   }
-  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+  // Distances are only meaningful relative to the user. When they asked
+  // about somewhere else, "2.3 km" would be measured from the wrong point
+  // and read as a lie, so it is left off.
+  if (!where && Number.isFinite(lat) && Number.isFinite(lng)) {
     for (const p of list) {
       p.distanceKm = Number.isFinite(p.lat)
         ? Math.round(haversineKm(lat, lng, p.lat, p.lng) * 10) / 10

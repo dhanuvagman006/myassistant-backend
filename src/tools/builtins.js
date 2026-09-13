@@ -138,16 +138,34 @@ function registerBuiltins() {
       type: "object",
       properties: {
         query: { type: "string", description: "What to look for, e.g. 'dosa restaurant'" },
+        near: {
+          type: "string",
+          description:
+            "The AREA the user named, if they named one — 'Jayamahal, " +
+            "Bangalore', 'KSRTC bus stand, Bejai, Mangalore'. Leave EMPTY " +
+            "when they mean where they are now ('near me', 'nearby', or no " +
+            "place at all). Setting this searches that area instead of " +
+            "around their phone, which is the only way a request about " +
+            "another town can find anything.",
+        },
       },
       required: ["query"],
     },
     async execute(args, ctx) {
       const list = await places.searchPlaces({
         q: args.query,
+        near: args.near,
         lat: ctx.lat,
         lng: ctx.lng,
       });
-      if (!list || !list.length) return { ok: false, error: "no places found" };
+      if (!list || !list.length) {
+        return {
+          ok: false,
+          error: args.near
+            ? `nothing found for "${args.query}" near ${args.near}`
+            : "no places found nearby",
+        };
+      }
       return { ok: true, data: list, speak: places.describePlaces(list) };
     },
   });

@@ -976,6 +976,63 @@ test("a correction is answered with an action, not a defence", () => {
   assert.match(proxy, /noLectureRule/, "and the rule must be in the live prompt");
 });
 
+/* ------------------------------------------------------------------ *
+ * A PLACE THEY NAMED BEATS THE PLACE THEY ARE STANDING
+ *
+ * Every Places search was biased to a 5 km circle around the user's own
+ * coordinates, so "wine shop near the KSRTC bus stand in Bejai,
+ * Mangalore" was looked for within 5 km of a phone in another city and
+ * answered "I'm not finding any" — three times in one session, for
+ * places that plainly exist.
+ * ------------------------------------------------------------------ */
+
+test("search_places can be told which area to search", () => {
+  const registry = require("../src/tools/registry");
+  const t = registry.get("search_places");
+  assert.ok(t.inputSchema.properties.near, "there must be a way to name an area");
+  assert.match(t.inputSchema.properties.near.description, /Leave EMPTY/i,
+    "and it must be clear when NOT to set it, or 'near me' breaks");
+});
+
+test("a named area drops the bias toward the user's own coordinates", () => {
+  const src = require("fs").readFileSync(__dirname + "/../src/services/tools/places.js", "utf8");
+  // The bias must be conditional on `near` being absent. Applied anyway,
+  // it fights the text query and suppresses the right answers.
+  assert.match(src, /\.\.\.\(!near && Number\.isFinite\(lat\)/,
+    "locationBias must only apply when no area was named");
+  assert.match(src, /textQuery: near \? /,
+    "the named area must reach the query itself");
+});
+
+test("distance is only reported when it is measured from the user", () => {
+  const src = require("fs").readFileSync(__dirname + "/../src/services/tools/places.js", "utf8");
+  // "2.3 km" measured from the wrong city reads as a lie.
+  assert.match(src, /if \(!where && Number\.isFinite\(lat\)/,
+    "distances must be skipped for a search about somewhere else");
+});
+
+test("the cache distinguishes the same query in different areas", () => {
+  const src = require("fs").readFileSync(__dirname + "/../src/services/tools/places.js", "utf8");
+  // Without the area in the key, "wine shop" in Mangalore would serve the
+  // cached Bangalore answer to the next person who asked.
+  assert.match(src, /const key = `\$\{q\.toLowerCase\(\)\}\|\$\{where\.toLowerCase\(\)\}/,
+    "the area must be part of the cache key");
+});
+
+test("a miss says WHERE it looked, so the answer is actionable", async () => {
+  const registry = require("../src/tools/registry");
+  const places = require("../src/services/tools/places");
+  const real = places.searchPlaces;
+  places.searchPlaces = async () => [];
+  const res = await registry.get("search_places").execute(
+    { query: "wine shop", near: "Bejai, Mangalore" }, {}
+  );
+  places.searchPlaces = real;
+  assert.strictEqual(res.ok, false);
+  assert.match(res.error, /Bejai, Mangalore/,
+    "'no places found' does not tell the user the search looked in the wrong city");
+});
+
 // Everything above only REGISTERED a test. This is what runs them, in
 // order, each one awaited — replacing a 250 ms setTimeout that reported a
 // total before the async tests had finished producing it.
