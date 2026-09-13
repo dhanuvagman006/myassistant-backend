@@ -263,11 +263,32 @@ function executedThisSession(state) {
   return state ? state.executed.slice() : [];
 }
 
+/**
+ * What ran in the last [ms], regardless of which turn it belonged to.
+ *
+ * THE CLAIM CHECK NEEDS THIS, NOT executedThisTurn. In live mode the user
+ * can speak while the previous reply is still buffered — which begins a
+ * NEW turn — and the old text is then flushed and judged against the new
+ * turn's executions, which are empty. So the assistant was told it had
+ * claimed something untrue about a tool that had genuinely run seconds
+ * earlier, and apologised for opening an app that was open on screen.
+ *
+ * A window rather than a turn id is the right unit here because the
+ * question being asked is "did this actually happen recently?", and the
+ * turn boundary is exactly what is unreliable while someone is
+ * interrupting.
+ */
+function executedRecently(state, ms = 45_000) {
+  if (!state || !Array.isArray(state.executed)) return [];
+  const since = Date.now() - ms;
+  return state.executed.filter((e) => e && (e.at || 0) >= since);
+}
+
 module.exports = {
   begin, get, end,
   beginTurn, recordReply,
   setEntity, clearEntity, activeEntity,
   setPending, takePending, clearPending, noteSuppressed,
-  recordExecution, executedThisTurn, executedThisSession,
+  recordExecution, executedThisTurn, executedThisSession, executedRecently,
   PENDING_TTL_MS, ENTITY_TTL_MS,
 };

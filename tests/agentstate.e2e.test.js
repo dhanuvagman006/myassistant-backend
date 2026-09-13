@@ -1623,6 +1623,41 @@ console.log("\nexecution record");
       "the cache is not consulted by question shape");
   });
 
+  console.log("\nthe claim check must survive a turn boundary");
+
+  await atest("an action from the previous turn still backs a claim", () => {
+    const sessionState = require("../src/agents/sessionState");
+    const claimCheck = require("../src/agents/claimCheck");
+    const st = sessionState.begin("claim-window-test", 99084);
+    sessionState.beginTurn(st, "turn-1");
+    sessionState.recordExecution(st, {
+      tool: "open_named_app", args: { app: "BigBasket" }, ok: true, turnId: "turn-1",
+    });
+    // The user speaks again while she is still talking: a NEW turn opens
+    // before the previous reply text is flushed.
+    sessionState.beginTurn(st, "turn-2");
+
+    assert.strictEqual(sessionState.executedThisTurn(st).length, 0,
+      "the new turn has run nothing — this is what used to be checked");
+    const recent = sessionState.executedRecently(st);
+    assert.strictEqual(recent.length, 1, "the window must still see it");
+
+    const bad = claimCheck.check("Opening BigBasket now.", sessionState.executedThisTurn(st));
+    assert.strictEqual(bad.ok, false, "turn-scoped checking is what produced the false apology");
+    const good = claimCheck.check("Opening BigBasket now.", recent);
+    assert.strictEqual(good.ok, true,
+      "an app opened seconds ago must not be called a failure");
+  });
+
+  await atest("the window still catches a claim nothing ever backed", () => {
+    const sessionState = require("../src/agents/sessionState");
+    const claimCheck = require("../src/agents/claimCheck");
+    const st = sessionState.begin("claim-window-empty", 99085);
+    sessionState.beginTurn(st, "t");
+    const v = claimCheck.check("Opening BigBasket now.", sessionState.executedRecently(st));
+    assert.strictEqual(v.ok, false, "the check must not be weakened into uselessness");
+  });
+
   console.log("\na voice change has to be heard, not just recorded");
 
   await atest("changing gender asks the app to rebuild the live session", async () => {

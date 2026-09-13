@@ -613,7 +613,13 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     // of rewriting them the model is told at once that it said something
     // untrue and must correct itself in its next breath.
     if (t && liveState) {
-      const verdict = claimCheck.check(t, sessionState.executedThisTurn(liveState));
+      // RECENTLY, not this turn. A user who speaks while she is still
+      // talking opens a new turn before this text is flushed, and the
+      // claim would then be judged against an empty list — which is how
+      // "opening BigBasket" was contradicted ten seconds after BigBasket
+      // opened. Barge-in makes overlapping turns the normal case, so this
+      // has to tolerate the boundary.
+      const verdict = claimCheck.check(t, sessionState.executedRecently(liveState));
       if (!verdict.ok) {
         correctionStreak++;
         console.warn(
