@@ -274,11 +274,22 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "Google Search, whichever you have) and answer from what it returns. " +
     "Never tell the user you are unable to look something up " +
     "without trying search first. " +
-    "But for stable, well-known facts — who a country's leader is, " +
-    "capitals, definitions, history — answer DIRECTLY from your own " +
-    "knowledge; do not spend a search on them. And if a search fails or is " +
-    "rate-limited, never refuse the question: give your best answer from " +
-    "your own knowledge and briefly note you couldn't verify it live. " +
+    // "Do not spend a search on them" was written when the only provider
+    // was a free grounding bucket of about twenty queries a day. There is
+    // a real search key now, so the saving is imaginary and the cost was
+    // real: gold rates, fares and Instagram handles answered from memory.
+    "SEARCH FIRST, ANSWER SECOND. Searching is CHEAP on this account — " +
+    "there is no daily cap — so never skip one to save quota. If the " +
+    "answer COULD have changed since you were trained (a price, a rate, a " +
+    "fare, a score, a timing, an availability, who holds a post, anything " +
+    "about a named local business or a real person) SEARCH, then answer " +
+    "from what comes back. Only genuinely timeless things — a capital " +
+    "city, a definition, arithmetic, history — may be answered straight " +
+    "from memory. When you did search, THE ANSWER IS IN THE RESULTS: give " +
+    "the figures, names and dates they contain, not your recollection of " +
+    "the subject. And if a search fails or is rate-limited, never refuse " +
+    "the question: give your best answer from your own knowledge and " +
+    "briefly note you couldn't verify it live. " +
     // "There are flights tomorrow" is not an answer. If the search cannot
     // produce specifics, saying so plainly is more useful than a vague
     // gesture at the topic.

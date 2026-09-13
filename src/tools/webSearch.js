@@ -123,7 +123,7 @@ async function run(query, ctx = {}) {
   let blocked = false; // any provider refused us, not merely found nothing
   for (const p of chain) {
     try {
-      const r = await BACKENDS[p](q);
+      const r = await BACKENDS[p](q, { isLive, lat: ctx.lat, lng: ctx.lng });
       if (r && r.length) {
         results = r;
         used = p;
@@ -264,24 +264,121 @@ const BACKENDS = {
     }));
   },
 
-  async brave(q) {
+  /**
+   * BRAVE — the primary provider, and the first one on this deployment
+   * with an index of its own. Gemini grounding was answering "I'm not
+   * finding any" about a wine shop that has stood opposite a bus stand
+   * for thirty years, because its tiny free bucket was spent and the
+   * chain fell through to Wikipedia. Measured on the live key, Brave
+   * returns that shop, today's gold rate carrying today's date, and a
+   * celebrity's real Instagram handle ranked first.
+   *
+   * Four parameters do most of that work, and all four are deliberate:
+   *   country            results for Indian users, not American ones —
+   *                      the default is "us", which is how a Mangalore
+   *                      question got answered from the wrong continent
+   *   text_decorations=0 no <strong> markup for a voice reply to read out
+   *   extra_snippets=1   several passages per page instead of one line
+   *   freshness=pd       a question about TODAY only looks at today
+   */
+  async brave(q, opts = {}) {
+    const params = new URLSearchParams({
+      q,
+      count: "8",
+      country: process.env.SEARCH_COUNTRY || "IN",
+      search_lang: "en",
+      text_decorations: "0",
+      extra_snippets: "1",
+      safesearch: "moderate",
+    });
+    // "What's the news" asked twice in a day must not return the same
+    // four stories. Restricting a live question to the past day is what
+    // makes the second answer genuinely different from the first.
+    if (opts.isLive) params.set("freshness", "pd");
+
     const r = await fetch(
-      `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}&count=6`,
+      `https://api.search.brave.com/res/v1/web/search?${params}`,
       {
         headers: {
           accept: "application/json",
+          "accept-encoding": "gzip",
           "x-subscription-token": process.env.BRAVE_SEARCH_API_KEY,
         },
         signal: AbortSignal.timeout(TIMEOUT_MS),
       }
     );
+    // The word "rate limit" has to survive into this message: the chain
+    // above reads it to tell an OUTAGE apart from an absence, and saying
+    // "I found nothing" when we never looked is the bug that started all
+    // of this.
+    if (r.status === 429) throw new Error("brave 429 rate limit");
     if (!r.ok) throw new Error(`brave ${r.status}`);
     const j = await r.json();
-    return (j.web?.results || []).map((x) => ({
-      title: x.title,
-      snippet: x.description,
-      url: x.url,
+
+    // Brave returns HTML, so snippets carry both tags and ENTITIES —
+    // "today&#x27;s gold rate", "18k &amp; 22k". A voice reply reads those
+    // out literally, so they are decoded here rather than left for the
+    // model to tidy up (which it does not reliably do).
+    const ENTITY = {
+      "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"',
+      "&#39;": "'", "&#x27;": "'", "&apos;": "'", "&nbsp;": " ",
+      "&#x2F;": "/", "&#8217;": "\u2019", "&#8216;": "\u2018",
+      "&hellip;": "\u2026", "&ndash;": "\u2013", "&mdash;": "\u2014",
+    };
+    const clean = (t) =>
+      String(t || "")
+        .replace(/<[^>]*>/g, "")
+        .replace(/&[#a-zA-Z0-9]{2,8};/g, (m) => {
+          const k = m.toLowerCase();
+          if (ENTITY[m] !== undefined) return ENTITY[m];
+          if (ENTITY[k] !== undefined) return ENTITY[k];
+          const dec = /^&#(\d+);$/.exec(m);
+          if (dec) return String.fromCodePoint(Number(dec[1]));
+          const hex = /^&#x([0-9a-f]+);$/i.exec(m);
+          if (hex) return String.fromCodePoint(parseInt(hex[1], 16));
+          return m;
+        })
+        .replace(/\s+/g, " ")
+        .trim();
+
+    // AN INFOBOX IS AN ANSWER, not a link to one. "Who is the prime
+    // minister of India" comes back with the entry itself; leading with
+    // it saves the model inferring a fact from three page titles.
+    const lead = [];
+    const ib = (j.infobox && j.infobox.results ? j.infobox.results : [])[0];
+    if (ib && (ib.long_desc || ib.description)) {
+      lead.push({
+        title: clean(ib.title),
+        snippet: clean(ib.long_desc || ib.description).slice(0, 600),
+        url: ib.url || ib.website_url || "",
+      });
+    }
+
+    // Brave stamps each story with its age ("6 hours ago"). That stamp is
+    // the whole difference between news and an article that merely
+    // mentions the subject, so it is carried into the snippet the model
+    // actually reads.
+    const news = ((j.news && j.news.results) || []).map((n) => ({
+      title: clean(n.title),
+      snippet: (n.age ? `[${clean(n.age)}] ` : "") + clean(n.description),
+      url: n.url || "",
     }));
+
+    const web = ((j.web && j.web.results) || []).map((x) => ({
+      title: clean(x.title),
+      snippet: [clean(x.description), ...(x.extra_snippets || []).map(clean)]
+        .filter(Boolean)
+        .join(" \u00b7 ")
+        .slice(0, 700),
+      url: x.url || "",
+      ...(x.page_age ? { date: String(x.page_age).slice(0, 10) } : {}),
+    }));
+
+    // Dated stories lead a live question; for a settled one the ranked
+    // web results are the better answer and the news merely rides along.
+    return [...lead, ...(opts.isLive ? [...news, ...web] : [...web, ...news])]
+      .filter((x) => x.title || x.snippet)
+      .slice(0, 10);
   },
 
   async tavily(q) {

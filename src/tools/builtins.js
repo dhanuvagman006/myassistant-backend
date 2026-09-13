@@ -3293,11 +3293,17 @@ function registerBuiltins() {
     // Hidden when no search provider is configured.
     available: () => Boolean(require("./webSearch").provider()),
     description:
-      "Search the live web for current information the assistant would not " +
-      "otherwise know: today's events, prices, company news, facts that " +
-      "change. Weather and currency rates are answered from their own " +
-      "sources through this same tool, so ask it for those too rather than " +
-      "answering from memory.",
+      "Search the live web. USE THIS BY DEFAULT for anything that could " +
+      "have changed since training: prices, rates, fares, gold and fuel " +
+      "rates, today's news, scores, opening hours, availability, who holds " +
+      "a post, what a company just did, and anything about a named local " +
+      "business or a real person (their official Instagram handle, their " +
+      "clinic, their address). It is cheap and uncapped on this account — " +
+      "never skip it to save quota, and never answer such a question from " +
+      "memory instead. Weather and currency rates come from their own " +
+      "dedicated sources through this same tool, so ask it for those too. " +
+      "Then answer from the RESULTS: quote the figures, names and dates " +
+      "they contain rather than your own impression of the subject.",
     risk: "low",
     inputSchema: {
       type: "object",

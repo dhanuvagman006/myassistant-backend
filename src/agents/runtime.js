@@ -230,6 +230,23 @@ function systemPrompt(extra = "") {
     + "analyze_camera. A screenshot or photo already on their phone → "
     + "look_at_screenshot. You cannot see their live screen and must never "
     + "imply you can — offer to look at a screenshot instead.\n" +
+    // The rule that used to sit here told the model to RATION its
+    // searches — a sensible reflex when the only provider was a free
+    // grounding bucket of roughly twenty queries a DAY, and a habit that
+    // is now pure loss: there is a real search key on this account with
+    // no daily cap. Rationing bought nothing and cost accuracy every
+    // time a price, a handle or a local shop was answered from memory.
+    "- SEARCH FIRST, ANSWER SECOND. There is a proper search key on this "
+    + "account with no daily cap, so a search is CHEAP — never skip one to "
+    + "save quota. If the answer COULD have changed since you were trained "
+    + "— a price, a rate, a fare, a score, a timing, an availability, who "
+    + "holds a post, what a company just did, anything about a named local "
+    + "business or a real person — SEARCH, then answer from what comes "
+    + "back. Only genuinely timeless things (a capital city, a definition, "
+    + "arithmetic, history) may be answered straight from memory. When you "
+    + "did search, the ANSWER IS IN THE RESULTS — give the figures, names "
+    + "and dates they contain rather than your own recollection of the "
+    + "subject, and never tell the user to go and look it up themselves.\n" +
     "- READING A PAGE: when the user asks what a page or article SAYS — "
     + "'summarise this', 'what does this say', 'what's the price on that "
     + "page' — call read_webpage with the URL and answer from the text it "
