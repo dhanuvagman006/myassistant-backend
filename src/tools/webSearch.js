@@ -74,6 +74,8 @@ function provider() {
 const LIVE_QUESTION =
   /\b(today|tonight|tomorrow|now|current|currently|latest|live|price|prices|rate|rates|cost|fare|fares|flight|flights|weather|forecast|news|score|scores|open|closing|stock|share|gold|petrol|diesel|exchange|traffic|timing|timings|schedule|available|availability)\b/i;
 
+const searchCache = require("./searchCache");
+
 const RESULT_TTL = 10 * 60_000;
 const resultCache = new Map(); // normalized query -> { ts, out }
 
@@ -93,6 +95,7 @@ async function run(query, ctx = {}) {
   const cacheKey = q.toLowerCase();
   const hit = resultCache.get(cacheKey);
   if (hit && Date.now() - hit.ts < RESULT_TTL) return hit.out;
+  const isLive = LIVE_QUESTION.test(q);
 
   // NEAR-DUPLICATES COUNT AS THE SAME QUESTION. One turn asking about
   // flights ran two searches — "flights from Noida to Bangalore tomorrow"
@@ -102,6 +105,16 @@ async function run(query, ctx = {}) {
   const shape = fingerprint(q);
   for (const [, v] of resultCache) {
     if (v.shape === shape && Date.now() - v.ts < RESULT_TTL) return v.out;
+  }
+
+  // THE SHARED STORE. Memory above is this process's own; this is every
+  // user's. One person asking for today's headlines answers it for the
+  // next person, and it survives a deploy — which the in-memory cache
+  // never did. Live questions keep 20 minutes, settled facts a day.
+  const shared = await searchCache.get(shape);
+  if (shared) {
+    resultCache.set(cacheKey, { ts: Date.now(), out: shared, shape });
+    return shared;
   }
 
   let results = [];
@@ -185,6 +198,9 @@ async function run(query, ctx = {}) {
     if (resultCache.size > 200) {
       resultCache.delete(resultCache.keys().next().value);
     }
+    // Write-through, fire and forget: a cache write must never delay or
+    // fail the answer the user is waiting for.
+    searchCache.put(shape, q, out, isLive).catch(() => {});
     return out;
   } catch (e) {
     return { ok: false, error: `search failed: ${String(e.message).slice(0, 300)}` };

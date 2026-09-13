@@ -707,6 +707,54 @@ test("open_app asks for the person's name, not a remembered username", () => {
     "handle is only for a username the USER said");
 });
 
+/* ------------------------------------------------------------------ *
+ * ONE SEARCH ANSWERS EVERYONE
+ *
+ * The cache was in-process, so every deploy threw it away and each pod
+ * rebuilt it alone — while the search quota was small enough to
+ * rate-limit during ordinary use.
+ * ------------------------------------------------------------------ */
+
+test("a live question and a settled fact do not get the same lifetime", () => {
+  const c = require("../src/tools/searchCache");
+  // Nobody should be read yesterday's headlines; nobody should spend
+  // quota re-confirming the capital of France.
+  assert.strictEqual(c.ttlFor(true), c.LIVE_TTL_MS);
+  assert.strictEqual(c.ttlFor(false), c.STABLE_TTL_MS);
+  assert.ok(c.LIVE_TTL_MS <= 30 * 60_000, "live answers must not go stale");
+  assert.ok(c.STABLE_TTL_MS >= 6 * 60 * 60_000, "settled facts should be kept");
+  assert.ok(c.STABLE_TTL_MS > c.LIVE_TTL_MS * 10, "the two must differ meaningfully");
+});
+
+test("the search path consults the shared store before a provider", () => {
+  const src = require("fs").readFileSync(__dirname + "/../src/tools/webSearch.js", "utf8");
+  const sharedAt = src.indexOf("searchCache.get(");
+  const providerAt = src.indexOf("await BACKENDS[p](q)");
+  assert.ok(sharedAt > 0 && providerAt > 0, "both paths must exist");
+  assert.ok(sharedAt < providerAt,
+    "the shared cache must be read BEFORE spending a search");
+  assert.match(src, /searchCache\.put\(/, "and successful answers written back");
+});
+
+test("a failed or fallback search is never cached", () => {
+  const src = require("fs").readFileSync(__dirname + "/../src/tools/searchCache.js", "utf8");
+  // Caching a failure would turn one provider hiccup into 20 minutes of
+  // failure for every user.
+  assert.match(src, /out\.ok !== true\) return/, "only successful answers");
+  assert.match(src, /provider === "wikipedia"\) return/,
+    "the last-resort encyclopedia must not be served as a cached answer");
+});
+
+test("the cache fails open — it can never break search", () => {
+  const src = require("fs").readFileSync(__dirname + "/../src/tools/searchCache.js", "utf8");
+  // get/put/sweep each swallow their own errors: a missing table or an
+  // unreachable database must degrade to "just search", not to an outage.
+  const bodies = src.split("async function").slice(1);
+  for (const b of bodies.slice(0, 3)) {
+    assert.match(b, /catch \(_\)/, "every database path must be guarded");
+  }
+});
+
 // Everything above only REGISTERED a test. This is what runs them, in
 // order, each one awaited — replacing a 250 ms setTimeout that reported a
 // total before the async tests had finished producing it.
