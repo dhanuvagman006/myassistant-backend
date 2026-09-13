@@ -959,6 +959,23 @@ test("live mode is told to call the tool before narrating it", () => {
     "the instruction has to be unambiguous, not a hint");
 });
 
+test("a correction is answered with an action, not a defence", () => {
+  const fs = require("fs");
+  const runtime = require("../src/agents/runtime").systemPrompt("");
+  const proxy = fs.readFileSync(__dirname + "/../src/live/proxy.js", "utf8");
+  // Observed: told its fare was wrong, it replied "I understand your
+  // frustration", lectured about why prices vary, and asked permission to
+  // open a site it could simply have opened. Three failures, one paragraph.
+  for (const [name, src] of [["runtime", runtime], ["live", proxy]]) {
+    assert.match(src, /DO NOT DEFEND — ACT/, `${name} must forbid defending`);
+    assert.match(src, /I understand your frustration/,
+      `${name} must name the therapy opener it is banning`);
+    assert.match(src, /A LIVE PRICE FROM A SEARCH IS NOT A FACT/,
+      `${name} must not present searched prices as looked-up fact`);
+  }
+  assert.match(proxy, /noLectureRule/, "and the rule must be in the live prompt");
+});
+
 // Everything above only REGISTERED a test. This is what runs them, in
 // order, each one awaited — replacing a 250 ms setTimeout that reported a
 // total before the async tests had finished producing it.
