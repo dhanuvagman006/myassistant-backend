@@ -3319,6 +3319,90 @@ function registerBuiltins() {
   });
 
   /* ---------------------------------------------------------------- */
+  /* THE DAY'S COMMITMENTS                                             */
+  /*                                                                   */
+  /* Not an "appointments" feature. A doctor's clinic list, a lawyer's  */
+  /* hearings and anybody's dentist appointment are the same question,  */
+  /* and the answer has to come from every place a commitment can be    */
+  /* made — calendar, bookings, recalls, reminders — or the count at    */
+  /* the top of the panel is simply wrong.                              */
+  /* ---------------------------------------------------------------- */
+
+  registry.register({
+    name: "show_schedule",
+    deviceAction: true,
+    description:
+      "Show the user's commitments for a day on their screen and say how " +
+      "many there are. USE THIS for 'show me today's appointments', " +
+      "'what meetings do I have', 'my schedule', 'who am I seeing " +
+      "tomorrow', 'my hearings today', 'am I free this afternoon'. It " +
+      "covers calendar meetings, bookings, client and patient recalls, and " +
+      "time-bound reminders together. Do NOT read the whole list aloud — " +
+      "the list is on screen; say the count and the next one or two.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        day: {
+          type: "string",
+          description:
+            "Which day: 'today' (default), 'tomorrow' or 'yesterday'.",
+          enum: ["today", "tomorrow", "yesterday"],
+        },
+      },
+    },
+    async execute(args, ctx) {
+      const uid = Number(ctx.userId);
+      if (!Number.isInteger(uid) || uid <= 0) {
+        return { ok: false, error: "not signed in" };
+      }
+      const offsets = { today: 0, tomorrow: 1, yesterday: -1 };
+      const dayOffset = offsets[String(args.day || "today").toLowerCase()] ?? 0;
+      try {
+        const out = await require("../services/schedule").forDay(uid, {
+          dayOffset,
+          tzOffsetMin: Number.isFinite(ctx.tzOffsetMin) ? ctx.tzOffsetMin : 330,
+        });
+        const when = out.label || "that day";
+        const spoken = out.items.slice(0, 2)
+          .map((i) => `${i.time} ${i.title}`)
+          .join(", ");
+        return {
+          ok: true,
+          deviceAction: {
+            type: "show_schedule",
+            day: when,
+            total: out.total,
+            items: out.items,
+            failed: out.failed,
+          },
+          speak: out.total
+            ? `${out.total} ${when}: ${spoken}`
+            : `Nothing scheduled ${when}.`,
+          note:
+            (out.failed.length
+              ? `COULD NOT REACH: ${out.failed.join(", ")}. Say the list may ` +
+                "be incomplete because one source could not be read — do NOT " +
+                "present this as a complete day. "
+              : "") +
+            "THE LIST IS ON THEIR SCREEN. Say how many there are and the " +
+            "next one or two in your own words. Do NOT read every entry, " +
+            "do NOT list times like a table, and do NOT ask which one they " +
+            "want — they can see it.",
+        };
+      } catch (e) {
+        return {
+          ok: false,
+          error: `schedule failed: ${String(e.message).slice(0, 160)}`,
+          note:
+            "Say you could not pull their schedule up just now — NOT that " +
+            "they have nothing on. Never invent an appointment.",
+        };
+      }
+    },
+  });
+
+  /* ---------------------------------------------------------------- */
   /* NEWS                                                              */
   /*                                                                   */
   /* Ten headlines read aloud takes over a minute and nobody remembers */
