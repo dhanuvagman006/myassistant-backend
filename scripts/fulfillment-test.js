@@ -439,19 +439,37 @@ test("every device action belongs to some claim family, or is listed as exempt",
   const covered = new Set(FAMILIES.flatMap((f) => f.tools));
   // Device actions the model does not narrate as a completed act, so no
   // family needs to vouch for them.
+  // Kept deliberately SHORT. An over-broad exempt list makes this test
+  // pass while the bug it guards against is still present, which is how
+  // the first version of it let enable_usage_tracking through.
   const EXEMPT = new Set([
-    "present_text", "show_text", "generate_image", "generate_video", "try_a_look",
-    "place_phone_call", "send_whatsapp_message", "set_alarm", "set_timer",
+    // Mode switches — the model does not narrate these as "opening".
     "translator_mode", "start_interpreter_mode", "stop_interpreter_mode",
-    "enable_usage_tracking", "look_at_screenshot", "open_video_mode",
-    "order_food", "book_ride", "book_movie_tickets", "send_patient_document",
-    "play_music", "open_webpage",
+    // Reads the screen rather than opening anything.
+    "look_at_screenshot",
   ]);
   const orphans = registry.list()
     .filter((t) => t.deviceAction && !covered.has(t.name) && !EXEMPT.has(t.name))
     .map((t) => t.name);
   assert.deepStrictEqual(orphans, [],
     `these device actions are narrated but no claim family backs them: ${orphans.join(", ")}`);
+});
+
+test("claims about screens and timers are backed by the tool that ran", () => {
+  const claimCheck = require("../src/agents/claimCheck");
+  // Each of these was observed being contradicted seconds after it worked.
+  const cases = [
+    ["OK, I'm opening those settings now.", "enable_usage_tracking"],
+    ["Opening Swiggy for your biryani.", "order_food"],
+    ["Sure, opening Uber for you.", "book_ride"],
+    ["Opening BookMyShow now.", "book_movie_tickets"],
+    ["I've set a timer for ten minutes.", "set_timer"],
+  ];
+  for (const [said, tool] of cases) {
+    const v = claimCheck.check(said, [{ tool, ok: true }]);
+    assert.strictEqual(v.ok, true,
+      `"${said}" was contradicted despite ${tool} running: ${v.violations.join("; ")}`);
+  }
 });
 
 // Everything above only REGISTERED a test. This is what runs them, in
