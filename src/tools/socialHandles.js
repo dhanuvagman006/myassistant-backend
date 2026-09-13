@@ -264,9 +264,30 @@ function followerCount(text) {
  * What [handle]'s profile page says about itself:
  * { name, followers } — or null when there is no such profile.
  */
+/**
+ * WHETHER THIS SERVER CAN READ PROFILE PAGES AT ALL.
+ *
+ * Verification was built and proved against a residential connection. From
+ * the VPS, Instagram answers 429 with an empty body — datacenter ranges are
+ * rate-limited hard — so every candidate "failed" verification and the
+ * lookup fell through to a search for everybody.
+ *
+ * One blocked response is remembered for a while so the next lookup does
+ * not spend seven futile requests discovering the same thing, and the
+ * caller degrades to search-derived handles instead of stalling.
+ */
+const BLOCKED_FOR_MS = 10 * 60_000;
+const blockedUntil = new Map(); // platform -> ts
+
+function inspectionBlocked(platform) {
+  const until = blockedUntil.get(platform) || 0;
+  return Date.now() < until;
+}
+
 async function inspect(handle, platform) {
   const make = PROFILE_URL[platform];
   if (!make || !handle) return null;
+  if (inspectionBlocked(platform)) return null;
   try {
     const r = await fetch(make(handle), {
       headers: {
@@ -275,6 +296,11 @@ async function inspect(handle, platform) {
       },
       signal: AbortSignal.timeout(6000),
     });
+    if (r.status === 429 || r.status === 403) {
+      // The platform is refusing this server, not denying the account.
+      blockedUntil.set(platform, Date.now() + BLOCKED_FOR_MS);
+      return null;
+    }
     if (!r.ok) return null;
     const html = await r.text();
     const t = html.match(/<meta property="og:title" content="([^"]*)"/i);
@@ -344,6 +370,6 @@ function _clear() {
 }
 
 module.exports = {
-  resolve, resolveVerified, verify, inspect, followerCount, candidatesFrom,
+  resolve, resolveVerified, verify, inspect, inspectionBlocked, followerCount, candidatesFrom,
   score, cleanName, PROFILE_RX, NOT_A_HANDLE, _clear,
 };

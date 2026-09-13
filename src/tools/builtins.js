@@ -2853,6 +2853,7 @@ function registerBuiltins() {
       // A handle the USER typed or spoke wins. Failing that, a single-token
       // query IS a handle — "open instagram someusername" arrives that way.
       const raw = String(args.handle || "").trim().replace(/^@/, "");
+      let unverified = false;
       let handle = /^[a-z0-9._]{2,30}$/i.test(raw)
         ? raw
         : /^@?[a-z0-9._]{2,30}$/i.test(q) && !/\s/.test(q)
@@ -2874,13 +2875,19 @@ function registerBuiltins() {
         // name, and it needs no search quota — which matters, because the
         // search was rate-limited and answering with Wikipedia articles
         // about a different woman.
-        const found = await require("./socialHandles")
-          .resolveVerified(person, args.app, ctx)
-          .catch(() => null);
+        const sh = require("./socialHandles");
+        const found = await sh.resolveVerified(person, args.app, ctx).catch(() => null);
         // The looked-up handle wins over anything remembered.
         if (found) handle = found;
         else if (raw && !args.person) handle = raw;
         else handle = "";  // no confident match → fall through to search
+        // WAS THE PAGE ACTUALLY CHECKED? Instagram answers this server 429
+        // — datacenter ranges are rate-limited — so on production the
+        // profile cannot be read and the "biggest matching account wins"
+        // ranking never runs. A handle from a search snippet is a decent
+        // guess, not a confirmed identity, and the reply must not present
+        // it as one.
+        unverified = Boolean(handle) && sh.inspectionBlocked(args.app);
       }
 
       // Web URLs, not app-scheme links: Android hands these to the installed
@@ -2903,19 +2910,16 @@ function registerBuiltins() {
       };
       const SEARCH = {
         instagram: (t) =>
-          // INSTAGRAM'S OWN SEARCH, not Google's.
+          // Google image results scoped to the site, NOT Instagram's own
+          // /explore/search/keyword/?q=.
           //
-          // This used to be a Google image search scoped to the site,
-          // written when it was believed Instagram had no external search
-          // route. It does: /explore/search/keyword/?q= is a real path,
-          // and — the part that matters — the Android app CLAIMS it
-          // (verified with `cmd package query-activities`:
-          // com.instagram.android). So this opens Instagram, already
-          // searching for the person, and the user taps the right account.
-          // The Google version dropped them in a browser, which is what
-          // "even Instagram is not opening, it's directly opening web
-          // search" was describing.
-          `https://www.instagram.com/explore/search/keyword/?q=${encodeURIComponent(t)}`,
+          // That path is real and the Android app does claim it — but the
+          // app IGNORES the query and opens on Reels, which was checked on
+          // a device and is worse than useless: the user asked for a
+          // person and got a video feed. Image results scoped to
+          // instagram.com at least show the person, with their profile a
+          // tap away.
+          `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(t + " site:instagram.com")}`,
         facebook: (t) => `https://www.facebook.com/search/top?q=${encodeURIComponent(t)}`,
         x: (t) => `https://x.com/search?q=${encodeURIComponent(t)}`,
         linkedin: (t) => `https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(t)}`,
@@ -2974,7 +2978,9 @@ function registerBuiltins() {
       const who = searchFor || person || q;
       const speak =
         mode === "profile"
-          ? `Opening ${handle}'s ${label} profile.`
+          ? unverified
+            ? `Opening @${handle} on ${label} — I couldn't confirm it's the right one, so check the name.`
+            : `Opening ${handle}'s ${label} profile.`
           : mode === "search"
             ? app === "instagram"
               ? who
@@ -2995,7 +3001,12 @@ function registerBuiltins() {
         // opened a namesake's account. It must not retry from
         // memory; the lookup already tried and could not confirm.
         note:
-          mode === "search" && PROFILE[app]
+          mode === "profile" && unverified
+            ? `The profile page could not be read from this server, so @${handle} ` +
+              `comes from a web search and is NOT confirmed. Say you have opened ` +
+              `it but could not verify it is the right account, in one short ` +
+              `clause. Do NOT state it is theirs as fact.`
+          : mode === "search" && PROFILE[app]
             ? `This is a SEARCH, not ${who || "their"} profile: the username ` +
               `could not be confirmed. Do NOT call this again with a handle ` +
               `you remember — a guessed username opens a stranger's account. ` +
