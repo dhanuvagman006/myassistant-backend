@@ -2773,14 +2773,15 @@ function registerBuiltins() {
       "PROFILE or a search — 'open Instagram', 'open Neha Shetty's " +
       "Instagram', 'show me Virat Kohli on X', 'open WhatsApp'. This DOES " +
       "open the app on their phone; say you're opening it.\n" +
-      "OPENING SOMEONE'S PROFILE: pass `handle`, not `query`. You know most " +
-      "public figures' usernames — Neha Shetty is nehashetty, Virat Kohli is " +
-      "virat.kohli, Shah Rukh Khan is iamsrk — and a handle opens their " +
-      "actual profile. `query` only searches, and Instagram cannot be " +
-      "searched from outside the app at all, so a name in `query` lands on " +
-      "image results instead of the person. Use your own knowledge of the " +
-      "handle; if you genuinely do not know it, say so and offer to search " +
-      "rather than guessing one.\n" +
+      "OPENING SOMEONE'S PROFILE: put their NAME in `person` — 'Neha " +
+      "Shetty', 'Virat Kohli'. The handle is then looked up from the web, " +
+      "which is what makes it THEIR account rather than someone with the " +
+      "same name. DO NOT GUESS A HANDLE. Asked for the actor Neha Shetty, a " +
+      "remembered username opened a different Neha Shetty four times over.\n" +
+      "Only pass `handle` when the USER themselves said the username " +
+      "('open @virat.kohli'). If the lookup cannot find them the tool falls " +
+      "back to a search page, which is correct — showing a choice beats " +
+      "confidently opening a stranger.\n" +
       "THE APP MUST BE ONE OF THE LISTED VALUES. For anything else the user " +
       "names — Swiggy, Zomato, Uber, Ola, BookMyShow, Blinkit — use " +
       "open_named_app instead. Never substitute a different app from this " +
@@ -2795,13 +2796,18 @@ function registerBuiltins() {
           enum: ["instagram", "facebook", "x", "linkedin", "whatsapp", "maps",
                  "gmail", "google_images", "google", "youtube", "spotify"],
         },
+        person: {
+          type: "string",
+          description:
+            "The PERSON'S NAME as the user said it — 'Neha Shetty', " +
+            "'Virat Kohli'. Preferred over handle: the real username is " +
+            "looked up, so it opens the right person and not a namesake.",
+        },
         handle: {
           type: "string",
           description:
-            "The person's USERNAME on that platform, without the @ — " +
-            "'nehashetty', 'virat.kohli', 'iamsrk'. This opens their profile " +
-            "directly. Prefer it over query whenever the request names a " +
-            "person and you know their handle.",
+            "Only when the USER gave the username themselves ('open " +
+            "@virat.kohli'). Never a username you remembered — use `person`.",
         },
         query: {
           type: "string",
@@ -2812,17 +2818,33 @@ function registerBuiltins() {
       },
       required: ["app"],
     },
-    async execute(args) {
+    async execute(args, ctx = {}) {
       const q = String(args.query || "").trim();
       const enc = encodeURIComponent(q);
-      // A handle the model supplied wins. Failing that, a single-token
+      // A handle the USER typed or spoke wins. Failing that, a single-token
       // query IS a handle — "open instagram nehashetty" arrives that way.
       const raw = String(args.handle || "").trim().replace(/^@/, "");
-      const handle = /^[a-z0-9._]{2,30}$/i.test(raw)
+      let handle = /^[a-z0-9._]{2,30}$/i.test(raw)
         ? raw
         : /^@?[a-z0-9._]{2,30}$/i.test(q) && !/\s/.test(q)
           ? q.replace(/^@/, "")
           : "";
+
+      // LOOK THE PERSON UP RATHER THAN TRUSTING A REMEMBERED USERNAME.
+      // A guessed handle opens a stranger's profile while saying the
+      // person's name — the failure this resolves. A name with a space in
+      // it is a person, not a username, so it is resolved too.
+      const person =
+        String(args.person || "").trim() || (/\s/.test(q) ? q : "");
+      if (person) {
+        const found = await require("./socialHandles")
+          .resolve(person, args.app, ctx)
+          .catch(() => null);
+        // The looked-up handle wins over anything remembered.
+        if (found) handle = found;
+        else if (raw && !args.person) handle = raw;
+        else handle = "";  // no confident match → fall through to search
+      }
 
       // Web URLs, not app-scheme links: Android hands these to the installed
       // app when it is there and to the browser when it is not, so the user

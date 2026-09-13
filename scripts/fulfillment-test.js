@@ -622,6 +622,91 @@ test("neither surface may hand the task back to the user", () => {
   assert.match(proxy, /doItRule/, "and it must actually be in the prompt");
 });
 
+/* ------------------------------------------------------------------ *
+ * WHOSE PROFILE IS THIS?
+ *
+ * Asked for the actor Neha Shetty, a handle the model REMEMBERED opened a
+ * different Neha Shetty — four times running while the user rephrased.
+ * The handle is looked up now, and an uncertain match goes to a search
+ * page rather than confidently opening a stranger.
+ * ------------------------------------------------------------------ */
+
+test("a handle is scored against the name, so a namesake does not win", () => {
+  const sh = require("../src/tools/socialHandles");
+  const shouldOpen = [
+    ["nehashetty", "Neha Shetty"], ["neha_shetty", "Neha Shetty"],
+    ["iamnehashetty", "Neha Shetty"], ["nehashettyofficial", "Neha Shetty"],
+    // Handles are often the name trimmed: Dhanush Vagman -> dhanuvagman.
+    ["dhanuvagman", "Dhanush Vagman"], ["dhanushvagman", "Dhanush Vagman"],
+  ];
+  const shouldNot = [
+    ["nehasharma", "Neha Shetty"],     // a different person entirely
+    ["neha", "Neha Shetty"],           // too little of the name
+    ["shettyfanclub", "Neha Shetty"],  // a fan account, not her
+    ["randomuser", "Neha Shetty"],
+    ["vagmandhanu", "Dhanush Vagman"], // right parts, wrong order
+  ];
+  for (const [h, n] of shouldOpen) {
+    assert.ok(sh.score(h, n) >= 60, `${h} should be accepted for "${n}" (got ${sh.score(h, n)})`);
+  }
+  for (const [h, n] of shouldNot) {
+    assert.ok(sh.score(h, n) < 60, `${h} must NOT be opened for "${n}" (got ${sh.score(h, n)})`);
+  }
+});
+
+test("platform pages are never mistaken for a person", () => {
+  const sh = require("../src/tools/socialHandles");
+  for (const p of ["explore", "accounts", "reels", "p", "login", "search"]) {
+    assert.ok(sh.NOT_A_HANDLE.has(p), `instagram.com/${p} is not somebody's profile`);
+  }
+});
+
+test("the handle is read from prose, not only from URLs", async () => {
+  const sh = require("../src/tools/socialHandles");
+  const ws = require("../src/tools/webSearch");
+  const real = ws.run;
+  // Gemini grounding — the provider actually in use — returns
+  // vertexaisearch redirect URLs, so the handle only ever appears in the
+  // answer text. Reading URLs alone resolved nobody at all.
+  ws.run = async () => ({
+    ok: true,
+    data: [{
+      title: "Web answer",
+      snippet: "Virat Kohli's official Instagram profile is @virat.kohli.",
+      url: "",
+    }],
+  });
+  sh._clear();
+  const h = await sh.resolve("Virat Kohli", "instagram", {});
+  ws.run = real;
+  assert.strictEqual(h, "virat.kohli");
+});
+
+test("an uncertain lookup opens a search page instead of a stranger", async () => {
+  const sh = require("../src/tools/socialHandles");
+  const ws = require("../src/tools/webSearch");
+  const real = ws.run;
+  ws.run = async () => ({
+    ok: true,
+    data: [{ title: "x", snippet: "Follow @someoneelse for updates", url: "" }],
+  });
+  sh._clear();
+  const h = await sh.resolve("Neha Shetty", "instagram", {});
+  ws.run = real;
+  assert.strictEqual(h, null,
+    "a weak match must not be opened — that is the bug being fixed");
+});
+
+test("open_app asks for the person's name, not a remembered username", () => {
+  const registry = require("../src/tools/registry");
+  const t = registry.get("open_app");
+  assert.ok(t.inputSchema.properties.person, "there must be a person field");
+  assert.match(t.description, /DO NOT GUESS A HANDLE/,
+    "the model must be told not to supply a remembered handle");
+  assert.match(t.inputSchema.properties.handle.description, /user gave the username/i,
+    "handle is only for a username the USER said");
+});
+
 // Everything above only REGISTERED a test. This is what runs them, in
 // order, each one awaited — replacing a 250 ms setTimeout that reported a
 // total before the async tests had finished producing it.
