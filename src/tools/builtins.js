@@ -3114,6 +3114,27 @@ function registerBuiltins() {
           speak: `Opening ${link.label}.`,
         };
       }
+      // AN OLD APP CANNOT DO THIS, AND MUST NOT BE TOLD IT DID.
+      //
+      // open_any_app is handled from build 34. An older app receives an
+      // event type it has no case for, ignores it in silence — and the
+      // tool has already said "Opening it." That is a false claim the
+      // claim checker cannot catch, because the tool really did run.
+      //
+      // Builds that predate version reporting send 0, so unknown counts as
+      // too old: guessing in the other direction produces exactly the
+      // silent failure this avoids.
+      const OPEN_ANY_APP_FROM = 34;
+      const build = Number(ctx.appBuild) || 0;
+      if (build < OPEN_ANY_APP_FROM) {
+        return {
+          ok: false,
+          error:
+            `This phone's app is too old to open ${asked} — that needs a ` +
+            `newer version. Tell the user their app needs updating to open ` +
+            `apps by name, and do NOT claim it opened.`,
+        };
+      }
       // THE PHONE DECIDES. There is no list here to be missing from — the
       // app matches the spoken name against what is installed and reports
       // back. It says "opening" rather than "opened" because the receipt

@@ -332,7 +332,7 @@ test("an app the server has no deep link for is handed to the PHONE, not refused
   // answered "I can't open that" on a phone that had BigBasket on its
   // home screen.
   const res = await registry.get("open_named_app").execute(
-    { app: "BigBasket" }, { platform: "android" }
+    { app: "BigBasket" }, { platform: "android", appBuild: 34 }
   );
   assert.strictEqual(res.ok, true, "the server must not refuse on its own");
   assert.strictEqual(res.deviceAction.type, "open_any_app");
@@ -908,6 +908,38 @@ test("nobody is hardcoded — the lookup is built from the name given", () => {
     assert.doesNotMatch(src, /nehashetty|iamnehashetty/i,
       `${f} must not carry a specific person's handle`);
   }
+});
+
+test("an app too old to open by name is told so, not lied to", async () => {
+  const registry = require("../src/tools/registry");
+  // open_any_app is handled from build 34. An older app has no case for
+  // that event, ignores it silently — and the tool has already said
+  // "Opening it." The claim checker cannot catch that, because the tool
+  // genuinely ran. Builds predating version reporting send 0, so unknown
+  // must count as too old.
+  for (const build of [0, 13, 33]) {
+    const res = await registry.get("open_named_app").execute(
+      { app: "BigBasket" }, { platform: "android", appBuild: build }
+    );
+    assert.strictEqual(res.ok, false, `build ${build} must not be told it opened`);
+    assert.match(res.error, /too old/i);
+    assert.match(res.error, /do NOT claim it opened/i);
+  }
+  const ok = await registry.get("open_named_app").execute(
+    { app: "BigBasket" }, { platform: "android", appBuild: 34 }
+  );
+  assert.strictEqual(ok.deviceAction.type, "open_any_app");
+});
+
+test("a deep-linked provider still opens on any build", async () => {
+  const registry = require("../src/tools/registry");
+  // Swiggy and the rest go out as a plain URL, which every build has
+  // always handled — the build gate must not break them.
+  const res = await registry.get("open_named_app").execute(
+    { app: "Swiggy" }, { platform: "android", appBuild: 0 }
+  );
+  assert.strictEqual(res.ok, true);
+  assert.strictEqual(res.deviceAction.type, "open_url");
 });
 
 // Everything above only REGISTERED a test. This is what runs them, in
