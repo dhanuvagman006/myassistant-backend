@@ -24,9 +24,22 @@ const engine = require("../knowledge/engine");
 const rules = require("../knowledge/rules");
 const legalGuard = require("../legal/guard");
 
+/**
+ * Entries that exist to steer the ASSISTANT, not to inform the user.
+ * The health pack carries a capability boundary whose summary is written
+ * as an instruction — "say this plainly and redirect", "never state a
+ * dose" — and toCitations puts `summary` straight on screen. Seen on a
+ * real device: a card headed "Assistant policy Scope" telling the user
+ * how the model had been told to answer them. The model still reads these
+ * through toFacts; they simply never become cards.
+ */
+function isInternalPolicy(e) {
+  return String(e.source_short || "").trim().toLowerCase() === "assistant policy";
+}
+
 /** Citations in the shape the app's existing results card already renders. */
 function toCitations(entries) {
-  return entries.map((e) => ({
+  return entries.filter((e) => !isInternalPolicy(e)).map((e) => ({
     title: [e.source_short, e.ref].filter(Boolean).join(" ") + ` — ${e.title}`,
     url: e.source_url || "",
     snippet: e.summary,
