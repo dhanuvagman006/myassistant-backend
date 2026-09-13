@@ -830,6 +830,23 @@ function registerBuiltins() {
     async execute(args, ctx) {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
       const due = parseUserTime(args.due_at, ctx.tzOffsetMin);
+      // A TIME THAT COULD NOT BE READ IS NOT "NO TIME".
+      //
+      // parseUserTime understands ISO-8601 and nothing else, so "tomorrow
+      // 9am" came back null — and the reminder was saved with no time at
+      // all, confirmed as "Saved", and never rang. Silently dropping the
+      // one detail that makes a reminder work is the worst outcome
+      // available; asking again costs a sentence.
+      if (args.due_at && due === null) {
+        return {
+          ok: false,
+          error:
+            `"${String(args.due_at).slice(0, 40)}" is not a datetime I can ` +
+            `read. Send due_at as full ISO-8601 in the user's local time ` +
+            `with their offset, e.g. 2026-09-14T09:00:00+05:30. Do NOT ` +
+            `save it without a time — a reminder with no time never rings.`,
+        };
+      }
       const ring = args.wake_me === true ? "alarm" : "gentle";
       const repeat = String(args.repeat || "");
       if (repeat && !due) {
@@ -896,6 +913,17 @@ function registerBuiltins() {
       }
       const target = scored[0].r;
       const newDue = args.new_due_at ? parseUserTime(args.new_due_at, ctx.tzOffsetMin) : undefined;
+      // Same rule as create: an unreadable time must not quietly become
+      // "no time", which silently stops the reminder ringing.
+      if (args.new_due_at && newDue === null) {
+        return {
+          ok: false,
+          error:
+            `"${String(args.new_due_at).slice(0, 40)}" is not a datetime I ` +
+            `can read. Send it as full ISO-8601 with the user's offset, ` +
+            `e.g. 2026-09-14T09:00:00+05:30.`,
+        };
+      }
       const updated = await reminders.update(
         ctx.userId, target.id,
         args.new_text ? String(args.new_text) : null,

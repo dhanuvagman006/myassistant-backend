@@ -1727,6 +1727,39 @@ console.log("\nexecution record");
     assert.match(engine, /ReminderNotifications\.instance\.sync\(\)/);
   });
 
+  await atest("a time that cannot be read is refused, not dropped", async () => {
+    const registry = require("../src/tools/registry");
+    const U = 99097;
+    await db.run("DELETE FROM reminders WHERE user_id = $1", [U]).catch(() => {});
+    // parseUserTime understands ISO-8601 and nothing else. "tomorrow 9am"
+    // came back null and the reminder was saved with NO time, confirmed
+    // as "Saved", and never rang. Silently dropping the one detail that
+    // makes a reminder work is the worst outcome available.
+    const bad = await registry.execute("create_reminder",
+      { text: "Alpha task", due_at: "tomorrow 9am" },
+      { userId: U, tzOffsetMin: 330, turnId: "t-bad" });
+    assert.strictEqual(bad.ok, false, "an unreadable time must not be saved as no time");
+    assert.match(bad.error, /ISO-8601/);
+    assert.match(bad.error, /never rings/i, "the model must be told why it matters");
+
+    const good = await registry.execute("create_reminder",
+      { text: "Beta task", due_at: "2026-09-14T09:00:00+05:30" },
+      { userId: U, tzOffsetMin: 330, turnId: "t-good" });
+    assert.strictEqual(good.ok, true, good.error);
+
+    // An UNDATED reminder is legitimate — "remind me to buy milk" is a
+    // note, not a failure. Only a time that was GIVEN and unreadable errors.
+    const note = await registry.execute("create_reminder",
+      { text: "Gamma note" }, { userId: U, tzOffsetMin: 330, turnId: "t-note" });
+    assert.strictEqual(note.ok, true, "an undated reminder must still be allowed");
+
+    const rows = await db.query(
+      "SELECT text, due_at FROM reminders WHERE user_id = $1 ORDER BY id", [U]);
+    assert.strictEqual(rows.length, 2, "only the two valid ones are stored");
+    assert.ok(Number(rows[0].due_at) > 0, "the ISO one kept its time");
+    await db.run("DELETE FROM reminders WHERE user_id = $1", [U]).catch(() => {});
+  });
+
   console.log("\na voice change has to be heard, not just recorded");
 
   await atest("changing gender asks the app to rebuild the live session", async () => {
