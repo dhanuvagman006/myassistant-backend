@@ -1351,8 +1351,15 @@ console.log("\nexecution record");
     const byName = await registry.execute("open_app",
       { app: "instagram", query: "Neha Shetty" }, ctx);
     assert.strictEqual(byName.data.mode, "search");
-    assert.match(byName.note, /call this again with handle set/i);
-    assert.match(byName.speak, /can't be searched/i);
+    // The note used to say "call this again with handle set if you know
+    // their username" — an invitation to guess, and guessing is what
+    // opened a different Neha Shetty's account. It now forbids it.
+    assert.match(byName.note, /do NOT call this again with a handle you remember/i);
+    assert.match(byName.note, /could not be confirmed/i);
+    // And the spoken line must still name who was searched for: an empty
+    // query once produced "here are 's Instagram photos".
+    assert.match(byName.speak, /Neha Shetty/);
+    assert.doesNotMatch(byName.speak, /here are 's/);
   });
 
   test("the image provider chain is inert without keys, and ordered", () => {

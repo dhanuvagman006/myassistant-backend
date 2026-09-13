@@ -2943,11 +2943,17 @@ function registerBuiltins() {
         data: { url, mode, handle: handle || null },
         deviceAction: { type: "open_url", url },
         speak,
+        // The old note told the model to "call this again with handle set
+        // if you know their username" — i.e. to guess, which is what
+        // opened a different Neha Shetty's account. It must not retry from
+        // memory; the lookup already tried and could not confirm.
         note:
           mode === "search" && PROFILE[app]
-            ? `This is a SEARCH, not ${q}'s profile — no handle was given. If ` +
-              `you know their username, call this again with handle set and it ` +
-              `will open the real profile.`
+            ? `This is a SEARCH, not ${who || "their"} profile: the username ` +
+              `could not be confirmed. Do NOT call this again with a handle ` +
+              `you remember — a guessed username opens a stranger's account. ` +
+              `Tell the user you could not confirm which account is theirs ` +
+              `and that the results are on screen to pick from.`
             : undefined,
       };
     },
