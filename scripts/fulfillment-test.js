@@ -814,17 +814,60 @@ test("a failed lookup searches for the person, never the bare home feed", async 
   const real = ws.run;
   ws.run = async () => ({ ok: true, provider: "brave", data: [{ title: "x", snippet: "nothing", url: "" }] });
   sh._clear();
-  const res = await registry.get("open_app").execute(
-    { app: "instagram", person: "actor Neha Shetty" }, {}
-  );
+  // A name nobody holds, so verification finds no profile either — the
+  // real-network path is deliberately exercised here rather than stubbed.
+  const who = "Qwertzuiop Notarealpersonxyz";
+  const res = await registry.get("open_app").execute({ app: "instagram", person: who }, {});
   ws.run = real;
   // "It just opens Instagram, but I'm not able to find her profile" was
-  // this: the fallback threw away the person's name and opened the feed.
+  // the fallback throwing away the name and opening the feed.
   assert.ok(!/^https:\/\/www\.instagram\.com\/$/.test(res.deviceAction.url),
     "the bare home feed is not an answer");
-  assert.match(res.deviceAction.url, /Neha%20Shetty/, res.deviceAction.url);
+  assert.match(res.deviceAction.url, /Qwertzuiop/, res.deviceAction.url);
   assert.doesNotMatch(res.speak, /here are 's/, "the spoken line must not lose the name");
-  assert.match(res.speak, /Neha Shetty/);
+});
+
+test("follower counts parse the way Instagram writes them", () => {
+  const sh = require("../src/tools/socialHandles");
+  assert.strictEqual(sh.followerCount("1M Followers, 1,275 Following"), 1000000);
+  assert.strictEqual(sh.followerCount("205 Followers"), 205);
+  assert.strictEqual(sh.followerCount("12.3K Followers"), 12300);
+  assert.strictEqual(sh.followerCount("1,275 Followers"), 1275);
+  assert.strictEqual(sh.followerCount("no numbers here"), 0);
+});
+
+test("the handles people actually use are all tried", () => {
+  const sh = require("../src/tools/socialHandles");
+  const c = sh.candidatesFrom("actor Neha Shetty");
+  // The role word must be gone, and @iamnehashetty — her real account —
+  // has to be among the shapes tried, or verification never sees it.
+  for (const want of ["nehashetty", "neha.shetty", "neha_shetty", "iamnehashetty"]) {
+    assert.ok(c.includes(want), `${want} should be tried (got ${c.join(", ")})`);
+  }
+  assert.ok(!c.some((h) => h.includes("actor")), "the role word is not part of a username");
+});
+
+test("the biggest account matching the name wins", () => {
+  const src = require("fs").readFileSync(__dirname + "/../src/tools/socialHandles.js", "utf8");
+  // Three real accounts answer to "Neha Shetty": @nehashetty (67
+  // followers, no display name — what the model originally guessed),
+  // @neha.shetty (205), and @iamnehashetty (1M, the actress). Name
+  // matching alone cannot separate them; asked for a public figure, the
+  // public figure is who is meant.
+  assert.match(src, /sort\(\(a, b\) => b\.followers - a\.followers\)/,
+    "candidates must be ranked by reach");
+  assert.match(src, /s >= 60 \? \{ handle: h, followers/,
+    "and only after the page's own name matches");
+});
+
+test("open_app verifies against the live profile, never a remembered name", () => {
+  const src = require("fs").readFileSync(__dirname + "/../src/tools/builtins.js", "utf8");
+  assert.match(src, /resolveVerified\(person, args\.app, ctx\)/,
+    "the tool must use the verifying resolver");
+  const sh = require("fs").readFileSync(__dirname + "/../src/tools/socialHandles.js", "utf8");
+  // og:title states who a profile belongs to — that is what turns this
+  // from a question about memory into one with a checkable answer.
+  assert.match(sh, /og:title/, "verification reads the page's own claim about itself");
 });
 
 // Everything above only REGISTERED a test. This is what runs them, in

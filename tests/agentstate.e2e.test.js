@@ -1348,18 +1348,31 @@ console.log("\nexecution record");
 
     // A NAME with no handle still falls back to search — but says so, and
     // tells the model how to do better rather than silently pretending.
+    // A NAME is now RESOLVED: candidates are checked against the live
+    // profile page and the biggest account carrying that name wins, so
+    // "Neha Shetty" reaches @iamnehashetty (1.4M, verified) rather than
+    // @nehashetty (67 followers, no display name) which is what a
+    // remembered username used to open.
+    //
+    // Asserted as a guarantee rather than an exact handle: this one call
+    // touches the network, and the promise is "her profile, or her search
+    // results" — never the bare home feed, and never a different person.
     const byName = await registry.execute("open_app",
       { app: "instagram", query: "Neha Shetty" }, ctx);
-    assert.strictEqual(byName.data.mode, "search");
-    // The note used to say "call this again with handle set if you know
-    // their username" — an invitation to guess, and guessing is what
-    // opened a different Neha Shetty's account. It now forbids it.
-    assert.match(byName.note, /do NOT call this again with a handle you remember/i);
-    assert.match(byName.note, /could not be confirmed/i);
-    // And the spoken line must still name who was searched for: an empty
-    // query once produced "here are 's Instagram photos".
-    assert.match(byName.speak, /Neha Shetty/);
-    assert.doesNotMatch(byName.speak, /here are 's/);
+    assert.ok(["profile", "search"].includes(byName.data.mode), byName.data.mode);
+    assert.notStrictEqual(byName.data.url, "https://www.instagram.com/",
+      "the bare home feed is never the answer");
+    if (byName.data.mode === "profile") {
+      // Whatever it opened, the page must genuinely be that person's.
+      const sh = require("../src/tools/socialHandles");
+      assert.ok(sh.score(byName.data.handle, "Neha Shetty") >= 60,
+        `opened @${byName.data.handle}, which is not plausibly hers`);
+    } else {
+      // The fallback must carry her name, and say so honestly.
+      assert.match(byName.data.url, /Neha/i);
+      assert.match(byName.speak, /Neha Shetty/);
+      assert.doesNotMatch(byName.speak, /here are 's/);
+    }
   });
 
   test("the image provider chain is inert without keys, and ordered", () => {

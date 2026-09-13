@@ -193,9 +193,141 @@ async function resolve(name, platform, ctx = {}) {
   return best;
 }
 
+/* ------------------------------------------------------------------ *
+ * VERIFY, DON'T TRUST
+ *
+ * A profile page states who it belongs to:
+ *
+ *   <meta property="og:title" content="Neha Sshetty (@iamnehashetty) …">
+ *
+ * That turns "which account is hers?" from a question about memory into a
+ * question with an answer we can check. A handle only opens if the page it
+ * points at says the person's name — so a remembered-but-wrong username
+ * is caught rather than opened, which is the whole failure here.
+ *
+ * It also means the lookup no longer depends on the search quota, which
+ * was rate-limited and falling back to Wikipedia articles about a
+ * different woman entirely.
+ * ------------------------------------------------------------------ */
+
+const PROFILE_URL = {
+  instagram: (h) => `https://www.instagram.com/${h}/`,
+  x: (h) => `https://x.com/${h}`,
+  youtube: (h) => `https://www.youtube.com/@${h}`,
+};
+
+/** Names a person plausibly uses, in the order they are worth trying. */
+function candidatesFrom(name) {
+  const parts = cleanName(name).toLowerCase().split(/\s+/)
+    .map((w) => w.replace(/[^a-z0-9]/g, "")).filter(Boolean);
+  if (!parts.length) return [];
+  const joined = parts.join("");
+  const out = [
+    joined,
+    parts.join("."),
+    parts.join("_"),
+    `iam${joined}`,
+    `${joined}official`,
+    `thereal_${joined}`,
+  ];
+  return [...new Set(out)].filter((h) => h.length >= 3 && h.length <= 30);
+}
+
+/** "1M" / "12.3K" / "1,275" as a number. */
+function followerCount(text) {
+  const m = String(text || "").match(/([\d.,]+)\s*([KMB])?\s*Followers/i);
+  if (!m) return 0;
+  const n = Number(String(m[1]).replace(/,/g, ""));
+  if (!Number.isFinite(n)) return 0;
+  const mult = { k: 1e3, m: 1e6, b: 1e9 }[String(m[2] || "").toLowerCase()] || 1;
+  return Math.round(n * mult);
+}
+
+/**
+ * What [handle]'s profile page says about itself:
+ * { name, followers } — or null when there is no such profile.
+ */
+async function inspect(handle, platform) {
+  const make = PROFILE_URL[platform];
+  if (!make || !handle) return null;
+  try {
+    const r = await fetch(make(handle), {
+      headers: {
+        "user-agent":
+          "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Mobile",
+      },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!r.ok) return null;
+    const html = await r.text();
+    const t = html.match(/<meta property="og:title" content="([^"]*)"/i);
+    if (!t) return null; // no such profile
+    const d = html.match(/<meta property="og:description" content="([^"]*)"/i);
+    return {
+      // The displayed name, before the "(@handle)" part.
+      name: t[1].split("(")[0].replace(/&[a-z]+;/gi, " ").trim(),
+      followers: followerCount(d && d[1]),
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+/** Whether [handle]'s profile page actually belongs to [name]. */
+async function verify(handle, name, platform) {
+  const got = await inspect(handle, platform);
+  return Boolean(got && score(norm(got.name), name) >= 60);
+}
+
+/**
+ * The handle for [name], checked against the live profile page.
+ * Tries what the search suggested first, then the shapes people actually
+ * use, and returns the first that the page itself confirms.
+ */
+async function resolveVerified(name, platform, ctx = {}) {
+  const who = cleanName(name);
+  if (!who || !PROFILE_URL[platform]) return null;
+
+  const key = `v:${platform}:${norm(who)}`;
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.ts < TTL_MS) return hit.handle;
+
+  const fromSearch = await resolve(name, platform, ctx).catch(() => null);
+  const tries = [...new Set([fromSearch, ...candidatesFrom(who)].filter(Boolean))]
+    .slice(0, 7); // bounded: this is one network call each
+
+  // THE BIGGEST MATCHING ACCOUNT WINS.
+  //
+  // Several real people share a name, and checking the name alone cannot
+  // tell them apart. For "Neha Shetty" the live pages say:
+  //   @nehashetty     67 followers, no display name  ← the model's guess
+  //   @neha.shetty    205 followers
+  //   @iamnehashetty  1M followers                   ← the actress
+  // Asked for a public figure, the public figure is who is meant. For an
+  // uncommon name there is only one match and the count decides nothing.
+  const checked = await Promise.all(
+    tries.map(async (h) => {
+      const got = await inspect(h, platform);
+      if (!got) return null;
+      const s = score(norm(got.name), who);
+      return s >= 60 ? { handle: h, followers: got.followers, s } : null;
+    })
+  );
+  const matches = checked.filter(Boolean).sort((a, b) => b.followers - a.followers);
+  if (!matches.length) return null;
+
+  const best = matches[0].handle;
+  cache.set(key, { ts: Date.now(), handle: best });
+  if (cache.size > 500) cache.delete(cache.keys().next().value);
+  return best;
+}
+
 /** Test seam. */
 function _clear() {
   cache.clear();
 }
 
-module.exports = { resolve, score, cleanName, PROFILE_RX, NOT_A_HANDLE, _clear };
+module.exports = {
+  resolve, resolveVerified, verify, inspect, followerCount, candidatesFrom,
+  score, cleanName, PROFILE_RX, NOT_A_HANDLE, _clear,
+};

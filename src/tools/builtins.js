@@ -2837,8 +2837,16 @@ function registerBuiltins() {
       const person =
         String(args.person || "").trim() || (/\s/.test(q) ? q : "");
       if (person) {
+        // resolveVerified, not resolve: it CHECKS each candidate against
+        // the live profile page rather than trusting a search snippet or a
+        // remembered username, and picks the biggest account whose page
+        // actually carries the person's name. That is what separates the
+        // actress (1M followers) from the two strangers who share her
+        // name, and it needs no search quota — which matters, because the
+        // search was rate-limited and answering with Wikipedia articles
+        // about a different woman.
         const found = await require("./socialHandles")
-          .resolve(person, args.app, ctx)
+          .resolveVerified(person, args.app, ctx)
           .catch(() => null);
         // The looked-up handle wins over anything remembered.
         if (found) handle = found;
@@ -2866,9 +2874,19 @@ function registerBuiltins() {
       };
       const SEARCH = {
         instagram: (t) =>
-          // No external search exists, so this is deliberately image
-          // results scoped to the site rather than a pretend search.
-          `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(t + " site:instagram.com")}`,
+          // INSTAGRAM'S OWN SEARCH, not Google's.
+          //
+          // This used to be a Google image search scoped to the site,
+          // written when it was believed Instagram had no external search
+          // route. It does: /explore/search/keyword/?q= is a real path,
+          // and — the part that matters — the Android app CLAIMS it
+          // (verified with `cmd package query-activities`:
+          // com.instagram.android). So this opens Instagram, already
+          // searching for the person, and the user taps the right account.
+          // The Google version dropped them in a browser, which is what
+          // "even Instagram is not opening, it's directly opening web
+          // search" was describing.
+          `https://www.instagram.com/explore/search/keyword/?q=${encodeURIComponent(t)}`,
         facebook: (t) => `https://www.facebook.com/search/top?q=${encodeURIComponent(t)}`,
         x: (t) => `https://x.com/search?q=${encodeURIComponent(t)}`,
         linkedin: (t) => `https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(t)}`,
@@ -2931,8 +2949,8 @@ function registerBuiltins() {
           : mode === "search"
             ? app === "instagram"
               ? who
-                ? `I couldn't confirm which account is ${who}'s, so here are their Instagram results — tap the right one.`
-                : "Instagram can't be searched from outside the app, so here are the image results."
+                ? `I couldn't pin down ${who}'s exact account, so I've opened Instagram's search for them — tap the right one.`
+                : "I've opened Instagram's search."
               : who
                 ? `Opening ${label} for ${who}.`
                 : `Opening ${label}.`
