@@ -41,17 +41,6 @@ function cfg() {
     authId: process.env.PLIVO_AUTH_ID || "",
     authToken: process.env.PLIVO_AUTH_TOKEN || "",
     from: process.env.PLIVO_FROM_NUMBER || "",
-    // ---- Exotel (India-native alternative; used when configured) ----
-    // EXOTEL_SUBDOMAIN: api.exotel.com (Singapore) or api.in.exotel.com
-    // (Mumbai — pick the region your Exotel account was created in).
-    // EXOTEL_FLOW_APP_ID: the App Bazaar flow that speaks our dynamic text
-    // (see the /agent-call/exotel/* webhooks for the flow's URL contract).
-    exoKey: process.env.EXOTEL_API_KEY || "",
-    exoToken: process.env.EXOTEL_API_TOKEN || "",
-    exoSid: process.env.EXOTEL_SID || "",
-    exoSub: (process.env.EXOTEL_SUBDOMAIN || "api.exotel.com").replace(/^https?:\/\//, ""),
-    exoFrom: process.env.EXOTEL_FROM_NUMBER || "", // your ExoPhone
-    exoApp: process.env.EXOTEL_FLOW_APP_ID || "",
     base: (process.env.PUBLIC_BASE_URL || "").replace(/\/$/, ""),
     voice: process.env.PLIVO_VOICE || "Polly.Aditi",
     dailyLimit: Number(process.env.AGENT_CALL_DAILY_LIMIT || 20),
@@ -65,13 +54,23 @@ function cfg() {
   };
 }
 
-/** Which telephony provider is configured. Retell is the conversational
- *  choice; Plivo remains a legacy fallback. Exotel was REMOVED 2026-09-09
- *  (speak-only flows, no usable two-way path — owner's call). */
+/** Which telephony provider is configured. PLIVO is the choice: it hands
+ *  us a real Indian number and a bidirectional media WebSocket, so the
+ *  call runs on our own model with the user's own memory rather than on
+ *  somebody else's hosted agent. Exotel was removed entirely on
+ *  2026-09-13 (balance exhausted, and its dashboard flows could not be
+ *  driven by response XML, so there was no usable two-way path). */
 function provider() {
   const c = cfg();
-  if (c.retellKey && c.retellFrom && c.retellAgent) return "retell";
+  // PLIVO FIRST, deliberately. Exotel is gone (removed 2026-09-13 — the
+  // account's balance was exhausted and it could not be driven by response
+  // XML anyway), and Retell was rejected: it is a hosted agent, and the
+  // requirement here is a number we can bridge straight to our own
+  // WebSocket so the call runs on our model with the user's own memory.
+  // Retell stays only as an inert fallback for an account that already
+  // has it; a configured Plivo always wins.
   if (c.authId && c.authToken && c.from) return "plivo";
+  if (c.retellKey && c.retellFrom && c.retellAgent) return "retell";
   return null;
 }
 
@@ -359,142 +358,6 @@ async function plivoPlaceCall({ to, id, token }) {
   return body.request_uuid || null;
 }
 
-// ---------------- EXOTEL ----------------
-// Exotel cannot be driven by response XML the way Plivo can: the call runs
-// a FLOW built once in their dashboard (App Bazaar), and the flow's applets
-// call back into these endpoints for the per-call content:
-//
-//   flow: Start → Greeting applet
-//                  ("Dynamic" text fetched from
-//                   {PUBLIC_BASE_URL}/agent-call/exotel/text)
-//               → Passthru applet
-//                  ({PUBLIC_BASE_URL}/agent-call/exotel/passthru)
-//               → Hangup
-//   (optional, for ask-mode replies: a Record applet between Greeting and
-//    Passthru; the recording lands on the passthru as RecordingUrl and is
-//    transcribed here.)
-//
-// Every applet receives CustomField (set below to "id/token"), which is how
-// a per-call lookup works even though the dashboard URLs are static.
-
-async function exotelPlaceCall({ to, id, token }) {
-  const c = cfg();
-  const statusUrl = `${c.base}/agent-call/exotel/status`;
-  const auth = Buffer.from(`${c.exoKey}:${c.exoToken}`).toString("base64");
-  const form = new URLSearchParams({
-    // Flow variant: 'From' is the number that gets CALLED and dropped into
-    // the flow; CallerId must be the ExoPhone.
-    From: to,
-    CallerId: c.exoFrom,
-    Url: `http://my.exotel.com/${c.exoSid}/exoml/start_voice/${c.exoApp}`,
-    CallType: "trans",
-    TimeLimit: "240",
-    CustomField: `${id}/${token}`,
-    // No StatusCallbackEvents: this account rejects every encoding of it
-    // ("Invalid 'StatusCallbackEvents' specified", live-tested) and the
-    // callback fires on terminal states by default anyway.
-    StatusCallback: statusUrl,
-  });
-  const r = await fetch(
-    `https://${c.exoSub}/v1/Accounts/${encodeURIComponent(c.exoSid)}/Calls/connect.json`,
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        authorization: `Basic ${auth}`,
-      },
-      signal: AbortSignal.timeout(15000),
-      body: form.toString(),
-    }
-  );
-  const body = await r.json().catch(() => ({}));
-  if (r.status >= 300) {
-    throw new Error(`exotel ${r.status} ${JSON.stringify(body).slice(0, 200)}`);
-  }
-  return body?.Call?.Sid || null;
-}
-
-/** Look a call up from an Exotel webhook's CustomField ("id/token"). */
-function fromCustomField(params) {
-  const cf = String(params.CustomField || params.custom_field || "").trim();
-  const [id, token] = cf.split("/");
-  const rec = get(id, token);
-  if (rec) return rec;
-  // The StatusCallback payload does NOT carry CustomField the way applets
-  // do (live-tested: /text and /passthru have it, /status doesn't) — fall
-  // back to Exotel's own Call Sid, which we stored when placing the call.
-  const sid = String(params.CallSid || params.Sid || params.call_sid || "").trim();
-  if (sid) {
-    for (const c of calls.values()) {
-      if (c.plivoUuid === sid) return c;
-    }
-  }
-  return null;
-}
-
-/** Greeting applet's dynamic-text URL: the words Hari speaks on the call. */
-function exotelText(params) {
-  const rec = fromCustomField(params);
-  if (!rec) return null;
-  if (rec.state === "dialing") rec.state = "in_progress";
-  // Ask-mode speaks only the question (a Record applet follows); inform
-  // delivers message + sign-off in one breath.
-  return rec.mode === "ask"
-    ? rec.script.speech
-    : `${rec.script.speech} ${rec.script.closing}`;
-}
-
-/** Passthru applet: flow progress; carries RecordingUrl for ask replies. */
-async function exotelPassthru(params) {
-  const rec = fromCustomField(params);
-  if (!rec) return false;
-  const recording = String(params.RecordingUrl || "").trim();
-  if (rec.mode === "ask" && recording && !rec.answer) {
-    try {
-      rec.state = "summarizing";
-      const c = cfg();
-      const auth = Buffer.from(`${c.exoKey}:${c.exoToken}`).toString("base64");
-      const audio = await fetch(recording, {
-        headers: { authorization: `Basic ${auth}` },
-        signal: AbortSignal.timeout(20000),
-      });
-      if (audio.ok) {
-        const buf = Buffer.from(await audio.arrayBuffer());
-        const { transcribeAudio } = require("../services/ai/router");
-        const out = await transcribeAudio(buf, "audio/wav", { hint: rec.lang });
-        rec.answer = String(out?.text || "").trim();
-      }
-      rec.result = await summarizeAnswer({
-        contactName: rec.contactName,
-        task: rec.task,
-        answer: rec.answer || "",
-        lang: rec.lang,
-      });
-      rec.state = "completed";
-      settle(rec);
-    } catch (e) {
-      console.error("exotel passthru transcription failed:", e.message);
-    }
-  }
-  return true;
-}
-
-/** StatusCallback: terminal state — reuses the Plivo hangup semantics. */
-function exotelStatus(params) {
-  const rec = fromCustomField(params);
-  if (!rec) {
-    // A callback we cannot attribute leaves a call stuck "in_progress" —
-    // log the shape so the field mapping can be fixed from evidence.
-    console.warn(
-      "exotel status: no matching call for payload:",
-      JSON.stringify(params).slice(0, 400)
-    );
-    return false;
-  }
-  onHangup(rec, params);
-  return true;
-}
-
 // ---------------- PUBLIC API (used by routes) ----------------
 
 /** Preview: the opening line + a verdict on the user's call rules. */
@@ -720,7 +583,4 @@ module.exports = {
   answerXml,
   onGather,
   onHangup,
-  exotelText,
-  exotelPassthru,
-  exotelStatus,
 };

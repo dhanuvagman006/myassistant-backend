@@ -99,7 +99,7 @@ async function scheduledTask(payload, job) {
     }
 
     // Device actions have no device here. Calls the server CAN place
-    // itself (the Exotel relay); anything else that reached this point
+    // itself (the telephony relay); anything else that reached this point
     // did NOT happen, whatever the model just said — say so.
     const HARMLESS = new Set(["documents", "translator", "search_results"]);
     let neededPhone = false;

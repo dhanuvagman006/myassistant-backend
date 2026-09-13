@@ -986,7 +986,6 @@ router.get("/api/debug", async (req, res) => {
   const integrations = {
     gemini: env("GEMINI_API_KEY"),
     heygen_avatar: env("HEYGEN_API_KEY"),
-    exotel_telephony: env("EXOTEL_API_KEY") && env("EXOTEL_SID"),
     razorpay_payments: env("RAZORPAY_KEY_ID"),
     google_places: env("GOOGLE_PLACES_API_KEY"),
     youtube: env("YOUTUBE_API_KEY"),
@@ -1010,19 +1009,6 @@ router.get("/api/debug", async (req, res) => {
       const faces = await heygen.listFaces();
       probes.heygen = faces.length ? `ok (${faces.length} faces)` : "empty catalog";
     } catch (e) { probes.heygen = e.message; }
-    // Exotel: account status.
-    try {
-      const sub = (process.env.EXOTEL_SUBDOMAIN || "api.exotel.com").replace(/^https?:\/\//, "");
-      const auth = Buffer.from(
-        `${process.env.EXOTEL_API_KEY}:${process.env.EXOTEL_API_TOKEN}`
-      ).toString("base64");
-      const r = await fetch(
-        `https://${sub}/v1/Accounts/${process.env.EXOTEL_SID}.json`,
-        { headers: { authorization: `Basic ${auth}` }, signal: AbortSignal.timeout(8000) }
-      );
-      const j = await r.json().catch(() => ({}));
-      probes.exotel = r.ok ? `ok (${j?.Account?.Status || "?"})` : `HTTP ${r.status}`;
-    } catch (e) { probes.exotel = e.message; }
   }
 
   res.json({

@@ -112,28 +112,32 @@ kubectl -n myassistant rollout undo deploy/myassistant-backend --to-revision=3
 Note: rollback reverts code, not data. If a bad release corrupted the DB,
 restore from the nightly backup as above.
 
-## Exotel agent calling ("call X and tell them Y" — Hari speaks on the call)
+## Plivo agent calling ("call X and tell them Y" — Hari speaks on the call)
 
-1. Create an Exotel account (exotel.com), finish KYC, buy an ExoPhone
-   (virtual number).
-2. Dashboard → Settings → API: copy the **API key**, **API token**, and
-   your **Account SID**. Note your region's subdomain
-   (`api.in.exotel.com` for Mumbai accounts, `api.exotel.com` for
-   Singapore).
-3. Dashboard → **App Bazaar → Create App** (this is the call flow):
-   `Start → Greeting → Passthru → Hangup`
-   - **Greeting applet**: choose *Dynamic* / "text from URL" and set
-     `https://api.hariassistant.tech/agent-call/exotel/text`
-     (Exotel fetches the words to speak per call from here.)
-   - **Passthru applet**: URL
-     `https://api.hariassistant.tech/agent-call/exotel/passthru`,
-     "make async" OFF.
-   - Optional (lets Hari CAPTURE a spoken reply for "ask" tasks):
-     insert a **Record** applet between Greeting and Passthru.
-   - Save; the number in the App's URL is the **App ID**.
-4. Set env (k8s: `k3s kubectl set env deploy/myassistant-backend -n myassistant KEY=value …`):
-   `EXOTEL_API_KEY, EXOTEL_API_TOKEN, EXOTEL_SID,
-    EXOTEL_SUBDOMAIN, EXOTEL_FROM_NUMBER, EXOTEL_FLOW_APP_ID`
-   (`PUBLIC_BASE_URL` must be the public HTTPS URL — already set in prod.)
-5. Test: POST /agent-call {toNumber, contactName, task} → poll
-   GET /agent-call/:id. Exotel wins over Plivo when both are configured.
+Plivo is the ONLY telephony provider. Exotel was removed on 2026-09-13:
+its balance was exhausted, and its dashboard flows cannot be driven by
+response XML, so there was never a usable two-way path. Retell remains in
+the tree as an inert fallback but a configured Plivo always wins — Retell
+is a hosted agent, and the point of Plivo is a number bridged straight to
+our own WebSocket, so the call runs on our model with the user's memory.
+
+1. Create a Plivo account and finish KYC. **Indian numbers can only be
+   rented by India-registered businesses** (Certificate of Incorporation +
+   GST), so this is a company action, not a developer one.
+2. Rent an Indian number. Published rates at the time of writing:
+   Rs 200/month for the number, Rs 0.38/min domestic — confirm current
+   pricing on their console rather than trusting this line.
+3. Set the credentials (never commit them):
+
+   ```
+   kubectl -n myassistant patch secret myassistant-secrets --type=merge \
+     --patch-file /root/plivo.json    # {"stringData":{"PLIVO_AUTH_ID":"…"}}
+   kubectl -n myassistant rollout restart deploy/myassistant-backend
+   ```
+
+   `PLIVO_AUTH_ID, PLIVO_AUTH_TOKEN, PLIVO_FROM_NUMBER`
+
+4. Verify: the admin Debug page reports the active provider, and
+   `GET /agent-call/:id` returns the call record. `provider()` returns
+   "plivo" as soon as all three are set — no code change or redeploy of
+   the image is needed, only the rollout above.

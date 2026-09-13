@@ -85,7 +85,7 @@ const PRIVACY = `
 <table>
 <tr><th>Provider</th><th>Used for</th></tr>
 <tr><td>Google (Gemini AI, Firebase Authentication, Cloud Messaging)</td><td>Understanding and answering your requests; sign-in; push notifications. Voice/text sent for AI processing is handled under Google's API data-use terms.</td></tr>
-<tr><td>Telephony provider (Exotel)</td><td>Placing assistant-relayed phone calls you request.</td></tr>
+<tr><td>Telephony provider (Plivo)</td><td>Placing assistant-relayed phone calls you request.</td></tr>
 <tr><td>Market/news/image services (Yahoo Finance, Google News, image-generation providers)</td><td>Live market data, headlines, and images you ask Hari to create. Only your query content is sent — never your identity.</td></tr>
 </table>
 
