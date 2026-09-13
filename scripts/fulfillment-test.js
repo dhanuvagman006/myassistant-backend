@@ -755,6 +755,35 @@ test("the cache fails open — it can never break search", () => {
   }
 });
 
+test("every tool a claim family names is visible to the claim checker", () => {
+  const registry = require("../src/tools/registry");
+  require("../src/agents/runtime");
+  registry.seal();
+  const { FAMILIES } = require("../src/agents/claimCheck");
+  const src = require("fs").readFileSync(__dirname + "/../src/tools/registry.js", "utf8");
+
+  // THE INVARIANT THAT WAS MISSING. recordExecution files only certain
+  // tools into the session, and the claim check reads that list. A family
+  // naming a tool that is never filed there is a list that can never be
+  // satisfied — so the assistant is made to apologise for work it did.
+  // open_named_app opened BigBasket and was contradicted ten seconds
+  // later; enable_usage_tracking and remember_fact had the same gap.
+  assert.match(src, /FAMILY_TOOLS\.has\(name\)/,
+    "the registry must file family tools into the session, not only world actions");
+
+  const unseeable = [];
+  for (const f of FAMILIES) {
+    for (const t of f.tools) {
+      if (!registry.get(t)) continue; // a separate test covers missing tools
+      if (!registry.isWorldAction(t) && !require("../src/agents/claimCheck").FAMILY_TOOLS.has(t)) {
+        unseeable.push(`${f.id} → ${t}`);
+      }
+    }
+  }
+  assert.deepStrictEqual(unseeable, [],
+    `these can never back their own claim: ${unseeable.join(", ")}`);
+});
+
 // Everything above only REGISTERED a test. This is what runs them, in
 // order, each one awaited — replacing a 250 ms setTimeout that reported a
 // total before the async tests had finished producing it.

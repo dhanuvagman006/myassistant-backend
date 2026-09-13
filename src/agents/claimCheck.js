@@ -221,4 +221,19 @@ function familiesAskedAbout(question) {
   return hit.length ? hit.flatMap((f) => f.tools) : FAMILIES.flatMap((f) => f.tools);
 }
 
-module.exports = { check, classify, claims, honestFor, satisfied, familiesAskedAbout, FAMILIES };
+/**
+ * Every tool any family relies on.
+ *
+ * The registry needs this: it only files WORLD ACTIONS into the session's
+ * claim-checking list, and a family tool that is not a world action can
+ * therefore never be seen to have run — so the assistant is made to
+ * apologise for it. open_named_app opened BigBasket and was contradicted
+ * ten seconds later for exactly this reason, as were enable_usage_tracking
+ * and, quietly, remember_fact.
+ */
+const FAMILY_TOOLS = new Set(FAMILIES.flatMap((f) => f.tools));
+
+module.exports = {
+  check, classify, claims, honestFor, satisfied, familiesAskedAbout,
+  FAMILIES, FAMILY_TOOLS,
+};

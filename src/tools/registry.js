@@ -941,7 +941,20 @@ function recordExecution(name, args, res, ctx) {
     // session's claim-checking list — a search does not make "I called
     // him" true — but every tool call belongs in the durable ledger, or
     // "why did you answer that?" has nothing to read.
-    if (!isWorldAction(name)) {
+    // A TOOL THAT BACKS A CLAIM MUST BE VISIBLE TO THE CLAIM CHECKER.
+    //
+    // World actions alone were filed into the session, and the original
+    // reasoning is sound — a search does not make "I called him" true. But
+    // the families already name the specific tools that satisfy them, so
+    // that protection was doing nothing here while silently breaking any
+    // family tool that is not a world action: open_named_app opened
+    // BigBasket and was contradicted seconds later, three days of
+    // "enable_usage_tracking didn't work" came from the same gap, and
+    // "I've noted that" was unbacked for remember_fact too.
+    const backsAClaim =
+      isWorldAction(name) ||
+      require("../agents/claimCheck").FAMILY_TOOLS.has(name);
+    if (!backsAClaim) {
       require("../actions/store").record(ctx.userId, {
         sessionId: ctx.sessionId || (ctx.session && ctx.session.sessionId) || "",
         turnId: ctx.turnId || "",
