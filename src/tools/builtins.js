@@ -2897,11 +2897,19 @@ function registerBuiltins() {
 
       let url;
       let mode;
+      // SEARCH FOR THE PERSON WHEN THE HANDLE COULD NOT BE FOUND.
+      //
+      // This used to require `query`, which the model does not send when
+      // it sends `person` — so a failed lookup opened Instagram's HOME
+      // FEED. "It just opens Instagram, but I'm not able to find Neha
+      // Shetty's profile" is exactly that: the fallback threw away the one
+      // thing the user had told us, the person's name.
+      const searchFor = q || require("./socialHandles").cleanName(person || "");
       if (handle && PROFILE[app]) {
         url = PROFILE[app](handle);
         mode = "profile";
-      } else if (q && SEARCH[app]) {
-        url = SEARCH[app](q);
+      } else if (searchFor && SEARCH[app]) {
+        url = SEARCH[app](searchFor);
         mode = "search";
       } else {
         url = HOME[app];
@@ -2912,13 +2920,22 @@ function registerBuiltins() {
       // Say what will ACTUALLY appear. Promising "Neha Shetty on Instagram"
       // and delivering the app's home feed is the kind of small lie that
       // erodes trust.
+      // `searchFor`, not `q`: when the lookup failed we searched for the
+      // PERSON, and saying "here are 's Instagram photos" — which is what
+      // the old template produced with an empty query — is worse than
+      // saying nothing.
+      const who = searchFor || person || q;
       const speak =
         mode === "profile"
           ? `Opening ${handle}'s ${label} profile.`
           : mode === "search"
             ? app === "instagram"
-              ? `Instagram can't be searched from outside the app, so here are ${q}'s Instagram photos.`
-              : `Opening ${label} for ${q}.`
+              ? who
+                ? `I couldn't confirm which account is ${who}'s, so here are their Instagram results — tap the right one.`
+                : "Instagram can't be searched from outside the app, so here are the image results."
+              : who
+                ? `Opening ${label} for ${who}.`
+                : `Opening ${label}.`
             : `Opening ${label}.`;
 
       return {

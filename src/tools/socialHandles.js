@@ -50,6 +50,32 @@ function norm(s) {
 }
 
 /**
+ * Strip what describes the person from what IS their name.
+ *
+ * The model passes what the user said, and the user says "open actor Neha
+ * Shetty's Instagram". Scoring then demanded the handle contain "actor"
+ * too, so @iamnehashetty — her real account — scored below the threshold
+ * and the whole thing fell through to opening Instagram's home feed. The
+ * describing word is not part of anybody's username.
+ */
+const ROLE_WORDS = new Set([
+  "actor", "actress", "singer", "cricketer", "player", "star", "celebrity",
+  "famous", "hero", "heroine", "model", "comedian", "director", "producer",
+  "politician", "minister", "author", "writer", "dancer", "musician",
+  "youtuber", "influencer", "the", "a", "an", "mr", "mrs", "ms", "dr",
+  "official", "real", "profile", "account", "page", "id",
+]);
+
+function cleanName(name) {
+  const kept = String(name || "")
+    .split(/\s+/)
+    .map((w) => w.replace(/[^A-Za-z0-9'.-]/g, ""))
+    .filter((w) => w && !ROLE_WORDS.has(w.toLowerCase()));
+  // If stripping left nothing, the words WERE the name — keep the original.
+  return kept.length ? kept.join(" ") : String(name || "").trim();
+}
+
+/**
  * Score a candidate handle against the name that was asked for.
  *
  * A handle that contains the person's name is far more likely to be them
@@ -59,7 +85,7 @@ function norm(s) {
  */
 function score(handle, name) {
   const h = norm(handle);
-  const parts = String(name).trim().split(/\s+/).map(norm).filter((p) => p.length > 1);
+  const parts = cleanName(name).trim().split(/\s+/).map(norm).filter((p) => p.length > 1);
   if (!parts.length) return 0;
   const joined = parts.join("");
   if (h === joined) return 100;                       // nehashetty
@@ -106,7 +132,7 @@ function consumesAsPrefixes(h, parts) {
  * @param {object} ctx       passed through to the search provider
  */
 async function resolve(name, platform, ctx = {}) {
-  const who = String(name || "").trim();
+  const who = cleanName(name);
   const rx = PROFILE_RX[platform];
   if (!who || !rx) return null;
 
@@ -123,6 +149,13 @@ async function resolve(name, platform, ctx = {}) {
     return null;
   }
   if (!res || !res.ok || !Array.isArray(res.data)) return null;
+  // THE ENCYCLOPEDIA CANNOT ANSWER THIS. When the search providers are
+  // rate-limited, webSearch falls back to Wikipedia — and asked for "Neha
+  // Shetty official instagram profile" it returned articles about Neha
+  // Kakkar, a different person. Those pages never carry the handle, and
+  // the names are close enough that a lax match would open the wrong
+  // account, which is the whole failure this module exists to prevent.
+  if (res.provider === "wikipedia") return null;
 
   const seen = new Map(); // handle -> best score
   const offer = (h) => {
@@ -165,4 +198,4 @@ function _clear() {
   cache.clear();
 }
 
-module.exports = { resolve, score, PROFILE_RX, NOT_A_HANDLE, _clear };
+module.exports = { resolve, score, cleanName, PROFILE_RX, NOT_A_HANDLE, _clear };

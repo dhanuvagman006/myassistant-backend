@@ -784,6 +784,49 @@ test("every tool a claim family names is visible to the claim checker", () => {
     `these can never back their own claim: ${unseeable.join(", ")}`);
 });
 
+test("a role word in the name does not break the lookup", () => {
+  const sh = require("../src/tools/socialHandles");
+  // The user says "open actor Neha Shetty's Instagram", so the model sends
+  // person="actor Neha Shetty". Demanding the handle contain "actor" too
+  // put @iamnehashetty below the threshold and opened the home feed.
+  assert.strictEqual(sh.cleanName("actor Neha Shetty"), "Neha Shetty");
+  assert.strictEqual(sh.cleanName("the famous actress Neha Shetty"), "Neha Shetty");
+  assert.ok(sh.score("iamnehashetty", "actor Neha Shetty") >= 60,
+    "her real account must still be accepted when a role word is present");
+  assert.ok(sh.score("nehasharma", "actor Neha Shetty") < 60,
+    "and a different person must still be rejected");
+  // Stripping must never empty the name out.
+  assert.strictEqual(sh.cleanName("Actor"), "Actor");
+});
+
+test("the encyclopedia fallback can never supply a handle", () => {
+  const src = require("fs").readFileSync(__dirname + "/../src/tools/socialHandles.js", "utf8");
+  // Rate-limited search falls back to Wikipedia, which answered "Neha
+  // Shetty official instagram profile" with articles about Neha Kakkar.
+  assert.match(src, /provider === "wikipedia"\) return null/,
+    "wikipedia results must not be mined for a username");
+});
+
+test("a failed lookup searches for the person, never the bare home feed", async () => {
+  const registry = require("../src/tools/registry");
+  const sh = require("../src/tools/socialHandles");
+  const ws = require("../src/tools/webSearch");
+  const real = ws.run;
+  ws.run = async () => ({ ok: true, provider: "brave", data: [{ title: "x", snippet: "nothing", url: "" }] });
+  sh._clear();
+  const res = await registry.get("open_app").execute(
+    { app: "instagram", person: "actor Neha Shetty" }, {}
+  );
+  ws.run = real;
+  // "It just opens Instagram, but I'm not able to find her profile" was
+  // this: the fallback threw away the person's name and opened the feed.
+  assert.ok(!/^https:\/\/www\.instagram\.com\/$/.test(res.deviceAction.url),
+    "the bare home feed is not an answer");
+  assert.match(res.deviceAction.url, /Neha%20Shetty/, res.deviceAction.url);
+  assert.doesNotMatch(res.speak, /here are 's/, "the spoken line must not lose the name");
+  assert.match(res.speak, /Neha Shetty/);
+});
+
 // Everything above only REGISTERED a test. This is what runs them, in
 // order, each one awaited — replacing a 250 ms setTimeout that reported a
 // total before the async tests had finished producing it.
