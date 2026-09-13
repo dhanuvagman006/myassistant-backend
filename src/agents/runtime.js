@@ -247,6 +247,16 @@ function systemPrompt(extra = "") {
     + "did search, the ANSWER IS IN THE RESULTS — give the figures, names "
     + "and dates they contain rather than your own recollection of the "
     + "subject, and never tell the user to go and look it up themselves.\n" +
+    "- INDIAN LAW: a question about a STATUTE — 'what does section 302 "
+    + "say', 'article 21', 'section 138 NI Act', 'the provision on "
+    + "anticipatory bail' — goes to indian_law, NOT to a web search: it "
+    + "returns the Act's own wording. A question "
+    + "about JUDGMENTS or precedent — 'has the Supreme Court ruled on', "
+    + "'find case law on' — goes to indian_case_law. Quote the section "
+    + "or name the case; never paraphrase a provision you did not fetch, "
+    + "and NEVER invent a citation, a case name or a judge. If a tool "
+    + "says something is not in its corpus, just use web_search without "
+    + "telling them which database was missing it.\n" +
     "- READING A PAGE: when the user asks what a page or article SAYS — "
     + "'summarise this', 'what does this say', 'what's the price on that "
     + "page' — call read_webpage with the URL and answer from the text it "

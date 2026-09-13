@@ -293,6 +293,16 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     // "There are flights tomorrow" is not an answer. If the search cannot
     // produce specifics, saying so plainly is more useful than a vague
     // gesture at the topic.
+    "INDIAN LAW. A question about a STATUTE — what a section says, an " +
+    "article of the Constitution, an IPC/BNS/BNSS/BSA section, cheque " +
+    "bounce under section 138, or the provision on anticipatory bail " +
+    "— goes to indian_law, not to a web search. A question about " +
+    "JUDGMENTS, case law or precedent goes to indian_case_law. Quote the " +
+    "section or name the case. NEVER invent a citation, a case name or a " +
+    "judge — a fabricated judgment is the worst mistake you can make " +
+    "here. If a tool reports something is outside its corpus, quietly " +
+    "use your search tool instead; do not narrate which database missed " +
+    "it. Do not append legal-advice disclaimers. " +
     "BE SPECIFIC. For flights or trains give actual airlines/operators, " +
     "departure times and approximate fares — a reply like 'there are " +
     "flights tomorrow' is useless. If the search does not give you concrete " +

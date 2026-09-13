@@ -3317,6 +3317,195 @@ function registerBuiltins() {
       return search.run(args.query, { lat: ctx.lat, lng: ctx.lng });
     },
   });
+
+  /* ---------------------------------------------------------------- */
+  /* INDIAN LAW                                                        */
+  /*                                                                   */
+  /* One source - Indian Kanoon - split into two tools, because a      */
+  /* lawyer asks two questions and each wants a different slice of it. */
+  /*                                                                   */
+  /*   indian_law       doctypes:laws      Central Acts and Rules      */
+  /*   indian_case_law  doctypes:judgments SC, High Courts, districts  */
+  /*                                                                   */
+  /* "What does section 302 say" must never reach the paid API, and    */
+  /* "has the Supreme Court ruled on this" cannot be answered without  */
+  /* it. The descriptions below are what makes the model choose right, */
+  /* so they name the question type, not the vendor.                   */
+  /* ---------------------------------------------------------------- */
+
+  registry.register({
+    name: "indian_law",
+    // Dark without a token: saying judgments and Acts cannot be looked up
+    // is survivable. A model inventing a section or a citation is not.
+    available: () => require("./indianKanoon").available(),
+    description:
+      "Look up INDIAN STATUTE TEXT — Central Acts and Rules — by citation " +
+      "or keyword: the Constitution, IPC, BNS, BNSS, BSA, the Negotiable " +
+      "Instruments Act (cheque bounce, s.138), Companies Act, Contract " +
+      "Act, CPC, CrPC, GST and the rest. USE THIS, NOT web_search, for " +
+      "'what does section 302 say', 'article 21', 'section 138 NI Act', " +
+      "'the provision on anticipatory bail'. It returns the Act's own " +
+      "wording. For JUDGMENTS and precedent use indian_case_law instead.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description:
+            "The provision as the user referred to it — 'IPC 302', " +
+            "'article 21', 'section 138 Negotiable Instruments Act'. " +
+            "Do not pre-parse it.",
+        },
+      },
+      required: ["query"],
+    },
+    timeoutMs: 45_000,
+    async execute(args) {
+      const ik = require("./indianKanoon");
+      const q = String(args.query || "").trim();
+      if (!q) return { ok: false, error: "empty query" };
+      try {
+        // doctypes:laws confines the search to Central Acts and Rules, so
+        // "section 302" returns the PROVISION rather than the ten thousand
+        // judgments that happen to cite it.
+        const out = await ik.research(q, { doctypes: "laws", depth: 2 });
+        if (!out.docs.length) {
+          return {
+            ok: false,
+            error: "not_found",
+            data: {
+              hint:
+                "The search ran and returned no Act for those terms. Say you " +
+                "could not find that provision and ask which Act they mean — " +
+                "do NOT quote a section from memory, and do NOT invent one.",
+            },
+          };
+        }
+        return {
+          ok: true,
+          provider: "indiankanoon",
+          data: out,
+          speak: out.docs
+            .slice(0, 3)
+            .map((d) => {
+              const body = (d.passages && d.passages.length
+                ? d.passages.join(" … ")
+                : d.snippet || ""
+              ).slice(0, 600);
+              return `${d.title}\n   ${body}`;
+            })
+            .join("\n"),
+          note:
+            "Quote the provision and name the Act and section — that is " +
+            "what a lawyer needs. Never paraphrase wording the passages do " +
+            "not contain, and never invent a section number. Do NOT add a " +
+            "disclaimer about this not being legal advice; they know.",
+        };
+      } catch (e) {
+        const m = String(e.message || "");
+        return {
+          ok: false,
+          error: `law lookup failed: ${m.slice(0, 160)}`,
+          note:
+            /balance|rate limit|auth|not_configured/i.test(m)
+              ? "The legal database is unavailable right now (credit or " +
+                "credentials). Say you could not look the provision up at " +
+                "the moment — NOT that it does not exist — and offer to retry."
+              : "SAY YOU COULD NOT LOOK IT UP, not that the law does not " +
+                "exist. Never quote a section from memory to fill the gap.",
+        };
+      }
+    },
+  });
+
+  registry.register({
+    name: "indian_case_law",
+    // Dark without a token: better to say judgments cannot be searched
+    // than to let the model invent one, which is the worst thing a legal
+    // assistant can do.
+    available: () => require("./indianKanoon").available(),
+    description:
+      "Search INDIAN JUDGMENTS AND CASE LAW — Supreme Court, High Courts " +
+      "and tribunals — on Indian Kanoon. Use for 'is there a judgment " +
+      "on...', 'what has the Supreme Court said about...', 'find me case " +
+      "law on...', 'precedent for...', or when the user names a case. " +
+      "Returns the court, the date and the passage of each judgment that " +
+      "matches. For the WORDING OF A STATUTE use indian_law instead — it " +
+      "is free and exact; this is billed per search.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description:
+            "What to search for, in legal terms — 'anticipatory bail " +
+            "498A', 'cheque dishonour section 138 limitation'.",
+        },
+      },
+      required: ["query"],
+    },
+    timeoutMs: 45_000,
+    async execute(args) {
+      const ik = require("./indianKanoon");
+      const q = String(args.query || "").trim();
+      if (!q) return { ok: false, error: "empty query" };
+      try {
+        const out = await ik.research(q, { doctypes: "judgments" });
+        if (!out.docs.length) {
+          return {
+            ok: false,
+            error: "no_judgments_found",
+            data: {
+              hint:
+                "The search ran and genuinely returned nothing. Say no " +
+                "reported judgment came up for those terms and offer to try " +
+                "different wording — do NOT invent a case, a citation or a " +
+                "judge's name.",
+            },
+          };
+        }
+        return {
+          ok: true,
+          provider: "indiankanoon",
+          data: out,
+          speak: out.docs
+            .slice(0, 4)
+            .map((d) => {
+              const head =
+                `${d.title}${d.court ? ` (${d.court}` : ""}` +
+                `${d.date ? `, ${String(d.date).slice(0, 10)}` : ""}${d.court ? ")" : ""}`;
+              const body = (d.passages && d.passages.length
+                ? d.passages.join(" … ")
+                : d.snippet || ""
+              ).slice(0, 500);
+              return `${head}\n   ${body}`;
+            })
+            .join("\n"),
+          note:
+            "These are REAL judgments. Name the case and the court when you " +
+            "answer, and never state a holding the passages do not support. " +
+            "If the passages are thin, say what was found and offer to open " +
+            "the judgment rather than filling the gap from memory. Do not " +
+            "add a legal-advice disclaimer.",
+        };
+      } catch (e) {
+        const m = String(e.message || "");
+        return {
+          ok: false,
+          error: `case law search failed: ${m.slice(0, 160)}`,
+          note:
+            /balance|rate limit|auth/i.test(m)
+              ? "The case-law service is unavailable right now (credit or " +
+                "credentials). Say you could not search the judgments at the " +
+                "moment — NOT that no such case exists — and offer to retry."
+              : "Say you could not search case law just now. Never invent a " +
+                "judgment or a citation to fill the gap.",
+        };
+      }
+    },
+  });
   /* ---------------------------------------------------------------- */
   /* CALENDAR                                                          */
   /*                                                                   */

@@ -350,6 +350,17 @@ async function runViaAgent(s, req, userText) {
         state(s, "using_tool");
         emit(s, { type: "tool_started", name: payload.name, tool: payload.name });
       }
+      // THE OTHER HALF, MISSING SINCE THIS WAS WRITTEN. runAgentTurn has
+      // always emitted tool_done, and nothing forwarded it — so on this
+      // path the app was told every tool STARTED and never that one
+      // finished. Two things went wrong quietly: the on-screen activity
+      // never cleared, and the app's tool_completed handler is also where
+      // a just-created reminder gets its alarm armed immediately rather
+      // than waiting for a throttled refresh. The live socket has always
+      // sent both; this brings the classic path in line.
+      if (ev === "tool_done") {
+        emit(s, { type: "tool_completed", name: payload.name, tool: payload.name, ok: payload.ok });
+      }
       if (ev === "sentence" && payload.text && !s.cancelled) {
         if (streamedSentences === 0) state(s, "speaking");
         streamedSentences++;
