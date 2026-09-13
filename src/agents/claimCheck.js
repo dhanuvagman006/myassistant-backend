@@ -43,7 +43,14 @@ const FAMILIES = [
   },
   {
     id: "open",
-    tools: ["open_app", "open_webpage", "open_service_app", "open_video_mode", "phone_control", "start_navigation", "capture_document", "analyze_camera"],
+    // open_named_app was added on 2026-09-13 and NOT added here, which
+    // inverted the bug this file exists to prevent: Swiggy opened, the
+    // checker saw no tool it recognised as "opening", and made the
+    // assistant apologise three seconds later for something that had just
+    // worked. A family that does not know about a tool silently calls it
+    // a liar, so tools.js has a test that fails when a device action is
+    // missing from every family.
+    tools: ["open_app", "open_named_app", "open_webpage", "open_service_app", "open_video_mode", "phone_control", "start_navigation", "capture_document", "analyze_camera"],
     claim: /\b(opening|opened|launching|launched|pulling up|bringing up)\b/i,
     // खोल…, ओपन कर…, ತೆರೆ…/ಓಪನ್ ಮಾಡ…, திறக்க…, తెరుస్…, തുറക്ക…
     claimIntl: /(खोल\s*(रहा|दिया|रही)|ओपन\s*कर|ತೆರೆ(ಯು|ದಿ)|ಓಪನ್\s*ಮಾಡ|திறக்கிற|திறந்த|తెరుస్తు|తెరిచా|തുറക്കു|തുറന്നു)/,

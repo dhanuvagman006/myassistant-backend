@@ -398,6 +398,62 @@ test("one user's news history does not affect another's", () => {
   news.forget(99073); news.forget(99074);
 });
 
+/* ------------------------------------------------------------------ *
+ * THE CLAIM CHECK MUST KNOW ABOUT THE TOOLS THAT EXIST
+ *
+ * open_named_app was added and not added to the "open" family, so Swiggy
+ * opened and the assistant apologised for it three seconds later — the
+ * exact inverse of the bug claimCheck exists to prevent. A family that
+ * does not list a tool silently calls the assistant a liar.
+ * ------------------------------------------------------------------ */
+
+test("every tool named in a claim family actually exists", () => {
+  const registry = require("../src/tools/registry");
+  const { FAMILIES } = require("../src/agents/claimCheck");
+  const missing = [];
+  for (const f of FAMILIES) {
+    for (const t of f.tools) if (!registry.get(t)) missing.push(`${f.id} → ${t}`);
+  }
+  assert.deepStrictEqual(missing, [],
+    `claim families name tools that do not exist: ${missing.join(", ")}`);
+});
+
+test("saying 'opening Swiggy' is backed by open_named_app", () => {
+  const claimCheck = require("../src/agents/claimCheck");
+  const v = claimCheck.check("Sure, opening Swiggy.", [{ tool: "open_named_app", ok: true }]);
+  assert.strictEqual(v.ok, true,
+    `the checker contradicted a tool that ran: ${v.violations.join("; ")}`);
+  assert.match(v.text, /opening Swiggy/i);
+});
+
+test("saying 'opening Swiggy' with NOTHING run is still corrected", () => {
+  const claimCheck = require("../src/agents/claimCheck");
+  const v = claimCheck.check("Sure, opening Swiggy.", []);
+  assert.strictEqual(v.ok, false, "an unbacked claim must still be caught");
+});
+
+test("every device action belongs to some claim family, or is listed as exempt", () => {
+  const registry = require("../src/tools/registry");
+  require("../src/agents/runtime");
+  const { FAMILIES } = require("../src/agents/claimCheck");
+  const covered = new Set(FAMILIES.flatMap((f) => f.tools));
+  // Device actions the model does not narrate as a completed act, so no
+  // family needs to vouch for them.
+  const EXEMPT = new Set([
+    "present_text", "show_text", "generate_image", "generate_video", "try_a_look",
+    "place_phone_call", "send_whatsapp_message", "set_alarm", "set_timer",
+    "translator_mode", "start_interpreter_mode", "stop_interpreter_mode",
+    "enable_usage_tracking", "look_at_screenshot", "open_video_mode",
+    "order_food", "book_ride", "book_movie_tickets", "send_patient_document",
+    "play_music", "open_webpage",
+  ]);
+  const orphans = registry.list()
+    .filter((t) => t.deviceAction && !covered.has(t.name) && !EXEMPT.has(t.name))
+    .map((t) => t.name);
+  assert.deepStrictEqual(orphans, [],
+    `these device actions are narrated but no claim family backs them: ${orphans.join(", ")}`);
+});
+
 // Everything above only REGISTERED a test. This is what runs them, in
 // order, each one awaited — replacing a 250 ms setTimeout that reported a
 // total before the async tests had finished producing it.
