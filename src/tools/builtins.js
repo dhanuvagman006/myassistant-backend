@@ -2758,7 +2758,11 @@ function registerBuiltins() {
       "searched from outside the app at all, so a name in `query` lands on " +
       "image results instead of the person. Use your own knowledge of the " +
       "handle; if you genuinely do not know it, say so and offer to search " +
-      "rather than guessing one.",
+      "rather than guessing one.\n" +
+      "THE APP MUST BE ONE OF THE LISTED VALUES. For anything else the user " +
+      "names — Swiggy, Zomato, Uber, Ola, BookMyShow, Blinkit — use " +
+      "open_named_app instead. Never substitute a different app from this " +
+      "list, and never say you opened one you did not.",
     risk: "low",
     deviceAction: true,
     inputSchema: {
@@ -2950,7 +2954,12 @@ function registerBuiltins() {
       "Open a shopping or grocery app for the user — Blinkit, Zepto, Amazon, " +
       "Flipkart, MakeMyTrip, YouTube — searching for something if given. " +
       "For food delivery use order_food, for cabs use book_ride, for cinema " +
-      "tickets use book_movie_tickets: those resolve the real target first.",
+      "tickets use book_movie_tickets: those resolve the real target first.\n" +
+      "THE SERVICE MUST BE ONE OF THE LISTED VALUES. If the user named " +
+      "anything else — Swiggy, Zomato, Uber, Ola, BookMyShow — use " +
+      "open_named_app. NEVER pick the nearest value from this list instead: " +
+      "asked for Swiggy, this tool was called with 'youtube' and the user " +
+      "was told YouTube was opening. That is worse than doing nothing.",
     risk: "low",
     deviceAction: true,
     inputSchema: {
