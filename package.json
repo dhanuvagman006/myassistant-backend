@@ -7,7 +7,7 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test:manifest": "node scripts/check-test-manifest.js",
-    "test:all": "npm run test:manifest && npm run test && npm run test:fulfillment && npm run test:legal && npm run test:knowledge && npm run test:professional && npm run test:integrations && npm run test:state && npm run test:studio && npm run test:contract && npm run test:tasks && npm run test:planner",
+    "test:all": "npm run test:manifest && npm run test && npm run test:fulfillment && npm run test:legal && npm run test:knowledge && npm run test:professional && npm run test:integrations && npm run test:state && npm run test:studio && npm run test:contract && npm run test:tasks && npm run test:planner && npm run test:phone",
     "test": "node scripts/smoke-test.js",
     "test:fulfillment": "node scripts/fulfillment-test.js",
     "test:legal": "node scripts/legal-test.js",
@@ -18,7 +18,8 @@
     "test:studio": "node tests/studio.e2e.test.js",
     "test:contract": "node tests/toolcontract.e2e.test.js",
     "test:tasks": "node tests/tasks.e2e.test.js",
-    "test:planner": "node tests/planner.e2e.test.js"
+    "test:planner": "node tests/planner.e2e.test.js",
+    "test:phone": "node tests/phone.e2e.test.js"
   },
   "engines": {
     "node": ">=20"
