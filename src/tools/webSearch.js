@@ -120,6 +120,7 @@ async function run(query, ctx = {}) {
   let results = [];
   let lastError = "";
   let used = "";
+  let blocked = false; // any provider refused us, not merely found nothing
   for (const p of chain) {
     try {
       const r = await BACKENDS[p](q);
@@ -131,11 +132,43 @@ async function run(query, ctx = {}) {
       lastError = `${p}: no results`;
     } catch (e) {
       lastError = `${p}: ${String(e.message).slice(0, 120)}`;
+      // REMEMBER AN OUTAGE ACROSS THE WHOLE CHAIN. lastError only holds
+      // the final provider's message, and the chain ends on Wikipedia —
+      // so a quota exhaustion two providers earlier was reported as
+      // "wikipedia: no results", i.e. as an absence rather than an
+      // outage.
+      if (/rate.?limit|429|quota|exhaust|timeout|ECONN/i.test(e.message || "")) {
+        blocked = true;
+      }
       console.warn(`web search ${lastError} — trying next provider`);
     }
   }
   if (!results.length) {
-    return { ok: false, error: `search failed (${lastError || "no provider"})` };
+    // "I COULD NOT LOOK" IS NOT "IT DOES NOT EXIST".
+    //
+    // The free grounding quota runs out several times a day, and the
+    // chain then falls to Wikipedia, which has nothing for a local
+    // business or a named professional. The model saw a bare "search
+    // failed" and told the user "I'm not finding any wine shops near the
+    // bus stand" — which reads as the shop not existing, about a shop
+    // that has been there thirty years. The distinction has to reach the
+    // model or it will keep reporting an outage as an absence.
+    const unavailable =
+      blocked || /rate.?limit|429|quota|no provider|timeout|ECONN/i.test(lastError);
+    return {
+      ok: false,
+      error: unavailable
+        ? "the web search is temporarily unavailable (rate limit), so nothing could be looked up"
+        : `search failed (${lastError || "no results"})`,
+      note: unavailable
+        ? "SAY YOU COULD NOT SEARCH, not that nothing was found. The search " +
+          "did not run — reporting 'I couldn't find any' about a place that " +
+          "may well exist is wrong and the user can tell. Say the search is " +
+          "unavailable for a moment, and offer to open a map or the site " +
+          "instead. Do NOT answer the question from your own memory as " +
+          "though you had looked it up."
+        : undefined,
+    };
   }
 
   // A LIVE QUESTION DESERVES A REAL ANSWER OR A STRAIGHT NO.

@@ -1033,6 +1033,34 @@ test("a miss says WHERE it looked, so the answer is actionable", async () => {
     "'no places found' does not tell the user the search looked in the wrong city");
 });
 
+test("an outage is reported as an outage, not as an absence", async () => {
+  const ws = require("../src/tools/webSearch");
+  const realFetch = global.fetch;
+  global.fetch = async () => { throw new Error("web search is rate-limited for a few minutes"); };
+  const r = await ws.run("a shop that has been there thirty years", {});
+  global.fetch = realFetch;
+  // The free quota runs out several times a day and the chain then falls
+  // to Wikipedia, which has nothing for a local business. The model saw a
+  // bare "search failed" and told the user "I'm not finding any" — which
+  // reads as the place not existing.
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /temporarily unavailable|rate limit/i,
+    "the reason must survive to the model");
+  assert.match(r.note || "", /SAY YOU COULD NOT SEARCH/,
+    "and it must be told the difference explicitly");
+  assert.match(r.note || "", /Do NOT answer the question from your own memory/i,
+    "a remembered answer dressed as a lookup is the other failure here");
+});
+
+test("an outage earlier in the chain is not masked by the last provider", () => {
+  const src = require("fs").readFileSync(__dirname + "/../src/tools/webSearch.js", "utf8");
+  // lastError only holds the FINAL provider's message and the chain ends
+  // on Wikipedia, so a quota exhaustion two providers earlier was
+  // reported as "wikipedia: no results".
+  assert.match(src, /let blocked = false/, "an outage must be remembered across the chain");
+  assert.match(src, /blocked \|\| \/rate/, "and must win over the last provider's message");
+});
+
 // Everything above only REGISTERED a test. This is what runs them, in
 // order, each one awaited — replacing a 250 ms setTimeout that reported a
 // total before the async tests had finished producing it.
