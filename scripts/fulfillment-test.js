@@ -325,17 +325,58 @@ test("an app we cannot open is refused, never silently swapped", () => {
   }
 });
 
-test("open_named_app refuses out loud, and forbids opening a substitute", async () => {
+test("an app the server has no deep link for is handed to the PHONE, not refused", async () => {
   const registry = require("../src/tools/registry");
+  // The server has no business deciding what is installed. It used to
+  // refuse anything outside a list of ten, so "open BigBasket" was
+  // answered "I can't open that" on a phone that had BigBasket on its
+  // home screen.
   const res = await registry.get("open_named_app").execute(
-    { app: "netflix" }, { platform: "android" }
+    { app: "BigBasket" }, { platform: "android" }
   );
-  assert.strictEqual(res.ok, false);
-  assert.match(res.error, /can't open netflix/i);
-  // The model reads this string and acts on it. The bug being fixed is
-  // precisely that it opened something else and said it had succeeded.
-  assert.match(res.error, /do NOT open a different app/i, res.error);
-  assert.match(res.error, /NOT say netflix opened/i, res.error);
+  assert.strictEqual(res.ok, true, "the server must not refuse on its own");
+  assert.strictEqual(res.deviceAction.type, "open_any_app");
+  assert.strictEqual(res.deviceAction.name, "BigBasket");
+});
+
+test("a known provider still gets its deep link rather than a bare launch", async () => {
+  const registry = require("../src/tools/registry");
+  // Swiggy by intent:// lands on its own host WITH a browser fallback, so
+  // it still works on a phone that does not have the app.
+  const res = await registry.get("open_named_app").execute(
+    { app: "Swiggy" }, { platform: "android" }
+  );
+  assert.strictEqual(res.deviceAction.type, "open_url");
+  assert.ok(res.deviceAction.url.includes("package=in.swiggy.android"));
+});
+
+test("the app resolves an unknown name against what is actually installed", () => {
+  const fs = require("fs");
+  const engine = fs.readFileSync(
+    __dirname + "/../../myassistant-flutter/lib/features/assistant/state/assistant_engine.dart",
+    "utf8"
+  );
+  assert.match(engine, /case 'open_any_app':/, "the engine must handle it");
+  assert.match(engine, /invokeMethod<String>\('launchApp'/,
+    "and ask the phone to resolve the name");
+  // A miss must be reported, or the assistant claims an app opened that did not.
+  assert.match(engine, /no app by that name is installed/,
+    "a missing app must be reported honestly");
+
+  const kt = fs.readFileSync(
+    __dirname + "/../../myassistant-flutter/android/app/src/main/kotlin/com/myassistant/myassistant/MainActivity.kt",
+    "utf8"
+  );
+  assert.match(kt, /"launchApp" ->/, "Android must implement launchApp");
+  assert.match(kt, /getLaunchIntentForPackage/, "and launch by package");
+
+  const manifest = fs.readFileSync(
+    __dirname + "/../../myassistant-flutter/android/app/src/main/AndroidManifest.xml",
+    "utf8"
+  );
+  // Without this, Android 11+ hides every package and matching finds nothing.
+  assert.match(manifest, /android\.intent\.category\.LAUNCHER/,
+    "the manifest must declare visibility of launchable apps");
 });
 
 test("open_named_app hands the phone a launchable intent for Swiggy", async () => {
@@ -521,6 +562,64 @@ test("asking for a male voice actually changes the voice, not just the label", (
   // An explicit voice must still win over the gender default.
   assert.match(src, /if \(!voice && VOICE_FOR_GENDER\[g\]\)/,
     "a voice the user chose explicitly must not be overwritten by a gender change");
+});
+
+/* ------------------------------------------------------------------ *
+ * A VOICE CHANGE HAS TO BE HEARD
+ *
+ * Gemini Live fixes the voice in the setup frame, sent once per socket.
+ * Changing the profile mid-call updated the database and nothing else:
+ * the user asked for a male voice, was told it changed, and kept hearing
+ * the female one. The app is now told to rebuild the session.
+ * ------------------------------------------------------------------ */
+
+
+
+
+test("the app actually handles the voice-change action it is sent", () => {
+  const fs = require("fs");
+  const engine = fs.readFileSync(
+    __dirname + "/../../myassistant-flutter/lib/features/assistant/state/assistant_engine.dart",
+    "utf8"
+  );
+  // The backend emitting an action nothing handles is the exact shape of
+  // this morning's bug, so the two halves are checked together.
+  assert.match(engine, /case 'live_voice_changed':/,
+    "the engine must handle live_voice_changed");
+  assert.match(engine, /_rebuildLiveForVoice/,
+    "and must actually rebuild the session");
+});
+
+test("barge-in: the mic keeps streaming while she is speaking locally", () => {
+  const fs = require("fs");
+  const live = fs.readFileSync(
+    __dirname + "/../../myassistant-flutter/lib/services/live_service.dart",
+    "utf8"
+  );
+  // Google decides an interruption happened, and can only decide it about
+  // audio it receives. This used to `return` without sending anything.
+  assert.match(live, /if \(!remoteSpeaking && !_gateActive && l != null\)/,
+    "mic frames must still go upstream during local playback, or barge-in cannot work");
+  assert.match(live, /if \(l > bargeFloor\) _ch\?\.sink\.add/,
+    "and only audio above the echo residue, or she interrupts herself");
+  assert.match(live, /_bargeInFactor/, "the threshold must be a named, tunable constant");
+});
+
+test("neither surface may hand the task back to the user", () => {
+  const fs = require("fs");
+  // "or you can just open it yourself on your phone" — the user called it
+  // disrespectful, and they were right: they are talking to an assistant
+  // precisely so they do not have to do it.
+  const runtime = require("../src/agents/runtime").systemPrompt("");
+  assert.match(runtime, /YOU DO THE WORK, NOT THEM/,
+    "the classic/voice prompt must forbid handing work back");
+  assert.match(runtime, /say in ONE sentence WHY/i,
+    "a refusal must still carry a reason");
+
+  const proxy = fs.readFileSync(__dirname + "/../src/live/proxy.js", "utf8");
+  assert.match(proxy, /YOU DO THE WORK, NOT THEM/,
+    "live mode needs the same rule — it is where this was reported");
+  assert.match(proxy, /doItRule/, "and it must actually be in the prompt");
 });
 
 // Everything above only REGISTERED a test. This is what runs them, in

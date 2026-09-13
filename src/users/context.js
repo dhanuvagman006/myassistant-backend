@@ -177,6 +177,19 @@ async function updateProfile(userId, fields = {}) {
  */
 const VOICE_FOR_GENDER = { female: "Kore", male: "Charon" };
 
+/**
+ * The assistant's own profile, independent of whether a `users` row
+ * exists. getProfile returns null in that case, which made "has the voice
+ * changed?" answer yes every time.
+ */
+async function getAssistantProfile(userId) {
+  if (!uidOk(userId)) throw new Error("authenticated userId required");
+  const row = await one(`SELECT * FROM assistant_profiles WHERE user_id=$1`, [userId]);
+  return row
+    ? { name: row.name, gender: row.gender, voice: row.voice, style: row.style, avatar_id: row.avatar_id }
+    : null;
+}
+
 async function setAssistantProfile(userId, { name, gender, voice, style, avatar_id } = {}) {
   if (!uidOk(userId)) throw new Error("authenticated userId required");
   // An EXPLICIT voice always wins — someone who picked Fenrir in Settings
@@ -209,7 +222,17 @@ async function setAssistantProfile(userId, { name, gender, voice, style, avatar_
      String(voice || "").slice(0, 40), String(style || "").slice(0, 30), Date.now(),
      face, faceKeep]
   );
-  return (await getProfile(userId)).assistant;
+  // getProfile returns null when there is no row in `users` — an account
+  // mid-creation, or a test id. Reaching straight through it threw
+  // "Cannot read properties of null", turning a settings change into a
+  // crash instead of a saved setting. The assistant profile was written
+  // either way, so read it back directly as the fallback.
+  const full = await getProfile(userId);
+  if (full && full.assistant) return full.assistant;
+  const row = await one(`SELECT * FROM assistant_profiles WHERE user_id=$1`, [userId]);
+  return row
+    ? { name: row.name, gender: row.gender, voice: row.voice, style: row.style, avatar_id: row.avatar_id }
+    : { name: "Assistant", gender: "", voice: "", style: "", avatar_id: "" };
 }
 
 /* ---------------- standing instructions (§14) ---------------- */
@@ -347,6 +370,7 @@ async function extractProfile(userId, text) {
 module.exports = {
   migrate,
   getProfile,
+  getAssistantProfile,
   updateProfile,
   setAssistantProfile,
   addInstruction,

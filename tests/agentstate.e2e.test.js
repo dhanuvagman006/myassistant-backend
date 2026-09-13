@@ -1623,9 +1623,47 @@ console.log("\nexecution record");
       "the cache is not consulted by question shape");
   });
 
+  console.log("\na voice change has to be heard, not just recorded");
+
+  await atest("changing gender asks the app to rebuild the live session", async () => {
+    const registry = require("../src/tools/registry");
+    require("../src/agents/runtime");
+    const U = 99081;
+    await registry.execute("configure_assistant", { gender: "female" },
+      { userId: U, turnId: "voice-a" });
+    const res = await registry.execute("configure_assistant", { gender: "male" },
+      { userId: U, turnId: "voice-b" });
+    assert.strictEqual(res.ok, true, res.error);
+    // Gemini Live fixes the voice in the setup frame, so a running session
+    // keeps the old one until it is rebuilt. Without this the user was
+    // told the voice changed and kept hearing the previous one.
+    assert.ok(res.deviceAction, "a voice change must reach the app");
+    assert.strictEqual(res.deviceAction.type, "live_voice_changed");
+    assert.strictEqual(res.deviceAction.voice, "Charon");
+  });
+
+  await atest("re-stating the same gender does not drop the call to reconnect", async () => {
+    const registry = require("../src/tools/registry");
+    const U = 99082;
+    await registry.execute("configure_assistant", { gender: "male" },
+      { userId: U, turnId: "same-a" });
+    const again = await registry.execute("configure_assistant", { gender: "male" },
+      { userId: U, turnId: "same-b" });
+    assert.strictEqual(again.ok, true, again.error);
+    assert.strictEqual(again.deviceAction, undefined,
+      "an unchanged voice must not churn the session");
+  });
+
+  await atest("a rename renames and does not rebuild the session", async () => {
+    const registry = require("../src/tools/registry");
+    const res = await registry.execute("configure_assistant", { name: "Maya" },
+      { userId: 99083, turnId: "rename-a" });
+    assert.strictEqual(res.deviceAction.type, "assistant_renamed");
+  });
+
   /* ---------------------------------------------------------------- */
   console.log("");
-  for (const uid of [USER_A, USER_B]) {
+  for (const uid of [USER_A, USER_B, 99081, 99082, 99083]) {
     await db.run("DELETE FROM executed_actions WHERE user_id = $1", [uid]).catch(() => {});
     await db.run("DELETE FROM conversation_turns WHERE user_id = $1", [uid]).catch(() => {});
     await db.run("DELETE FROM task_outcomes WHERE user_id = $1", [uid]).catch(() => {});

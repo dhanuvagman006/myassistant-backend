@@ -1330,16 +1330,38 @@ function registerBuiltins() {
     },
     async execute(args, ctx) {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const before = await userCtx.getAssistantProfile(ctx.userId).catch(() => null);
       const a = await userCtx.setAssistantProfile(ctx.userId, args);
+
+      // A VOICE CHANGE NEEDS A NEW SESSION TO BE HEARD.
+      //
+      // Gemini Live fixes the voice in the setup message, which is sent
+      // once when the socket opens. Changing the profile mid-call updates
+      // the database and nothing else: the user asks for a male voice, is
+      // told it changed, and carries on hearing the same female one. The
+      // Settings screen has the same gap — it saves and never reconnects.
+      //
+      // So the app is told to rebuild the session. It waits for this
+      // confirmation to finish speaking first, or the sentence announcing
+      // the change is cut off by the change itself.
+      const voiceMoved = Boolean(a && before && a.voice !== before.voice);
+      const renamed = Boolean(args.name);
+
+      let deviceAction;
+      if (renamed) deviceAction = { type: "assistant_renamed", name: a.name };
+      else if (voiceMoved) deviceAction = { type: "live_voice_changed", voice: a.voice || "" };
+
       return {
         ok: true,
         data: a,
         // The app renames itself on the spot — settings has no name field;
         // the conversation IS how the assistant is named.
-        deviceAction: args.name
-          ? { type: "assistant_renamed", name: a.name }
-          : undefined,
-        speak: args.name ? `From now on I'm ${a.name}.` : "Done.",
+        deviceAction,
+        speak: renamed
+          ? `From now on I'm ${a.name}.`
+          : voiceMoved
+            ? "Done — give me a second to switch over."
+            : "Done.",
       };
     },
   });
@@ -2984,14 +3006,15 @@ function registerBuiltins() {
   registry.register({
     name: "open_named_app",
     description:
-      "OPEN AN APP THE USER NAMED, when they just want it on screen — " +
-      "'open Swiggy', 'open Uber', 'open Zomato', 'open Ola', 'open " +
-      "BookMyShow', 'open Blinkit'. USE THIS FIRST for any plain 'open X' " +
-      "request naming a delivery, cab, ticket or shopping app.\n" +
-      "Do NOT substitute a different app. If this returns that it cannot " +
-      "open the one they asked for, SAY THAT — never open something else " +
-      "and never say you opened it. Opening YouTube when the user asked " +
-      "for Swiggy is worse than admitting you cannot.\n" +
+      "OPEN ANY APP INSTALLED ON THE USER'S PHONE, by the name they used — " +
+      "'open Swiggy', 'open BigBasket', 'open Uber', 'open PhonePe', 'open " +
+      "my banking app'. USE THIS FIRST for any plain 'open X' request.\n" +
+      "THERE IS NO LIST. The phone looks up what it actually has installed " +
+      "and opens it, so do NOT refuse because an app sounds unfamiliar — " +
+      "pass the name through and let the phone answer. Only if it comes " +
+      "back saying the app is not installed do you tell the user that.\n" +
+      "Do NOT substitute a different app. Opening YouTube when the user " +
+      "asked for Swiggy is worse than admitting you could not.\n" +
       "When they want something DONE rather than opened — order a dish, " +
       "book a cab, get tickets — use order_food, book_ride or " +
       "book_movie_tickets instead; those prepare the real target.",
@@ -3004,7 +3027,7 @@ function registerBuiltins() {
           type: "string",
           description:
             "The app's name exactly as the user said it — 'Swiggy', " +
-            "'Uber', 'Zomato'. Free text, not a fixed list.",
+            "'BigBasket', 'PhonePe'. Free text; any installed app works.",
         },
       },
       required: ["app"],
@@ -3014,25 +3037,28 @@ function registerBuiltins() {
       const asked = String(args.app || "").trim();
       if (!asked) return { ok: false, error: "no app was named" };
 
+      // A KNOWN PROVIDER STILL GETS ITS DEEP LINK. Swiggy opened by
+      // intent:// lands on its own host with a browser fallback, which is
+      // better than a bare launcher intent — it works even when the app is
+      // not installed. Everything else goes to the phone, which is the
+      // only thing that knows what is actually on it.
       const link = deeplinks.launch({ name: asked, platform: ctx.platform });
-      // AN HONEST NO. The failure that produced this tool was a model
-      // picking the nearest value from a closed enum and announcing it had
-      // opened Swiggy when it had opened YouTube. The error therefore says
-      // what cannot be done AND forbids the substitution explicitly,
-      // because the model reads this text and acts on it.
-      if (!link) {
+      if (link) {
         return {
-          ok: false,
-          error:
-            `I can't open ${asked} — it isn't one of the apps I can launch. ` +
-            `Tell the user that plainly. Do NOT open a different app and do ` +
-            `NOT say ${asked} opened.`,
+          ok: true,
+          deviceAction: { type: "open_url", url: link.url },
+          speak: `Opening ${link.label}.`,
         };
       }
+      // THE PHONE DECIDES. There is no list here to be missing from — the
+      // app matches the spoken name against what is installed and reports
+      // back. It says "opening" rather than "opened" because the receipt
+      // has not arrived yet; if the app is not there, the phone reports a
+      // failure and the assistant is corrected.
       return {
         ok: true,
-        deviceAction: { type: "open_url", url: link.url },
-        speak: `Opening ${link.label}.`,
+        deviceAction: { type: "open_any_app", name: asked },
+        speak: `Opening ${asked}.`,
       };
     },
   });
