@@ -162,8 +162,31 @@ async function updateProfile(userId, fields = {}) {
   return getProfile(userId);
 }
 
+/**
+ * ASKING FOR A MALE VOICE HAS TO CHANGE THE VOICE.
+ *
+ * `gender` and `voice` are separate columns, and the live path reads
+ * `voice`. So "switch to a male voice" set gender=male, the assistant
+ * said "I've changed my voice to sound male", and it went on speaking
+ * with Kore — a female voice. Another sentence that was not true.
+ *
+ * The names are the ones this codebase already uses: avatar/heygen.js
+ * maps a female face to Kore and a male face to Charon, and the app's
+ * own voice picker labels Kore/Aoede female and Puck/Charon/Fenrir male.
+ * Nothing new is invented here.
+ */
+const VOICE_FOR_GENDER = { female: "Kore", male: "Charon" };
+
 async function setAssistantProfile(userId, { name, gender, voice, style, avatar_id } = {}) {
   if (!uidOk(userId)) throw new Error("authenticated userId required");
+  // An EXPLICIT voice always wins — someone who picked Fenrir in Settings
+  // and then says "be male" keeps Fenrir. Only a gender change with no
+  // voice of its own moves the voice.
+  const g = String(gender || "").toLowerCase().trim();
+  if (!voice && VOICE_FOR_GENDER[g]) voice = VOICE_FOR_GENDER[g];
+  // "neutral" clears back to automatic (the face's voice, else the
+  // deployment default) rather than picking a gendered one.
+  if (!voice && g === "neutral") voice = "default";
   // avatar_id: undefined/'' keeps the current face; the literal 'default'
   // clears the choice back to the deployment default.
   const face =

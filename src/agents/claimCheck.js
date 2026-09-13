@@ -65,6 +65,8 @@ const FAMILIES = [
       // These open an app or a screen too, and say so in the same words.
       "enable_usage_tracking", "order_food", "book_ride", "book_movie_tickets",
       "try_a_look", "present_text", "generate_image", "generate_video",
+      // Screens inside this app. "Opening your settings" is the same claim.
+      "open_app_screen", "set_app_theme",
     ],
     claim: /\b(opening|opened|launching|launched|pulling up|bringing up)\b/i,
     // खोल…, ओपन कर…, ತೆರೆ…/ಓಪನ್ ಮಾಡ…, திறக்க…, తెరుస్…, തുറക്ക…

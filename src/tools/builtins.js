@@ -2893,6 +2893,95 @@ function registerBuiltins() {
   });
 
   registry.register({
+    name: "set_app_theme",
+    description:
+      "Change how the APP ITSELF looks — 'switch to dark mode', 'make it " +
+      "light', 'turn on dark theme', 'go back to automatic'. This is the " +
+      "assistant app's own appearance, not the phone's system theme.\n" +
+      "'adaptive' follows the clock: light by day, dark in the evening. It " +
+      "is the default, and what 'automatic' means. Pick it when the user " +
+      "asks for automatic or says to stop choosing for them.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        mode: {
+          type: "string",
+          enum: ["dark", "light", "adaptive"],
+          description:
+            "dark or light to fix it; adaptive to follow the time of day.",
+        },
+      },
+      required: ["mode"],
+    },
+    async execute(args) {
+      const mode = String(args.mode || "").toLowerCase().trim();
+      if (!["dark", "light", "adaptive"].includes(mode)) {
+        return { ok: false, error: `"${args.mode}" is not a theme I can set` };
+      }
+      return {
+        ok: true,
+        deviceAction: { type: "set_theme", mode },
+        speak:
+          mode === "adaptive"
+            ? "Back to automatic — light by day, dark in the evening."
+            : `Switched to ${mode} mode.`,
+      };
+    },
+  });
+
+  registry.register({
+    name: "open_app_screen",
+    description:
+      "Open a screen INSIDE this assistant app — 'open my settings', 'show " +
+      "my documents', 'open my clients', 'show my finances', 'open " +
+      "diagnostics'. Use this for the app's OWN screens.\n" +
+      "Not for other apps on the phone (use open_named_app or open_app), " +
+      "and not for the phone's system settings (use phone_control).",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        screen: {
+          type: "string",
+          enum: [
+            "settings", "home", "hub", "chat",
+            "documents", "clients", "finance", "stocks",
+            "diagnostics", "mcp",
+          ],
+          description:
+            "settings = the assistant's own settings (voice, name, theme). " +
+            "home/hub/chat are the main tabs. The rest are feature screens.",
+        },
+      },
+      required: ["screen"],
+    },
+    async execute(args) {
+      const screen = String(args.screen || "").toLowerCase().trim();
+      const ALLOWED = [
+        "settings", "home", "hub", "chat", "documents", "clients",
+        "finance", "stocks", "diagnostics", "mcp",
+      ];
+      if (!ALLOWED.includes(screen)) {
+        return { ok: false, error: `I don't have a screen called "${args.screen}"` };
+      }
+      const LABEL = {
+        settings: "your settings", home: "Home", hub: "the Hub", chat: "Chat",
+        documents: "your documents", clients: "your clients",
+        finance: "your finances", stocks: "your stocks",
+        diagnostics: "diagnostics", mcp: "your connected servers",
+      };
+      return {
+        ok: true,
+        deviceAction: { type: "open_app_screen", screen },
+        speak: `Opening ${LABEL[screen]}.`,
+      };
+    },
+  });
+
+  registry.register({
     name: "open_named_app",
     description:
       "OPEN AN APP THE USER NAMED, when they just want it on screen — " +

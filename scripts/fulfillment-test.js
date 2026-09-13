@@ -472,6 +472,57 @@ test("claims about screens and timers are backed by the tool that ran", () => {
   }
 });
 
+/* ------------------------------------------------------------------ *
+ * SETTINGS BY VOICE — theme, screens, and the assistant's own voice.
+ * ------------------------------------------------------------------ */
+
+test("setting the theme by voice produces an action the app can perform", async () => {
+  const registry = require("../src/tools/registry");
+  for (const [mode, expect] of [["dark", /dark/i], ["light", /light/i], ["adaptive", /automatic/i]]) {
+    const res = await registry.get("set_app_theme").execute({ mode }, {});
+    assert.strictEqual(res.ok, true, `${mode} should be settable`);
+    assert.strictEqual(res.deviceAction.type, "set_theme");
+    assert.strictEqual(res.deviceAction.mode, mode);
+    assert.match(res.speak, expect, res.speak);
+  }
+});
+
+test("a theme the app does not have is refused, not guessed at", async () => {
+  const registry = require("../src/tools/registry");
+  const res = await registry.get("set_app_theme").execute({ mode: "sepia" }, {});
+  assert.strictEqual(res.ok, false);
+  assert.match(res.error, /sepia/);
+});
+
+test("every screen open_app_screen offers is one the app can actually build", async () => {
+  const fs = require("fs");
+  const registry = require("../src/tools/registry");
+  const screens = registry.get("open_app_screen").inputSchema.properties.screen.enum;
+  // The four tabs live in the shell; the rest must have a builder entry.
+  const TABS = ["home", "hub", "chat", "settings"];
+  const engine = fs.readFileSync(
+    __dirname + "/../../myassistant-flutter/lib/features/assistant/state/assistant_engine.dart",
+    "utf8"
+  );
+  const missing = screens
+    .filter((s) => !TABS.includes(s))
+    .filter((s) => !engine.includes(`'${s}' => (_)`));
+  assert.deepStrictEqual(missing, [],
+    `the tool offers screens the app cannot open: ${missing.join(", ")}`);
+});
+
+test("asking for a male voice actually changes the voice, not just the label", () => {
+  // gender and voice are separate columns and the live path reads `voice`.
+  // Setting only gender left it speaking with Kore while claiming otherwise.
+  const src = require("fs").readFileSync(__dirname + "/../src/users/context.js", "utf8");
+  assert.match(src, /VOICE_FOR_GENDER/, "gender must map to a voice");
+  assert.match(src, /female:\s*"Kore"/, "female voice must be one the picker offers");
+  assert.match(src, /male:\s*"Charon"/, "male voice must be one the picker offers");
+  // An explicit voice must still win over the gender default.
+  assert.match(src, /if \(!voice && VOICE_FOR_GENDER\[g\]\)/,
+    "a voice the user chose explicitly must not be overwritten by a gender change");
+});
+
 // Everything above only REGISTERED a test. This is what runs them, in
 // order, each one awaited — replacing a 250 ms setTimeout that reported a
 // total before the async tests had finished producing it.
