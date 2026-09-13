@@ -137,13 +137,29 @@ async function resolve(name, platform, ctx = {}) {
   const hit = cache.get(key);
   if (hit && Date.now() - hit.ts < TTL_MS) return hit.handle;
 
-  let res;
-  try {
-    // The platform name is in the query so the results are profile pages
-    // rather than news about the person.
-    res = await webSearch.run(`${who} official ${platform} profile`, ctx);
-  } catch (_) {
-    return null;
+  // THE QUESTION HAS TO BE ASKED PROPERLY.
+  //
+  // "<name> official instagram profile" returned an encyclopedia article
+  // about a different person with a similar name. Asking for the VERIFIED
+  // account, and for its follower count, gets the answer directly:
+  //   "actress X's official Instagram account, @thehandle, has 1,459,982
+  //    followers"
+  // That single sentence carries both the handle and the figure that
+  // separates a public figure from a namesake — without fetching the
+  // profile page, which this server is blocked from reading.
+  const QUERIES = [
+    `${who} verified ${platform} username official account followers`,
+    `${who} official ${platform} account`,
+  ];
+  let res = null;
+  for (const q of QUERIES) {
+    try {
+      const got = await webSearch.run(q, ctx);
+      if (got && got.ok && Array.isArray(got.data) && got.data.length) {
+        res = got;
+        if (got.provider !== "wikipedia") break;
+      }
+    } catch (_) { /* try the next phrasing */ }
   }
   if (!res || !res.ok || !Array.isArray(res.data)) return null;
   // THE ENCYCLOPEDIA CANNOT ANSWER THIS. When the search providers are
@@ -154,6 +170,7 @@ async function resolve(name, platform, ctx = {}) {
   if (res.provider === "wikipedia") return null;
 
   const seen = new Map(); // handle -> best score
+  const reach = new Map(); // handle -> followers stated near it
   const offer = (h) => {
     if (!h) return;
     const clean = String(h).replace(/^@/, "");
@@ -175,11 +192,29 @@ async function resolve(name, platform, ctx = {}) {
     // the answer text, however, says "...profile is @virat.kohli". Reading
     // only URLs found nothing for anybody, famous or not.
     const prose = `${r.snippet || ""} ${r.title || ""}`;
-    for (const m of prose.matchAll(/@([A-Za-z0-9._]{2,30})\b/g)) offer(m[1]);
+    for (const m of prose.matchAll(/@([A-Za-z0-9._]{2,30})\b/g)) {
+      offer(m[1]);
+      // A follower count stated NEAR the handle belongs to it. This is the
+      // only reach signal available when the profile page cannot be read,
+      // and reach is what tells a public figure from a namesake.
+      const after = prose.slice(m.index, m.index + 220);
+      const f = followerCount(after);
+      if (f > 0) {
+        const h = m[1];
+        reach.set(h, Math.max(reach.get(h) || 0, f));
+      }
+    }
   }
   if (!seen.size) return null;
 
-  const [best, bestScore] = [...seen.entries()].sort((a, b) => b[1] - a[1])[0];
+  // Rank by REACH first where the search stated it, then by how well the
+  // handle matches the name. Two accounts can both look like "First Last";
+  // the one with a million followers is the one someone asking by name
+  // means.
+  const ranked = [...seen.entries()]
+    .map(([h, sc]) => ({ h, sc, f: reach.get(h) || 0 }))
+    .sort((a, b) => (b.f - a.f) || (b.sc - a.sc));
+  const [best, bestScore] = [ranked[0].h, ranked[0].sc];
   // A weak match is worse than none: opening the wrong person's account is
   // the failure being fixed, so an uncertain result falls back to search.
   if (bestScore < 60) return null;
@@ -356,7 +391,19 @@ async function resolveVerified(name, platform, ctx = {}) {
     })
   );
   const matches = checked.filter(Boolean).sort((a, b) => b.followers - a.followers);
-  if (!matches.length) return null;
+  if (!matches.length) {
+    // NOTHING COULD BE READ. Either the platform is refusing this server
+    // (429 on every datacenter range) or none of the guessed shapes
+    // exist. The search already answered the question — "the verified
+    // account, @handle, has 1.4M followers" — and that answer is ranked
+    // by the same reach signal, so use it rather than giving up and
+    // opening a search page.
+    if (fromSearch) {
+      cache.set(key, { ts: Date.now(), handle: fromSearch });
+      return fromSearch;
+    }
+    return null;
+  }
 
   const best = matches[0].handle;
   cache.set(key, { ts: Date.now(), handle: best });
