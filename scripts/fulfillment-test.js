@@ -361,6 +361,43 @@ test("a non-Android phone gets the plain https link, not an intent URL", async (
   assert.ok(res.deviceAction.url.startsWith("https://"), res.deviceAction.url);
 });
 
+test("news does not read the same headlines twice in a row", () => {
+  const news = require("../src/services/tools/news");
+  news.forget(99071);
+  const items = Array.from({ length: 12 }, (_, i) => ({ title: `Story ${i + 1}`, source: "S" }));
+  const first = news.freshFor(99071, items, 6).map((h) => h.title);
+  const second = news.freshFor(99071, items, 6).map((h) => h.title);
+  assert.strictEqual(first.length, 6);
+  assert.strictEqual(second.length, 6);
+  // The BRICS summit was recited to a user over and over because the top
+  // six came back from cache every time.
+  assert.strictEqual(
+    first.filter((t) => second.includes(t)).length, 0,
+    `the second ask repeated: ${second.join(", ")}`
+  );
+  news.forget(99071);
+});
+
+test("news cycles rather than going silent once everything is heard", () => {
+  const news = require("../src/services/tools/news");
+  news.forget(99072);
+  const items = Array.from({ length: 6 }, (_, i) => ({ title: `Only ${i + 1}`, source: "S" }));
+  assert.strictEqual(news.freshFor(99072, items, 6).length, 6);
+  const again = news.freshFor(99072, items, 6);
+  assert.strictEqual(again.length, 6, "an empty news answer is worse than a repeat");
+  news.forget(99072);
+});
+
+test("one user's news history does not affect another's", () => {
+  const news = require("../src/services/tools/news");
+  news.forget(99073); news.forget(99074);
+  const items = Array.from({ length: 12 }, (_, i) => ({ title: `Item ${i + 1}`, source: "S" }));
+  const a = news.freshFor(99073, items, 6).map((h) => h.title);
+  const b = news.freshFor(99074, items, 6).map((h) => h.title);
+  assert.deepStrictEqual(a, b, "a second user must still get the top headlines");
+  news.forget(99073); news.forget(99074);
+});
+
 // Everything above only REGISTERED a test. This is what runs them, in
 // order, each one awaited — replacing a 250 ms setTimeout that reported a
 // total before the async tests had finished producing it.

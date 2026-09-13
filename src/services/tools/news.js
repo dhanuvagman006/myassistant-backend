@@ -55,4 +55,56 @@ function describe(items, topic) {
   );
 }
 
-module.exports = { getHeadlines, describe };
+/* ------------------------------------------------------------------ *
+ * NOT THE SAME SIX HEADLINES EVERY TIME
+ *
+ * getHeadlines collects twelve items and returned the first six, from a
+ * cache. So "what's the news" twice in a minute read out the identical
+ * list, and the BRICS summit was recited to the user over and over. The
+ * second half of the feed was already fetched and simply never used.
+ *
+ * This remembers what a user has been told and serves them what they have
+ * not heard. When everything has been heard it falls back to the newest —
+ * repeating is better than saying nothing — and starts over, because by
+ * then the feed itself has usually moved on.
+ * ------------------------------------------------------------------ */
+const SEEN_TTL = 6 * 60 * 60_000;
+const seen = new Map(); // userId -> { ts, titles: Set<string> }
+
+function seenFor(userId) {
+  const key = String(userId || "");
+  const hit = seen.get(key);
+  if (hit && Date.now() - hit.ts < SEEN_TTL) return hit;
+  const fresh = { ts: Date.now(), titles: new Set() };
+  seen.set(key, fresh);
+  return fresh;
+}
+
+/**
+ * Pick up to [max] headlines this user has not already been read.
+ * Marks whatever it returns as heard.
+ */
+function freshFor(userId, items, max = 6) {
+  const all = Array.isArray(items) ? items : [];
+  if (!userId || !all.length) return all.slice(0, max);
+
+  const rec = seenFor(userId);
+  let picked = all.filter((h) => !rec.titles.has(h.title)).slice(0, max);
+
+  // Heard all of them. Start the cycle again rather than going silent —
+  // and clear first, so the next ask is not immediately "seen" too.
+  if (!picked.length) {
+    rec.titles.clear();
+    rec.ts = Date.now();
+    picked = all.slice(0, max);
+  }
+  for (const h of picked) rec.titles.add(h.title);
+  return picked;
+}
+
+/** Test seam / sign-out: forget what a user has been told. */
+function forget(userId) {
+  seen.delete(String(userId || ""));
+}
+
+module.exports = { getHeadlines, describe, freshFor, forget };

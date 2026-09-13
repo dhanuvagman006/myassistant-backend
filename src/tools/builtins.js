@@ -90,12 +90,16 @@ function registerBuiltins() {
         },
       },
     },
-    async execute(args) {
-      const items = await news.getHeadlines({ topic: args.topic });
+    async execute(args, ctx) {
+      // Ask for the whole page, not six: freshFor picks what this user has
+      // not been read yet. Asked twice, the second answer used to be the
+      // identical six headlines from cache — the same BRICS story, again.
+      const items = await news.getHeadlines({ topic: args.topic, max: 12 });
       if (!items || !items.length) {
         return { ok: false, error: "no headlines found" };
       }
-      return { ok: true, data: items, speak: news.describe(items, args.topic) };
+      const fresh = news.freshFor(ctx && ctx.userId, items, 6);
+      return { ok: true, data: fresh, speak: news.describe(fresh, args.topic) };
     },
   });
 

@@ -492,6 +492,9 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     if (!t) return;
     turnBuf = "";
     userTurns++;
+    // A new request is a fresh attempt, not a continuation of the last
+    // thing the model got wrong — so the correction guard starts over.
+    correctionStreak = 0;
     if (Number(user?.sub) > 0) {
       require("../commitments/service").extractAsync(Number(user.sub), t, { source: "voice" });
       require("../agents/memory").extractAndStore(Number(user.sub), t);
@@ -570,6 +573,23 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   // signal arrives after the user stopped speaking (see repliedAt).
   let turnLatency = 0;
   let turnTools = [];
+  // CORRECTION STORM GUARD.
+  //
+  // The claim check tells the model, mid-call, that it just said something
+  // untrue — and does so with turnComplete, so the model speaks again. If
+  // the correction itself contains another false claim, that fires the
+  // check again, and so on. Observed in production on 2026-09-13: asked to
+  // open Swiggy with no tool that could, it said "Opening Swiggy now",
+  // then apologised and re-claimed four more times in 25 seconds, each
+  // apology spoken out loud. The user's word for it was "idiot", and they
+  // were right.
+  //
+  // So: correct once, escalate once, then stop talking about it. The
+  // streak resets the moment the user says something new or a tool
+  // actually runs, because then it is a fresh attempt rather than the same
+  // lie restated.
+  const CORRECTION_LIMIT = 2;
+  let correctionStreak = 0;
   // Shared by the user's line and the reply it produced (see recent.js).
   let currentTurnId = "";
   const flushModelTurn = () => {
@@ -582,28 +602,53 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     if (t && liveState) {
       const verdict = claimCheck.check(t, sessionState.executedThisTurn(liveState));
       if (!verdict.ok) {
-        console.warn("live claim check:", verdict.violations.join(" | "));
-        try {
-          upstream.send(
-            JSON.stringify({
-              clientContent: {
-                turns: [{
-                  role: "user",
-                  parts: [{
-                    text:
-                      "[SYSTEM] CORRECTION: you just told the user " +
-                      verdict.violations.join("; ") +
-                      " — but no such action ran. Tell them plainly, in one " +
-                      "short sentence, that it did not actually happen, and " +
-                      "either do it properly now with the right tool or ask " +
-                      "what they want. Never repeat the false claim.",
-                  }],
-                }],
-                turnComplete: true,
-              },
-            })
+        correctionStreak++;
+        console.warn(
+          `live claim check (${correctionStreak}):`, verdict.violations.join(" | ")
+        );
+        // PAST THE LIMIT THE CURE IS WORSE THAN THE DISEASE. Another
+        // correction only buys another apology; the transcript already
+        // holds the truth, and the user is owed silence rather than a
+        // fifth "sorry". The next real user turn clears this.
+        if (correctionStreak > CORRECTION_LIMIT) {
+          console.warn(
+            "live claim check: suppressed — already corrected " +
+            `${correctionStreak - 1} times this turn without it landing`
           );
-        } catch (_) {}
+        } else {
+          const finalAttempt = correctionStreak === CORRECTION_LIMIT;
+          try {
+            upstream.send(
+              JSON.stringify({
+                clientContent: {
+                  turns: [{
+                    role: "user",
+                    parts: [{
+                      text: finalAttempt
+                        ? "[SYSTEM] STOP. You have now claimed something " +
+                          "untrue twice in a row (" +
+                          verdict.violations.join("; ") +
+                          "). Do NOT apologise again and do NOT say you are " +
+                          "trying again. Say ONCE, in one short sentence, " +
+                          "that you cannot do it — then ask what they would " +
+                          "like instead, and wait for their answer."
+                        : "[SYSTEM] CORRECTION: you just told the user " +
+                          verdict.violations.join("; ") +
+                          " — but no such action ran. Tell them plainly, in one " +
+                          "short sentence, that it did not actually happen, and " +
+                          "either do it properly now with the right tool or ask " +
+                          "what they want. Never repeat the false claim.",
+                    }],
+                  }],
+                  turnComplete: true,
+                },
+              })
+            );
+          } catch (_) {}
+        }
+      } else if (turnTools.length) {
+        // A truthful reply that actually ran something ends the streak.
+        correctionStreak = 0;
       }
       sessionState.recordReply(liveState, t);
     }
