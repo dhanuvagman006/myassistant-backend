@@ -222,8 +222,75 @@ function speakFor({ precision, providerLabel, what }) {
   return `Opening ${providerLabel} — I couldn't narrow it down, so you'll need to search from there.`;
 }
 
+/**
+ * JUST OPEN THE APP.
+ *
+ * "Open Swiggy" is not an order and "open Uber" is not a ride — they are
+ * launch requests, and until now nothing could serve one. open_app and
+ * open_service_app each carry a closed enum (social apps; shopping apps),
+ * neither of which lists Swiggy, Zomato, Uber or Ola. A model forced to
+ * emit a schema-valid value picks the nearest thing on the list, which is
+ * how "open the Swiggy app" was answered with "Sure, opening YouTube for
+ * you" — and how "open Uber" opened nothing while claiming it had.
+ *
+ * Resolution is by NAME against the table above, so nothing here invents a
+ * package. An unknown name returns null and the caller says it cannot open
+ * it; that honest failure is the whole point, because the alternative the
+ * product just demonstrated is opening the wrong app confidently.
+ */
+const ALIASES = {
+  "swiggy instamart": "swiggy",
+  instamart: "swiggy",
+  "book my show": "bookmyshow",
+  bms: "bookmyshow",
+  "make my trip": "makemytrip",
+  mmt: "makemytrip",
+  grofers: "blinkit",
+  "zepto now": "zepto",
+  zeptonow: "zepto",
+  "amazon shopping": "amazon",
+  olacabs: "ola",
+  "ola cabs": "ola",
+};
+
+function resolveAppName(name) {
+  // "open the swiggy app" → "swiggy". Stripped REPEATEDLY: a single pass
+  // left "the swiggy" and failed to resolve, because the model does not
+  // always hand over a bare noun.
+  // A LOOP, not a /g/ replace: `^` only matches at index 0, so the global
+  // flag still strips one word and "open the swiggy app" stayed
+  // "the swiggy".
+  let raw = String(name || "").toLowerCase().trim();
+  let prev;
+  do {
+    prev = raw;
+    raw = raw
+      .replace(/^(?:open|launch|start|go\s+to|the|my|a)\s+/u, "")
+      .replace(/\s+(?:app|application)$/u, "")
+      .trim();
+  } while (raw !== prev);
+  if (!raw) return null;
+  const key = ALIASES[raw] || raw;
+  return isProvider(key) ? key : null;
+}
+
+/**
+ * Build a launch link for an app the user named. Android gets an intent://
+ * wrapped at the provider's own host, so the installed app takes it and a
+ * phone without it falls back to the site rather than dead-ending.
+ */
+function launch({ name, platform }) {
+  const key = resolveAppName(name);
+  if (!key) return null;
+  const p = PROVIDERS[key];
+  const https = `https://${p.host}/`;
+  return { url: wrap(https, p.pkg, platform), label: p.label, provider: key };
+}
+
 module.exports = {
   PROVIDERS,
+  resolveAppName,
+  launch,
   isProvider,
   labelFor,
   food,

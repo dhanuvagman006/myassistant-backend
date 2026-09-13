@@ -2885,6 +2885,62 @@ function registerBuiltins() {
   });
 
   registry.register({
+    name: "open_named_app",
+    description:
+      "OPEN AN APP THE USER NAMED, when they just want it on screen — " +
+      "'open Swiggy', 'open Uber', 'open Zomato', 'open Ola', 'open " +
+      "BookMyShow', 'open Blinkit'. USE THIS FIRST for any plain 'open X' " +
+      "request naming a delivery, cab, ticket or shopping app.\n" +
+      "Do NOT substitute a different app. If this returns that it cannot " +
+      "open the one they asked for, SAY THAT — never open something else " +
+      "and never say you opened it. Opening YouTube when the user asked " +
+      "for Swiggy is worse than admitting you cannot.\n" +
+      "When they want something DONE rather than opened — order a dish, " +
+      "book a cab, get tickets — use order_food, book_ride or " +
+      "book_movie_tickets instead; those prepare the real target.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        app: {
+          type: "string",
+          description:
+            "The app's name exactly as the user said it — 'Swiggy', " +
+            "'Uber', 'Zomato'. Free text, not a fixed list.",
+        },
+      },
+      required: ["app"],
+    },
+    async execute(args, ctx) {
+      const deeplinks = require("../fulfillment/deeplinks");
+      const asked = String(args.app || "").trim();
+      if (!asked) return { ok: false, error: "no app was named" };
+
+      const link = deeplinks.launch({ name: asked, platform: ctx.platform });
+      // AN HONEST NO. The failure that produced this tool was a model
+      // picking the nearest value from a closed enum and announcing it had
+      // opened Swiggy when it had opened YouTube. The error therefore says
+      // what cannot be done AND forbids the substitution explicitly,
+      // because the model reads this text and acts on it.
+      if (!link) {
+        return {
+          ok: false,
+          error:
+            `I can't open ${asked} — it isn't one of the apps I can launch. ` +
+            `Tell the user that plainly. Do NOT open a different app and do ` +
+            `NOT say ${asked} opened.`,
+        };
+      }
+      return {
+        ok: true,
+        deviceAction: { type: "open_url", url: link.url },
+        speak: `Opening ${link.label}.`,
+      };
+    },
+  });
+
+  registry.register({
     name: "open_service_app",
     description:
       "Open a shopping or grocery app for the user — Blinkit, Zepto, Amazon, " +

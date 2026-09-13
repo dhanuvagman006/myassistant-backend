@@ -440,13 +440,21 @@ function stubPlan(steps, decline) {
 
   console.log("\nstart_task");
 
-  await atest("start_task is registered, low risk, and offered to the model", async () => {
+  await atest("start_task is registered, low risk, and NOT offered to the model", async () => {
     const t = registry.get("start_task");
     assert.ok(t, "the tool must exist");
     assert.strictEqual(t.risk, "low",
       "the STEPS carry the risk; asking a user to approve 'a plan' approves nothing they can judge");
+    // DARK until a plan step's deviceAction can actually reach the phone.
+    // It could not, so 26 tools did nothing inside a plan and then hung it
+    // waiting for a receipt no one sends. This assertion is the guard: it
+    // fails the moment someone re-offers the tool, which must not happen
+    // until delivery works and has been checked on a real device.
+    assert.strictEqual(t.available(), false,
+      "start_task must stay dark while plan steps cannot drive the phone");
     const declared = registry.declarations({ userId: USER }).map((d) => d.name);
-    assert.ok(declared.includes("start_task"), "the model must be able to reach it");
+    assert.ok(!declared.includes("start_task"),
+      "an unavailable tool must never be declared to the model");
   });
 
   await atest("a goal the planner declines is reported as 'do it directly', not as failure", async () => {

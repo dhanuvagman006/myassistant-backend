@@ -279,6 +279,88 @@ test("youtube watch link points at the video, which is what makes it play", () =
   assert.ok(youtube.watchUrl("abc123").includes("watch?v=abc123"));
 });
 
+/* ------------------------------------------------------------------ *
+ * OPENING AN APP THE USER NAMED
+ *
+ * Shipped broken: "open the Swiggy app" was answered "Sure, opening
+ * YouTube for you", and "open Uber" opened nothing while saying it had.
+ * Neither open_app nor open_service_app lists Swiggy or Uber in its enum,
+ * so the model emitted the nearest schema-valid value. These check the
+ * launcher that fixes it — and, just as importantly, that an app it does
+ * NOT know is refused instead of quietly becoming a different one.
+ * ------------------------------------------------------------------ */
+
+test("the apps people actually ask for resolve to their own package", () => {
+  const d = require("../src/fulfillment/deeplinks");
+  for (const [said, label, pkg] of [
+    ["Swiggy", "Swiggy", "in.swiggy.android"],
+    ["Uber", "Uber", "com.ubercab"],
+    ["Zomato", "Zomato", "com.application.zomato"],
+    ["Ola", "Ola", "com.olacabs.customer"],
+    ["BookMyShow", "BookMyShow", "com.bt.bms"],
+  ]) {
+    const r = d.launch({ name: said, platform: "android" });
+    assert.ok(r, `${said} must resolve`);
+    assert.strictEqual(r.label, label);
+    assert.ok(r.url.includes(`package=${pkg}`), r.url);
+  }
+});
+
+test("the way people actually phrase it still resolves", () => {
+  const d = require("../src/fulfillment/deeplinks");
+  for (const said of [
+    "open the swiggy app", "launch my uber app", "go to zomato",
+    "the Zomato application", "open ola cabs", "swiggy instamart", "BMS",
+  ]) {
+    assert.ok(d.launch({ name: said, platform: "android" }),
+      `"${said}" should resolve — a single-pass strip left "the swiggy" and did not`);
+  }
+});
+
+test("an app we cannot open is refused, never silently swapped", () => {
+  const d = require("../src/fulfillment/deeplinks");
+  for (const said of ["netflix", "open", "the app", "", "hotstar"]) {
+    assert.strictEqual(d.launch({ name: said, platform: "android" }), null,
+      `"${said}" must return null rather than resolve to something else`);
+  }
+});
+
+test("open_named_app refuses out loud, and forbids opening a substitute", async () => {
+  const registry = require("../src/tools/registry");
+  const res = await registry.get("open_named_app").execute(
+    { app: "netflix" }, { platform: "android" }
+  );
+  assert.strictEqual(res.ok, false);
+  assert.match(res.error, /can't open netflix/i);
+  // The model reads this string and acts on it. The bug being fixed is
+  // precisely that it opened something else and said it had succeeded.
+  assert.match(res.error, /do NOT open a different app/i, res.error);
+  assert.match(res.error, /NOT say netflix opened/i, res.error);
+});
+
+test("open_named_app hands the phone a launchable intent for Swiggy", async () => {
+  const registry = require("../src/tools/registry");
+  const res = await registry.get("open_named_app").execute(
+    { app: "Swiggy" }, { platform: "android" }
+  );
+  assert.strictEqual(res.ok, true);
+  assert.strictEqual(res.deviceAction.type, "open_url");
+  assert.ok(res.deviceAction.url.startsWith("intent://"), res.deviceAction.url);
+  assert.ok(res.deviceAction.url.includes("package=in.swiggy.android"));
+  // Without the browser fallback a phone that lacks the app dead-ends.
+  assert.ok(res.deviceAction.url.includes("browser_fallback_url"));
+  assert.match(res.speak, /Opening Swiggy/i);
+});
+
+test("a non-Android phone gets the plain https link, not an intent URL", async () => {
+  const registry = require("../src/tools/registry");
+  const res = await registry.get("open_named_app").execute(
+    { app: "Swiggy" }, { platform: "ios" }
+  );
+  assert.strictEqual(res.ok, true);
+  assert.ok(res.deviceAction.url.startsWith("https://"), res.deviceAction.url);
+});
+
 // Everything above only REGISTERED a test. This is what runs them, in
 // order, each one awaited — replacing a 250 ms setTimeout that reported a
 // total before the async tests had finished producing it.
