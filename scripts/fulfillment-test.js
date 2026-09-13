@@ -942,6 +942,23 @@ test("a deep-linked provider still opens on any build", async () => {
   assert.strictEqual(res.deviceAction.type, "open_url");
 });
 
+test("live mode is told to call the tool before narrating it", () => {
+  const src = require("fs").readFileSync(__dirname + "/../src/live/proxy.js", "utf8");
+  // Asked three times to open an app, the live model said "one second,
+  // opening it" three times and called NO tool — the ledger for that
+  // window is empty. The text model picks the right tool for the same
+  // sentence every time; the live model needs telling.
+  assert.match(src, /TOOL FIRST, THEN SPEAK/,
+    "the live prompt must order the act before the narration");
+  assert.match(src, /actFirstRule/, "and the rule must actually be in the prompt");
+  // Matched on a fragment that sits on ONE source line: the rule is built
+  // by string concatenation, so a phrase spanning the join never matches.
+  assert.match(src, /the same sentence twice while waiting to act/i,
+    "it repeated itself while failing to act");
+  assert.match(src, /CALL THE TOOL/,
+    "the instruction has to be unambiguous, not a hint");
+});
+
 // Everything above only REGISTERED a test. This is what runs them, in
 // order, each one awaited — replacing a 250 ms setTimeout that reported a
 // total before the async tests had finished producing it.

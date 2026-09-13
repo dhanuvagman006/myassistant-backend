@@ -123,8 +123,29 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "connected, you have no tool for it — and stop there. A reason is " +
     "respectful; handing the task back is not. Never offer a substitute " +
     "they did not ask for as though it were the answer. ";
+  // SAYING IT IS NOT DOING IT.
+  //
+  // Observed 2026-09-13: asked three times to open an app, the live model
+  // answered "Sure, one second... opening it for you" three times over and
+  // called NO TOOL AT ALL — the ledger for that window is empty. The claim
+  // check then caught it and the user heard an apology for something that
+  // was never attempted. The text model picks the right tool for the same
+  // sentence every time; this live model needs telling.
+  //
+  // Phrased as the order of operations rather than a prohibition, because
+  // the failure is not the model lying — it is narrating the intention and
+  // never getting to the act.
+  const actFirstRule =
+    "TOOL FIRST, THEN SPEAK. If what they asked for needs a tool — opening " +
+    "an app, setting a reminder, placing a call, searching, playing music — " +
+    "CALL THE TOOL. Do not announce it and stop: 'one second, opening it' " +
+    "followed by no tool call is the single worst thing you can do, because " +
+    "they believe you and nothing happened. If you have already said you are " +
+    "doing something, the tool call must follow in that same turn. Never say " +
+    "the same sentence twice while waiting to act. ";
   let prompt = `You are ${assistantName}, a warm, quick-witted personal voice assistant from India. ` +
     doItRule +
+    actFirstRule +
     nowLine(tzOffsetMin) + " " +
     "You are SPEAKING with the user in real time. " +
     languageRule +
