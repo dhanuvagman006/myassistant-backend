@@ -515,6 +515,17 @@ function askWhich({ preferred = "", askedAt = 0, userTurns = [] } = {}) {
   }
   let top = "", n = 0;
   for (const [k, v] of counts) if (v > n) { top = k; n = v; }
+
+  // ARMED BY HAND. A negative stamp means somebody decided this user
+  // should be asked, whatever their transcripts say — a person telling us
+  // their language is unsettled outranks our reading of it. It still only
+  // names a language when the script proves which one.
+  if (Number(askedAt) < 0) {
+    const nameable = top && mirrorable(top) && !scriptAmbiguous(top) &&
+      !sameFamily(preferred, top);
+    return { ask: true, language: nameable ? top : "" };
+  }
+
   if (n < ASK_EVIDENCE || !mirrorable(top)) return no;
 
   // They are already being spoken to in something script evidence cannot
