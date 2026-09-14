@@ -201,6 +201,27 @@ async function adminStats(days = 7) {
  *   conversation" is what made a fresh "hello" look like the continuation
  *   of the previous request.
  */
+/**
+ * ASSISTANT LINES THAT TEACH THE WRONG LESSON.
+ *
+ * This block exists so the model remembers what was DISCUSSED. A past
+ * apology is not that, and including it is actively harmful: shown three
+ * turns in a row of "you asked for a timer, I said I could not", the model
+ * stopped calling set_timer at all and refused in under a second — on a
+ * build where the tool was offered and the underlying bug was already
+ * fixed. An instruction saying "a past failure is not a prediction" is one
+ * sentence arguing against three worked examples, and it loses.
+ *
+ * Dropping them costs nothing. Nobody needs to be reminded that something
+ * went wrong yesterday; they need it to work today.
+ */
+const FAILURE_LINE =
+  /\b(i can'?t|i cannot|couldn'?t|could not|unable to|didn'?t (work|set|go through)|did not (work|set)|failed|not working|isn'?t working|went wrong|something went wrong|sorry about that|my apologies|wasn'?t saved|was not saved)\b/i;
+
+/** Bare greetings and filler — noise that crowds out real context. */
+const FILLER_LINE =
+  /^(good (morning|afternoon|evening)|hello|hi|hey|namaste|sure|okay|ok|right|understood|no problem|you'?re welcome)\b[\s,!.…-]*$/i;
+
 async function recentBlock(userId, { maxTurns = 12, maxAgeMs = 48 * 3600_000, maxChars = 1700, excludeSessionId = "" } = {}) {
   const uid = Number(userId);
   if (!Number.isInteger(uid) || uid <= 0) return "";
@@ -223,11 +244,20 @@ async function recentBlock(userId, { maxTurns = 12, maxAgeMs = 48 * 3600_000, ma
     const lines = [];
     let used = 0;
     for (const r of rows) { // newest→oldest; keep newest within budget
-      const line = `${r.role === "assistant" ? "You said" : "User said"}: ${r.text}`;
+      const text = String(r.text || "").trim();
+      if (!text) continue;
+      // A REPLY THAT REPORTS A FAILURE IS NOT CONTEXT, IT IS A LESSON.
+      // Only the assistant's own lines are filtered: what the USER asked
+      // still matters, and dropping their side would lose the subject.
+      if (r.role === "assistant" && FAILURE_LINE.test(text)) continue;
+      // Repeated greetings crowd the window without carrying anything.
+      if (FILLER_LINE.test(text)) continue;
+      const line = `${r.role === "assistant" ? "You said" : "User said"}: ${text}`;
       if (used + line.length > maxChars) break;
       used += line.length;
       lines.push(line);
     }
+    if (!lines.length) return "";
     lines.reverse();
     return (
       "EARLIER CONVERSATION — ALREADY FINISHED AND ALREADY ACTED ON.\n" +
