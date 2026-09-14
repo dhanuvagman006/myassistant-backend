@@ -117,6 +117,42 @@ function mostlyLatin(t) {
   return latin / letters.length >= 0.6;
 }
 
+
+/**
+ * HOW MANY THEY ASKED FOR, READ FROM THEIR OWN WORDS.
+ *
+ * The model is told to set `count`, and usually does — but "top 4 news"
+ * arriving as ten is exactly the complaint this is meant to end, and a
+ * judgement call is the wrong mechanism for a number the user said out
+ * loud. Reading it from the utterance makes it deterministic: if they
+ * said a number, that is the number.
+ *
+ * Deliberately narrow. Only a count that sits next to a news word counts,
+ * so "top 5 news" is five headlines while "5 point action plan for BRICS"
+ * and "iPhone 17" are left alone.
+ */
+const WORD_NUM = {
+  one: 1, two: 2, three: 3, four: 4, five: 5,
+  six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  a: 1, an: 1, couple: 2, few: 3,
+};
+const NEWS_WORD = "(?:news|headlines?|stories|story|updates?|articles?)";
+
+function countFromText(text) {
+  const t = String(text || "").toLowerCase();
+  if (!t) return null;
+  const num = "(\\d{1,2}|" + Object.keys(WORD_NUM).join("|") + ")";
+  // "top 4 news" / "5 headlines" / "give me three stories"
+  const m =
+    new RegExp(`\\b(?:top|best|latest|first|main)?\\s*${num}\\s+(?:of\\s+)?${NEWS_WORD}\\b`).exec(t) ||
+    new RegExp(`\\b${NEWS_WORD}\\s*[:-]?\\s*${num}\\b`).exec(t);
+  if (!m) return null;
+  const raw = m[1];
+  const n = /^\d+$/.test(raw) ? Number(raw) : WORD_NUM[raw];
+  if (!Number.isFinite(n) || n < 1) return null;
+  return Math.min(n, 10);
+}
+
 async function headlines({ topic = "", count = 10, sort = "relevance" } = {}) {
   // "top news today" matched AGGREGATORS — "NDTV Live TV", "Top 10 Hindi
   // News Headlines" — rather than stories, because those pages are
@@ -189,4 +225,4 @@ async function headlines({ topic = "", count = 10, sort = "relevance" } = {}) {
   return { ...out, cached: false };
 }
 
-module.exports = { headlines, ageMinutes, sameStory, clean, NOT_A_STORY, mostlyLatin };
+module.exports = { headlines, ageMinutes, sameStory, clean, NOT_A_STORY, mostlyLatin, countFromText };

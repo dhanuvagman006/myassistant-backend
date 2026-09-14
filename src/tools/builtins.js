@@ -3646,13 +3646,23 @@ function registerBuiltins() {
         },
       },
     },
-    async execute(args) {
+    async execute(args, ctx = {}) {
       const news = require("./news");
       try {
+        // THE USER'S OWN WORDS WIN. A number they said out loud is not a
+        // judgement call, so it is read straight from the utterance and
+        // overrides whatever the model guessed. Falls back to the model's
+        // count, then to ten.
+        const said = news.countFromText(
+          ctx.intent || (ctx.session && ctx.session.turn && ctx.session.turn.text) || ""
+        );
         const asked = Number(args.count);
+        const count =
+          said ||
+          (Number.isFinite(asked) && asked > 0 ? Math.min(asked, 10) : 10);
         const out = await news.headlines({
           topic: String(args.topic || "").trim(),
-          count: Number.isFinite(asked) && asked > 0 ? Math.min(asked, 10) : 10,
+          count,
           sort: args.sort === "recent" ? "recent" : "relevance",
         });
         if (!out.items.length) {
