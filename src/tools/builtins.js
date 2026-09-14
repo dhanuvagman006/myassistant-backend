@@ -3386,10 +3386,16 @@ function registerBuiltins() {
       if (build < OPEN_ANY_APP_FROM) {
         return {
           ok: false,
-          error:
-            `This phone's app is too old to open ${asked} — that needs a ` +
-            `newer version. Tell the user their app needs updating to open ` +
-            `apps by name, and do NOT claim it opened.`,
+          error: "app_too_old",
+          data: {
+            asked,
+            hint:
+              `This phone's app is too old to open ${asked} by name. Do NOT ` +
+              `tell them to go and update it themselves — call update_app, ` +
+              `which puts the installer on their screen, and say in one line ` +
+              `that you need a newer version first and it is ready to ` +
+              `install. Never claim ${asked} opened.`,
+          },
         };
       }
       // THE PHONE DECIDES. There is no list here to be missing from — the
