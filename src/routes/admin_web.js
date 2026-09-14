@@ -404,6 +404,101 @@ router.get("/api/conversations", async (req, res) => {
   res.json({ conversations: rows, stats });
 });
 
+/* ------------------------------------------------------------------ */
+/* Recordings — the call itself, not just what was typed down           */
+/* ------------------------------------------------------------------ */
+
+router.get("/api/recordings", async (req, res) => {
+  const rec = require("../live/recorder");
+  const userId = parseInt(req.query.user_id, 10);
+  const [rows, usage] = await Promise.all([
+    rec.list({
+      userId: Number.isFinite(userId) ? userId : undefined,
+      limit: parseInt(req.query.limit, 10) || 50,
+      offset: parseInt(req.query.offset, 10) || 0,
+    }).catch(() => []),
+    rec.usage().catch(() => null),
+  ]);
+  res.json({ recordings: rows, usage });
+});
+
+/**
+ * Streams one recording, with byte ranges.
+ *
+ * Range is not optional here: without it an <audio> element can play
+ * from the start but cannot seek, and a reviewer listening for one
+ * moment thirty minutes in would have to sit through the whole call.
+ */
+router.get("/api/recordings/:id/audio", async (req, res) => {
+  const fs = require("fs");
+  const { pipeline } = require("stream");
+  const row = await require("../live/recorder").get(req.params.id).catch(() => null);
+  if (!row) return res.status(404).json({ error: "no such recording" });
+
+  // Async, because this process is relaying live call audio while it
+  // answers: a blocking stat here is a stutter in somebody's conversation.
+  const st = await fs.promises.stat(row.file).catch(() => null);
+  if (!st) return res.status(410).json({ error: "the audio file is gone" });
+  const size = st.size;
+
+  const stamp = new Date(Number(row.started_at)).toISOString()
+    .replace(/[:.]/g, "-").slice(0, 19);
+  res.setHeader("Content-Type", "audio/mp4");
+  res.setHeader("Accept-Ranges", "bytes");
+  res.setHeader("Cache-Control", "private, max-age=600");
+  res.setHeader("Content-Disposition",
+    `inline; filename="call-${row.user_id}-${stamp}.m4a"`);
+
+  // pipeline, not pipe: pipe attaches an error listener to the DESTINATION
+  // only, so a file that vanishes between the stat above and the open
+  // below throws an unhandled 'error' — which in Node 20 takes the whole
+  // process down. It also destroys the read stream when the browser
+  // abandons a seek, which <audio> does constantly.
+  const send = (opts) => pipeline(fs.createReadStream(row.file, opts), res, (err) => {
+    if (err && !res.headersSent) res.status(410).end();
+  });
+
+  // Three forms are legal and browsers send all of them: "bytes=0-",
+  // "bytes=100-200", and "bytes=-100" meaning the LAST hundred bytes.
+  // Reading that last one as 0-100 answers with the wrong audio under a
+  // 206 that claims otherwise.
+  const m = /^bytes=(?:(\d+)-(\d*)|-(\d+))$/.exec(String(req.headers.range || ""));
+  if (!m) {
+    res.setHeader("Content-Length", size);
+    return send({});
+  }
+  let start, end;
+  if (m[3] !== undefined) {
+    const n = parseInt(m[3], 10);
+    if (!n) {
+      res.setHeader("Content-Range", `bytes */${size}`);
+      return res.status(416).end();
+    }
+    start = Math.max(0, size - n);
+    end = size - 1;
+  } else {
+    start = parseInt(m[1], 10);
+    end = m[2] ? parseInt(m[2], 10) : size - 1;
+  }
+  if (end >= size) end = size - 1;
+  if (!Number.isFinite(start) || start > end || start >= size) {
+    res.setHeader("Content-Range", `bytes */${size}`);
+    return res.status(416).end();
+  }
+  res.status(206);
+  res.setHeader("Content-Range", `bytes ${start}-${end}/${size}`);
+  res.setHeader("Content-Length", end - start + 1);
+  send({ start, end });
+});
+
+/** Deletes one recording once it has been listened to — bytes included. */
+router.delete("/api/recordings/:id", async (req, res) => {
+  const gone = await require("../live/recorder").destroy(req.params.id)
+    .catch(() => false);
+  if (!gone) return res.status(404).json({ error: "no such recording" });
+  res.json({ ok: true });
+});
+
 /**
  * CSV of the Conversations view — same rows, same filters, as a
  * spreadsheet: every question, the answer, how long it took, which tools

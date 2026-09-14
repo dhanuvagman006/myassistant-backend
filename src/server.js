@@ -101,6 +101,7 @@ app.use(
       ["^/reminders/\\d+", "/reminders/#id"],
       ["^/agent-call/plivo/[^/]+/", "/agent-call/plivo/#id/"],
       ["^/agent-call/[a-f0-9]{16,}", "/agent-call/#id"],
+      ["^/admin-panel/api/recordings/\\d+.*", "/admin-panel/api/recordings/#id"],
     ],
   })
 );
@@ -482,6 +483,20 @@ require("./db")
       `  live mode: model=${process.env.GEMINI_LIVE_MODEL || "gemini-2.5-flash-native-audio-preview"} at /live/ws (experimental)`
     );
 
+    // Call recordings are pruned after every session, but a server that
+    // sat idle over a weekend still holds expired ones. Sweep at boot and
+    // once a day, so nothing depends on someone making a call.
+    {
+      const rec = require("./live/recorder");
+      const sweep = () => rec.prune().catch((e) =>
+        console.warn("recordings: prune failed —", e.message));
+      setTimeout(sweep, 30_000).unref?.();
+      setInterval(sweep, 24 * 3600_000).unref?.();
+      console.log(
+        `  recordings: ${rec.ENABLED ? `on, kept ${rec.KEEP_DAYS} days` : "off (LIVE_RECORD=0)"}`
+      );
+    }
+
     const avatarSessions = require("./avatar/session");
     console.log(
       `  avatar: ${
@@ -502,6 +517,15 @@ require("./db")
         if (shuttingDown) return;
         shuttingDown = true;
         try { await avatarSessions.stopAll(); } catch (_) {}
+        // server.close() does not close WebSockets, so a live call's
+        // recording would otherwise be abandoned as raw PCM on every
+        // deploy. Bounded, because the exit timer below is not.
+        try {
+          await Promise.race([
+            require("./live/recorder").stopAll(),
+            new Promise((r) => setTimeout(r, 4000).unref?.()),
+          ]);
+        } catch (_) {}
         server.close(() => process.exit(0));
         // Don't let a hung socket hold the paid room open indefinitely.
         setTimeout(() => process.exit(0), 5000).unref();

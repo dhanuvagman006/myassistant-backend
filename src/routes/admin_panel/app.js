@@ -213,6 +213,7 @@ const NAV = [
   ["#/users", "Users"],
   ["#/analytics", "Analytics"],
   ["#/conversations", "Conversations"],
+  ["#/recordings", "Recordings"],
   ["#/documents", "Documents"],
   ["#/activity", "Activity"],
   ["#/outcomes", "Task outcomes"],
@@ -264,6 +265,7 @@ async function render() {
     if (hash.startsWith("#/users")) return await viewUsers();
     if (hash.startsWith("#/analytics")) return await viewAnalytics();
     if (hash.startsWith("#/conversations")) return await viewConversations();
+    if (hash.startsWith("#/recordings")) return await viewRecordings();
     if (hash.startsWith("#/documents")) return await viewDocuments();
     if (hash.startsWith("#/activity")) return await viewActivity();
     if (hash.startsWith("#/outcomes")) return await viewOutcomes();
@@ -413,7 +415,9 @@ async function viewUsers() {
 function conversationCard(rows, userId) {
   if (!rows || !rows.length) {
     return h("div", { class: "card" }, h("h3", {}, "Recent conversation"),
-      h("div", { class: "chart-empty" }, "No conversations recorded yet."));
+      h("div", { class: "chart-empty" }, "No conversations recorded yet."),
+      userId ? h("div", { style: "padding:0 12px 12px;" },
+        h("a", { class: "btn", href: "#/recordings/" + userId }, "Listen")) : null);
   }
   return h("div", { class: "card table-card" },
     h("div", {
@@ -421,6 +425,8 @@ function conversationCard(rows, userId) {
     },
       h("h3", { style: "margin:0;" }, "Recent conversation"),
       h("div", { style: "flex:1;" }),
+      // The transcript is here; the audio behind it is one click away.
+      userId ? h("a", { class: "btn", href: "#/recordings/" + userId }, "Listen") : null,
       userId ? h("button", {
         class: "btn",
         onclick: () => window.open(
@@ -1293,6 +1299,113 @@ async function viewDebug(probe) {
           ...d.fulfillment.map((f) => h("div", { class: "stat-mini" },
             h("span", { class: "k" }, f.status), h("span", { class: "v" }, f.count))),
         ] : null))));
+}
+
+/* ------------------------------------------------------------------ */
+/* Recordings — listen to the call, not just read it                    */
+/* ------------------------------------------------------------------ */
+
+const fmtLen = (ms) => {
+  const s = Math.round((Number(ms) || 0) / 1000);
+  const m = Math.floor(s / 60);
+  return m ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
+};
+
+async function viewRecordings() {
+  shell("#/recordings", loading());
+  // #/recordings/28 narrows to one user; the plain hash shows everyone.
+  const m = (location.hash || "").match(/^#\/recordings\/(\d+)/);
+  const userId = m ? parseInt(m[1], 10) : 0;
+  let offset = 0;
+  const body = h("tbody", {});
+  const moreBtn = h("button", { class: "btn", style: "margin:12px;" }, "Load more");
+  const summary = h("div", { class: "page-sub" }, "");
+
+  function row(r) {
+    // preload="none" matters: without it, opening this page would pull
+    // down every recording on it at once.
+    const player = h("audio", {
+      controls: "controls", preload: "none", style: "width:260px;height:34px;",
+      src: `/admin-panel/api/recordings/${r.id}/audio`,
+    });
+    const tr = h("tr", {},
+      h("td", { class: "sub", style: "white-space:nowrap;" },
+        h("div", {}, fmtDate(r.started_at)),
+        h("div", { class: "faint" }, timeAgo(r.started_at))),
+      h("td", {}, r.user_id
+        ? h("a", { href: "#/user/" + r.user_id }, r.user_name || "#" + r.user_id)
+        : h("span", { class: "faint" }, "—")),
+      h("td", { style: "white-space:nowrap;" }, fmtLen(r.duration_ms)),
+      h("td", { class: "sub" }, String(r.turns || 0)),
+      h("td", { class: "sub", style: "white-space:nowrap;" }, fmtBytes(r.bytes)),
+      h("td", {}, player),
+      h("td", { style: "white-space:nowrap;" },
+        h("a", { class: "btn", href: `/admin-panel/api/recordings/${r.id}/audio`,
+                 download: `call-${r.id}.m4a` }, "Download"),
+        " ",
+        h("button", {
+          class: "btn danger",
+          onclick: async (e) => {
+            if (!confirm("Delete this recording? The audio file is removed from the server.")) return;
+            e.target.disabled = true;
+            try {
+              // Stop playback first: a browser holding the file open
+              // keeps requesting ranges from something already deleted.
+              player.pause();
+              player.removeAttribute("src");
+              player.load();
+              await api(`/recordings/${r.id}`, { method: "DELETE" });
+              tr.remove();
+              toast("Recording deleted.");
+            } catch (err) {
+              e.target.disabled = false;
+              toast(err.message, true);
+            }
+          },
+        }, "Delete")));
+    return tr;
+  }
+
+  async function load(append) {
+    const d = await api(`/recordings?user_id=${userId || ""}&offset=${offset}&limit=50`);
+    if (!append) body.replaceChildren();
+    const rows = d.recordings.map(row);
+    if (rows.length) body.append(...rows);
+    else if (!append) {
+      body.append(h("tr", {}, h("td", { colspan: 7, class: "chart-empty" },
+        "No recordings yet. They appear here once a voice session ends.")));
+    }
+    if (d.usage) {
+      summary.replaceChildren(document.createTextNode(
+        `${d.usage.count} call${d.usage.count === 1 ? "" : "s"} · ` +
+        `${fmtLen(d.usage.ms)} of audio · ${fmtBytes(d.usage.bytes)} on disk · ` +
+        `kept ${d.usage.keepDays} days` +
+        (d.usage.failed ? ` · ${d.usage.failed} failed` : "") +
+        (d.usage.enabled ? "" : " · RECORDING IS OFF")));
+    }
+    moreBtn.disabled = d.recordings.length < 50;
+  }
+  moreBtn.addEventListener("click", () => {
+    offset += 50;
+    load(true).catch((e) => toast(e.message, true));
+  });
+
+  shell("#/recordings", h("div", {},
+    h("div", { class: "page-head" },
+      h("div", {},
+        h("div", { class: "page-title" },
+          userId ? "Recordings for #" + userId : "Recordings"),
+        summary),
+      userId ? h("a", { class: "btn", href: "#/recordings" }, "All users") : null),
+    h("div", { class: "card table-card" },
+      h("table", {},
+        h("thead", {}, h("tr", {},
+          h("th", {}, "When"), h("th", {}, "User"), h("th", {}, "Length"),
+          h("th", {}, "Turns"), h("th", {}, "Size"), h("th", {}, "Listen"),
+          h("th", {}, ""))),
+        body),
+      moreBtn)));
+  await load(false);
 }
 
 /* ------------------------------------------------------------------ */

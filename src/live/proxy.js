@@ -645,6 +645,11 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   const langModule = require("../agents/language");
   const claimCheck = require("../agents/claimCheck");
   const liveSessionId = "live:" + require("crypto").randomUUID();
+  // BOTH HALVES OF THE CALL, ON DISK. A transcript records what the
+  // recogniser thought it heard; every hard bug so far has been diagnosed
+  // from one that looked perfectly fine. Null when recording is switched
+  // off or the session is anonymous, and it can never throw.
+  const recording = require("./recorder").begin(Number(user?.sub), liveSessionId);
   const liveState = Number(user?.sub) > 0
     ? sessionState.begin(Number(user.sub), liveSessionId, {
         surface: "live",
@@ -659,6 +664,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     if (!t) return;
     turnBuf = "";
     userTurns++;
+    if (recording) recording.turn();
     // A new request is a fresh attempt, not a continuation of the last
     // thing the model got wrong — so the correction guard starts over.
     correctionStreak = 0;
@@ -927,6 +933,10 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   } catch (e) {
     appWs.send(JSON.stringify({ type: "error", message: "connect failed" }));
     appWs.close();
+    // This return happens before closeBoth exists and before any close
+    // listener is attached, so the recording started above would never be
+    // finished by anything else.
+    if (recording) recording.stop();
     return;
   }
 
@@ -940,6 +950,10 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     if (why) console.log(`live: session closed (${why})`);
     // Ends BEY billing. Fired on every close path, including errors.
     if (room) require("../avatar/session").detach(room);
+    // Pads both tracks to the same length, merges them and drops the raw
+    // PCM. Fired here so every close path finishes the file, including
+    // the error ones — an unmerged recording is an unplayable one.
+    if (recording) recording.stop();
   };
 
   upstream.on("open", async () => {
@@ -1366,12 +1380,20 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       // sentence the user just talked over.
       if (avatar && !avatar.closed) avatar.interrupt();
       appWs.send(JSON.stringify({ type: "interrupted" }));
+      // The recording drops it too. Gemini streams a reply faster than it
+      // is spoken, so at the moment of a barge-in the file already holds
+      // seconds of audio nobody will ever hear — and leaving it there
+      // pushes every later sentence out of step for the rest of the call.
+      if (recording) recording.interrupt();
     }
     const parts = sc.modelTurn?.parts || [];
     for (const p of parts) {
       const b64 = p.inlineData?.data;
       if (b64) {
         const pcm = Buffer.from(b64, "base64");
+        // Recorded here, above the avatar/handset fork, so the reply is
+        // captured either way — an avatar session is still a call.
+        if (recording) recording.agent(pcm);
         // Exactly one destination. Sending to both would play the voice
         // twice — once from the phone's own speaker path and once from
         // the avatar's track, a beat apart.
@@ -1447,6 +1469,9 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
 
   appWs.on("message", (data, isBinary) => {
     if (isBinary) {
+      // Recorded before the readiness check: the user spoke these words
+      // whether or not Google was listening yet.
+      if (recording) recording.user(data);
       if (!upstreamReady) {
         // ~2s of pre-ready audio max, so a stalled setup can't balloon.
         if (pending.length < 64) pending.push(data);
