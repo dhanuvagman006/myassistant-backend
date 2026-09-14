@@ -14,7 +14,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { execFile, execFileSync } = require("child_process");
+const { execFile, execFileSync, spawnSync } = require("child_process");
 
 const USER_RATE = 16000;
 const AGENT_RATE = 24000;
@@ -111,17 +111,20 @@ function ffprobe(file, field) {
   // The whole point of two channels: the user's voice must be on the left
   // in the first half and the assistant's on the right in the second, not
   // both smeared across each other.
-  const vols = (side, ch) => {
-    const txt = String(execFileSync("ffmpeg", [
-      "-hide_banner", "-v", "error", "-i", out,
-      "-af", `pan=mono|c0=c${ch},atrim=${side},volumedetect`,
+  // volumedetect reports on STDERR at info level — quieten ffmpeg any
+  // further and there is nothing to read, which is why this has to be
+  // spawnSync rather than execFileSync (that returns stdout only).
+  const vols = (from, to, ch) => {
+    const r = spawnSync("ffmpeg", [
+      "-hide_banner", "-v", "info", "-i", out,
+      "-af", `atrim=${from}:${to},pan=mono|c0=c${ch},volumedetect`,
       "-f", "null", "-",
-    ], { stdio: ["ignore", "ignore", "pipe"] }));
-    const m = /mean_volume:\s*(-?[\d.]+) dB/.exec(txt);
+    ], { encoding: "utf8" });
+    const m = /mean_volume:\s*(-?[\d.]+) dB/.exec(String(r.stderr || ""));
     return m ? parseFloat(m[1]) : null;
   };
-  const leftEarly = vols("0:2", 0), leftLate = vols("4:6", 0);
-  const rightEarly = vols("0:2", 1), rightLate = vols("4:6", 1);
+  const leftEarly = vols(0, 2, 0), leftLate = vols(4, 6, 0);
+  const rightEarly = vols(0, 2, 1), rightLate = vols(4, 6, 1);
   check(leftEarly !== null && leftEarly > (leftLate ?? 0) + 20,
     "the user is on the left, only while speaking",
     `0-2s ${leftEarly} dB vs 4-6s ${leftLate} dB`);
