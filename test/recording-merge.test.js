@@ -85,8 +85,9 @@ function ffprobe(file, field) {
       "-hide_banner", "-loglevel", "error", "-y",
       "-f", "s16le", "-ar", String(USER_RATE), "-ac", "1", "-i", userPcm,
       "-f", "s16le", "-ar", String(AGENT_RATE), "-ac", "1", "-i", agentPcm,
-      "-filter_complex", `[0:a]aresample=${AGENT_RATE}[u];[u][1:a]amerge=inputs=2[a]`,
-      "-map", "[a]", "-ac", "2", "-c:a", "aac", "-b:a", "32k",
+      "-filter_complex",
+      `[0:a]aresample=${AGENT_RATE}[u];[u][1:a]join=inputs=2:channel_layout=stereo[a]`,
+      "-map", "[a]", "-ac", "2", "-c:a", "aac", "-b:a", "48k",
       "-movflags", "+faststart", out,
     ], { timeout: 120_000 }, (err, _o, stderr) =>
       err ? reject(new Error(String(stderr || err.message))) : resolve());

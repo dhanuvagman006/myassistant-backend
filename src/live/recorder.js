@@ -390,10 +390,16 @@ function merge(userPcm, agentPcm, out) {
         "-f", "s16le", "-ar", String(USER_RATE), "-ac", "1", "-i", userPcm,
         "-f", "s16le", "-ar", String(AGENT_RATE), "-ac", "1", "-i", agentPcm,
         // The user on the left, the assistant on the right. Both tracks
-        // were fixed to the same DURATION before this ran, so amerge has
-        // nothing to guess about once the 16 kHz side is resampled up.
+        // were fixed to the same DURATION before this ran, so the mapping
+        // has nothing to guess about once the 16 kHz side is resampled up.
+        //
+        // join, not amerge. Raw PCM carries no channel layout, so amerge
+        // is handed two mono streams it cannot tell apart and gives up:
+        // "the following filters could not choose their formats". join
+        // takes the output layout as an argument, which is the whole
+        // question being asked here.
         "-filter_complex",
-        `[0:a]aresample=${AGENT_RATE}[u];[u][1:a]amerge=inputs=2[a]`,
+        `[0:a]aresample=${AGENT_RATE}[u];[u][1:a]join=inputs=2:channel_layout=stereo[a]`,
         "-map", "[a]", "-ac", "2",
         "-c:a", "aac", "-b:a", BITRATE,
         "-movflags", "+faststart",
