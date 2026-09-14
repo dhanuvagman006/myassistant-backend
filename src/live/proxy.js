@@ -524,7 +524,21 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           personalContext +=
             "\nThis is a NEW conversation. Anything above is history that " +
             "was already acted on — start from the user's next words, and " +
-            "never re-execute an earlier request.";
+            "never re-execute an earlier request." +
+            // A PAST FAILURE IS NOT A PREDICTION.
+            //
+            // The history above contains whatever went wrong before, and
+            // the model read it as a standing fact about the device: after
+            // one timer failed, the next request was refused outright in a
+            // single second with no tool call at all — "that feature isn't
+            // working right now" — on a build where the tool was offered
+            // and the bug had just been fixed. It had taught itself the
+            // capability was gone.
+            " If something in that history FAILED, that says nothing about " +
+            "whether it works now — the app updates, permissions change, " +
+            "and failures are usually fixed. Never refuse a request because " +
+            "a past attempt failed, and never say a feature is unavailable " +
+            "without calling its tool THIS turn and seeing it fail.";
         }
       } catch (_) {}
       
