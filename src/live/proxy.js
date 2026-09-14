@@ -83,34 +83,56 @@ function nowLine(tzOffsetMin = 330) {
   );
 }
 
-function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], personalContext = "", tzOffsetMin = 330, preferredLanguage = "") {
-  // The user's chosen language (asked at registration) pins EVERY reply,
-  // greeting included; without one, Indian English with speak-what-they-
-  // speak switching.
-  const languageRule = preferredLanguage
-    ? `The user's preferred language is ${preferredLanguage}. Speak ` +
-      `${preferredLanguage} in EVERY reply — the greeting included — even ` +
-      `if they mix in English words, until they EXPLICITLY ask you to ` +
-      `switch languages. If they do ask, switch immediately and call ` +
-      `update_my_profile to save the new preferred language. `
-    : "Speak ENGLISH by default (Indian English). Only switch language " +
-      "if the user clearly and deliberately speaks another one to you, " +
-      "and then stay in it — never drift between languages " +
-      "mid-conversation. ";
-  // TRANSCRIPTION IS NOT TRUTH. Indian-language speech (Tulu, Kannada,
-  // Konkani…) is regularly mis-transcribed as Japanese, French or German
-  // — and the assistant then ANSWERED in that language, which reads as
-  // broken. Never follow the transcript's language; follow the user's.
-  const garbledRule =
-    "IMPORTANT: your speech-to-text sometimes mis-detects the language and " +
-    "hands you nonsense that looks like Japanese, French, Korean, German or " +
-    "Spanish. NEVER reply in a language the user has not actually spoken to " +
-    "you, and never act on a garbled line. If a line looks like that kind of " +
-    "mis-transcription, or makes no sense, simply ask them to repeat — in " +
-    (preferredLanguage || "the language they have been speaking") + ". " +
-    "Indian languages like Tulu, Kannada, Konkani, Hindi and Marathi are the " +
-    "likely real input; treat European/East-Asian text as a transcription " +
-    "error unless the user clearly chose that language. ";
+function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], personalContext = "", tzOffsetMin = 330, preferredLanguage = "", languageAsk = "") {
+  // SPEAK THE LANGUAGE THEY SPOKE.
+  //
+  // This was a pin: whatever was chosen once on the onboarding screen was
+  // spoken in EVERY reply forever. Reported 2026-09-14 — a user asked in
+  // plain English to be spoken to in English, and was greeted in Hindi
+  // again the next session. He speaks both, by turn, like most of this
+  // product's users; a single stored value was never going to describe
+  // that.
+  //
+  // ONE RULE, NOT TWO. The pin and the mis-transcription guard used to be
+  // separate paragraphs, and once the pin becomes "follow the user" the
+  // two contradict each other in the same prompt: follow what you heard,
+  // never follow what you heard. Since this is a native-audio model the
+  // language is settled by prompt text alone, so the prompt may not hold
+  // both sides of an argument. It is one rule with an explicit list.
+  const language = require("../agents/language");
+  const opening = preferredLanguage || "English (Indian English)";
+  const languageRule =
+    "LANGUAGE — reply in the language the user SPOKE to you, and switch " +
+    "the moment they switch, without remarking on it. The languages you " +
+    "speak are: " + language.SPOKEN_HERE + ". If they mix English words " +
+    "into another language, mix them back the same way rather than " +
+    "correcting them. Before they have said anything, and whenever you " +
+    `genuinely cannot tell what they spoke, use ${opening}. ` +
+    // TRANSCRIPTION IS NOT TRUTH. Indian-language speech (Tulu, Kannada,
+    // Konkani…) is regularly mis-recognised as Japanese, French or German
+    // — and the assistant then ANSWERED in that language, which reads as
+    // broken. The list above is the whole permitted range, so a wrong
+    // guess has nowhere to go.
+    "Your speech recognition mis-hears Indian speech as Japanese, Korean, " +
+    "French, German or Spanish more often than you would expect. That is " +
+    "a recognition error and never a language switch: never reply in a " +
+    "language outside the list above, and never act on a line that reads " +
+    "like that kind of nonsense — ask them to repeat, in the language " +
+    "they have been speaking. " +
+    // TEXT THE APP HANDS YOU IS NOT THE USER SPEAKING.
+    //
+    // The greeting, the acknowledgement after a declined call, the line
+    // that follows a camera capture — eighteen of these — are fixed
+    // English strings the app injects as if they were user turns. Under
+    // the old pin they were harmless. Under "follow the user" each one is
+    // a user who just switched to English, which would flip a Hindi
+    // conversation to English the first time somebody declined a call.
+    "Text the app hands you — a greeting to say, a line beginning " +
+    "[SYSTEM], an instruction to acknowledge something — is written in " +
+    "English for your convenience. It is NOT the user speaking and never " +
+    "tells you which language to use. When you are handed a greeting, say " +
+    `it in ${opening}. ` +
+    languageAsk;
   // YOU DO THE WORK, NOT THEM. Reported 2026-09-13: asked to open
   // BigBasket it offered "or you can just open it yourself on your phone".
   // Handing the task back is the one thing an assistant must not do.
@@ -176,7 +198,6 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     nowLine(tzOffsetMin) + " " +
     "You are SPEAKING with the user in real time. " +
     languageRule +
-    garbledRule +
     "Keep replies short and " +
     "conversational, one thought at a time, like a friend on a phone call. " +
     "If you did not clearly hear something, ask them to repeat it rather " +
@@ -479,6 +500,9 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   let userName = null;
   let personalContext = "";
   let preferredLanguage = "";
+  // A rider added to the system prompt for the one session in which the
+  // assistant is allowed to raise the language question. Empty otherwise.
+  let languageAsk = "";
   let liveVoice = null; // per-user override of the LIVE_VOICE() default
   // Loaded CONCURRENTLY with the Google WS handshake below. This used to
   // run to completion first, which put three DB round trips (profile,
@@ -496,6 +520,41 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       if (p?.user?.preferred_language) {
         preferredLanguage = String(p.user.preferred_language).slice(0, 40);
       }
+
+      // ── ASK HIM, DON'T GUESS ──────────────────────────────────────
+      // When what a user actually speaks has disagreed with what we have
+      // stored, the honest move is to ask which they want and save the
+      // answer — once, ever. Decided here, at session start, rather than
+      // mid-conversation: the only in-band channel forces a spoken turn,
+      // and a user who asked for a cab would get a language survey.
+      try {
+        const lang = require("../agents/language");
+        const rows = await require("../memory/recent").turns(uid, {
+          role: "user", limit: 20,
+        });
+        const verdict = lang.askWhich({
+          preferred: p?.user?.preferred_language || "",
+          askedAt: Number(p?.user?.language_asked_at || 0),
+          userTurns: rows.map((r) => String(r.text || "")),
+        });
+        if (verdict.ask) {
+          languageAsk =
+            "ONE THING TO ASK, ONCE. After you greet them, ask in a single " +
+            "short sentence which language they would like you to speak " +
+            "with them" +
+            (verdict.language
+              ? ` — they have been speaking ${verdict.language} to you, ` +
+                `so offer that` : "") +
+            ". Whatever they answer, call update_my_profile with " +
+            "preferred_language set to it, then carry on in that language. " +
+            "Ask this ONCE and never raise it again. ";
+          // Stamped now, not when they answer: a question asked is a
+          // question asked, and a user who ignores it must not be asked
+          // again next time they open the app.
+          require("../users/context").markLanguageAsked(uid, Date.now())
+            .catch(() => {});
+        }
+      } catch (_) { /* never block a session on this */ }
       // Voice: the user's explicit Settings choice wins; otherwise the
       // voice matched to their chosen avatar face (Mark must not speak
       // with Kore's female voice); otherwise the deployment default.
@@ -583,6 +642,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   // conversation. (src/agents/sessionState.js)
   const sessionState = require("../agents/sessionState");
   const inputQuality = require("../agents/inputQuality");
+  const langModule = require("../agents/language");
   const claimCheck = require("../agents/claimCheck");
   const liveSessionId = "live:" + require("crypto").randomUUID();
   const liveState = Number(user?.sub) > 0
@@ -606,11 +666,57 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       require("../commitments/service").extractAsync(Number(user.sub), t, { source: "voice" });
       require("../agents/memory").extractAndStore(Number(user.sub), t);
       currentTurnId = require("crypto").randomUUID();
+      // ── A LANGUAGE THEY ASKED FOR OUT LOUD ──────────────────────
+      // The prompt has told the model for months to switch and call
+      // update_my_profile when asked. Measured 2026-09-14: asked in
+      // plain English for English, it did neither, and the greeting the
+      // next morning was still Hindi. The tool is reachable; the model
+      // simply did not reach for it. So the server decides this one.
+      //
+      // Sent as a reconfiguring turn with no turnComplete, like
+      // interpreter_mode: the user asked one thing and must hear one
+      // answer, not an acknowledgement and then a second utterance.
+      const wants = langModule.requestedLanguage(t);
+      if (wants.language && wants.permanent &&
+          langModule.canonical(preferredLanguage) !== wants.language) {
+        const was = preferredLanguage;
+        preferredLanguage = wants.language;
+        require("../users/context")
+          .setPreferredLanguage(Number(user.sub), wants.language)
+          .catch(() => {});
+        try {
+          if (upstream && upstreamReady) {
+            upstream.send(JSON.stringify({
+              clientContent: {
+                turns: [{ role: "user", parts: [{ text:
+                  `[SYSTEM] They have just asked you to speak ` +
+                  `${wants.language}. Speak ${wants.language} from now ` +
+                  `on — including the greeting the next time they open ` +
+                  `the app; it is saved. Acknowledge in at most a few ` +
+                  `words and then answer what they actually asked.` }] }],
+                turnComplete: false,
+              },
+            }));
+          }
+        } catch (_) {}
+        require("../actions/store").record(Number(user.sub), {
+          sessionId: liveSessionId, turnId: currentTurnId,
+          tool: "set_language", args: { from: was, to: wants.language },
+          ok: true, world: false, decision: "saved", intent: t,
+          surface: "live", result: `preferred language ${wants.language}`,
+        });
+      }
+
       // Is this safe to act on at all? A fragment ("con") or a bare number
       // must not be completed from the previous request — the gate lives in
       // the tool registry, this is where the verdict is made.
       turnQuality = inputQuality.assess(t, {
         expectsNumber: /\b(number|digits|phone)\b/i.test(lastModelLine),
+        // STILL THE STORED VALUE, DELIBERATELY. This list answers a
+        // different question from "which language to reply in": it is
+        // the set this user may legitimately be HEARD in, and it is what
+        // lets a French-looking transcript be called a mis-recognition.
+        // Feeding it a detected language would close that escape hatch.
         languages: preferredLanguage ? [preferredLanguage] : [],
       });
       turnQuality.heard = t.slice(0, 120);
@@ -932,7 +1038,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
             parts: [{
               text: liveSystemPrompt(
                 assistantName, unreadMessages, personalContext,
-                deviceCtx.tz, preferredLanguage
+                deviceCtx.tz, preferredLanguage, languageAsk
               ) +
               // The honest limits of THIS phone, so a denied permission is
               // explained rather than attempted and apologised for.

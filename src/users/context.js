@@ -27,6 +27,13 @@ async function migrate(exec) {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS location          TEXT NOT NULL DEFAULT '';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS preferred_language TEXT NOT NULL DEFAULT '';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS timezone          TEXT NOT NULL DEFAULT '';
+    -- ASKED ONCE MEANS ONCE, NOT ONCE PER SOCKET.
+    -- When the assistant last asked the user which language to speak. A
+    -- live "session" is one WebSocket and the app rebuilds it on every
+    -- return from another app, so anything scoped to a session would ask
+    -- the same question four times in six minutes. This is per user,
+    -- forever.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS language_asked_at BIGINT NOT NULL DEFAULT 0;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token         TEXT NOT NULL DEFAULT '';
     -- When fcm_token was last written. Newly-minted FCM tokens take a few
     -- minutes to propagate to the send backend, during which sends return
@@ -89,7 +96,8 @@ async function getProfile(userId) {
   if (!uidOk(userId)) throw new Error("authenticated userId required");
   const u = await one(
     `SELECT id, name, gender, birthday, profession, organisation, location,
-            preferred_language, timezone, fcm_token, phone_number FROM users WHERE id=$1`,
+            preferred_language, language_asked_at, timezone, fcm_token,
+            phone_number FROM users WHERE id=$1`,
     [userId]
   );
   if (!u) return null;
@@ -367,11 +375,37 @@ async function extractProfile(userId, text) {
   return { applied, profile };
 }
 
+/**
+ * Saves the language the user asked for, in so many words.
+ *
+ * Separate from updateProfile because that one skips empty strings — a
+ * deliberate rule that stops a half-filled onboarding form from blanking
+ * real data, and the reason a wrong language preference was, until now,
+ * impossible to clear once written. Here "" is a legitimate value: it
+ * means "no stated preference, follow what they speak".
+ */
+async function setPreferredLanguage(userId, language) {
+  if (!uidOk(userId)) throw new Error("authenticated userId required");
+  const v = String(language || "").trim().slice(0, 40);
+  await run(`UPDATE users SET preferred_language = $2 WHERE id = $1`, [userId, v]);
+  return v;
+}
+
+/** Stamps that the assistant has raised the language question with this
+ *  user, so it never raises it again. */
+async function markLanguageAsked(userId, whenMs) {
+  if (!uidOk(userId)) throw new Error("authenticated userId required");
+  await run(`UPDATE users SET language_asked_at = $2 WHERE id = $1`,
+    [userId, Number(whenMs) || Date.now()]);
+}
+
 module.exports = {
   migrate,
   getProfile,
   getAssistantProfile,
   updateProfile,
+  setPreferredLanguage,
+  markLanguageAsked,
   setAssistantProfile,
   addInstruction,
   listInstructions,

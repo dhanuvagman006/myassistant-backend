@@ -28,6 +28,13 @@ const ASK = [
   ["English", "English", true],
   ["हिन्दी", "Hindi", true],
   // one-off: switch this reply, do not rewrite tomorrow's greeting
+  // answers to the one question the assistant is allowed to ask
+  ["English is fine", "English", true],
+  ["I'd prefer Hindi", "Hindi", true],
+  ["I would like you to speak Kannada", "Kannada", true],
+  ["let's do English", "English", true],
+  ["Tamil is better for me", "Tamil", true],
+  ["Hindi please", "Hindi", true],
   ["say it in Hindi", "Hindi", false],
   ["write that in Kannada", "Kannada", false],
   // not a request about the conversation at all
@@ -39,6 +46,8 @@ const ASK = [
   ["my daughter is learning Tamil", "", false],
   ["I speak Hindi and English at home", "", false],
   ["book a Kannada movie ticket", "", false],
+  ["play Hindi songs", "", false],
+  ["I want a Tamil movie tonight", "", false],
   ["set a timer for ten minutes", "", false],
   ["what is the capital of India", "", false],
   // a complaint names the language it is complaining about
@@ -97,6 +106,32 @@ for (const [t, lang, ev] of SPOKEN) {
   const ok = r.language === lang && r.evidence === ev;
   if (!ok) fail++;
   console.log(`${ok ? "ok  " : "FAIL"}  ${JSON.stringify(t).padEnd(40)} -> ${JSON.stringify(r)}  expected ${lang || "(unsure)"}${ev ? "/" + ev : ""}`);
+}
+console.log("\n\u2500\u2500 askWhich \u2500\u2500");
+const hi = ["मुझे कल का मौसम बताओ", "आज की खबरें दिखाओ", "दस मिनट का टाइमर लगाओ"];
+const ta = ["இன்றைய வானிலை என்ன", "எனக்கு ஒரு நினைவூட்டல் வை", "அந்த செய்தியை காட்டு"];
+const en = ["what is the weather like", "set a timer for ten minutes", "show me the news"];
+const ASK_CASES = [
+  ["stored English, speaks Devanagari -> ask, but name nothing (Hindi/Marathi/Konkani share it)",
+   { preferred: "English", userTurns: hi }, true, ""],
+  ["stored English, speaks Tamil -> script is decisive, so name it",
+   { preferred: "English", userTurns: ta }, true, "Tamil"],
+  ["stored Marathi, speaks Devanagari -> same family, nothing to resolve",
+   { preferred: "Marathi", userTurns: hi }, false, ""],
+  ["stored Hindi, speaks Hindi -> they agree",
+   { preferred: "Hindi", userTurns: hi }, false, ""],
+  ["already asked once -> never again",
+   { preferred: "English", askedAt: 1, userTurns: hi }, false, ""],
+  ["only Latin evidence -> a run of bad transcripts is not intent",
+   { preferred: "Hindi", userTurns: en }, false, ""],
+  ["one turn -> below the evidence bar",
+   { preferred: "English", userTurns: [hi[0]] }, false, ""],
+];
+for (const [name, arg, ask, lang] of ASK_CASES) {
+  const r = L.askWhich(arg);
+  const ok = r.ask === ask && r.language === lang;
+  if (!ok) fail++;
+  console.log(`${ok ? "ok  " : "FAIL"}  ${JSON.stringify(r).padEnd(32)} ${name}`);
 }
 console.log("\n\u2500\u2500 scriptAmbiguous \u2500\u2500");
 for (const [v, exp] of [["Hindi", true], ["Marathi", true], ["Tulu", true], ["Kannada", true], ["Tamil", false], ["English", false], ["Telugu", false]]) {

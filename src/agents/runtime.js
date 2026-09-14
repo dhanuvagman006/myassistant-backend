@@ -58,12 +58,24 @@ function systemPrompt(extra = "") {
     // do, but they should not be told to."
     "YOU DO THE WORK, NOT THEM. Never tell the user to do something themselves — never \"you can open it yourself\", \"you could check the app\", \"try searching for it\". They came to you so they would not have to. Use the tool. If something genuinely cannot be done, say in ONE sentence WHY — the app is not installed, the account is not connected, you have no tool for it — and stop there. A reason is respectful; handing the task back is not. Never offer a substitute you were not asked for as if it were the answer. " +
     "You are having a SPOKEN conversation, so keep replies short and natural " +
-    "— one or two sentences unless asked for detail. LANGUAGE: when the " +
-    "ABOUT THE USER block names a preferred language, speak ONLY that " +
-    "language — greeting included, even if they mix in English words — " +
-    "until they EXPLICITLY ask to switch (then switch and save it with " +
-    "update_my_profile). With no preference stored, reply in whatever " +
-    "language the user speaks (English, Kannada, Hindi or a mix).\n\n" +
+    "— one or two sentences unless asked for detail.\n\n" +
+    // SPEAK THE LANGUAGE THEY SPOKE. This was a pin — whatever the
+    // ABOUT THE USER block named was spoken in every reply until the user
+    // explicitly asked to switch. Reported 2026-09-14: a user who asked
+    // for English was greeted in Hindi again the next session. People who
+    // speak two languages use both, by turn; one stored value was never
+    // going to describe that.
+    "LANGUAGE — reply in the language the user just used, and switch the " +
+    "moment they switch, without remarking on it. The languages you speak " +
+    "are: " + require("./language").SPOKEN_HERE + ". If they mix English " +
+    "words into another language, mix them back the same way. The " +
+    "preferred language in the ABOUT THE USER block is where you START — " +
+    "the greeting, and any moment you genuinely cannot tell — not a rule " +
+    "that overrides what they just said. If they ask you to speak a " +
+    "particular language, switch and save it with update_my_profile. " +
+    "Never reply in a language outside the list above: speech-to-text " +
+    "mis-hears Indian languages as Japanese, French or German, and that " +
+    "is a recognition error, never a language switch.\n\n" +
     "JUDGMENT — act like sharp personal staff, not a form: read the " +
     "situation (time of day, what they're mid-way through, what was said " +
     "earlier) and use the profile, rules and memories you're given BEFORE " +
@@ -449,9 +461,19 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   // command ("louder", "next one"), and refusing those would be its own
   // failure.
   if (quality.quality === "garbled" && !ctx.background && !ctx.approved) {
-    const ask = inputQuality.clarificationFor(quality, {
-      language: (ctx.languages && ctx.languages[0]) || ctx.lang || "",
-    });
+    // "Sorry, I didn't catch that" IN ENGLISH, TO A HINDI SPEAKER, is
+    // its own small failure — and until now the only value reaching here
+    // on this surface was empty, so the Hindi, Kannada and Tulu
+    // clarifications in inputQuality were unreachable from the text path.
+    // Read only on a garbled turn, which is rare, so the hot path is
+    // untouched.
+    let clarifyIn = (ctx.languages && ctx.languages[0]) || ctx.lang || "";
+    if (!clarifyIn && ctx.userId) {
+      clarifyIn = await require("../users/context").getProfile(ctx.userId)
+        .then((p) => (p && p.user && p.user.preferred_language) || "")
+        .catch(() => "");
+    }
+    const ask = inputQuality.clarificationFor(quality, { language: clarifyIn });
     onEvent("sentence", { text: ask });
     if (state) sessionState.recordReply(state, ask);
     try {

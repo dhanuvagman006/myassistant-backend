@@ -103,11 +103,6 @@ const LANGUAGES = [
     script: /[଀-୿]/,
     names: ["odia", "oriya", "ଓଡ଼ିଆ", "उड़िया"],
   },
-  {
-    name: "Urdu",
-    script: /[؀-ۿ]/,
-    names: ["urdu", "اردو", "उर्दू"],
-  },
 ];
 
 const BY_NAME = new Map();
@@ -118,8 +113,10 @@ for (const l of LANGUAGES) for (const n of l.names) BY_NAME.set(n, l.name);
 const DEVANAGARI = /[ऀ-ॿ]/;
 
 /** Scripts that mean the recogniser guessed wrong, not that the user
- *  switched language. Mirrored NEVER — see inputQuality.FOREIGN_SCRIPT. */
-const NOT_OURS = /[぀-ヿㇰ-ㇿ가-힯Ѐ-ӿ฀-๿一-鿿]/;
+ *  switched language. Mirrored NEVER. Kept identical to
+ *  inputQuality.FOREIGN_SCRIPT, plus Han: one list of scripts that are
+ *  not ours, in two files that must never drift apart. */
+const NOT_OURS = /[぀-ヿㇰ-ㇿ가-힯Ѐ-ӿ؀-ۿ฀-๿一-鿿]/;
 
 /* ------------------------------------------------------------------ *
  * canonical()
@@ -156,7 +153,7 @@ function mirrorable(name) {
  * silently rewritten the user's saved preference.
  */
 const ABOUT_NOT_FOR =
-  /\b(translat\w*|transliterat\w*|meaning|means|word for|words for|how do (you|i) say|how to say|spell|pronounce|subtitle|dub|caption|lyrics|song|movie|film|news in|teach me|learn|learning|course|class|typing|keyboard|font)\b/i;
+  /\b(translat\w*|transliterat\w*|meaning|means|word for|words for|how do (you|i) say|how to say|spell|pronounce|subtitle|dub|caption|lyrics|songs?|movies?|films?|news in|teach me|learn|learning|course|class|typing|keyboard|font)\b/i;
 
 /**
  * "SAY IT IN HINDI" IS NOT "SPEAK HINDI FROM NOW ON".
@@ -296,6 +293,23 @@ function requestedLanguage(text) {
     `[^।.?!]{0,30}?` +
     `(?:बात|बोल|बोलो|बोलिए|कहो|जवाब|लिख|ಮಾತ|ಹೇಳ|ಬರ|பேச|பேசு|சொல|మాట|చెప|പറ|സംസാര|বল|কথা)`, "u");
   if (native.test(raw)) return { language: lang, permanent: true };
+
+  // ── ANSWERS TO THE QUESTION WE JUST ASKED.
+  //
+  // The assistant is allowed to ask, once, which language to speak. That
+  // only helps if the answer is understood — and people do not answer
+  // "speak in English", they answer "English is fine" or "I'd prefer
+  // Hindi". The model is supposed to save it; the whole reason this file
+  // exists is that it did not.
+  const preference = new RegExp(
+    `\\b(?:prefer|want|would like|i like|choose|pick|go with|stick (?:to|with)|let'?s (?:do|use|speak|try))\\b` +
+    `[^.?!]{0,20}?\\b(?:you to\\s+)?(?:speak\\s+)?(?:in\\s+)?${alt}\\b`, "i");
+  if (preference.test(raw) && !aimedAtSomeoneElse(raw)) {
+    return { language: lang, permanent: true };
+  }
+  const verdict = new RegExp(
+    `${alt}\\s+(?:is\\s+)?(?:fine|good|better|best|ok|okay|perfect|preferred|comfortable)\\b`, "i");
+  if (verdict.test(raw)) return { language: lang, permanent: true };
 
   // ── The shortest honest form, as a whole utterance: "English", "हिंदी".
   //    Only when the user said nothing else at all — otherwise a passing
@@ -450,6 +464,66 @@ function scriptAmbiguous(name) {
   return ["Hindi", "Marathi", "Konkani", "Kannada", "Tulu"].includes(canonical(name));
 }
 
+/* ------------------------------------------------------------------ *
+ * askWhich() — when to stop guessing and ask
+ * ------------------------------------------------------------------ */
+
+/** How many script-decisive turns in one language count as a pattern. */
+const ASK_EVIDENCE = 3;
+
+/** Languages that share a script, so evidence cannot separate them. */
+const FAMILIES = [
+  ["Hindi", "Marathi", "Konkani"], // Devanagari
+  ["Kannada", "Tulu"],             // Kannada script
+];
+
+/** True when script evidence could not tell these two apart anyway. */
+function sameFamily(a, b) {
+  const x = canonical(a), y = canonical(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  return FAMILIES.some((f) => f.includes(x) && f.includes(y));
+}
+
+/**
+ * Decides whether the assistant should ask the user which language to
+ * speak, and whether it may name one.
+ *
+ * The evidence is deliberately narrow. Only script-decisive turns count
+ * (see detectSpoken) — a run of Latin mis-transcriptions is a run of bad
+ * recognition, not a statement of intent, and this ends in a permanent
+ * write to the user's profile.
+ *
+ * NAMING THE LANGUAGE IS OFTEN THE WRONG MOVE. Devanagari is Hindi,
+ * Marathi or Konkani; the Kannada script is Kannada or Tulu — and Tulu
+ * is an audience this product serves by name. Asking a Marathi speaker
+ * "shall I switch to Hindi?" is worse than not asking, because agreeing
+ * saves the wrong language. Where the script is shared, the question is
+ * left open and the user's own answer decides it.
+ *
+ * @returns {{ask:boolean, language:string}}  language "" means ask openly
+ */
+function askWhich({ preferred = "", askedAt = 0, userTurns = [] } = {}) {
+  const no = { ask: false, language: "" };
+  if (Number(askedAt) > 0) return no; // asked once means once, forever
+
+  const counts = new Map();
+  for (const t of userTurns) {
+    const d = detectSpoken(t);
+    if (d.evidence !== "script" || !d.language) continue;
+    counts.set(d.language, (counts.get(d.language) || 0) + 1);
+  }
+  let top = "", n = 0;
+  for (const [k, v] of counts) if (v > n) { top = k; n = v; }
+  if (n < ASK_EVIDENCE || !mirrorable(top)) return no;
+
+  // They are already being spoken to in something script evidence cannot
+  // distinguish from what they speak. Nothing to resolve.
+  if (preferred && sameFamily(preferred, top)) return no;
+
+  return { ask: true, language: scriptAmbiguous(top) ? "" : top };
+}
+
 module.exports = {
   LANGUAGES,
   canonical,
@@ -457,5 +531,7 @@ module.exports = {
   requestedLanguage,
   detectSpoken,
   scriptAmbiguous,
+  sameFamily,
+  askWhich,
   SPOKEN_HERE: LANGUAGES.map((l) => l.name).join(", "),
 };
