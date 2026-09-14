@@ -2000,6 +2000,63 @@ function registerBuiltins() {
     }
   });
 
+  registry.register({
+    name: "update_app",
+    deviceAction: true,
+    description:
+      "Check whether a newer version of THIS app has been released and, if " +
+      "so, put the installer in front of the user. Use when they ask to " +
+      "update the app, say 'is there a new version', 'update yourself', " +
+      "'install the latest update'. It reports honestly when they are " +
+      "already on the newest build.",
+    risk: "low",
+    inputSchema: { type: "object", properties: {} },
+    async execute(_args, ctx) {
+      let meta = null;
+      try {
+        meta = require("../routes/appUpdate").readMeta();
+      } catch (_) {}
+      const latest = Number(meta && meta.versionCode) || 0;
+      const have = Number(ctx.appBuild) || 0;
+
+      if (!latest) {
+        return {
+          ok: false,
+          error: "no_published_build",
+          note: "Say there is no update available right now. Do not invent a version.",
+        };
+      }
+      // ALREADY CURRENT IS AN ANSWER, NOT A FAILURE — and it must not open
+      // a sheet that would immediately say the same thing.
+      if (have && have >= latest) {
+        return {
+          ok: true,
+          data: { installed: have, latest, upToDate: true },
+          speak: `You're already on the latest version.`,
+          note:
+            "They are up to date. Say so in one short line and do NOT claim " +
+            "to be opening or installing anything.",
+        };
+      }
+      return {
+        ok: true,
+        deviceAction: { type: "check_for_update" },
+        data: {
+          installed: have || null,
+          latest,
+          versionName: meta.versionName || "",
+          upToDate: false,
+        },
+        speak: `Version ${meta.versionName || latest} is ready — opening the installer.`,
+        note:
+          "THE UPDATE SHEET IS NOW ON THEIR SCREEN with an install button. " +
+          "Say in one line that the update is ready and they can tap to " +
+          "install. Do NOT claim it is installed — they have to accept it, " +
+          "and Android asks for confirmation.",
+      };
+    },
+  });
+
   /* ---------------------------------------------------------------- */
   /* THE REST OF THE CLOCK                                             */
   /*                                                                   */

@@ -70,6 +70,8 @@ const FAMILIES = [
       // Opens the phone clock app and says "Opening your alarms" — the
       // same words, so it belongs here or it denies what it just did.
       "show_alarms",
+      // "Opening the installer" is the same claim again.
+      "update_app",
     ],
     claim: /\b(opening|opened|launching|launched|pulling up|bringing up)\b/i,
     // खोल…, ओपन कर…, ತೆರೆ…/ಓಪನ್ ಮಾಡ…, திறக்க…, తెరుస్…, തുറക്ക…
