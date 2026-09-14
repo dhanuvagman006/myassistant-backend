@@ -38,8 +38,23 @@ const FOREIGN_SCRIPT =
 const EUROPEAN_GIVEAWAY =
   /\b(je suis|je dis|n'accepte|prenez|arrêtez|c'est|nous|vous|el grupo|conciencia|de que|para|estoy|gracias|ich bin|nicht|danke|war alle|und|sono|questo)\b/i;
 
+/**
+ * COMBINING MARKS ARE PART OF THE LETTER, and forgetting that made this
+ * gate reject Indian languages as noise.
+ *
+ * Devanagari and the southern scripts write most vowels as matras — ि े ो
+ * ा ् — which Unicode classes as \p{M}, not \p{L}. Counting letters alone,
+ * a perfectly clear Hindi sentence scores around 0.36 and is thrown out as
+ * "mostly non-letters", while the same sentence scores 0.66 once its marks
+ * are counted. Measured against real transcripts: a user asking about
+ * Delhi-Bengaluru flights was told "I didn't hear that properly" SEVEN
+ * times in four minutes, having said nothing wrong at any point.
+ *
+ * This is the whole product's audience — Hindi, Kannada, Tamil, Telugu,
+ * Malayalam, Tulu, Bengali all carry marks the same way.
+ */
 function letterRatio(t) {
-  const letters = (t.match(/[\p{L}]/gu) || []).length;
+  const letters = (t.match(/[\p{L}\p{M}]/gu) || []).length;
   return t.length ? letters / t.length : 0;
 }
 

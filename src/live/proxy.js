@@ -694,7 +694,26 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       // "opening BigBasket" was contradicted ten seconds after BigBasket
       // opened. Barge-in makes overlapping turns the normal case, so this
       // has to tolerate the boundary.
-      const verdict = claimCheck.check(t, sessionState.executedRecently(liveState));
+      const recent = sessionState.executedRecently(liveState);
+      const verdict = claimCheck.check(t, recent);
+      // WHEN A REWRITE HAPPENS, SAY WHAT WE THOUGHT HAD RUN.
+      //
+      // Observed 2026-09-14: set_alarm executed and returned ok:true (the
+      // tool log proves it), and the reply was still rewritten to "that
+      // reminder wasn't saved" — the user's alarm WAS set and they were
+      // told it had failed. claimCheck itself is correct when handed the
+      // execution, so the gap is upstream of it. Guessing was not getting
+      // anywhere; the next occurrence now carries the evidence.
+      if (!verdict.ok) {
+        console.warn(
+          "claim rewritten:",
+          JSON.stringify({
+            violations: verdict.violations,
+            recent: recent.map((e) => ({ tool: e.tool, ok: e.ok, ageMs: Date.now() - e.at })),
+            turnId: liveState && liveState.turn && liveState.turn.id,
+          })
+        );
+      }
       if (!verdict.ok) {
         correctionStreak++;
         console.warn(
