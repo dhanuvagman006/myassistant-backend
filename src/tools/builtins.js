@@ -3615,7 +3615,10 @@ function registerBuiltins() {
       "happening today, or news about a particular subject — do NOT use " +
       "web_search for that and do NOT read a long list aloud. Pass a topic " +
       "only if they named one ('sports news', 'news about the budget'); " +
-      "leave it empty for general headlines.",
+      "leave it empty for general headlines. MATCH THE NUMBER THEY ASKED " +
+      "FOR: 'five news' is count 5, 'the best news' or 'the top story' is " +
+      "count 1 or 2, 'the latest news' or no number is 10. Ten every time " +
+      "is wrong when they asked for fewer.",
     risk: "low",
     inputSchema: {
       type: "object",
@@ -3626,14 +3629,31 @@ function registerBuiltins() {
             "Optional subject, only if the user named one. Empty for " +
             "general headlines.",
         },
+        count: {
+          type: "integer",
+          description:
+            "HOW MANY they asked for. 'five news' -> 5. 'the best news' " +
+            "or 'the top story' -> 1 or 2. 'the latest news' or no number " +
+            "-> 10. Never show ten when they asked for fewer.",
+        },
+        sort: {
+          type: "string",
+          enum: ["relevance", "recent"],
+          description:
+            "'recent' ONLY when they ask for the latest or newest. For " +
+            "'top', 'best' or 'main' news use 'relevance' — the most " +
+            "important story is rarely the one published most recently.",
+        },
       },
     },
     async execute(args) {
       const news = require("./news");
       try {
+        const asked = Number(args.count);
         const out = await news.headlines({
           topic: String(args.topic || "").trim(),
-          count: 10,
+          count: Number.isFinite(asked) && asked > 0 ? Math.min(asked, 10) : 10,
+          sort: args.sort === "recent" ? "recent" : "relevance",
         });
         if (!out.items.length) {
           return {
@@ -3656,7 +3676,8 @@ function registerBuiltins() {
           note:
             "THE HEADLINES ARE NOW ON THEIR SCREEN. Say in ONE short line " +
             "that today's headlines are up, then read out ONLY the top two " +
-            "or three in your own words. Do NOT list all ten, do NOT read " +
+            "or three in your own words — or ALL of them when they asked " +
+            "for just one or two. Do NOT list every item, do NOT read " +
             "URLs or source names, and do NOT ask which one they want — " +
             "they can see the list and will tap one. Tapping a headline " +
             "opens the full story for you to read, so there is nothing for " +

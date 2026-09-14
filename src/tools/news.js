@@ -102,7 +102,7 @@ function mostlyLatin(t) {
   return latin / letters.length >= 0.6;
 }
 
-async function headlines({ topic = "", count = 10 } = {}) {
+async function headlines({ topic = "", count = 10, sort = "relevance" } = {}) {
   // "top news today" matched AGGREGATORS — "NDTV Live TV", "Top 10 Hindi
   // News Headlines" — rather than stories, because those pages are
   // literally titled that. A plain country term returns actual reporting;
@@ -156,8 +156,20 @@ async function headlines({ topic = "", count = 10 } = {}) {
       thumbnail: (x.thumbnail && (x.thumbnail.src || x.thumbnail.original)) || "",
     });
   }
-  rows.sort((a, b) => a.ageMins - b.ageMins);
-  const out = { topic: topic || "today", items: rows.slice(0, count) };
+  // RECENCY IS NOT IMPORTANCE, and sorting by it destroyed the index's own
+  // ranking. Brave returns news in relevance order — which is roughly what
+  // a person means by "top" or "best" news — and re-sorting purely on age
+  // replaced that with whatever happened to be published most recently.
+  // It is why our headlines and Google's looked like different days: they
+  // were answering "what matters", we were answering "what just landed".
+  //
+  // Only an explicit ask for the LATEST re-orders by clock.
+  if (sort === "recent") rows.sort((a, b) => a.ageMins - b.ageMins);
+  const out = {
+    topic: topic || "today",
+    sort,
+    items: rows.slice(0, Math.max(1, Math.min(count, 10))),
+  };
   searchCache.put(shape, q, out, true).catch(() => {}); // live: 20 min
   return { ...out, cached: false };
 }
