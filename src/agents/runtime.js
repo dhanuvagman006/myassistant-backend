@@ -264,6 +264,12 @@ function systemPrompt(extra = "") {
     + "section unless they actually asked about the law. Having the legal "
     + "corpus available changes NOTHING about how you answer everything "
     + "else.\n" +
+    "- NEARBY PLACES: restaurants, hospitals, ATMs, shops, petrol pumps, "
+    + "'the best X in Y' — use web_search. There is no separate places "
+    + "tool any more. Give the actual names the results contain and say "
+    + "where they are; offer to open a map only if they ask. You do NOT "
+    + "have ratings, distances or opening hours unless a result states "
+    + "them, so never invent a star rating or a distance in km.\n" +
     "- READING A PAGE: when the user asks what a page or article SAYS — "
     + "'summarise this', 'what does this say', 'what's the price on that "
     + "page' — call read_webpage with the URL and answer from the text it "

@@ -309,6 +309,11 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "legal one, and never mention an Act or a section unless they asked " +
     "about the law. Having the legal corpus available changes NOTHING " +
     "about how you answer everything else. " +
+    "NEARBY PLACES. Restaurants, hospitals, ATMs, shops, petrol pumps, " +
+    "'the best X in Y' — use your search tool. There is no separate " +
+    "places tool. Name the actual places the results mention and say " +
+    "roughly where they are. You do NOT have star ratings, distances in " +
+    "km or opening hours unless a result says so — never invent one. " +
     "BE SPECIFIC. For flights or trains give actual airlines/operators, " +
     "departure times and approximate fares — a reply like 'there are " +
     "flights tomorrow' is useless. If the search does not give you concrete " +
