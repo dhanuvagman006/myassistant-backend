@@ -2000,6 +2000,149 @@ function registerBuiltins() {
     }
   });
 
+  /* ---------------------------------------------------------------- */
+  /* THE REST OF THE CLOCK                                             */
+  /*                                                                   */
+  /* Setting was the only half that existed, so "switch off my alarm"  */
+  /* got "I can't turn off your alarms from here" — seen verbatim in a */
+  /* transcript. Android exposes the whole surface through standard    */
+  /* intents, all seven verified as handled on a real device before    */
+  /* these were written.                                               */
+  /* ---------------------------------------------------------------- */
+
+  registry.register({
+    name: "stop_alarm",
+    description:
+      "Turn OFF a ringing or upcoming alarm in the phone's clock app — " +
+      "'switch off my alarm', 'turn off the alarm', 'cancel my 6 am alarm', " +
+      "'stop that alarm'. Use which='next' for the upcoming one (the usual " +
+      "case), which='all' to clear every alarm, or give hour and minute to " +
+      "dismiss one specific alarm.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        which: { type: "string", enum: ["next", "all"], description: "Default 'next'." },
+        hour: { type: "integer", description: "0-23, only to dismiss one specific alarm." },
+        minute: { type: "integer", description: "0-59, with hour." },
+      },
+    },
+    async execute(args) {
+      const hasTime =
+        Number.isInteger(args.hour) && Number.isInteger(args.minute);
+      // SEARCH_MODE is REQUIRED by ACTION_DISMISS_ALARM; without it the
+      // clock app has no idea which alarm is meant and does nothing.
+      const mode = hasTime
+        ? "android.time"
+        : args.which === "all"
+          ? "android.all"
+          : "android.next";
+      const time = hasTime
+        ? `i.android.intent.extra.alarm.HOUR=${args.hour};` +
+          `i.android.intent.extra.alarm.MINUTES=${args.minute};`
+        : "";
+      const url =
+        `intent://#Intent;action=android.intent.action.DISMISS_ALARM;` +
+        `S.android.intent.extra.alarm.SEARCH_MODE=${mode};${time}end`;
+      const what = hasTime
+        ? `the ${String(args.hour).padStart(2, "0")}:${String(args.minute).padStart(2, "0")} alarm`
+        : args.which === "all"
+          ? "all your alarms"
+          : "your next alarm";
+      return {
+        ok: true,
+        deviceAction: { type: "open_url", url },
+        speak: `Turning off ${what}.`,
+      };
+    },
+  });
+
+  registry.register({
+    name: "snooze_alarm",
+    description:
+      "Snooze the alarm that is ringing right now — 'snooze', 'five more " +
+      "minutes', 'snooze the alarm'. Only meaningful while an alarm is " +
+      "actually sounding; to cancel an upcoming one use stop_alarm.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        minutes: { type: "integer", description: "How long to snooze for, if they said." },
+      },
+    },
+    async execute(args) {
+      const m = Number.isInteger(args.minutes) && args.minutes > 0
+        ? `i.android.intent.extra.alarm.SNOOZE_DURATION=${args.minutes};`
+        : "";
+      const url =
+        `intent://#Intent;action=android.intent.action.SNOOZE_ALARM;${m}end`;
+      return {
+        ok: true,
+        deviceAction: { type: "open_url", url },
+        speak: m ? `Snoozing for ${args.minutes} minutes.` : "Snoozing that alarm.",
+      };
+    },
+  });
+
+  registry.register({
+    name: "stop_timer",
+    description:
+      "Stop or cancel a running countdown timer — 'stop the timer', " +
+      "'cancel the timer', 'turn that timer off'. For an ALARM use " +
+      "stop_alarm instead; a timer counts down, an alarm rings at a time.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: { type: "object", properties: {} },
+    async execute() {
+      return {
+        ok: true,
+        deviceAction: {
+          type: "open_url",
+          url: "intent://#Intent;action=android.intent.action.DISMISS_TIMER;end",
+        },
+        speak: "Stopping the timer.",
+      };
+    },
+  });
+
+  registry.register({
+    name: "show_alarms",
+    description:
+      "Open the phone's clock app so the user can SEE their alarms or " +
+      "timers — 'show me my alarms', 'what alarms do I have', 'open the " +
+      "timer'. Use this when they want to look at them rather than change " +
+      "one; there is no way to read the list back, so do not describe or " +
+      "count their alarms, just put the clock in front of them.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        what: { type: "string", enum: ["alarms", "timers"], description: "Default 'alarms'." },
+      },
+    },
+    async execute(args) {
+      const timers = args.what === "timers";
+      const action = timers
+        ? "android.intent.action.SHOW_TIMERS"
+        : "android.intent.action.SHOW_ALARMS";
+      return {
+        ok: true,
+        deviceAction: {
+          type: "open_url",
+          url: `intent://#Intent;action=${action};end`,
+        },
+        speak: timers ? "Opening your timers." : "Opening your alarms.",
+        note:
+          "The clock app is now on their screen. You CANNOT read what is in " +
+          "it — never state how many alarms they have or what time they are " +
+          "set for, because you did not see them.",
+      };
+    },
+  });
+
   registry.register({
     name: "set_timer",
     description:

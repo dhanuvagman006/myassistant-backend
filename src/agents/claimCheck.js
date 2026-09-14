@@ -67,6 +67,9 @@ const FAMILIES = [
       "try_a_look", "present_text", "generate_image", "generate_video",
       // Screens inside this app. "Opening your settings" is the same claim.
       "open_app_screen", "set_app_theme",
+      // Opens the phone clock app and says "Opening your alarms" — the
+      // same words, so it belongs here or it denies what it just did.
+      "show_alarms",
     ],
     claim: /\b(opening|opened|launching|launched|pulling up|bringing up)\b/i,
     // खोल…, ओपन कर…, ತೆರೆ…/ಓಪನ್ ಮಾಡ…, திறக்க…, తెరుస్…, തുറക്ക…
@@ -90,6 +93,27 @@ const FAMILIES = [
     // रिमाइंडर/अलार्म सेट…, ರಿಮೈಂಡರ್/ಅಲಾರಂ ಇಟ್ಟ…, நினைவூட்ட…, గుర్తు చేస…, ഓർമ്മിപ്പിക്ക…
     claimIntl: /(रिमाइंडर\s*(सेट|लगा)|अलार्म\s*(सेट|लगा)|याद\s*दिला|ರಿಮೈಂಡರ್|ಅಲಾರಂ|ಅಲಾರಾಂ|ನೆನಪಿಸ|நினைவூட்ட|அலாரம்|గుర్తు\s*చేస|అలారం|ഓർമ്മിപ്പിക്ക|അലാറം)/,
     honest: () => "That reminder wasn't saved — say it again and I'll set it.",
+  },
+  {
+    // STOPPING IS NOT SETTING. "I've turned off your alarm" is satisfied by
+    // stop_alarm, never by set_alarm, so it needs its own family — and
+    // without one the tools would not be filed into the session at all
+    // (registry only records what backs a claim), leaving the assistant to
+    // deny work it had just done.
+    id: "clockoff",
+    tools: ["stop_alarm", "snooze_alarm", "stop_timer"],
+    // EVERY ALTERNATIVE MUST NAME THE ALARM OR THE TIMER. A generic
+      // "turned off" also matches "I turned off the lights for you", which
+      // phone_control legitimately says — scoping it broadly rewrote a
+      // true statement about the torch into a clock failure.
+      //
+      // Present continuous counts as a claim: these tools speak as they
+      // act ("Snoozing that alarm."), so a past-tense-only pattern let
+      // their own wording through unchecked.
+    claim:
+      /\b(snoozing|snoozed)\b|\b(alarms?|timers?)\b[^.]{0,24}\b(off|cancelled|canceled|stopped)\b|\b(turn(ed|ing)?|switch(ed|ing)?|stop(ped|ping)?|cancel(led|ing|ling)?|shut(ting)?)\b[^.]{0,24}\b(alarms?|timers?)\b/i,
+    claimIntl: /(अलार्म\s*(बंद|रद्द)|टाइमर\s*बंद|ಅಲಾರಂ\s*(ಆಫ್|ನಿಲ್ಲಿಸ)|ಟೈಮರ್\s*ನಿಲ್ಲಿಸ|அலாரம்\s*நிறுத்த|అలారం\s*ఆపా)/,
+    honest: () => "I couldn't turn that off — say it again and I'll try.",
   },
   {
     id: "play",
