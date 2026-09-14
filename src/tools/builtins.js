@@ -1650,7 +1650,7 @@ function registerBuiltins() {
           ok: true,
           deviceAction: {
             type: "open_url",
-            url: "intent://#Intent;action=android.intent.action.MAIN;" +
+            url: "intent:#Intent;action=android.intent.action.MAIN;" +
                  "category=android.intent.category.HOME;end",
           },
           speak: "Taking you Home.",
@@ -1812,7 +1812,7 @@ function registerBuiltins() {
         : `https://music.youtube.com/search?q=${encodeURIComponent(args.query)}`;
       const q = encodeURIComponent(args.query);
       const url =
-        `intent://#Intent;action=android.media.action.MEDIA_PLAY_FROM_SEARCH;` +
+        `intent:#Intent;action=android.media.action.MEDIA_PLAY_FROM_SEARCH;` +
         `S.query=${q};package=${pkg};S.browser_fallback_url=${encodeURIComponent(fallback)};end`;
 
       return {
@@ -1986,7 +1986,7 @@ function registerBuiltins() {
       // making the user finish the form — and because it lives in the
       // clock app, it rings even if this app is closed or updated.
       const url =
-        `intent://#Intent;action=android.intent.action.SET_ALARM;` +
+        `intent:#Intent;action=android.intent.action.SET_ALARM;` +
         `i.android.intent.extra.alarm.HOUR=${args.hour};` +
         `i.android.intent.extra.alarm.MINUTES=${args.minute};` +
         `B.android.intent.extra.alarm.SKIP_UI=true;${label}end`;
@@ -2043,7 +2043,7 @@ function registerBuiltins() {
           `i.android.intent.extra.alarm.MINUTES=${args.minute};`
         : "";
       const url =
-        `intent://#Intent;action=android.intent.action.DISMISS_ALARM;` +
+        `intent:#Intent;action=android.intent.action.DISMISS_ALARM;` +
         `S.android.intent.extra.alarm.SEARCH_MODE=${mode};${time}end`;
       const what = hasTime
         ? `the ${String(args.hour).padStart(2, "0")}:${String(args.minute).padStart(2, "0")} alarm`
@@ -2077,7 +2077,7 @@ function registerBuiltins() {
         ? `i.android.intent.extra.alarm.SNOOZE_DURATION=${args.minutes};`
         : "";
       const url =
-        `intent://#Intent;action=android.intent.action.SNOOZE_ALARM;${m}end`;
+        `intent:#Intent;action=android.intent.action.SNOOZE_ALARM;${m}end`;
       return {
         ok: true,
         deviceAction: { type: "open_url", url },
@@ -2100,7 +2100,7 @@ function registerBuiltins() {
         ok: true,
         deviceAction: {
           type: "open_url",
-          url: "intent://#Intent;action=android.intent.action.DISMISS_TIMER;end",
+          url: "intent:#Intent;action=android.intent.action.DISMISS_TIMER;end",
         },
         speak: "Stopping the timer.",
       };
@@ -2132,7 +2132,7 @@ function registerBuiltins() {
         ok: true,
         deviceAction: {
           type: "open_url",
-          url: `intent://#Intent;action=${action};end`,
+          url: `intent:#Intent;action=${action};end`,
         },
         speak: timers ? "Opening your timers." : "Opening your alarms.",
         note:
@@ -2172,7 +2172,7 @@ function registerBuiltins() {
       // Same route as set_alarm: the phone's own clock app, via an intent
       // deep link. SKIP_UI starts it without making the user finish a form.
       const url =
-        `intent://#Intent;action=android.intent.action.SET_TIMER;` +
+        `intent:#Intent;action=android.intent.action.SET_TIMER;` +
         `i.android.intent.extra.alarm.LENGTH=${seconds};` +
         `B.android.intent.extra.alarm.SKIP_UI=true;${label}end`;
       const human =
