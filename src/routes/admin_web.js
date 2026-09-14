@@ -1127,14 +1127,71 @@ router.get("/api/debug", async (req, res) => {
 /* Static SPA                                                          */
 /* ------------------------------------------------------------------ */
 
+/**
+ * A DEPLOY THAT NOBODY SEES IS NOT A DEPLOY.
+ *
+ * index.html asked for /admin-panel/app.js by a name that never changes,
+ * so a browser holding yesterday's copy kept running yesterday's panel
+ * after a release — new pages simply absent, with nothing to suggest the
+ * server had anything newer. Reported 2026-09-14 for the Recordings page,
+ * which was live and being served correctly the whole time.
+ *
+ * The asset URLs now carry a hash of their own contents. Change a byte
+ * and the URL changes, so the browser has no cached copy to reuse; change
+ * nothing and it keeps what it has. The shell itself is never stored,
+ * which is what makes the hash reachable in the first place.
+ */
+const PANEL_DIR = path.join(__dirname, "admin_panel");
+let shellCache = null;
+
+function panelShell() {
+  const fs = require("fs");
+  const index = path.join(PANEL_DIR, "index.html");
+  const stamp = ["index.html", "app.js", "style.css"]
+    .map((f) => {
+      try {
+        const st = fs.statSync(path.join(PANEL_DIR, f));
+        return `${f}:${st.size}:${st.mtimeMs}`;
+      } catch (_) { return f; }
+    })
+    .join("|");
+  if (shellCache && shellCache.stamp === stamp) return shellCache.html;
+
+  const version = crypto.createHash("sha1").update(stamp).digest("hex").slice(0, 10);
+  const html = fs.readFileSync(index, "utf8")
+    .replace(/(["'])(\/admin-panel\/(?:app\.js|style\.css))\1/g, `$1$2?v=${version}$1`);
+  shellCache = { stamp, html };
+  return html;
+}
+
 router.get("/", (_req, res) => {
   if (KEY().length < 16) {
     return res
       .status(503)
       .send("Admin panel disabled — set ADMIN_KEY (16+ chars) in the environment.");
   }
-  res.sendFile(path.join(__dirname, "admin_panel", "index.html"));
+  let html;
+  try {
+    html = panelShell();
+  } catch (e) {
+    // Never fail the panel over a cache optimisation.
+    return res.sendFile(path.join(PANEL_DIR, "index.html"));
+  }
+  // The shell is the only thing that knows which version to ask for, so
+  // it is the one file that must never come from a cache.
+  res.setHeader("Cache-Control", "no-store, must-revalidate");
+  res.type("html").send(html);
 });
-router.use(express.static(path.join(__dirname, "admin_panel")));
+
+// Safe to cache hard: every reference to these carries a content hash, so
+// a changed file is a changed URL.
+router.use(express.static(PANEL_DIR, {
+  maxAge: "1h",
+  setHeaders(res, filePath) {
+    if (/\.(?:js|css)$/.test(filePath)) {
+      res.setHeader("Cache-Control", "public, max-age=3600, must-revalidate");
+    }
+  },
+}));
 
 module.exports = router;
