@@ -57,7 +57,26 @@ async function googlePlaces(q, lat, lng, near) {
         : {}),
     }),
   });
-  if (!r.ok) throw new Error(`places ${r.status}`);
+  if (!r.ok) {
+    // A 403 here is almost always "Places API (New) has not been used in
+    // this project before or it is disabled" — a console setting, not a
+    // transient failure. Swallowed into the OSM fallback it looked like
+    // patchy local coverage for months: no ratings on anything, "best
+    // fish restaurants in Mangalore" returning nothing while bare
+    // "restaurants" returned ten. Say it loudly enough to be found.
+    let detail = "";
+    try {
+      const body = await r.json();
+      detail = (body && body.error && body.error.message) || "";
+    } catch (_) {}
+    if (r.status === 403 || r.status === 401) {
+      console.error(
+        `PLACES API NOT USABLE (${r.status}) — falling back to OpenStreetMap, ` +
+        `which has no ratings and much weaker coverage. ${detail.slice(0, 200)}`
+      );
+    }
+    throw new Error(`places ${r.status}${detail ? ": " + detail.slice(0, 120) : ""}`);
+  }
   const data = await r.json();
   return (data.places || []).map((p) => ({
     name: p.displayName?.text || "",
@@ -73,13 +92,18 @@ async function googlePlaces(q, lat, lng, near) {
   }));
 }
 
-async function osmPlaces(q, lat, lng) {
-  // Bounded search in a ~10 km box around the user.
-  const box = Number.isFinite(lat) && Number.isFinite(lng)
+async function osmPlaces(q, lat, lng, near = "") {
+  // WHEN THEY NAMED A PLACE, SEARCH THAT PLACE. The fallback only ever
+  // searched a 10 km box around the user, so "in Mangalore" was dropped
+  // on the floor — fine while the user happened to be there, wrong the
+  // moment they asked about anywhere else.
+  const where = String(near || "").trim();
+  const query = where ? `${q} ${where}` : q;
+  const box = !where && Number.isFinite(lat) && Number.isFinite(lng)
     ? `&viewbox=${lng - 0.05},${lat + 0.05},${lng + 0.05},${lat - 0.05}&bounded=1`
     : "";
   const r = await fetch(
-    `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=10&q=${encodeURIComponent(q)}${box}`,
+    `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=10&q=${encodeURIComponent(query)}${box}`,
     {
       signal: AbortSignal.timeout(TIMEOUT),
       headers: { "user-agent": "MyAssistant/1.0" }, // Nominatim requires one
@@ -104,9 +128,9 @@ async function searchPlaces({ q, lat, lng, near = "" }) {
 
   let list;
   try {
-    list = (await googlePlaces(q, lat, lng, where)) ?? (await osmPlaces(q, lat, lng));
+    list = (await googlePlaces(q, lat, lng, where)) ?? (await osmPlaces(q, lat, lng, where));
   } catch (_) {
-    list = await osmPlaces(q, lat, lng); // Google down → OSM still answers
+    list = await osmPlaces(q, lat, lng, where); // Google down → OSM still answers
   }
   // Distances are only meaningful relative to the user. When they asked
   // about somewhere else, "2.3 km" would be measured from the wrong point
