@@ -3383,7 +3383,19 @@ function registerBuiltins() {
       // silent failure this avoids.
       const OPEN_ANY_APP_FROM = 34;
       const build = Number(ctx.appBuild) || 0;
-      if (build < OPEN_ANY_APP_FROM) {
+      // UNKNOWN IS NOT OLD.
+      //
+      // Treating a missing build as 0 meant a dropped X-App-Build header
+      // was indistinguishable from an ancient install, and the client —
+      // who updates diligently — was told his app was too old on every
+      // single turn. The app-side race that dropped that header is fixed,
+      // but a header can always go missing, and the cost of the two
+      // mistakes is not symmetric: refusing someone who can do it is a
+      // visible, repeated insult, while attempting it on a phone that
+      // cannot now ends in an honest device_result failure the assistant
+      // reports. So only a build we actually KNOW to be too old is
+      // refused.
+      if (build > 0 && build < OPEN_ANY_APP_FROM) {
         return {
           ok: false,
           error: "app_too_old",
