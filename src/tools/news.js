@@ -91,12 +91,27 @@ const NOT_A_STORY =
   /\blive tv\b|live streaming|where to watch|\blive blog\b|live score|live updates|toss result|playing xi|\d+\/\d+ in \d+(\.\d+)? overs|\btop \d+\b.*\b(headlines|news)\b|news channel|free live/i;
 
 /**
- * The index returns Telugu and Hindi pages for an English query. A
- * headline the assistant cannot read aloud in the user's language is
- * noise in the panel, so anything mostly outside the Latin script goes.
+ * The index returns Telugu and Hindi pages for an English query, and a
+ * ratio alone does not catch them. Publishers append a Latin SEO slug to
+ * their own headline —
+ *
+ *   "BRICS समिट में भारत की 5 बड़ी कूटनीतिक जीत... PM मोदी ने कैसे साधा
+ *    संतुलन? - brics summit india five diplomatic wins for india"
+ *
+ * — which lifted that title to 74% Latin and sailed past a 60% floor,
+ * while the part actually shown to the reader is entirely Devanagari.
+ *
+ * A RUN is the honest test. Latin headlines borrow the odd foreign word
+ * or accented name; they do not contain four unbroken characters of
+ * another script. That is a headline written in that script.
  */
+const NON_LATIN_RUN =
+  /[\p{Script=Devanagari}\p{Script=Telugu}\p{Script=Tamil}\p{Script=Kannada}\p{Script=Malayalam}\p{Script=Bengali}\p{Script=Gujarati}\p{Script=Gurmukhi}\p{Script=Oriya}\p{Script=Arabic}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Cyrillic}\p{M}]{4,}/u;
+
 function mostlyLatin(t) {
-  const letters = String(t).replace(/[^\p{L}]/gu, "");
+  const text = String(t || "");
+  if (NON_LATIN_RUN.test(text)) return false;
+  const letters = text.replace(/[^\p{L}]/gu, "");
   if (!letters.length) return false;
   const latin = (letters.match(/[\p{Script=Latin}]/gu) || []).length;
   return latin / letters.length >= 0.6;
