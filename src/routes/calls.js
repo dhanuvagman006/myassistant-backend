@@ -57,8 +57,16 @@ const kvKey = (uid) => `call_analysis:${uid}`;
 
 async function analysisState(uid) {
   const row = await db.one(`SELECT v FROM kv WHERE k = $1`, [kvKey(uid)]);
+  if (!row) {
+    // DEFAULT ON (owner's call, 2026-09-17): a fresh account starts with
+    // analysis enabled — but consentAt stays 0 until the app has SHOWN
+    // the sign-in notice and posted the decision. The watcher reads no
+    // files while consentAt is 0, so "on by default" never means
+    // "reading recordings nobody was told about".
+    return { enabled: true, consentAt: 0 };
+  }
   try {
-    const v = JSON.parse(row?.v || "{}");
+    const v = JSON.parse(row.v || "{}");
     return { enabled: Boolean(v.enabled), consentAt: Number(v.consentAt) || 0 };
   } catch (_) {
     return { enabled: false, consentAt: 0 };
