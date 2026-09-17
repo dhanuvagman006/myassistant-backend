@@ -219,12 +219,16 @@ function registerBuiltins() {
   registry.register({
     name: "call_recall",
     description:
-      "Search the user's ANALYSED PHONE CALLS (the in-app dialer with AI " +
-      "call analysis on records and transcribes them). Use when the user " +
-      "asks what was said on a phone call — 'what did I speak with Ramesh " +
-      "4 days back', 'what was that call with the bank about', 'did we fix " +
-      "a time on yesterday's call'. Only calls made with analysis enabled " +
-      "exist here; if nothing matches, say so and mention the toggle.",
+      "Search the user's ANALYSED PHONE CALLS (AI call analysis records " +
+      "and transcribes them). Use for ANY question about past contact " +
+      "with a person — 'what was my last communication with Yashmitha', " +
+      "'when did I last talk to Ramesh', 'what did I speak with him 4 " +
+      "days back', 'what was that call with the bank about', 'did we fix " +
+      "a time on yesterday's call'. This is the ONLY channel of past " +
+      "conversations available: SMS and WhatsApp history cannot be read, " +
+      "so never route such questions there. Only calls made with " +
+      "analysis enabled exist here; if nothing matches, say so and " +
+      "mention the toggle.",
     risk: "low",
     inputSchema: {
       type: "object",

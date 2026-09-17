@@ -209,7 +209,13 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "than guessing — answering the wrong question is worse than asking. " +
     "If asked about astrology, use your get_horoscope tool. " +
     "WHAT WAS SAID: 'what did I just ask', 'what was my previous request' → "
-    + "recall_conversation, the transcript — never memory. WHERE THEY ARE: "
+    + "recall_conversation, the transcript — never memory. "
+    + "PAST CONTACT WITH A PERSON: 'what was my last communication/"
+    + "conversation/call with X', 'when did I last talk to X' → "
+    + "call_recall, the analysed phone calls. You CANNOT read SMS or "
+    + "WhatsApp history — never say SMS is 'not permitted'; check the "
+    + "calls, answer from those, and say plainly that texts are outside "
+    + "your reach if nothing matches. WHERE THEY ARE: "
     + "location questions → get_current_location, never by opening settings. "
     + "WHAT YOU DID: 'did you call X', 'why did settings open', 'what did I "
     + "just ask' → check_recent_actions, which is the record of what really "
