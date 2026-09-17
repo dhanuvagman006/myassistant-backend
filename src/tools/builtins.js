@@ -258,8 +258,11 @@ function registerBuiltins() {
         from = Date.now() - 30 * 86400_000;
         to = Date.now() + 1;
       }
+      // processing rows included on purpose: "what did my last call say"
+      // seconds after hanging up should answer "still analysing", not
+      // "no such call".
       const wheres = [`user_id = $1`, `started_at BETWEEN $2 AND $3`,
-        `status = 'done'`];
+        `status IN ('done','processing')`];
       const params = [ctx.userId, from, to];
       if (args.person) {
         params.push(`%${String(args.person).trim()}%`);
@@ -274,7 +277,7 @@ function registerBuiltins() {
       const { query } = require("../db");
       const rows = await query(
         `SELECT id, peer_name, peer_number, direction, started_at,
-                duration_s, summary, actions,
+                duration_s, summary, actions, status,
                 LEFT(transcript, 4000) AS transcript_excerpt
            FROM call_records WHERE ${wheres.join(" AND ")}
           ORDER BY started_at DESC LIMIT 5`,
@@ -287,6 +290,14 @@ function registerBuiltins() {
           speak:
             "I don't have an analysed call matching that. Calls are only " +
             "recorded when AI call analysis is switched on in Settings.",
+        };
+      }
+      if (rows.every((r) => r.status === "processing")) {
+        return {
+          ok: true,
+          data: { calls: rows },
+          speak: "I'm still going through that call — give me a minute " +
+            "and ask again.",
         };
       }
       return { ok: true, data: { calls: rows } };

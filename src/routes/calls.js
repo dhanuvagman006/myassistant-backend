@@ -296,18 +296,18 @@ async function processCall(id, uid, filePath, meta) {
     [transcript.slice(0, 100000), summary, JSON.stringify(filed), id]
   );
 
-  // 4. Tell the user what their call produced — quietly useful.
-  if (filed.length && user?.fcm_token) {
+  // 4. Tell the user their call was understood — EVERY time. Silence
+  // after an analysed call read as "the feature did nothing"; the whole
+  // point of automatic analysis is that the user never has to ask.
+  if (user?.fcm_token) {
     const n = filed.length;
+    const withWho = meta.peerName ? `with ${meta.peerName} ` : "";
+    const body = n
+      ? `${n} item${n === 1 ? "" : "s"} from your call ${withWho}added to your agenda.`
+      : `Your call ${withWho}was noted: ${summary.slice(0, 120)}`;
     require("../services/push")
-      .sendNotification(
-        user.fcm_token,
-        "Call notes ready",
-        `${n} item${n === 1 ? "" : "s"} from your call ${
-          meta.peerName ? `with ${meta.peerName} ` : ""
-        }added to your agenda.`,
-        { kind: "call_analysis" }
-      )
+      .sendNotification(user.fcm_token, "Call notes ready", body,
+        { kind: "call_analysis" })
       .catch(() => {});
   }
 }
