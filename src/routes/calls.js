@@ -244,9 +244,18 @@ async function processCall(id, uid, filePath, meta) {
     `Other party: ${meta.peerName || meta.peerNumber || "unknown"}. ` +
     `Call started: ${when}.\n\nTRANSCRIPT:\n${transcript.slice(0, 24000)}\n\n` +
     `Reply with STRICT JSON only, no markdown fences:\n` +
-    `{"summary":"<2-3 sentences, plain language>",` +
+    `{"summary":"<a FULL account of the call, 3-8 sentences: every topic ` +
+    `touched, who said what mattered, decisions, moods if notable — not ` +
+    `just the 'important' parts>",` +
+    `"facts":["<one concrete fact per entry, each self-contained with ` +
+    `names and dates spelled out: 'Yashmitha returns from Delhi on 21 ` +
+    `September', 'The exam is on Friday at 10 am', 'The phone repair ` +
+    `costs 3000 rupees'>"],` +
     `"items":[{"kind":"reminder|meeting|task|promise","text":"<what>",` +
     `"whenIso":"<ISO 8601 with timezone offset, or empty if no time was agreed>"}]}\n` +
+    `facts is the heart of this: capture EVERYTHING checkable someone ` +
+    `might ask about later — dates, times, amounts, places, plans, ` +
+    `names, states of things. Ten small facts beat three big ones. ` +
     `kind guide: meeting = a time two people agreed to meet or talk; ` +
     `promise = something the phone owner committed to do for the other ` +
     `person; task = work the owner has to do; reminder = anything else ` +
@@ -260,10 +269,14 @@ async function processCall(id, uid, filePath, meta) {
 
   let summary = "";
   let items = [];
+  let facts = [];
   try {
     const j = JSON.parse(String(reply).replace(/^```json?\s*|```\s*$/g, ""));
-    summary = String(j.summary || "").slice(0, 1000);
+    summary = String(j.summary || "").slice(0, 2000);
     if (Array.isArray(j.items)) items = j.items.slice(0, 10);
+    if (Array.isArray(j.facts)) {
+      facts = j.facts.map((f) => String(f).slice(0, 300)).slice(0, 40);
+    }
   } catch (_) {
     summary = String(reply).slice(0, 500);
   }
@@ -287,10 +300,22 @@ async function processCall(id, uid, filePath, meta) {
       }
       continue;
     }
-    const label = it.kind === "meeting" ? `Meeting: ${text}` : text;
+    let label = it.kind === "meeting" ? `Meeting: ${text}` : text;
     let dueAt = null;
     const t = Date.parse(String(it?.whenIso || ""));
-    if (Number.isFinite(t) && t > Date.now() - 60_000) dueAt = t;
+    if (Number.isFinite(t) && t > Date.now() - 60_000) {
+      dueAt = t;
+      // A meeting reminder that rings AT the meeting is a reminder to be
+      // late. Ring five minutes early, and keep the true time in the
+      // label so the agenda still says what was agreed.
+      if (it.kind === "meeting" && t - Date.now() > 5 * 60_000) {
+        dueAt = t - 5 * 60_000;
+        const at = new Date(t + 330 * 60_000); // IST label
+        const hh = at.getUTCHours() % 12 === 0 ? 12 : at.getUTCHours() % 12;
+        const mm = String(at.getUTCMinutes()).padStart(2, "0");
+        label += ` at ${hh}:${mm} ${at.getUTCHours() < 12 ? "am" : "pm"}`;
+      }
+    }
     const made = await reminders
       .create(uid, label, dueAt, "gentle")
       .catch(() => null);
@@ -299,9 +324,10 @@ async function processCall(id, uid, filePath, meta) {
 
   await db.run(
     `UPDATE call_records
-        SET transcript=$1, summary=$2, actions=$3, status='done'
-      WHERE id=$4`,
-    [transcript.slice(0, 100000), summary, JSON.stringify(filed), id]
+        SET transcript=$1, summary=$2, actions=$3, facts=$4, status='done'
+      WHERE id=$5`,
+    [transcript.slice(0, 100000), summary, JSON.stringify(filed),
+     JSON.stringify(facts), id]
   );
 
   // 4. Tell the user their call was understood — EVERY time. Silence

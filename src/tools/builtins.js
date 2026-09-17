@@ -220,15 +220,16 @@ function registerBuiltins() {
     name: "call_recall",
     description:
       "Search the user's ANALYSED PHONE CALLS (AI call analysis records " +
-      "and transcribes them). Use for ANY question about past contact " +
-      "with a person — 'what was my last communication with Yashmitha', " +
-      "'when did I last talk to Ramesh', 'what did I speak with him 4 " +
-      "days back', 'what was that call with the bank about', 'did we fix " +
-      "a time on yesterday's call'. This is the ONLY channel of past " +
-      "conversations available: SMS and WhatsApp history cannot be read, " +
-      "so never route such questions there. Only calls made with " +
-      "analysis enabled exist here; if nothing matches, say so and " +
-      "mention the toggle.",
+      "and transcribes them; each call carries a full summary, a list of " +
+      "concrete FACTS, and the transcript). Use for ANY question whose " +
+      "answer might live in a call — 'when will Yashmitha return', " +
+      "'when is my exam', 'how much did the repair cost', 'what was my " +
+      "last communication with X', 'did we fix a time yesterday'. Answer " +
+      "from the facts and transcript, not only the summary. This is the " +
+      "ONLY channel of past conversations: SMS and WhatsApp history " +
+      "cannot be read, so never route such questions there. Only calls " +
+      "made with analysis enabled exist here; if nothing matches, say so " +
+      "and mention the toggle.",
     risk: "low",
     inputSchema: {
       type: "object",
@@ -279,12 +280,13 @@ function registerBuiltins() {
       if (args.query) {
         params.push(`%${String(args.query).trim()}%`);
         wheres.push(
-          `(transcript ILIKE $${params.length} OR summary ILIKE $${params.length})`);
+          `(transcript ILIKE $${params.length} OR summary ILIKE ` +
+          `$${params.length} OR facts ILIKE $${params.length})`);
       }
       const { query } = require("../db");
       const rows = await query(
         `SELECT id, peer_name, peer_number, direction, started_at,
-                duration_s, summary, actions, status,
+                duration_s, summary, actions, status, facts,
                 LEFT(transcript, 4000) AS transcript_excerpt
            FROM call_records WHERE ${wheres.join(" AND ")}
           ORDER BY started_at DESC LIMIT 5`,

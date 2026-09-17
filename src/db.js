@@ -270,6 +270,11 @@ async function init() {
     );
     CREATE INDEX IF NOT EXISTS idx_call_records_user
       ON call_records (user_id, started_at DESC);
+    -- Full-analysis upgrade (2026-09-18): every concrete fact from the
+    -- call ("Yashmitha returns on the 21st", "exam Friday 10 am"), so the
+    -- agent can answer ANY question about it, not only the action items.
+    ALTER TABLE call_records ADD COLUMN IF NOT EXISTS
+      facts TEXT NOT NULL DEFAULT '[]';
 
     CREATE TABLE IF NOT EXISTS documents (
       id         SERIAL PRIMARY KEY,
