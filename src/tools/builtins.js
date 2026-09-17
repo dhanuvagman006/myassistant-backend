@@ -235,7 +235,10 @@ function registerBuiltins() {
       properties: {
         person: {
           type: "string",
-          description: "Name or number of the other party, if the user named one.",
+          description:
+            "Name or number of the other party. REQUIRED whenever the " +
+            "user names a person — never omit it and answer from " +
+            "somebody else's call.",
         },
         daysBack: {
           type: "number",
