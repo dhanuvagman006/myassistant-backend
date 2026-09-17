@@ -106,6 +106,20 @@ router.get("/recent", async (req, res) => {
   res.json({ calls: rows });
 });
 
+// The full record — everything the analysis understood about one call.
+// Owner-scoped: a call is the most private row this database holds.
+router.get("/:id(\\d+)", async (req, res) => {
+  const uid = Number(req.user.sub);
+  const row = await db.one(
+    `SELECT id, direction, peer_number, peer_name, started_at, duration_s,
+            summary, facts, actions, status, transcript
+       FROM call_records WHERE id = $1 AND user_id = $2`,
+    [Number(req.params.id), uid]
+  );
+  if (!row) return res.status(404).json({ error: "unknown call" });
+  res.json({ call: row });
+});
+
 // ---------------- upload + analysis pipeline ----------------
 
 router.post("/upload", upload.single("audio"), async (req, res) => {
@@ -148,19 +162,46 @@ router.post("/upload", upload.single("audio"), async (req, res) => {
     // record's status tells the story.
     res.status(202).json({ id: rec.id });
 
-    processCall(rec.id, uid, file.path, { peerName, peerNumber, startedAt })
-      .catch((e) => {
-        console.error(`calls: analysis of #${rec.id} failed —`, e.message);
-        db.run(`UPDATE call_records SET status='failed' WHERE id=$1`,
-          [rec.id]).catch(() => {});
-      })
-      .finally(clean);
+    enqueueAnalysis(() =>
+      processCall(rec.id, uid, file.path, { peerName, peerNumber, startedAt })
+        .catch((e) => {
+          console.error(`calls: analysis of #${rec.id} failed —`, e.message);
+          db.run(`UPDATE call_records SET status='failed' WHERE id=$1`,
+            [rec.id]).catch(() => {});
+        })
+        .finally(clean));
   } catch (e) {
     clean();
     console.error("calls: upload failed —", e.message);
     if (!res.headersSent) res.status(500).json({ error: "upload failed" });
   }
 });
+
+// ---------------- analysis queue ----------------
+// Transcription holds megabytes of audio in memory per call. Unbounded
+// concurrency meant five users hanging up together could stack five
+// buffers on a small pod — the classic way this feature would fall over
+// at scale. Two at a time, the rest wait their turn; upload latency is
+// unaffected because the HTTP answer already went out.
+const _queue = [];
+let _running = 0;
+function enqueueAnalysis(job) {
+  _queue.push(job);
+  drainAnalysis();
+}
+function drainAnalysis() {
+  while (_running < 2 && _queue.length) {
+    const job = _queue.shift();
+    _running++;
+    Promise.resolve()
+      .then(job)
+      .catch(() => {})
+      .finally(() => {
+        _running--;
+        drainAnalysis();
+      });
+  }
+}
 
 /** Media type by extension — the system recorder saves m4a/amr/mp3. */
 function mimeFor(name) {
@@ -173,7 +214,11 @@ function mimeFor(name) {
 
 /** Slice one mono 16-bit WAV file into playable WAV chunks of ~chunkSec. */
 function wavChunks(filePath, chunkSec = 180) {
-  const buf = fs.readFileSync(filePath);
+  // Memory ceiling: past ~90 MB (~45 min of 16 kHz WAV) transcribe what
+  // fits rather than risking the pod for one marathon call.
+  const CAP = 90 * 1024 * 1024;
+  let buf = fs.readFileSync(filePath);
+  if (buf.length > CAP) buf = buf.subarray(0, CAP);
   if (buf.length < 44 || buf.toString("ascii", 0, 4) !== "RIFF") {
     return [buf]; // not a WAV we recognise — try it whole
   }
