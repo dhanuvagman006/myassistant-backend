@@ -251,6 +251,26 @@ async function init() {
       v TEXT NOT NULL
     );
 
+    -- In-app dialer: one row per phone call the user chose to analyse.
+    -- Audio is transcribed then DELETED — only text lives here. consent_at
+    -- is when the user enabled AI call analysis (their standing consent).
+    CREATE TABLE IF NOT EXISTS call_records (
+      id          SERIAL PRIMARY KEY,
+      user_id     INTEGER NOT NULL,
+      direction   TEXT NOT NULL DEFAULT 'outgoing',  -- outgoing | incoming
+      peer_number TEXT NOT NULL DEFAULT '',
+      peer_name   TEXT NOT NULL DEFAULT '',
+      started_at  BIGINT NOT NULL,
+      duration_s  INTEGER NOT NULL DEFAULT 0,
+      consent_at  BIGINT NOT NULL DEFAULT 0,
+      transcript  TEXT NOT NULL DEFAULT '',
+      summary     TEXT NOT NULL DEFAULT '',
+      actions     TEXT NOT NULL DEFAULT '[]',        -- JSON: extracted items
+      status      TEXT NOT NULL DEFAULT 'processing' -- processing|done|failed
+    );
+    CREATE INDEX IF NOT EXISTS idx_call_records_user
+      ON call_records (user_id, started_at DESC);
+
     CREATE TABLE IF NOT EXISTS documents (
       id         SERIAL PRIMARY KEY,
       user_id    INTEGER NOT NULL,

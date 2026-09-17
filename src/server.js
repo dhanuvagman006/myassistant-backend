@@ -189,6 +189,8 @@ app.use("/assistant", appAuth, perUserLimit, assistantRoutes);
 // Onboarding survey + profile view (feeds users table + agent memory).
 app.use("/profile", appAuth, require("./routes/profile"));
 app.use("/phone", appAuth, require("./routes/phone"));
+// In-app dialer: call analysis uploads, history and the consent toggle.
+app.use("/calls", appAuth, require("./routes/calls").router);
 app.use("/contacts", appAuth, require("./routes/contacts"));
 
 // Phase 1 / ADR-004 — the user-visible audit trail of assistant actions.

@@ -216,6 +216,83 @@ function registerBuiltins() {
     },
   });
 
+  registry.register({
+    name: "call_recall",
+    description:
+      "Search the user's ANALYSED PHONE CALLS (the in-app dialer with AI " +
+      "call analysis on records and transcribes them). Use when the user " +
+      "asks what was said on a phone call — 'what did I speak with Ramesh " +
+      "4 days back', 'what was that call with the bank about', 'did we fix " +
+      "a time on yesterday's call'. Only calls made with analysis enabled " +
+      "exist here; if nothing matches, say so and mention the toggle.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        person: {
+          type: "string",
+          description: "Name or number of the other party, if the user named one.",
+        },
+        daysBack: {
+          type: "number",
+          description:
+            "How many days back to search, e.g. 4 for 'four days ago'. Omit for the last 30 days.",
+        },
+        query: {
+          type: "string",
+          description: "Topic words to find inside the calls, if the user gave any.",
+        },
+      },
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const days = Number(args.daysBack);
+      // "4 days back" means AROUND that day, not everything since — a ±1
+      // day window when a specific distance was named, else 30 days.
+      let from, to;
+      if (Number.isFinite(days) && days > 0) {
+        const target = Date.now() - days * 86400_000;
+        from = target - 86400_000;
+        to = target + 86400_000;
+      } else {
+        from = Date.now() - 30 * 86400_000;
+        to = Date.now() + 1;
+      }
+      const wheres = [`user_id = $1`, `started_at BETWEEN $2 AND $3`,
+        `status = 'done'`];
+      const params = [ctx.userId, from, to];
+      if (args.person) {
+        params.push(`%${String(args.person).trim()}%`);
+        wheres.push(
+          `(peer_name ILIKE $${params.length} OR peer_number ILIKE $${params.length})`);
+      }
+      if (args.query) {
+        params.push(`%${String(args.query).trim()}%`);
+        wheres.push(
+          `(transcript ILIKE $${params.length} OR summary ILIKE $${params.length})`);
+      }
+      const { query } = require("../db");
+      const rows = await query(
+        `SELECT id, peer_name, peer_number, direction, started_at,
+                duration_s, summary, actions,
+                LEFT(transcript, 4000) AS transcript_excerpt
+           FROM call_records WHERE ${wheres.join(" AND ")}
+          ORDER BY started_at DESC LIMIT 5`,
+        params
+      );
+      if (!rows.length) {
+        return {
+          ok: true,
+          data: { calls: [] },
+          speak:
+            "I don't have an analysed call matching that. Calls are only " +
+            "recorded when AI call analysis is switched on in Settings.",
+        };
+      }
+      return { ok: true, data: { calls: rows } };
+    },
+  });
+
   // ---------------- PEOPLE (clients/contacts the user told us about) ------
 
   const mem = require("../memory/service");
