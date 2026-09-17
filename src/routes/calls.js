@@ -237,8 +237,12 @@ async function processCall(id, uid, filePath, meta) {
     `Call started: ${when}.\n\nTRANSCRIPT:\n${transcript.slice(0, 24000)}\n\n` +
     `Reply with STRICT JSON only, no markdown fences:\n` +
     `{"summary":"<2-3 sentences, plain language>",` +
-    `"items":[{"kind":"reminder|meeting","text":"<what>",` +
+    `"items":[{"kind":"reminder|meeting|task|promise","text":"<what>",` +
     `"whenIso":"<ISO 8601 with timezone offset, or empty if no time was agreed>"}]}\n` +
+    `kind guide: meeting = a time two people agreed to meet or talk; ` +
+    `promise = something the phone owner committed to do for the other ` +
+    `person; task = work the owner has to do; reminder = anything else ` +
+    `worth surfacing at a time. ` +
     `Only include items the call ACTUALLY agreed on. No item is fine.`;
 
   const { reply } = await ai.generateReply(
@@ -256,13 +260,25 @@ async function processCall(id, uid, filePath, meta) {
     summary = String(reply).slice(0, 500);
   }
 
-  // 3. FILE THE ACTIONS into the user's real agenda. Meetings and
-  // reminders both land as reminders — that is the store the brief,
-  // the alarms and the home agenda all read from.
+  // 3. FILE THE ACTIONS where the app already looks for them: meetings,
+  // tasks and reminders into the reminders store (the brief, the alarms
+  // and the home agenda all read it); promises into the commitments
+  // store, which is the "Promises you made" section and its nudges.
   const filed = [];
   for (const it of items) {
     const text = String(it?.text || "").trim();
     if (!text) continue;
+    if (it.kind === "promise") {
+      const who = meta.peerName || meta.peerNumber || "";
+      const saved = await require("../commitments/service")
+        .extract(uid, `I promised ${who ? who + " " : ""}on a phone call: ${text}` +
+          (it.whenIso ? ` (by ${it.whenIso})` : ""), { source: "call" })
+        .catch(() => []);
+      for (const s of saved) {
+        filed.push({ kind: "promise", text: s.text, dueAt: s.due_at ?? null });
+      }
+      continue;
+    }
     const label = it.kind === "meeting" ? `Meeting: ${text}` : text;
     let dueAt = null;
     const t = Date.parse(String(it?.whenIso || ""));
