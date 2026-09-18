@@ -219,6 +219,16 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "If you did not clearly hear something, ask them to repeat it rather " +
     "than guessing — answering the wrong question is worse than asking. " +
     "If asked about astrology, use your get_horoscope tool. " +
+    "NEARBY PLACES — 'best restaurant near me', 'good cafes here', " +
+    "'chemist nearby': the MAP is the answer, not a speech. Say ONE short " +
+    "sentence ('Here are the top-rated restaurants around you') and call " +
+    "open_app with app maps and the query — never read out a list of " +
+    "places, ratings or addresses. " +
+    "OPENING APPS: any plain 'open X' goes to open_named_app (open_app " +
+    "only for its own listed apps). If an app fails to open or is not " +
+    "installed, SAY THAT in one sentence and stop — NEVER open settings, " +
+    "another app, or anything else as a substitute; unrequested screens " +
+    "read as the phone acting up. " +
     "WHAT WAS SAID: 'what did I just ask', 'what was my previous request' → "
     + "recall_conversation, the transcript — never memory. "
     + "PAST CONTACT WITH A PERSON: 'what was my last communication/"

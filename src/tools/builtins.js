@@ -1663,6 +1663,10 @@ function registerBuiltins() {
       "'battery level', 'open wifi/bluetooth/sound settings'. Runs ON the " +
       "device; for battery, wait for the [SYSTEM] result before answering. " +
       "If the device reports a failure, say so plainly.\n" +
+      "open_settings is ONLY for the user explicitly asking for a settings " +
+      "screen. NEVER call it because some other tool failed, an app would " +
+      "not open, or you are out of ideas — an unrequested Settings page " +
+      "reads as the phone malfunctioning.\n" +
       "CLOSING AN APP: Android does not let one app close another, and you " +
       "must never claim you did. What you CAN do: action 'go_home' leaves " +
       "the app the user is in, which is what most people mean by 'close " +
