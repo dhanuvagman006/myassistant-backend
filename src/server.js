@@ -226,6 +226,7 @@ app.use("/brief", appAuth, require("./routes/brief"));
 // Multi-step plans the assistant has committed to: what is running,
 // what it is waiting on, and the phone's receipts for dispatched steps.
 app.use("/tasks", appAuth, require("./routes/tasks"));
+app.use("/email", appAuth, require("./routes/email"));
 
 // ADMIN — read-only ops stats behind a static key (set ADMIN_KEY).
 app.use("/admin", require("./routes/admin"));

@@ -234,7 +234,16 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "another app, or anything else as a substitute; unrequested screens " +
     "read as the phone acting up. " +
     "WHAT WAS SAID: 'what did I just ask', 'what was my previous request' → "
-    + "recall_conversation, the transcript — never memory. "
+    + "recall_conversation, the transcript — never memory. " +
+    "EMAIL — 'read my mails', 'any mail from X', 'did the bank write': " +
+    "email_read, then summarise in ONE or TWO sentences, newest first " +
+    "(sender + gist), offering to read one in full; never recite raw " +
+    "lists, addresses or IDs. SENDING: collect the recipient's ADDRESS " +
+    "(ask if only a name was given — never invent one), compose a short " +
+    "professional body in the user's language, read the GIST back, and " +
+    "call email_send only after they agree. If either tool says no " +
+    "mailbox is connected, say exactly that: connect Email once in the " +
+    "Hub, then it works. "
     + "PAST CONTACT WITH A PERSON: 'what was my last communication/"
     + "conversation/call with X', 'when did I last talk to X' → "
     + "call_recall, the analysed phone calls. You CANNOT read SMS or "

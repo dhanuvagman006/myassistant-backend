@@ -1488,6 +1488,125 @@ function registerBuiltins() {
     },
   });
 
+  // ---------------- EMAIL (read + send, when asked) ----------------
+  // One mailbox per user, connected in Hub → Email. Both tools answer
+  // with a clear "connect it first" when no account is linked — the
+  // model must relay that instead of improvising.
+
+  registry.register({
+    name: "email_read",
+    description:
+      "Read/summarise the user's EMAIL INBOX when asked — 'read my " +
+      "mails', 'any new mail?', 'did the bank send something', 'mail " +
+      "from Ravi about the invoice'. Args narrow it: from (sender name " +
+      "or address), query (words in subject/body), unread_only, or uid " +
+      "(read ONE full message the user picked from a previous list). " +
+      "Without uid it returns the newest matching messages (sender, " +
+      "subject, when, unread) — summarise those in ONE or TWO spoken " +
+      "sentences, newest first; NEVER read out raw lists, addresses or " +
+      "message IDs. If it reports that no mailbox is connected, tell " +
+      "the user to connect their email once in the Hub → Email screen.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        from: { type: "string", description: "Sender name or address to filter by" },
+        query: { type: "string", description: "Words to search in subject/body" },
+        unread_only: { type: "boolean", description: "Only unread mail" },
+        uid: { type: "number", description: "Read this ONE message in full (uid from an earlier email_read result)" },
+        limit: { type: "number", description: "How many to fetch (default 5, max 10)" },
+      },
+    },
+    async execute(args, ctx) {
+      const email = require("../services/email");
+      const uid = Number(ctx?.userId || ctx?.uid || 0);
+      try {
+        if (args.uid) {
+          const m = await email.readBody(uid, Number(args.uid));
+          if (!m) return { ok: false, error: "couldn't fetch that message any more" };
+          return { ok: true, data: m };
+        }
+        const list = await email.listRecent(uid, {
+          from: args.from,
+          text: args.query,
+          unreadOnly: Boolean(args.unread_only),
+          limit: args.limit,
+        });
+        if (!list.length) {
+          return {
+            ok: true,
+            data: { messages: [] },
+            speak: args.from || args.query
+              ? "No mail matching that — want me to check the whole inbox?"
+              : "Your inbox has nothing new.",
+          };
+        }
+        return { ok: true, data: { messages: list } };
+      } catch (e) {
+        if (e?.code === "no_account") {
+          return {
+            ok: false,
+            error: "no mailbox connected",
+            speak:
+              "Your email isn't connected yet — open the Hub, tap Email, " +
+              "and link it once. After that I can read and send mail for you.",
+          };
+        }
+        return { ok: false, error: `mailbox unreachable: ${String(e.message || e).slice(0, 120)}` };
+      }
+    },
+  });
+
+  registry.register({
+    name: "email_send",
+    description:
+      "SEND an email from the user's own mailbox — 'mail ravi@x.com " +
+      "that I'll be late', 'send the report follow-up to my professor'. " +
+      "Needs a real email ADDRESS in `to`: if the user only named a " +
+      "person, ASK for the address (or find it in an earlier email_read " +
+      "result) — never guess one. Compose a short professional body in " +
+      "the user's language and normal prose (no markdown), read the " +
+      "GIST back, and call this only after the user agrees. If it " +
+      "reports no mailbox is connected, point the user to Hub → Email.",
+    risk: "high",
+    inputSchema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "Recipient email address (required, must contain @)" },
+        subject: { type: "string", description: "Short subject line" },
+        body: { type: "string", description: "The message body, plain text" },
+      },
+      required: ["to", "subject", "body"],
+    },
+    confirmSummary: (a) => `Email ${a.to}: ${String(a.subject || "").slice(0, 60)}`,
+    async execute(args, ctx) {
+      const email = require("../services/email");
+      const uid = Number(ctx?.userId || ctx?.uid || 0);
+      try {
+        const out = await email.send(uid, args);
+        return {
+          ok: true,
+          data: out,
+          speak: `Sent — your mail to ${args.to} is on its way.`,
+        };
+      } catch (e) {
+        if (e?.code === "no_account") {
+          return {
+            ok: false,
+            error: "no mailbox connected",
+            speak:
+              "Your email isn't connected yet — open the Hub, tap Email, " +
+              "and link it once. Then I can send this for you.",
+          };
+        }
+        if (e?.code === "bad_address") {
+          return { ok: false, error: "that recipient address is not a valid email address — ask the user for the correct one" };
+        }
+        return { ok: false, error: `send failed: ${String(e.message || e).slice(0, 120)}` };
+      }
+    },
+  });
+
   // ---------------- DEVICE ACTIONS ----------------
   // These CANNOT be performed by the server. Android/iOS require the app to
   // initiate them, so the tool returns an authorized action for the app and
