@@ -275,6 +275,11 @@ async function init() {
     -- agent can answer ANY question about it, not only the action items.
     ALTER TABLE call_records ADD COLUMN IF NOT EXISTS
       facts TEXT NOT NULL DEFAULT '[]';
+    -- Auto-understood shared documents (2026-09-18): what the document
+    -- ASKS OF the user — a timetable's classes, an invite's meeting —
+    -- as {kind, events:[{title, whenIso}], remindersSet} JSON.
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS
+      understanding TEXT NOT NULL DEFAULT '';
 
     CREATE TABLE IF NOT EXISTS documents (
       id         SERIAL PRIMARY KEY,

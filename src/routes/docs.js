@@ -14,6 +14,7 @@
 const router = require("express").Router();
 const multer = require("multer");
 const fs = require("fs");
+const db = require("../db");
 const docs = require("../docs/store");
 const { analyzeDocument } = require("../docs/analyze");
 const intelligence = require("../docs/intelligence");
@@ -78,10 +79,105 @@ async function analyzeInBackground(userId, row, buffer, mime) {
       `Saved a ${updated.category || "document"}: "${updated.title}" dated ${when}`,
       1 // minor context fact — first to be evicted when memory is full
     );
+
+    // UNDERSTAND, DON'T JUST FILE. A shared timetable or invite carries
+    // OBLIGATIONS — the user should never have to say "now set reminders
+    // from that image". Extract every dated commitment, file each as a
+    // reminder, record the verdict on the row (the app reads it to mirror
+    // events into the phone's calendar), and tell the user what happened.
+    await understandDocument(userId, updated).catch((e) =>
+      console.error("docs understanding failed (document kept):", e.message));
   } catch (e) {
     console.error("docs background analyze:", e.message);
   }
 }
+
+async function understandDocument(userId, doc) {
+  const text = String(doc.full_text || "").trim();
+  if (!text) {
+    await db.run(
+      `UPDATE documents SET understanding=$1 WHERE id=$2 AND user_id=$3`,
+      [JSON.stringify({ kind: "other", events: [], remindersSet: 0 }),
+       doc.id, userId]);
+    return;
+  }
+  const { generateReply } = require("../services/ai/router");
+  const now = new Date().toString();
+  const prompt =
+    `A user shared this document into their personal-assistant app. ` +
+    `Title: "${doc.title}". Category: ${doc.category}. Today is ${now} ` +
+    `(IST). Document text:\n${text.slice(0, 12000)}\n\n` +
+    `Reply STRICT JSON, no fences:\n` +
+    `{"kind":"timetable|meeting|invite|deadline|legal|other",` +
+    `"events":[{"title":"<short, e.g. 'Maths exam' or 'Meeting with Rao'>",` +
+    `"whenIso":"<ISO 8601 with +05:30 offset; empty if truly undated>"}]}\n` +
+    `events = every FUTURE dated commitment this document puts on the ` +
+    `user: exam slots, class times for the coming week, a meeting, a ` +
+    `hearing date, a payment due date. Nothing from the past, nothing ` +
+    `invented, at most 15. A legal contract or ID with no future date ` +
+    `has kind "legal" or "other" and an empty list.`;
+  let kind = "other";
+  let events = [];
+  try {
+    const { reply } = await generateReply(
+      [{ role: "user", content: prompt }],
+      { system: "You extract structured obligations from documents. JSON only." }
+    );
+    const j = JSON.parse(String(reply).replace(/^```json?\s*|```\s*$/g, ""));
+    kind = String(j.kind || "other");
+    if (Array.isArray(j.events)) events = j.events.slice(0, 15);
+  } catch (e) {
+    console.error("docs understanding parse failed:", e.message);
+  }
+
+  const reminders = require("../reminders/store");
+  const filed = [];
+  for (const ev of events) {
+    const title = String(ev?.title || "").trim();
+    const t = Date.parse(String(ev?.whenIso || ""));
+    if (!title || !Number.isFinite(t) || t < Date.now() - 60_000) continue;
+    const made = await reminders
+      .create(userId, title, t, "gentle")
+      .catch(() => null);
+    if (made) filed.push({ title, atMs: t });
+  }
+
+  await db.run(
+    `UPDATE documents SET understanding=$1 WHERE id=$2 AND user_id=$3`,
+    [JSON.stringify({ kind, events: filed, remindersSet: filed.length }),
+     doc.id, userId]);
+
+  // The user hears the OUTCOME, unprompted — that is the whole feature.
+  try {
+    const user = await db.findById(userId);
+    if (user?.fcm_token) {
+      const body = filed.length
+        ? `${filed.length} reminder${filed.length === 1 ? "" : "s"} set from "${doc.title}".`
+        : `"${doc.title}" saved — ask me about it any time.`;
+      await require("../services/push").sendNotification(
+        user.fcm_token, "Document understood", body, { kind: "doc_understood" });
+    }
+  } catch (_) {}
+}
+
+// The app polls this after a share to mirror extracted events into the
+// phone's own calendar. `ready` flips once background analysis finished.
+router.get("/:id(\\d+)/understanding", async (req, res) => {
+  const uid = Number(req.user.sub);
+  const row = await db.one(
+    `SELECT id, title, understanding FROM documents
+      WHERE id=$1 AND user_id=$2`,
+    [Number(req.params.id), uid]);
+  if (!row) return res.status(404).json({ error: "unknown document" });
+  if (!row.understanding) return res.json({ ready: false });
+  try {
+    return res.json({ ready: true, title: row.title,
+      ...JSON.parse(row.understanding) });
+  } catch (_) {
+    return res.json({ ready: true, title: row.title, kind: "other",
+      events: [], remindersSet: 0 });
+  }
+});
 
 // One attempt per document per server boot — a doc that failed analysis
 // (key missing at the time, quota, junk output) is retried when it's next
