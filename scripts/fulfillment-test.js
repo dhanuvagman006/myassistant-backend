@@ -137,14 +137,16 @@ test("booking by phone is high risk, so it cannot run without approval", () => {
 
 test("booking by phone refuses honestly when telephony is unconfigured", async () => {
   const registry = require("../src/tools/registry");
-  const saved = process.env.PLIVO_AUTH_ID;
-  delete process.env.PLIVO_AUTH_ID;
+  const saved = { b: process.env.BOLNA_API_KEY, r: process.env.RETELL_API_KEY };
+  delete process.env.BOLNA_API_KEY;
+  delete process.env.RETELL_API_KEY;
   const res = await registry.execute(
     "book_by_calling_business",
     { business_name: "Some Clinic", kind: "appointment" },
     { userId: 1, approved: true }
   );
-  if (saved) process.env.PLIVO_AUTH_ID = saved;
+  if (saved.b) process.env.BOLNA_API_KEY = saved.b;
+  if (saved.r) process.env.RETELL_API_KEY = saved.r;
   assert.strictEqual(res.ok, false, "must not report success without telephony");
   assert.ok(/not configured|isn't configured/i.test(res.error), res.error);
 });

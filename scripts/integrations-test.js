@@ -80,12 +80,14 @@ async function atest(name, fn) {
   });
 
   test("no telephony means no negotiation, stated honestly", async () => {
-    const saved = process.env.PLIVO_AUTH_ID;
-    delete process.env.PLIVO_AUTH_ID;
+    const saved = { b: process.env.BOLNA_API_KEY, r: process.env.RETELL_API_KEY };
+    delete process.env.BOLNA_API_KEY;
+    delete process.env.RETELL_API_KEY;
     const out = await negotiator.start({
       userId: 1, contact: { name: "Ravi", phone: "+919876543210" }, slots: SLOTS,
     });
-    if (saved) process.env.PLIVO_AUTH_ID = saved;
+    if (saved.b) process.env.BOLNA_API_KEY = saved.b;
+    if (saved.r) process.env.RETELL_API_KEY = saved.r;
     assert.strictEqual(out.ok, false);
     assert.strictEqual(out.reason, "telephony");
   });

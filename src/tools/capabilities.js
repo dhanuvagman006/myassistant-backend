@@ -62,9 +62,9 @@ const INTEGRATIONS = {
     env: ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"],
     why: "collecting a payment needs the payment gateway configured",
   },
-  plivo: {
-    label: "Plivo",
-    env: ["PLIVO_AUTH_ID", "PLIVO_AUTH_TOKEN", "PLIVO_FROM_NUMBER"],
+  bolna: {
+    label: "Bolna calling",
+    env: ["BOLNA_API_KEY", "BOLNA_FROM_NUMBER", "BOLNA_AGENT_ID"],
     why: "placing a call on the user's behalf needs the telephony provider configured",
   },
   places: {

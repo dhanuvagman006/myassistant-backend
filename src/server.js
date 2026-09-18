@@ -99,7 +99,6 @@ app.use(
     normalizePath: [
       ["^/docs/\\d+.*", "/docs/#id"],
       ["^/reminders/\\d+", "/reminders/#id"],
-      ["^/agent-call/plivo/[^/]+/", "/agent-call/plivo/#id/"],
       ["^/agent-call/[a-f0-9]{16,}", "/agent-call/#id"],
       ["^/admin-panel/api/recordings/\\d+.*", "/admin-panel/api/recordings/#id"],
     ],
@@ -154,13 +153,12 @@ const perUserLimit = rateLimit({
   keyGenerator: (req) => String(req.user?.sub || req.ip),
 });
 
-// AGENT CALLS — Hari phones a contact and reports back.
-// Plivo webhooks are PUBLIC (Plivo can't send our app key); they are guarded
-// by a per-call token embedded in the path and MUST be mounted before the
-// app-facing routes so they don't hit appAuth.
+// AGENT CALLS — Hari phones a contact (or the user themself) and reports
+// back. Provider webhooks are PUBLIC (Bolna/Retell can't send our app key):
+// gated by a key-derived URL secret, mounted before appAuth.
 const agentCall = require("./routes/agentCall");
-app.use("/agent-call/plivo", agentCall.webhooks);
 app.use("/agent-call/retell", agentCall.retellWebhooks);
+app.use("/agent-call/bolna", agentCall.bolnaWebhooks);
 app.use("/agent-call", appAuth, perUserLimit, agentCall.router);
 
 // INBOUND CALLING — Hari answers the user's own number: screens callers,

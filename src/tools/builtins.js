@@ -1546,11 +1546,8 @@ function registerBuiltins() {
       const agentAvailable = require("../agents/agentCall").enabled();
       const relaying = Boolean(args.message) && agentAvailable;
 
-      // "Call ME" — a wake-up call / spoken reminder to the user's own
-      // phone. No contact lookup exists for "me": the server already knows
-      // the verified number, so the call is placed right here and the
-      // device is not involved at all. Redial-on-no-answer applies, which
-      // is the entire point of a wake-up call.
+      // "Call ME" — wake-up call to the user's own verified number, placed
+      // right here (no contact lookup, no device). Redials if unanswered.
       if (/^(me|myself|my\s*(own\s*)?(phone|number|mobile))$/i.test(String(args.name || "").trim())) {
         if (!agentAvailable) {
           return {
@@ -4992,11 +4989,11 @@ function registerBuiltins() {
   // prevent, and the user would have discovered it by turning up at a
   // clinic that had never heard of them.
   //
-  // It now uses the real Plivo agent-call engine that was already in the
-  // codebase (src/agents/agentCall.js), pointed at a business number
-  // resolved from Google Places. Hari genuinely dials, genuinely asks, and
-  // reports what the business genuinely said. When telephony is not
-  // configured on this deployment, it says so instead of pretending.
+  // It now uses the real agent-call engine (src/agents/agentCall.js,
+  // Bolna/Retell), pointed at a business number resolved from Google
+  // Places. Hari genuinely dials, genuinely asks, and reports what the
+  // business genuinely said. When telephony is not configured on this
+  // deployment, it says so instead of pretending.
 
   registry.register({
     name: "book_by_calling_business",

@@ -1,92 +1,52 @@
 /**
- * AGENT CALLS — Hari phones the user's contact, delivers or asks something
- * on the user's behalf, and hangs up on its own.
+ * AGENT CALLS — Hari phones a real number, speaks on the user's behalf
+ * (or wakes the user themself), and reports the true outcome.
  *
- * "Call mom and tell her I'll be late"  -> Hari dials mom, speaks the message
- *                                          in a natural voice, and ends the
- *                                          call automatically.
- * "Call the clinic and ask when I can come in" -> Hari asks, captures the
- *                                          spoken reply, and reports it back.
- *
- * Telephony provider: PLIVO (India-capable, per-minute, simple XML control).
- * The phone's own dialer is never used, so the app's voice loop keeps running
- * while the call happens and speaks the outcome the moment it lands.
- *
- * Flow:
- *   1. app POST /agent-call            -> we place a Plivo call, return {id}
- *   2. Plivo answers  -> GET/POST /agent-call/plivo/:id/:token/answer
- *                        we return Plivo XML: speak the message; for an
- *                        "ask" task, gather the reply; then hang up.
- *   3. reply captured  -> /agent-call/plivo/:id/:token/gather
- *   4. call ends       -> /agent-call/plivo/:id/:token/hangup (status)
- *   5. app polls GET /agent-call/:id until a terminal state, then speaks
- *      `result`.
- *
- * Env (feature hidden — returns 503 — while unset, so the app falls back to
- * a normal direct dial):
- *   PLIVO_AUTH_ID, PLIVO_AUTH_TOKEN   from console.plivo.com
- *   PLIVO_FROM_NUMBER                 a Plivo voice-enabled number (E.164)
- *   PUBLIC_BASE_URL                   https URL Plivo can reach for webhooks
- *   PLIVO_VOICE                       optional, default "Polly.Aditi"
- *   AGENT_CALL_DAILY_LIMIT            optional, default 20 calls/user/day
+ * Providers, in order: BOLNA (Indian +91 caller ID; the live choice),
+ * RETELL (US +1 number; complete fallback). Both are hosted agents driven
+ * by per-call variables; both report back through a webhook. The feature
+ * is hidden (503 → app falls back to a direct dial) until one provider's
+ * three env vars are set:
+ *   BOLNA_API_KEY  BOLNA_FROM_NUMBER  BOLNA_AGENT_ID
+ *   RETELL_API_KEY RETELL_FROM_NUMBER RETELL_AGENT_ID
+ * plus PUBLIC_BASE_URL for webhooks. No answer → automatic redial after
+ * AGENT_CALL_RETRY_MS (default 5 min), up to AGENT_CALL_MAX_ATTEMPTS
+ * (default 3); the final outcome is pushed to the user's phone.
  */
 
 const crypto = require("crypto");
 const { generateReply } = require("../services/ai/router");
 
-const PLIVO_BASE = "https://api.plivo.com/v1";
-
 function cfg() {
   return {
-    authId: process.env.PLIVO_AUTH_ID || "",
-    authToken: process.env.PLIVO_AUTH_TOKEN || "",
-    from: process.env.PLIVO_FROM_NUMBER || "",
     base: (process.env.PUBLIC_BASE_URL || "").replace(/\/$/, ""),
-    voice: process.env.PLIVO_VOICE || "Polly.Aditi",
     dailyLimit: Number(process.env.AGENT_CALL_DAILY_LIMIT || 20),
-    // ---- Retell AI (conversational agent calls — the current provider).
-    // The agent holds a REAL two-way conversation, and the webhook hands
-    // back the transcript + summary, so "ask Allen if he's coming" gets an
-    // actual answer instead of a one-shot recording.
     retellKey: process.env.RETELL_API_KEY || "",
     retellFrom: process.env.RETELL_FROM_NUMBER || "",
     retellAgent: process.env.RETELL_AGENT_ID || "",
-    // ---- No-answer redial. A wake-up call that gives up after one ring
-    // defeats its purpose: ring again after a pause, a bounded number of
-    // times, then tell the user it never got through.
+    bolnaKey: process.env.BOLNA_API_KEY || "",
+    bolnaFrom: process.env.BOLNA_FROM_NUMBER || "",
+    bolnaAgent: process.env.BOLNA_AGENT_ID || "",
     retryMs: Number(process.env.AGENT_CALL_RETRY_MS || 5 * 60 * 1000),
     maxAttempts: Number(process.env.AGENT_CALL_MAX_ATTEMPTS || 3),
   };
 }
 
-/** Which telephony provider is configured. PLIVO is the choice: it hands
- *  us a real Indian number and a bidirectional media WebSocket, so the
- *  call runs on our own model with the user's own memory rather than on
- *  somebody else's hosted agent. Exotel was removed entirely on
- *  2026-09-13 (balance exhausted, and its dashboard flows could not be
- *  driven by response XML, so there was no usable two-way path). */
 function provider() {
   const c = cfg();
-  // PLIVO FIRST, deliberately. Exotel is gone (removed 2026-09-13 — the
-  // account's balance was exhausted and it could not be driven by response
-  // XML anyway), and Retell was rejected: it is a hosted agent, and the
-  // requirement here is a number we can bridge straight to our own
-  // WebSocket so the call runs on our model with the user's own memory.
-  // Retell stays only as an inert fallback for an account that already
-  // has it; a configured Plivo always wins.
-  if (c.authId && c.authToken && c.from) return "plivo";
+  if (c.bolnaKey && c.bolnaFrom && c.bolnaAgent) return "bolna";
   if (c.retellKey && c.retellFrom && c.retellAgent) return "retell";
   return null;
 }
 
-/** The feature is available only when telephony + a reachable base URL exist. */
 function enabled() {
   return Boolean(provider() && cfg().base);
 }
 
 // ---------------- IN-MEMORY CALL STORE ----------------
-// Agent calls are short-lived (< 3 min). A Map with TTL cleanup is plenty;
-// move to Postgres later if cross-restart durability is ever needed.
+// Calls live minutes, not days: a Map with TTL is enough. A pod restart
+// drops pending redial timers — the push on the final outcome is the
+// contract the user can rely on, not the timer.
 
 const calls = new Map(); // id -> record
 const CALL_TTL_MS = 15 * 60 * 1000;
@@ -96,14 +56,15 @@ function gc() {
   for (const [id, c] of calls) {
     if (now - c.createdAt > CALL_TTL_MS) calls.delete(id);
   }
+  for (const [execId, rec] of bolnaExecs) {
+    if (now - rec.createdAt > CALL_TTL_MS) bolnaExecs.delete(execId);
+  }
 }
 setInterval(gc, 5 * 60 * 1000).unref?.();
 
-// Per-user daily counter (resets by date string).
 const dayCounts = new Map(); // `${userId}:${yyyy-mm-dd}` -> n
 function bumpDaily(userId) {
   const key = `${userId}:${new Date().toISOString().slice(0, 10)}`;
-  // Yesterday's keys are dead weight forever — sweep them on write.
   const today = key.slice(-10);
   for (const k of dayCounts.keys()) {
     if (!k.endsWith(today)) dayCounts.delete(k);
@@ -113,27 +74,10 @@ function bumpDaily(userId) {
   return n;
 }
 function dailyCount(userId) {
-  const key = `${userId}:${new Date().toISOString().slice(0, 10)}`;
-  return dayCounts.get(key) || 0;
+  return dayCounts.get(`${userId}:${new Date().toISOString().slice(0, 10)}`) || 0;
 }
 
-// ---------------- LANGUAGE / VOICE ----------------
-
-// Plivo <Speak> uses an Amazon Polly voice (namespaced "Polly."). Aditi is
-// bilingual Indian-English + Hindi, a natural default for India; the voice
-// itself carries the language, so <Speak> takes NO language attribute. The
-// ASR language (for GetInput speech recognition) is returned separately.
-function voiceFor(lang) {
-  const c = cfg();
-  const l = String(lang || "en").toLowerCase().slice(0, 2);
-  const asr = {
-    hi: "hi-IN", en: "en-IN", ta: "ta-IN", te: "te-IN",
-    kn: "kn-IN", ml: "ml-IN", bn: "bn-IN", mr: "mr-IN",
-  }[l] || "en-IN";
-  return { voice: c.voice, asrLang: asr };
-}
-
-// ---------------- TASK MODE + SCRIPT ----------------
+// ---------------- TASK MODE ----------------
 
 // "ask / find out / when / what time" => two-way; otherwise a one-way notice.
 const ASK_RX =
@@ -143,23 +87,19 @@ function detectMode(task) {
   return ASK_RX.test(String(task || "")) ? "ask" : "inform";
 }
 
-/**
- * Generate the natural spoken script for the call. Returns
- * { mode, speech, closing } — `speech` is the main line (the message to
- * deliver, or the question to ask); `closing` is a short sign-off.
- */
+/** Preview-only: the opening line the agent would say (LLM round-trip —
+ *  live calls never pay it; the hosted agent speaks from its own prompt). */
 async function buildScript({ userName, contactName, task, lang }) {
   const mode = detectMode(task);
   const who = userName ? userName : "the caller";
   const sys =
-    "You write a SHORT phone script for an AI assistant that is calling " +
-    "someone ON BEHALF OF a user. You are the assistant speaking to the " +
-    "CONTACT (not to the user). Be warm, brief and natural — this is spoken " +
-    "aloud on a phone call. Identify yourself in one clause as calling on " +
+    "You write a SHORT phone script for an AI assistant calling someone ON " +
+    "BEHALF OF a user. You speak to the CONTACT, not the user. Warm, brief, " +
+    "natural. Identify yourself in one clause as calling on " +
     `${who}'s behalf. ` +
     (mode === "ask"
-      ? "The user wants you to ASK the contact something and get their answer. "
-      : "The user wants you to INFORM the contact of something; do not ask a question. ") +
+      ? "ASK the contact the user's question. "
+      : "INFORM the contact; do not ask a question. ") +
     "Reply with STRICT JSON only, no markdown: " +
     '{"speech":"<the main thing you say>","closing":"<a short sign-off>"}. ' +
     "Keep speech to 1-2 sentences. Use ONLY the language of code " +
@@ -168,98 +108,28 @@ async function buildScript({ userName, contactName, task, lang }) {
   const user =
     `User's name: ${who}. Contact's name: ${contactName}. ` +
     `What the user asked me to do: "${task}".`;
-
   try {
-    const { reply } = await generateReply(
-      [{ role: "user", content: user }],
-      { system: sys }
-    );
+    const { reply } = await generateReply([{ role: "user", content: user }], { system: sys });
     const parsed = JSON.parse(stripFences(reply));
     const speech = String(parsed.speech || "").trim();
-    const closing =
-      String(parsed.closing || "").trim() || defaultClosing(lang);
-    if (speech) return { mode, speech, closing };
-  } catch (_) {
-    /* fall through to a safe template */
-  }
-  // Safe fallback template if the model misbehaves.
-  const hi = /^hi/i.test(lang || "");
-  if (mode === "ask") {
-    return {
-      mode,
-      speech: hi
-        ? `नमस्ते, मैं ${who} की ओर से बात कर रहा हूँ। ${task}`
-        : `Hello, I'm calling on behalf of ${who}. ${task}`,
-      closing: defaultClosing(lang),
-    };
-  }
+    if (speech) return { mode, speech };
+  } catch (_) {}
   return {
     mode,
-    speech: hi
-      ? `नमस्ते, मैं ${who} की ओर से एक संदेश दे रहा हूँ। ${task}`
-      : `Hello, I'm calling on behalf of ${who} with a message. ${task}`,
-    closing: defaultClosing(lang),
+    speech:
+      mode === "ask"
+        ? `Hello, I'm calling on behalf of ${who}. ${task}`
+        : `Hello, I'm calling on behalf of ${who} with a message. ${task}`,
   };
 }
 
-function defaultClosing(lang) {
-  return /^hi/i.test(lang || "") ? "धन्यवाद, अलविदा।" : "Thank you, goodbye.";
-}
-
 function stripFences(s) {
-  return String(s || "")
-    .replace(/```json/gi, "")
-    .replace(/```/g, "")
-    .trim();
+  return String(s || "").replace(/```json/gi, "").replace(/```/g, "").trim();
 }
 
-// ---------------- RESULT SUMMARY (spoken back to the user) ----------------
+// ---------------- RETELL ----------------
 
-/**
- * Turn the contact's raw spoken reply into a clean first-person report for
- * the user, in the user's language.
- */
-async function summarizeAnswer({ contactName, task, answer, lang }) {
-  const raw = String(answer || "").trim();
-  if (!raw) {
-    return `I spoke with ${contactName}, but couldn't make out their reply clearly.`;
-  }
-  const sys =
-    "You are reporting back to a user what their contact said on a phone " +
-    "call you just made for them. Write ONE or TWO short spoken sentences, " +
-    "first person ('I asked … they said …'). Use ONLY the language of code " +
-    `"${(lang || "en").slice(0, 2)}" (fallback to simple English). No markdown.`;
-  const user =
-    `Contact: ${contactName}. What I was asked to do: "${task}". ` +
-    `What the contact said (raw transcript): "${raw}".`;
-  try {
-    const { reply } = await generateReply(
-      [{ role: "user", content: user }],
-      { system: sys }
-    );
-    const out = String(reply || "").trim();
-    if (out) return out;
-  } catch (_) {}
-  return `I spoke with ${contactName}. They said: ${raw}`;
-}
-
-// ---------------- PLIVO ----------------
-
-function xmlEscape(s) {
-  return String(s || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
-/**
- * RETELL — one dashboard agent handles every call; the per-call task rides
- * in as dynamic variables the agent's prompt references ({{task}},
- * {{contact_name}}, {{user_name}}, {{mode}}). The webhook below settles
- * the record from call_ended / call_analyzed.
- */
+/** One dashboard agent; the per-call task rides in as {{variables}}. */
 async function retellPlaceCall({ to, rec }) {
   const c = cfg();
   const r = await fetch("https://api.retellai.com/v2/create-phone-call", {
@@ -268,6 +138,7 @@ async function retellPlaceCall({ to, rec }) {
       Authorization: `Bearer ${c.retellKey}`,
       "Content-Type": "application/json",
     },
+    signal: AbortSignal.timeout(15000),
     body: JSON.stringify({
       from_number: c.retellFrom,
       to_number: to,
@@ -275,10 +146,9 @@ async function retellPlaceCall({ to, rec }) {
       retell_llm_dynamic_variables: {
         task: rec.task || "",
         contact_name: rec.contactName || "there",
-        user_name: rec.script?.userName || rec.userName || "the caller",
-        // "self" = the assistant is ringing its OWN user (wake-up call /
-        // reminder), so "I'm calling on behalf of X" would be nonsense —
-        // the dashboard prompt branches on this.
+        user_name: rec.userName || "the caller",
+        // "self" = ringing the user THEMSELF (wake-up call); the dashboard
+        // prompt branches on it and drops "on behalf of".
         mode: rec.selfCall ? "self" : rec.mode || "inform",
       },
       metadata: { rec_id: rec.id, token: rec.token },
@@ -292,17 +162,11 @@ async function retellPlaceCall({ to, rec }) {
   return j.call_id || rec.id;
 }
 
-/**
- * Retell webhook (POST /agent-call/retell/webhook/:secret). The URL secret
- * plus the per-call metadata token gate it; the record is matched by
- * metadata.rec_id. call_ended maps busy/no-answer; call_analyzed carries
- * the transcript + summary that become the spoken outcome.
- */
+/** Webhook: gated by the URL secret + per-call metadata token. */
 function retellWebhook(body) {
   const event = String(body?.event || "");
   const call = body?.call || {};
-  const recId = String(call?.metadata?.rec_id || "");
-  const rec = calls.get(recId);
+  const rec = calls.get(String(call?.metadata?.rec_id || ""));
   if (!rec || String(call?.metadata?.token || "") !== rec.token) return false;
 
   if (event === "call_started") {
@@ -312,8 +176,7 @@ function retellWebhook(body) {
   if (event === "call_ended") {
     const why = String(call?.disconnection_reason || "").toLowerCase();
     if (/dial_failed|invalid/.test(why)) {
-      // A number that doesn't connect won't start connecting in 5 minutes —
-      // never redial these, say what happened instead.
+      // A number that doesn't connect won't start connecting in 5 minutes.
       rec.retryPending = false;
       rec.state = "failed";
       rec.result = `The call to ${rec.contactName} didn't connect — the number may be wrong.`;
@@ -321,222 +184,124 @@ function retellWebhook(body) {
     } else if (/busy|no.?answer|voicemail/.test(why)) {
       handleNoAnswer(rec);
     } else if (rec.state !== "completed") {
-      // Connected and ended normally — the analysis event lands seconds
-      // later with the summary; mark it so the poller keeps waiting.
+      // Ended normally; call_analyzed lands seconds later with the summary.
       rec.state = "summarizing";
       rec.answer = String(call?.transcript || "").slice(0, 4000) || rec.answer;
     }
     return true;
   }
   if (event === "call_analyzed") {
+    if (!["dialing", "in_progress", "summarizing"].includes(rec.state)) return true;
     rec.answer = String(call?.transcript || rec.answer || "").slice(0, 4000);
-    const summary = String(call?.call_analysis?.call_summary || "").trim();
-    rec.result = summary
-      ? `I spoke with ${rec.contactName}. ${summary}`
-      : rec.result || `I spoke with ${rec.contactName}, but couldn't summarise the call.`;
-    rec.state = "completed";
-    settle(rec);
+    finishCompleted(rec, String(call?.call_analysis?.call_summary || "").trim());
     return true;
   }
   return true;
 }
 
-async function plivoPlaceCall({ to, id, token }) {
-  const c = cfg();
-  const answerUrl = `${c.base}/agent-call/plivo/${id}/${token}/answer`;
-  const hangupUrl = `${c.base}/agent-call/plivo/${id}/${token}/hangup`;
-  const auth = Buffer.from(`${c.authId}:${c.authToken}`).toString("base64");
+// ---------------- BOLNA ----------------
 
-  const r = await fetch(`${PLIVO_BASE}/Account/${c.authId}/Call/`, {
+// Bolna's webhook carries no custom metadata: executions are matched by
+// execution id, and only the CURRENT attempt's id is live on the record.
+const bolnaExecs = new Map(); // execution_id -> rec
+
+async function bolnaPlaceCall({ to, rec }) {
+  const c = cfg();
+  const r = await fetch("https://api.bolna.ai/call", {
     method: "POST",
     headers: {
-      "content-type": "application/json",
-      authorization: `Basic ${auth}`,
+      Authorization: `Bearer ${c.bolnaKey}`,
+      "Content-Type": "application/json",
     },
     signal: AbortSignal.timeout(15000),
     body: JSON.stringify({
-      from: c.from,
-      to,
-      answer_url: answerUrl,
-      answer_method: "POST",
-      hangup_url: hangupUrl,
-      hangup_method: "POST",
-      ring_timeout: 30,
+      agent_id: c.bolnaAgent,
+      recipient_phone_number: to,
+      from_phone_number: c.bolnaFrom,
+      user_data: {
+        task: rec.task || "",
+        contact_name: rec.contactName || "there",
+        user_name: rec.userName || "the caller",
+        mode: rec.selfCall ? "self" : rec.mode || "inform",
+      },
     }),
   });
-  const body = await r.json().catch(() => ({}));
-  if (r.status !== 201 && r.status !== 200) {
-    throw new Error(`plivo ${r.status} ${JSON.stringify(body).slice(0, 200)}`);
+  if (!r.ok) {
+    const body = await r.text().catch(() => "");
+    throw new Error(`bolna call ${r.status}: ${body.slice(0, 200)}`);
   }
-  return body.request_uuid || null;
+  const j = await r.json();
+  const execId = String(j.execution_id || "");
+  if (!execId) throw new Error("bolna call: no execution_id in response");
+  rec.bolnaExec = execId;
+  bolnaExecs.set(execId, rec);
+  return execId;
 }
 
-// ---------------- PUBLIC API (used by routes) ----------------
+/** Webhook: the raw execution, POSTed several times as status advances —
+ *  handlers must be idempotent, and "completed" alone does NOT mean anyone
+ *  spoke (a voicemail pickup completes with conversation_duration 0). */
+function bolnaWebhook(body) {
+  const execId = String(body?.id || body?.execution_id || "");
+  const rec = bolnaExecs.get(execId);
+  if (!rec || rec.bolnaExec !== execId) return false; // stale attempt / unknown
 
-/** Preview: the opening line + a verdict on the user's call rules. */
-async function preview({ userName, contactName, task, lang }) {
-  const script = await buildScript({ userName, contactName, task, lang });
-  return { opening: script.speech, allowed: true, reason: null, mode: script.mode };
-}
-
-/**
- * Place an agent call. Returns { id } (202). Throws { code:"unavailable" }
- * when telephony isn't configured, or { code:"quota" } over the daily limit.
- */
-async function start({ userId, userName, toNumber, contactName, task, lang, selfCall }) {
-  if (!enabled()) throw { code: "unavailable" };
-  const to = normalizeNumber(toNumber);
-  if (!to) throw { code: "bad_number" };
-
-  const c = cfg();
-  if (userId && dailyCount(userId) >= c.dailyLimit) {
-    throw { code: "quota" };
+  const status = String(body?.status || "").toLowerCase();
+  if (["queued", "scheduled", "rescheduled", "ringing", "in-progress"].includes(status)) {
+    if (rec.state === "dialing" && status === "in-progress") rec.state = "in_progress";
+    return true;
   }
+  if (!["dialing", "in_progress", "summarizing"].includes(rec.state)) return true; // duplicate
 
-  const id = crypto.randomBytes(12).toString("hex");
-  const token = crypto.randomBytes(8).toString("hex");
-  const script = await buildScript({ userName, contactName, task, lang });
-
-  const rec = {
-    id,
-    token,
-    userId: userId || null,
-    to,
-    contactName,
-    task,
-    lang: lang || "en",
-    userName: userName || null,
-    mode: script.mode,
-    script,
-    state: "dialing",
-    result: null,
-    answer: null,
-    plivoUuid: null,
-    createdAt: Date.now(),
-    // Redial bookkeeping. `attempt` is 1-based; `retryPending` marks the
-    // app-visible "no answer" as NON-final so settle() holds off; once a
-    // retry runs, the app has stopped polling, so the eventual outcome
-    // travels by push instead (`pushOutcome`). Self-calls ("wake me up")
-    // are never followed by a poller at all — push from the start.
-    attempt: 1,
-    retryPending: false,
-    pushOutcome: Boolean(selfCall),
-    selfCall: Boolean(selfCall),
-  };
-  calls.set(id, rec);
-
-  try {
-    rec.plivoUuid =
-      provider() === "retell"
-        ? await retellPlaceCall({ to, rec })
-        : await plivoPlaceCall({ to, id, token });
-    if (userId) bumpDaily(userId);
-  } catch (e) {
-    rec.state = "failed";
-    settle(rec);
-    rec.result = `I couldn't start the call to ${contactName} just now.`;
-    throw { code: "failed", message: String(e.message || e) };
+  if (status === "busy" || status === "no-answer") {
+    handleNoAnswer(rec);
+    return true;
   }
-  return { id };
-}
-
-/**
- * Poll status for the app.
- *
- * `answer` is the RAW transcript of what the other party said, alongside
- * the prose `result` written for the user. Callers that must act on the
- * reply — the meeting negotiator has to work out which slot was agreed —
- * need the actual words, not a summary of them.
- */
-function status(id) {
-  const rec = calls.get(id);
-  if (!rec) return null;
-  return { state: rec.state, result: rec.result, answer: rec.answer || null };
-}
-
-// ---------------- WEBHOOK HANDLERS (called by Plivo) ----------------
-
-function get(id, token) {
-  const rec = calls.get(id);
-  if (!rec || rec.token !== token) return null;
-  return rec;
-}
-
-/** Build the answer XML: speak the message, gather a reply if asking, hang up. */
-function answerXml(rec) {
-  const c = cfg();
-  const v = voiceFor(rec.lang);
-  const speakOpen = `<Speak voice="${v.voice}">`;
-  const speech = xmlEscape(rec.script.speech);
-  const closing = xmlEscape(rec.script.closing);
-
-  if (rec.state === "dialing") rec.state = "in_progress";
-
-  if (rec.mode === "ask") {
-    const action = `${c.base}/agent-call/plivo/${rec.id}/${rec.token}/gather`;
-    // Speak the question inside GetInput; capture the spoken reply. If no
-    // reply is heard, a short retry line plays, then we hang up.
-    return (
-      `<?xml version="1.0" encoding="UTF-8"?>` +
-      `<Response>` +
-      `<GetInput inputType="speech" action="${action}" method="POST" ` +
-      `speechEndTimeout="auto" language="${v.asrLang}">` +
-      `${speakOpen}${speech}</Speak>` +
-      `</GetInput>` +
-      `${speakOpen}${closing}</Speak>` +
-      `<Hangup/>` +
-      `</Response>`
-    );
+  if (status === "completed") {
+    const secs = Number(body?.conversation_duration || 0);
+    const transcript = String(body?.transcript || "");
+    const theySpoke = /^user\s*:/im.test(transcript);
+    // An INFORM call counts once it was heard (secs > 0); an ASK needs the
+    // contact's words; a WAKE-UP call needs the USER'S words — a voicemail
+    // greeting must never count as the user being awake.
+    if (secs <= 0 || (!theySpoke && (rec.selfCall || rec.mode === "ask"))) {
+      handleNoAnswer(rec);
+      return true;
+    }
+    rec.answer = transcript.slice(0, 4000) || rec.answer;
+    finishCompleted(rec, String(body?.summary || "").trim());
+    return true;
   }
-
-  // INFORM: deliver the message and hang up — the call cuts itself.
-  return (
-    `<?xml version="1.0" encoding="UTF-8"?>` +
-    `<Response>` +
-    `${speakOpen}${speech}</Speak>` +
-    `${speakOpen}${closing}</Speak>` +
-    `<Hangup/>` +
-    `</Response>`
-  );
+  // failed / canceled / stopped / error / balance-low
+  rec.retryPending = false;
+  rec.state = "failed";
+  rec.result =
+    status === "balance-low"
+      ? "The call couldn't be placed — the calling balance is used up and needs a top-up."
+      : `I couldn't complete the call to ${rec.selfCall ? "your phone" : rec.contactName}.`;
+  settle(rec);
+  return true;
 }
 
-/** GetInput action: the contact's reply arrived. Store + finalize. */
-async function onGather(rec, params) {
-  const spoken = String(params.Speech || params.SpeechResult || "").trim();
-  rec.answer = spoken;
-  rec.state = "summarizing";
-  const v = voiceFor(rec.lang);
-  const speakOpen = `<Speak voice="${v.voice}">`;
+// ---------------- OUTCOME + REDIAL ----------------
 
-  // Finalize the user-facing result off the critical path.
-  rec.result = await summarizeAnswer({
-    contactName: rec.contactName,
-    task: rec.task,
-    answer: spoken,
-    lang: rec.lang,
-  });
+function finishCompleted(rec, summary) {
+  rec.result = summary
+    ? rec.selfCall
+      ? `I called you as asked. ${summary}`
+      : `I spoke with ${rec.contactName}. ${summary}`
+    : rec.result ||
+      (rec.selfCall
+        ? `I called you and delivered the reminder: ${rec.task}`
+        : `I spoke with ${rec.contactName} and passed on: ${rec.task}`);
   rec.state = "completed";
   settle(rec);
-
-  // Say thanks and hang up.
-  return (
-    `<?xml version="1.0" encoding="UTF-8"?>` +
-    `<Response>` +
-    `${speakOpen}${xmlEscape(rec.script.closing)}</Speak>` +
-    `<Hangup/>` +
-    `</Response>`
-  );
 }
 
-// ---------------- NO-ANSWER REDIAL ----------------
-
 /**
- * The contact (or the user themself, for a wake-up call) didn't pick up.
- * If attempts remain: surface "no answer, trying again in N minutes" to
- * whoever is still polling, then redial after the pause. The retry lives
- * on an in-process timer — the same durability trade the whole call store
- * makes (header note): a pod restart drops it, and the push on the FINAL
- * outcome is what the user can actually rely on.
+ * No pickup. With attempts left: tell the poller "no answer, retrying in
+ * N minutes" and redial after the pause; the eventual outcome travels by
+ * push (the app stops polling after ~3 minutes).
  */
 function handleNoAnswer(rec) {
   const c = cfg();
@@ -555,7 +320,7 @@ function handleNoAnswer(rec) {
   rec.result =
     `${rec.selfCall ? "You" : rec.contactName} didn't pick up. ` +
     `I'll call again in ${mins} minute${mins === 1 ? "" : "s"} and let you know.`;
-  rec.pushOutcome = true; // by the time the retry lands, nobody is polling
+  rec.pushOutcome = true;
   if (rec.retryTimer) clearTimeout(rec.retryTimer);
   rec.retryTimer = setTimeout(() => redial(rec), c.retryMs);
   rec.retryTimer.unref?.();
@@ -571,10 +336,7 @@ async function redial(rec) {
   rec.answer = null;
   rec.createdAt = Date.now(); // restart the TTL clock for this attempt
   try {
-    rec.plivoUuid =
-      provider() === "retell"
-        ? await retellPlaceCall({ to: rec.to, rec })
-        : await plivoPlaceCall({ to: rec.to, id: rec.id, token: rec.token });
+    rec.providerRef = await placeByProvider(rec);
     if (rec.userId) bumpDaily(rec.userId);
   } catch (e) {
     console.error("agent-call redial failed:", e.message || e);
@@ -586,21 +348,26 @@ async function redial(rec) {
   }
 }
 
-/** Hangup/status callback: mark terminal state if not already resolved. */
-/** Mirror a relay call's terminal state into task_outcomes (the durable,
- *  admin-visible record — the in-memory `calls` map dies with the process),
- *  and push the outcome to the user's phone when nothing is polling for it
- *  any more (redials outlive the app's 3-minute follow window; self wake-up
- *  calls are never followed at all). */
+function placeByProvider(rec) {
+  return provider() === "bolna"
+    ? bolnaPlaceCall({ to: rec.to, rec })
+    : retellPlaceCall({ to: rec.to, rec });
+}
+
+/** Terminal states only: mirror into task_outcomes, and push the outcome
+ *  to the user's phone when nothing is polling for it any more. */
 function settle(rec) {
   try {
     if (!["completed", "failed", "no_answer"].includes(rec.state)) return;
     if (rec.retryPending) return; // not final — a redial is on the clock
     require("../outcomes/store")
-      .updateByExternalId(rec.id, { status: rec.state, detail: rec.result ? String(rec.result).slice(0, 400) : rec.task })
+      .updateByExternalId(rec.id, {
+        status: rec.state,
+        detail: rec.result ? String(rec.result).slice(0, 400) : rec.task,
+      })
       .catch(() => {});
     if (rec.pushOutcome && rec.userId && !rec.pushed) {
-      rec.pushed = true; // call_ended + call_analyzed both settle — push once
+      rec.pushed = true; // several webhook events settle — push once
       pushOutcome(rec).catch(() => {});
     }
   } catch (_) {}
@@ -615,61 +382,84 @@ async function pushOutcome(rec) {
       : rec.state === "no_answer"
         ? (rec.selfCall ? "Missed my calls" : `Couldn't reach ${rec.contactName}`)
         : "Call didn't go through";
-  const body = String(rec.result || rec.task || "").slice(0, 180);
   await require("../services/push").sendNotification(
-    user.fcm_token, title, body, { kind: "agent_call", state: rec.state });
+    user.fcm_token,
+    title,
+    String(rec.result || rec.task || "").slice(0, 180),
+    { kind: "agent_call", state: rec.state }
+  );
 }
 
-function onHangup(rec, params) {
-  onHangupInner(rec, params);
-  settle(rec);
+// ---------------- PUBLIC API ----------------
+
+async function preview({ userName, contactName, task, lang }) {
+  const script = await buildScript({ userName, contactName, task, lang });
+  return { opening: script.speech, allowed: true, reason: null, mode: script.mode };
 }
 
-function onHangupInner(rec, params) {
-  const callStatus = String(params.CallStatus || params.Status || "").toLowerCase();
-  const hangupCause = String(params.HangupCause || "").toLowerCase();
+/**
+ * Place an agent call. Returns { id } (202). Throws { code:"unavailable" }
+ * when telephony isn't configured, or { code:"quota" } over the daily limit.
+ */
+async function start({ userId, userName, toNumber, contactName, task, lang, selfCall }) {
+  if (!enabled()) throw { code: "unavailable" };
+  const to = normalizeNumber(toNumber);
+  if (!to) throw { code: "bad_number" };
+  if (userId && dailyCount(userId) >= cfg().dailyLimit) throw { code: "quota" };
 
-  if (rec.state === "completed") return; // already resolved by gather
+  const rec = {
+    id: crypto.randomBytes(12).toString("hex"),
+    token: crypto.randomBytes(8).toString("hex"),
+    userId: userId || null,
+    to,
+    contactName,
+    task,
+    lang: lang || "en",
+    userName: userName || null,
+    mode: detectMode(task),
+    state: "dialing",
+    result: null,
+    answer: null,
+    providerRef: null,
+    createdAt: Date.now(),
+    attempt: 1,
+    retryPending: false,
+    // Self wake-up calls are never followed by a poller — push from the
+    // start; relayed calls start polled and switch to push on first retry.
+    pushOutcome: Boolean(selfCall),
+    selfCall: Boolean(selfCall),
+  };
+  calls.set(rec.id, rec);
 
-  if (rec.mode === "inform" && (rec.state === "in_progress")) {
-    // The message was delivered and the call ended normally.
-    rec.state = "completed";
-    rec.result =
-      rec.result || `Done — I let ${rec.contactName} know: ${rec.script.speech}`;
-    return;
+  try {
+    rec.providerRef = await placeByProvider(rec);
+    if (userId) bumpDaily(userId);
+  } catch (e) {
+    rec.state = "failed";
+    rec.result = `I couldn't start the call to ${contactName} just now.`;
+    settle(rec);
+    throw { code: "failed", message: String(e.message || e) };
   }
-
-  // Never answered / busy / failed before we spoke.
-  const noAnswer =
-    callStatus.includes("no-answer") ||
-    callStatus.includes("noanswer") ||
-    callStatus.includes("busy") ||
-    hangupCause.includes("no_answer") ||
-    hangupCause.includes("busy") ||
-    hangupCause.includes("timeout") ||
-    rec.state === "dialing";
-
-  if (noAnswer) {
-    handleNoAnswer(rec);
-  } else if (rec.mode === "ask" && !rec.answer) {
-    // Answered but hung up before replying.
-    rec.state = "completed";
-    rec.result = `I reached ${rec.contactName}, but they hung up before answering.`;
-  } else {
-    rec.state = rec.state === "summarizing" ? "completed" : "failed";
-    rec.result =
-      rec.result || `I couldn't complete the call to ${rec.contactName}.`;
-  }
+  return { id: rec.id };
 }
 
-// ---------------- HELPERS ----------------
+/** Poll status. `answer` is the RAW transcript — callers that act on the
+ *  reply (the meeting negotiator) need the words, not a summary. */
+function status(id) {
+  const rec = calls.get(id);
+  if (!rec) return null;
+  return { state: rec.state, result: rec.result, answer: rec.answer || null };
+}
+
+function get(id) {
+  return calls.get(id) || null;
+}
 
 function normalizeNumber(n) {
   const s = String(n || "").replace(/[^\d+]/g, "");
   if (!s) return null;
   if (s.startsWith("+")) return s;
-  // Bare 10-digit Indian mobile -> +91. Otherwise leave as-is with a +.
-  if (/^\d{10}$/.test(s)) return `+91${s}`;
+  if (/^\d{10}$/.test(s)) return `+91${s}`; // bare Indian mobile
   return `+${s}`;
 }
 
@@ -677,11 +467,9 @@ module.exports = {
   enabled,
   provider,
   retellWebhook,
+  bolnaWebhook,
   preview,
   start,
   status,
   get,
-  answerXml,
-  onGather,
-  onHangup,
 };

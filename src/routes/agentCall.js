@@ -4,18 +4,18 @@
  * App-facing (behind appAuth):
  *   POST /agent-call/preview  { contactName, task, lang? } -> { opening, allowed, reason? }
  *   POST /agent-call          { toNumber, contactName, task, lang? } -> 202 { id }
- *                              503 when telephony not configured (app falls back
- *                              to a direct dial); 402 over the daily limit.
- *   GET  /agent-call/:id      -> { state, result? }
+ *                              503 when telephony not configured (app falls
+ *                              back to a direct dial); 402 over the daily limit.
+ *   GET  /agent-call/:id      -> { state, result?, answer? }
  *
- * Public (Plivo calls these — NO app auth; guarded by a per-call token in the
- * path and mounted before appAuth in server.js):
- *   POST /agent-call/plivo/:id/:token/answer  -> Plivo XML
- *   POST /agent-call/plivo/:id/:token/gather  -> Plivo XML
- *   POST /agent-call/plivo/:id/:token/hangup  -> 204
+ * Provider webhooks (public — mounted WITHOUT appAuth in server.js, gated
+ * by a URL secret = sha256(provider api key)[:32]):
+ *   POST /agent-call/retell/webhook/:secret
+ *   POST /agent-call/bolna/webhook/:secret
  */
 
 const express = require("express");
+const crypto = require("crypto");
 const agent = require("../agents/agentCall");
 
 function uidOf(req) {
@@ -27,8 +27,6 @@ function firstName(req) {
   return n ? String(n).split(" ")[0] : null;
 }
 
-// ---------------- APP-FACING ROUTER (mounted WITH appAuth) ----------------
-
 const router = express.Router();
 
 router.post("/preview", async (req, res) => {
@@ -38,29 +36,17 @@ router.post("/preview", async (req, res) => {
   if (!contactName || !task) {
     return res.status(400).json({ error: "contactName and task required" });
   }
-  if (!agent.enabled()) {
-    // Preview still works so the app can show what WOULD be said; but flag
-    // that calling isn't available on this deployment.
-    try {
-      const p = await agent.preview({
-        userName: firstName(req),
-        contactName,
-        task,
-        lang,
-      });
-      return res.json({ opening: p.opening, allowed: false,
-        reason: "Calling on your behalf isn't set up on this server yet, but I can connect you directly." });
-    } catch (_) {
-      return res.status(502).json({ error: "preview failed" });
-    }
-  }
   try {
-    const p = await agent.preview({
-      userName: firstName(req),
-      contactName,
-      task,
-      lang,
-    });
+    const p = await agent.preview({ userName: firstName(req), contactName, task, lang });
+    if (!agent.enabled()) {
+      // Preview still shows what WOULD be said; flag that calling is off.
+      return res.json({
+        opening: p.opening,
+        allowed: false,
+        reason:
+          "Calling on your behalf isn't set up on this server yet, but I can connect you directly.",
+      });
+    }
     res.json({ opening: p.opening, allowed: p.allowed, reason: p.reason });
   } catch (e) {
     console.error("agent-call preview error:", e.message || e);
@@ -74,9 +60,7 @@ router.post("/", async (req, res) => {
   const task = String(req.body?.task || "").trim();
   const lang = req.body?.lang ? String(req.body.lang) : null;
   if (!toNumber || !contactName || !task) {
-    return res
-      .status(400)
-      .json({ error: "toNumber, contactName and task required" });
+    return res.status(400).json({ error: "toNumber, contactName and task required" });
   }
   if (!agent.enabled()) {
     return res.status(503).json({ error: "agent calling not configured" });
@@ -109,85 +93,35 @@ router.post("/", async (req, res) => {
   }
 });
 
-// RETELL webhook — the URL secret (sha256 of the API key) plus the
-// per-call metadata token inside the payload gate it. Always 200s fast;
-// Retell retries on non-2xx and duplicate events are harmless.
-const crypto = require("crypto");
-const retellWebhooks = require("express").Router();
-retellWebhooks.use(require("express").json({ limit: "1mb" }));
-retellWebhooks.post("/webhook/:secret", (req, res) => {
-  const key = process.env.RETELL_API_KEY || "";
-  const want = crypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
-  if (!key || req.params.secret !== want) return res.status(404).json({ error: "not found" });
-  try {
-    agent.retellWebhook(req.body || {});
-  } catch (e) {
-    console.error("retell webhook failed:", e.message);
-  }
-  res.json({ ok: true });
-});
-
 router.get("/:id", (req, res) => {
   const rec = agent.get(String(req.params.id));
   // Transcripts and outcomes are the caller's own business only.
   if (!rec || (rec.userId && String(rec.userId) !== String(req.user?.sub))) {
     return res.status(404).json({ error: "unknown call" });
   }
-  const s = agent.status(String(req.params.id));
-  if (!s) return res.status(404).json({ error: "unknown call" });
-  res.json(s);
+  res.json(agent.status(String(req.params.id)));
 });
 
-// ---------------- PUBLIC WEBHOOKS (mounted WITHOUT appAuth) ----------------
-
-const webhooks = express.Router();
-// Plivo posts application/x-www-form-urlencoded.
-webhooks.use(express.urlencoded({ extended: false }));
-
-function sendXml(res, xml) {
-  res.set("Content-Type", "text/xml").send(xml);
-}
-// A minimal, always-valid "goodbye" XML for any error path.
-function byeXml() {
-  return (
-    `<?xml version="1.0" encoding="UTF-8"?>` +
-    `<Response><Speak>Sorry, goodbye.</Speak><Hangup/></Response>`
-  );
-}
-
-webhooks.post("/:id/:token/answer", (req, res) => {
-  const rec = agent.get(req.params.id, req.params.token);
-  if (!rec) return sendXml(res, byeXml());
-  try {
-    sendXml(res, agent.answerXml(rec));
-  } catch (e) {
-    console.error("answer xml error:", e.message || e);
-    sendXml(res, byeXml());
-  }
-});
-
-webhooks.post("/:id/:token/gather", async (req, res) => {
-  const rec = agent.get(req.params.id, req.params.token);
-  if (!rec) return sendXml(res, byeXml());
-  try {
-    const xml = await agent.onGather(rec, req.body || {});
-    sendXml(res, xml);
-  } catch (e) {
-    console.error("gather error:", e.message || e);
-    sendXml(res, byeXml());
-  }
-});
-
-webhooks.post("/:id/:token/hangup", (req, res) => {
-  const rec = agent.get(req.params.id, req.params.token);
-  if (rec) {
+/** Webhook router gated by sha256(api key)[:32] in the path; always 200s
+ *  fast (providers retry on non-2xx and duplicate events are harmless). */
+function providerWebhook(envKey, handle) {
+  const r = express.Router();
+  r.use(express.json({ limit: "2mb" }));
+  r.post("/webhook/:secret", (req, res) => {
+    const key = process.env[envKey] || "";
+    const want = crypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
+    if (!key || req.params.secret !== want) return res.status(404).json({ error: "not found" });
     try {
-      agent.onHangup(rec, req.body || {});
+      handle(req.body || {});
     } catch (e) {
-      console.error("hangup error:", e.message || e);
+      console.error(`${envKey} webhook failed:`, e.message);
     }
-  }
-  res.status(204).end();
-});
+    res.json({ ok: true });
+  });
+  return r;
+}
 
-module.exports = { router, webhooks, retellWebhooks };
+const retellWebhooks = providerWebhook("RETELL_API_KEY", agent.retellWebhook);
+const bolnaWebhooks = providerWebhook("BOLNA_API_KEY", agent.bolnaWebhook);
+
+module.exports = { router, retellWebhooks, bolnaWebhooks };
