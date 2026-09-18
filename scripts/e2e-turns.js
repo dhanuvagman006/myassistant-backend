@@ -45,6 +45,8 @@ const CASES = [
     expectTool: /call_recall/ },
   { name: "battery", text: "What's my battery level?",
     expectTool: /phone_control/ },
+  { name: "farewell", text: "Okay, thank you. Bye!",
+    expectTool: /end_conversation/, maxWords: 6 },
 ];
 
 (async () => {

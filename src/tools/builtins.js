@@ -217,6 +217,27 @@ function registerBuiltins() {
   });
 
   registry.register({
+    name: "end_conversation",
+    description:
+      "The user is ENDING the conversation — 'bye', 'goodbye', 'ok bye', " +
+      "'that's all', 'we're done', 'stop', 'thanks, bye', 'ಸಾಕು', 'बस', " +
+      "'ok thank you' as a clear sign-off. Call this IMMEDIATELY and say " +
+      "AT MOST a three-word farewell in their language ('Goodbye!', " +
+      "'ಸರಿ, ಬೈ!'). Never continue the conversation after it, never ask " +
+      "'anything else?', never summarise. The screen closes itself.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: { type: "object", properties: {} },
+    async execute() {
+      return {
+        ok: true,
+        deviceAction: { type: "end_conversation" },
+        speak: "Goodbye!",
+      };
+    },
+  });
+
+  registry.register({
     name: "call_recall",
     description:
       "Search the user's ANALYSED PHONE CALLS (AI call analysis records " +

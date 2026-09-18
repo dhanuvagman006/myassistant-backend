@@ -62,6 +62,9 @@ const FAMILIES = [
       "open_app", "open_named_app", "open_webpage", "open_service_app",
       "open_video_mode", "phone_control", "start_navigation",
       "capture_document", "analyze_camera",
+      // Farewells carry no "opening…" claim, but every device action must
+      // live in SOME family or the membership test (rightly) fails.
+      "end_conversation",
       // These open an app or a screen too, and say so in the same words.
       "enable_usage_tracking", "order_food", "book_ride", "book_movie_tickets",
       "try_a_look", "present_text", "generate_image", "generate_video",

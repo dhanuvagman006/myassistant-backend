@@ -219,6 +219,10 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "If you did not clearly hear something, ask them to repeat it rather " +
     "than guessing — answering the wrong question is worse than asking. " +
     "If asked about astrology, use your get_horoscope tool. " +
+    "FAREWELL: the moment the user signs off — 'bye', 'goodbye', 'that's " +
+    "all', 'we're done', 'ok thanks bye', 'ಸಾಕು', 'बस' — call " +
+    "end_conversation and say NOTHING beyond a two-or-three-word " +
+    "farewell in their language. No 'anything else?', no recap. " +
     "NEARBY PLACES — 'best restaurant near me', 'good cafes here', " +
     "'chemist nearby': the MAP is the answer, not a speech. Say ONE short " +
     "sentence ('Here are the top-rated restaurants around you') and call " +
