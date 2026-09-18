@@ -1507,6 +1507,10 @@ function registerBuiltins() {
       "service is configured, the assistant places the call itself and " +
       "speaks the message so the user doesn't have to talk; otherwise the " +
       "phone dials the contact directly for the user to speak. " +
+      "WAKE-UP / SELF CALLS: 'call me and remind me…', 'give me a wake-up " +
+      "call' — pass the literal name 'me' plus the reminder as `message`; " +
+      "the assistant rings the user's own registered number, and if they " +
+      "don't pick up it automatically calls again a few minutes later. " +
       "IMPORTANT: this tool only ASKS the phone to try — the contact is " +
       "not even looked up yet, so NEVER say 'calling X now'; say you are " +
       "finding them. The contact may not exist or permissions may be off. " +
@@ -1535,12 +1539,65 @@ function registerBuiltins() {
     },
     confirmSummary: (a) =>
       a.message ? `Call ${a.name} and say: ${a.message}` : `Call ${a.name}`,
-    async execute(args) {
+    async execute(args, ctx) {
       // The app decides HOW to act on this from agent_available: with a
       // message and the relay configured it asks the server to place the
       // call (Hari speaks it herself); otherwise it dials directly.
       const agentAvailable = require("../agents/agentCall").enabled();
       const relaying = Boolean(args.message) && agentAvailable;
+
+      // "Call ME" — a wake-up call / spoken reminder to the user's own
+      // phone. No contact lookup exists for "me": the server already knows
+      // the verified number, so the call is placed right here and the
+      // device is not involved at all. Redial-on-no-answer applies, which
+      // is the entire point of a wake-up call.
+      if (/^(me|myself|my\s*(own\s*)?(phone|number|mobile))$/i.test(String(args.name || "").trim())) {
+        if (!agentAvailable) {
+          return {
+            ok: false,
+            error:
+              "calling isn't configured on this server yet, so I can't ring " +
+              "the user's phone — offer to set a loud reminder alarm instead",
+          };
+        }
+        if (!ctx?.userId) return { ok: false, error: "not signed in" };
+        const me = await require("../db").findById(ctx.userId);
+        const own = String(me?.phone_number || "").trim();
+        if (!own) {
+          return {
+            ok: false,
+            error:
+              "the user's own phone number isn't verified in their profile, " +
+              "so there is nothing to dial — ask them to add it in Profile, " +
+              "and offer a reminder alarm as the alternative",
+          };
+        }
+        const task = String(args.message || "").trim() ||
+          "Check in with them as they requested.";
+        try {
+          const { id } = await require("../agents/agentCall").start({
+            userId: ctx.userId,
+            userName: me?.name ? String(me.name).split(" ")[0] : null,
+            toNumber: own,
+            contactName: me?.name ? String(me.name).split(" ")[0] : "you",
+            task,
+            lang: ctx.lang || null,
+            selfCall: true,
+          });
+          return {
+            ok: true,
+            data: { call_id: id, to: "own number" },
+            speak:
+              "I'll ring your phone now — if you don't pick up, I'll try " +
+              "again in five minutes.",
+          };
+        } catch (e) {
+          if (e?.code === "quota") {
+            return { ok: false, error: "today's limit for placed calls is reached" };
+          }
+          return { ok: false, error: "the call could not be started: " + String(e?.message || e?.code || e) };
+        }
+      }
       return {
         ok: true,
         note:

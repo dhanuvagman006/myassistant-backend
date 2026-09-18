@@ -51,6 +51,11 @@ function cfg() {
     retellKey: process.env.RETELL_API_KEY || "",
     retellFrom: process.env.RETELL_FROM_NUMBER || "",
     retellAgent: process.env.RETELL_AGENT_ID || "",
+    // ---- No-answer redial. A wake-up call that gives up after one ring
+    // defeats its purpose: ring again after a pause, a bounded number of
+    // times, then tell the user it never got through.
+    retryMs: Number(process.env.AGENT_CALL_RETRY_MS || 5 * 60 * 1000),
+    maxAttempts: Number(process.env.AGENT_CALL_MAX_ATTEMPTS || 3),
   };
 }
 
@@ -271,7 +276,10 @@ async function retellPlaceCall({ to, rec }) {
         task: rec.task || "",
         contact_name: rec.contactName || "there",
         user_name: rec.script?.userName || rec.userName || "the caller",
-        mode: rec.mode || "inform",
+        // "self" = the assistant is ringing its OWN user (wake-up call /
+        // reminder), so "I'm calling on behalf of X" would be nonsense —
+        // the dashboard prompt branches on this.
+        mode: rec.selfCall ? "self" : rec.mode || "inform",
       },
       metadata: { rec_id: rec.id, token: rec.token },
     }),
@@ -303,10 +311,15 @@ function retellWebhook(body) {
   }
   if (event === "call_ended") {
     const why = String(call?.disconnection_reason || "").toLowerCase();
-    if (/busy|no.?answer|dial_failed|invalid|voicemail/.test(why)) {
-      rec.state = "no_answer";
-      rec.result = `${rec.contactName} didn't pick up. Want me to try again later?`;
+    if (/dial_failed|invalid/.test(why)) {
+      // A number that doesn't connect won't start connecting in 5 minutes —
+      // never redial these, say what happened instead.
+      rec.retryPending = false;
+      rec.state = "failed";
+      rec.result = `The call to ${rec.contactName} didn't connect — the number may be wrong.`;
       settle(rec);
+    } else if (/busy|no.?answer|voicemail/.test(why)) {
+      handleNoAnswer(rec);
     } else if (rec.state !== "completed") {
       // Connected and ended normally — the analysis event lands seconds
       // later with the summary; mark it so the poller keeps waiting.
@@ -370,7 +383,7 @@ async function preview({ userName, contactName, task, lang }) {
  * Place an agent call. Returns { id } (202). Throws { code:"unavailable" }
  * when telephony isn't configured, or { code:"quota" } over the daily limit.
  */
-async function start({ userId, userName, toNumber, contactName, task, lang }) {
+async function start({ userId, userName, toNumber, contactName, task, lang, selfCall }) {
   if (!enabled()) throw { code: "unavailable" };
   const to = normalizeNumber(toNumber);
   if (!to) throw { code: "bad_number" };
@@ -400,6 +413,15 @@ async function start({ userId, userName, toNumber, contactName, task, lang }) {
     answer: null,
     plivoUuid: null,
     createdAt: Date.now(),
+    // Redial bookkeeping. `attempt` is 1-based; `retryPending` marks the
+    // app-visible "no answer" as NON-final so settle() holds off; once a
+    // retry runs, the app has stopped polling, so the eventual outcome
+    // travels by push instead (`pushOutcome`). Self-calls ("wake me up")
+    // are never followed by a poller at all — push from the start.
+    attempt: 1,
+    retryPending: false,
+    pushOutcome: Boolean(selfCall),
+    selfCall: Boolean(selfCall),
   };
   calls.set(id, rec);
 
@@ -506,16 +528,96 @@ async function onGather(rec, params) {
   );
 }
 
+// ---------------- NO-ANSWER REDIAL ----------------
+
+/**
+ * The contact (or the user themself, for a wake-up call) didn't pick up.
+ * If attempts remain: surface "no answer, trying again in N minutes" to
+ * whoever is still polling, then redial after the pause. The retry lives
+ * on an in-process timer — the same durability trade the whole call store
+ * makes (header note): a pod restart drops it, and the push on the FINAL
+ * outcome is what the user can actually rely on.
+ */
+function handleNoAnswer(rec) {
+  const c = cfg();
+  const mins = Math.max(1, Math.round(c.retryMs / 60000));
+  if (rec.attempt >= c.maxAttempts) {
+    rec.retryPending = false;
+    rec.state = "no_answer";
+    rec.result = rec.selfCall
+      ? `I called your phone ${rec.attempt} times but you didn't pick up: ${rec.task}`
+      : `${rec.contactName} didn't pick up — I tried ${rec.attempt} times, so the message wasn't delivered.`;
+    settle(rec);
+    return;
+  }
+  rec.retryPending = true;
+  rec.state = "no_answer"; // the app's poller treats this as terminal and speaks it
+  rec.result =
+    `${rec.selfCall ? "You" : rec.contactName} didn't pick up. ` +
+    `I'll call again in ${mins} minute${mins === 1 ? "" : "s"} and let you know.`;
+  rec.pushOutcome = true; // by the time the retry lands, nobody is polling
+  if (rec.retryTimer) clearTimeout(rec.retryTimer);
+  rec.retryTimer = setTimeout(() => redial(rec), c.retryMs);
+  rec.retryTimer.unref?.();
+}
+
+async function redial(rec) {
+  if (!calls.has(rec.id)) calls.set(rec.id, rec); // survive a GC sweep mid-wait
+  rec.attempt += 1;
+  rec.retryPending = false;
+  rec.retryTimer = null;
+  rec.state = "dialing";
+  rec.result = null;
+  rec.answer = null;
+  rec.createdAt = Date.now(); // restart the TTL clock for this attempt
+  try {
+    rec.plivoUuid =
+      provider() === "retell"
+        ? await retellPlaceCall({ to: rec.to, rec })
+        : await plivoPlaceCall({ to: rec.to, id: rec.id, token: rec.token });
+    if (rec.userId) bumpDaily(rec.userId);
+  } catch (e) {
+    console.error("agent-call redial failed:", e.message || e);
+    rec.state = "failed";
+    rec.result = rec.selfCall
+      ? "I couldn't place the repeat call to your phone."
+      : `I couldn't reach ${rec.contactName} on the repeat call.`;
+    settle(rec);
+  }
+}
+
 /** Hangup/status callback: mark terminal state if not already resolved. */
 /** Mirror a relay call's terminal state into task_outcomes (the durable,
- *  admin-visible record — the in-memory `calls` map dies with the process). */
+ *  admin-visible record — the in-memory `calls` map dies with the process),
+ *  and push the outcome to the user's phone when nothing is polling for it
+ *  any more (redials outlive the app's 3-minute follow window; self wake-up
+ *  calls are never followed at all). */
 function settle(rec) {
   try {
     if (!["completed", "failed", "no_answer"].includes(rec.state)) return;
+    if (rec.retryPending) return; // not final — a redial is on the clock
     require("../outcomes/store")
       .updateByExternalId(rec.id, { status: rec.state, detail: rec.result ? String(rec.result).slice(0, 400) : rec.task })
       .catch(() => {});
+    if (rec.pushOutcome && rec.userId && !rec.pushed) {
+      rec.pushed = true; // call_ended + call_analyzed both settle — push once
+      pushOutcome(rec).catch(() => {});
+    }
   } catch (_) {}
+}
+
+async function pushOutcome(rec) {
+  const user = await require("../db").findById(rec.userId);
+  if (!user?.fcm_token) return;
+  const title =
+    rec.state === "completed"
+      ? (rec.selfCall ? "I called you" : `Call to ${rec.contactName} done`)
+      : rec.state === "no_answer"
+        ? (rec.selfCall ? "Missed my calls" : `Couldn't reach ${rec.contactName}`)
+        : "Call didn't go through";
+  const body = String(rec.result || rec.task || "").slice(0, 180);
+  await require("../services/push").sendNotification(
+    user.fcm_token, title, body, { kind: "agent_call", state: rec.state });
 }
 
 function onHangup(rec, params) {
@@ -548,8 +650,7 @@ function onHangupInner(rec, params) {
     rec.state === "dialing";
 
   if (noAnswer) {
-    rec.state = "no_answer";
-    rec.result = `${rec.contactName} didn't pick up. Want me to try again later?`;
+    handleNoAnswer(rec);
   } else if (rec.mode === "ask" && !rec.answer) {
     // Answered but hung up before replying.
     rec.state = "completed";

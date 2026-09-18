@@ -27,7 +27,20 @@ const SHORT_OK = new Set([
   "haan", "haa", "nahi", "nahin", "sari", "sari", "ille", "aayta", "bodchi",
   "aan", "athe", "ho", "hoon", "acha", "theek", "bas", "ಹೌದು", "ಇಲ್ಲ", "ಸರಿ",
   "हाँ", "हां", "नहीं", "ठीक", "बस", "रुको",
+  // ONE-WORD DEVICE COMMANDS. "hotspot", "flashlight", "mute" are complete
+  // requests on a phone — a user saying one of these wants exactly that,
+  // and refusing them as "a single word with no sentence around it" was
+  // measured in production ("hotspot" → asked to repeat).
+  "hotspot", "flashlight", "torch", "bluetooth", "wifi", "wi-fi", "volume",
+  "mute", "unmute", "quieter", "softer", "brighter", "dimmer", "pause",
+  "play", "resume", "skip", "previous", "alarm", "timer", "snooze", "camera",
+  "screenshot", "lock", "silent", "vibrate", "home", "settings", "news",
+  "weather", "brief", "update", "help", "navigate", "music", "radio",
 ]);
+
+/** Verbs that make two to four words a request rather than a fragment. */
+const IMPERATIVE =
+  /^(open|close|call|ring|dial|set|remind|play|pause|stop|show|send|text|message|turn|switch|start|book|order|search|find|look|navigate|take|read|check|tell|wake|mute|unmute|increase|decrease|raise|lower|enable|disable|cancel|delete|add|create|make|schedule|note|save|kholo|खोलो|band|बंद|chalao|चलाओ|lagao|लगाओ|karo|करो|dikhao|दिखाओ|bhejo|भेजो|bulao|बुलाओ|batao|बताओ|ತೆರೆ|ತೆರೆಯಿರಿ|ಮಾಡು|ಮಾಡಿ|ಹಾಕು|ಹಾಕಿ|ತೋರಿಸು|ತೋರಿಸಿ|ಕರೆ|ಕಳಿಸು|ಕಳಿಸಿ)$/iu;
 
 /** Scripts an Indian user's speech should not normally arrive in — a
  *  strong sign the recogniser guessed the wrong language entirely. */
@@ -56,6 +69,22 @@ const EUROPEAN_GIVEAWAY =
 function letterRatio(t) {
   const letters = (t.match(/[\p{L}\p{M}]/gu) || []).length;
   return t.length ? letters / t.length : 0;
+}
+
+/**
+ * DIGITS ARE CONTENT IN A SHORT COMMAND. "4:30 a.m. alarm tomorrow" is a
+ * complete, clear request, but letterRatio scores it 0.62 — the colon,
+ * the digits and the dots all count against it — and it was refused as
+ * "fragmentary" in production, so the alarm was never set. For the short
+ * -phrase check the measure is letters, marks and digits over the
+ * visible characters (whitespace and invisible format characters such as
+ * the zero-width joiner Indic keyboards emit are neither for nor against).
+ */
+function contentRatio(t) {
+  const visible = t.replace(/[\s\p{Cf}]/gu, "");
+  if (!visible.length) return 0;
+  const content = (visible.match(/[\p{L}\p{M}\p{N}]/gu) || []).length;
+  return content / visible.length;
 }
 
 /**
@@ -116,9 +145,12 @@ function assess(text, { expectsNumber = false, languages = [] } = {}) {
   // "that that Y2I tab", "el grupo", "photos photos mein".
   if (words.length <= 4) {
     const norm = words.map((w) => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, ""));
-    const repeated = new Set(norm).size < norm.length;
+    // A recogniser doubling a word ("Open Uber app Uber") is still a
+    // request when it starts with a verb; only a verbless repeat is noise.
+    const imperative = IMPERATIVE.test(norm[0] || "");
+    const repeated = !imperative && new Set(norm).size < norm.length;
     const alnumMix = norm.some((w) => /\d/.test(w) && /\p{L}/u.test(w));
-    if (repeated || alnumMix || letterRatio(raw) < 0.7) {
+    if (repeated || alnumMix || contentRatio(raw) < 0.7) {
       return { quality: "weak", reason: "fragmentary", digitsOnly: false };
     }
   }
