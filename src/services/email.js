@@ -398,7 +398,7 @@ async function listImportant(userId, { limit = 12, force = false } = {}) {
   if (!force && hit && Date.now() - hit.at < 180_000) {
     return hit.items.slice(0, limit);
   }
-  const rows = await listRecent(userId, { limit: 25, important: true });
+  const rows = await listRecent(userId, { limit: 15, important: true });
   if (!rows.length) {
     _impCache.set(userId, { at: Date.now(), items: [] });
     return [];
