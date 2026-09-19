@@ -59,7 +59,8 @@ async function recentEmails(userId, { max = 10, q } = {}) {
       gget(
         userId,
         `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}` +
-          "?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date"
+          "?format=metadata&metadataHeaders=From&metadataHeaders=Subject" +
+          "&metadataHeaders=Date&metadataHeaders=List-Unsubscribe"
       ).catch(() => null)
     )
   );
@@ -76,6 +77,17 @@ async function recentEmails(userId, { max = 10, q } = {}) {
       snippet: (m.snippet || "").slice(0, 160),
       unread: (m.labelIds || []).includes("UNREAD"),
       date: Number(m.internalDate) || null,
+      // WHAT THE CATEGORY SEARCH CANNOT TELL US.
+      //
+      // Gmail keeps CATEGORY_* labels on every message even when the user
+      // has inbox tabs switched off — but the `category:` SEARCH operator
+      // goes dead in that case. So importance is decided here, on labels
+      // we can actually see, plus List-Unsubscribe: the header every bulk
+      // sender must include and no real person ever does.
+      labels: m.labelIds || [],
+      bulk: Boolean(header(m, "List-Unsubscribe")),
+      important: (m.labelIds || []).includes("IMPORTANT"),
+      starred: (m.labelIds || []).includes("STARRED"),
     }));
 }
 

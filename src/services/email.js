@@ -178,6 +178,22 @@ const IMPORTANT_ONLY =
   "in:inbox -category:promotions -category:social " +
   "-category:updates -category:forums -in:spam -in:trash";
 
+const NOISE_LABELS = [
+  "CATEGORY_PROMOTIONS",
+  "CATEGORY_SOCIAL",
+  "CATEGORY_FORUMS",
+];
+
+/** Worth reading aloud? Starred/Gmail-important always wins; otherwise
+ *  drop the promo/social/forum buckets and anything carrying the bulk
+ *  sender's unsubscribe header. */
+function isImportant(m) {
+  if (m.starred || m.important) return true;
+  if ((m.labels || []).some((l) => NOISE_LABELS.includes(l))) return false;
+  if (m.bulk) return false;
+  return true;
+}
+
 function gmailQuery({ from, text, unreadOnly, important }) {
   const parts = [important === false ? "in:inbox" : IMPORTANT_ONLY];
   if (from) parts.push(`from:${String(from).replace(/\s+/g, "")}`);
@@ -200,12 +216,16 @@ async function listRecent(
     if (await googleLinked(userId)) {
       const gapi = require("../google/api");
       const n = Math.min(Math.max(Number(limit) || 5, 1), 25);
+      // Importance is decided on labels (see google/api.js), so fetch a
+      // wider net and trim after filtering rather than asking Gmail for
+      // exactly n and losing most of them.
       const rows = await gapi.recentEmails(userId, {
-        max: n,
+        max: important === false ? n : Math.min(n * 4, 40),
         q: gmailQuery({ from, text, unreadOnly, important }),
       });
       if (rows === null) throw { code: "no_account" };
-      return rows.map((m) => ({
+      const kept = important === false ? rows : rows.filter(isImportant);
+      return kept.slice(0, n).map((m) => ({
         uid: m.id, // Gmail message id — email_read passes it back for the body
         from: m.from || "unknown sender",
         fromAddr: m.fromEmail || "",
