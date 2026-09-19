@@ -170,8 +170,12 @@ async function googleLinked(userId) {
 // WHAT "IMPORTANT" MEANS HERE (his spec, 2026-09-19): the primary inbox
 // with promotions, social, updates, forums, spam and trash all excluded —
 // the mail a person actually wants read to them, not newsletters.
+// NOTE: no `category:primary`. Gmail only has categories when the user
+// keeps the inbox TABS enabled — his does not, so that term matched zero
+// messages and the screen looked empty with a perfectly good link.
+// Excluding the noisy categories works either way.
 const IMPORTANT_ONLY =
-  "in:inbox category:primary -category:promotions -category:social " +
+  "in:inbox -category:promotions -category:social " +
   "-category:updates -category:forums -in:spam -in:trash";
 
 function gmailQuery({ from, text, unreadOnly, important }) {

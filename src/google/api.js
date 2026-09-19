@@ -47,7 +47,9 @@ async function recentEmails(userId, { max = 10, q } = {}) {
   const list = await gget(
     userId,
     "https://gmail.googleapis.com/gmail/v1/users/me/messages" +
-      `?maxResults=${max}&q=${encodeURIComponent(q || "in:inbox category:primary newer_than:3d")}`
+      // Same trap as services/email.js: `category:primary` silently returns
+      // nothing for accounts with inbox tabs turned off.
+      `?maxResults=${max}&q=${encodeURIComponent(q || "in:inbox -category:promotions -category:social newer_than:3d")}`
   );
   if (list === null) return null;
   const ids = (list.messages || []).map((m) => m.id);
