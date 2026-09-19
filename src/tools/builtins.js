@@ -1563,6 +1563,44 @@ function registerBuiltins() {
   });
 
   registry.register({
+    name: "email_recipients",
+    description:
+      "Who the user has emailed before, newest first, with the name they " +
+      "gave each one. Call this FIRST whenever they refer to a recipient " +
+      "without spelling an address — 'the same address', 'send it to him " +
+      "again', 'mail my professor' — then pass the real address to " +
+      "email_send so the confirmation names a person, not a pronoun. " +
+      "Fast: it reads their own sent history, no mailbox access.",
+    risk: "low",
+    inputSchema: { type: "object", properties: {} },
+    async execute(_args, ctx) {
+      const email = require("../services/email");
+      const uid = Number(ctx?.userId || 0);
+      try {
+        const rows = await email.recentRecipients(uid, 12);
+        if (!rows.length) {
+          return {
+            ok: true,
+            data: { recipients: [] },
+            note: "No one yet — ask the user for the address this first time.",
+          };
+        }
+        return {
+          ok: true,
+          data: {
+            recipients: rows.map((r) => ({
+              address: r.to_addr,
+              name: r.to_label || "",
+            })),
+          },
+        };
+      } catch (e) {
+        return { ok: false, error: `could not read sent history: ${e.message}` };
+      }
+    },
+  });
+
+  registry.register({
     name: "email_send",
     description:
       "SEND an email from the user's own mailbox. THIS IS THE MAIN EMAIL " +
