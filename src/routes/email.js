@@ -62,9 +62,9 @@ router.delete("/account", async (req, res) => {
  */
 router.get("/inbox", async (req, res) => {
   try {
-    const messages = await email.listRecent(uidOf(req), {
+    const messages = await email.listImportant(uidOf(req), {
       limit: Math.min(Number(req.query.limit) || 12, 25),
-      important: true,
+      force: req.query.refresh === "1",
     });
     res.json({ connected: true, messages });
   } catch (e) {

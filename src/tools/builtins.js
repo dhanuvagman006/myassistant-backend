@@ -1526,12 +1526,17 @@ function registerBuiltins() {
           if (!m) return { ok: false, error: "couldn't fetch that message any more" };
           return { ok: true, data: m };
         }
-        const list = await email.listRecent(uid, {
-          from: args.from,
-          text: args.query,
-          unreadOnly: Boolean(args.unread_only),
-          limit: args.limit,
-        });
+        // A bare "read my mails" wants the TRIAGED list (marketing and
+        // job-board blasts dropped); a search for a sender or words wants
+        // the literal matches.
+        const list = args.from || args.query || args.unread_only
+          ? await email.listRecent(uid, {
+              from: args.from,
+              text: args.query,
+              unreadOnly: Boolean(args.unread_only),
+              limit: args.limit,
+            })
+          : await email.listImportant(uid, { limit: args.limit || 8 });
         if (!list.length) {
           return {
             ok: true,

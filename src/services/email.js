@@ -20,6 +20,7 @@ const { ImapFlow } = require("imapflow");
 const nodemailer = require("nodemailer");
 const { simpleParser } = require("mailparser");
 const { query } = require("../db");
+const { generateReply } = require("./ai/router");
 const { encryptSecrets, decryptSecrets } = require("../mcp/schema");
 
 // Known providers; anything else falls back to imap.<domain>/smtp.<domain>.
@@ -377,8 +378,76 @@ async function send(userId, { to, subject, body }) {
   return { messageId: info.messageId || null, from: acc.address };
 }
 
+/**
+ * THE IMPORTANT MAIL, RANKED BY THE MODEL.
+ *
+ * Structural signals were not enough: recruiter blasts and job-board
+ * alerts arrive labelled CATEGORY_PERSONAL with no List-Unsubscribe
+ * header, so labels alone cannot tell them from a real person writing.
+ * Importance is a judgement, so a judgement is what makes it — the list
+ * is pre-filtered cheaply, then the model keeps what a busy person would
+ * actually want read out, most pressing first.
+ *
+ * Falls back to the structural list if the model is unavailable: a
+ * slightly noisy inbox beats an empty screen.
+ */
+const _impCache = new Map(); // userId -> { at, items }
+
+async function listImportant(userId, { limit = 12, force = false } = {}) {
+  const hit = _impCache.get(userId);
+  if (!force && hit && Date.now() - hit.at < 180_000) {
+    return hit.items.slice(0, limit);
+  }
+  const rows = await listRecent(userId, { limit: 25, important: true });
+  if (!rows.length) {
+    _impCache.set(userId, { at: Date.now(), items: [] });
+    return [];
+  }
+
+  const listing = rows
+    .map((m, i) => `${i}. from ${m.from} <${m.fromAddr}> — "${m.subject}" — ${(m.snippet || "").slice(0, 120)}`)
+    .join("\n");
+  const sys =
+    "You triage a busy professional's inbox. From the numbered emails, " +
+    "return ONLY the ones that genuinely matter to them, most important " +
+    "first. KEEP: a real person writing to them; interviews, offers and " +
+    "recruiter mail addressed to them personally; security alerts and " +
+    "account warnings; money — bills, payments, banking, invoices; " +
+    "deadlines, exams, results, travel and delivery updates; anything " +
+    "needing a reply. DROP: marketing and promotions, newsletters, " +
+    "job-board blasts and quiz/enrolment campaigns, social notifications, " +
+    "and automated notifications nobody must act on. Reply with STRICT " +
+    'JSON only: {"keep":[{"i":<number>,"why":"<max 6 words>"}]}. ' +
+    "If nothing qualifies, return an empty keep array.";
+
+  let picked = null;
+  try {
+    const { reply } = await generateReply([{ role: "user", content: listing }], {
+      system: sys,
+    });
+    const parsed = JSON.parse(
+      String(reply || "").replace(/```json/gi, "").replace(/```/g, "").trim()
+    );
+    if (Array.isArray(parsed.keep)) picked = parsed.keep;
+  } catch (_) {
+    picked = null; // model down or bad JSON — fall through
+  }
+
+  const items = picked
+    ? picked
+        .map((k) => {
+          const m = rows[Number(k.i)];
+          return m ? { ...m, why: String(k.why || "").slice(0, 60) } : null;
+        })
+        .filter(Boolean)
+    : rows;
+  _impCache.set(userId, { at: Date.now(), items });
+  return items.slice(0, limit);
+}
+
 module.exports = {
   getAccount,
+  listImportant,
   connectAccount,
   disconnectAccount,
   listRecent,
