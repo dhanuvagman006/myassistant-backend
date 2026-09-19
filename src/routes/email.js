@@ -52,4 +52,57 @@ router.delete("/account", async (req, res) => {
   }
 });
 
+/**
+ * GET /email/inbox?limit=12 — the IMPORTANT mail, for the Email screen.
+ *
+ * Promotions, social, updates, forums, spam and trash are excluded by the
+ * query itself (his spec: "the most important emails, filtering all the
+ * spam as well as promotional and unwanted"). Works for either backend —
+ * the Google link or an IMAP account.
+ */
+router.get("/inbox", async (req, res) => {
+  try {
+    const messages = await email.listRecent(uidOf(req), {
+      limit: Math.min(Number(req.query.limit) || 12, 25),
+      important: true,
+    });
+    res.json({ connected: true, messages });
+  } catch (e) {
+    if (e?.code === "no_account") {
+      return res.json({ connected: false, messages: [] });
+    }
+    console.error("email inbox:", e.message || e);
+    res.status(502).json({ error: "mailbox unreachable" });
+  }
+});
+
+/** GET /email/message/:id — one message in full, for the detail view. */
+router.get("/message/:id", async (req, res) => {
+  try {
+    const m = await email.readBody(uidOf(req), req.params.id);
+    if (!m) return res.status(404).json({ error: "not found" });
+    res.json(m);
+  } catch (e) {
+    if (e?.code === "no_account") return res.status(409).json({ error: "not linked" });
+    res.status(502).json({ error: "mailbox unreachable" });
+  }
+});
+
+/** POST /email/send { to, subject, body } — used by the app's reply box. */
+router.post("/send", async (req, res) => {
+  try {
+    const out = await email.send(uidOf(req), {
+      to: req.body?.to,
+      subject: req.body?.subject,
+      body: req.body?.body,
+    });
+    res.json({ ok: true, draft: Boolean(out.draft) });
+  } catch (e) {
+    if (e?.code === "no_account") return res.status(409).json({ error: "not linked" });
+    if (e?.code === "bad_address") return res.status(400).json({ error: "invalid address" });
+    console.error("email send:", e.message || e);
+    res.status(502).json({ error: "could not send" });
+  }
+});
+
 module.exports = router;

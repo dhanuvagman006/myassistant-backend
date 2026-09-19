@@ -32,6 +32,12 @@ function fromName(v) {
   return (m ? m[1] : v).trim();
 }
 
+/** "Ramesh Kumar <x@y.com>" → "x@y.com" (the address alone, for replies). */
+function fromEmail(v) {
+  const m = String(v).match(/<([^>]+)>/);
+  return (m ? m[1] : String(v)).trim();
+}
+
 /**
  * Recent primary-inbox emails.
  * @returns null when Gmail isn't linked; else
@@ -61,6 +67,9 @@ async function recentEmails(userId, { max = 10, q } = {}) {
     .map((m) => ({
       id: m.id,
       from: fromName(header(m, "From")),
+      // The address, not just the display name: "reply to this one" needs
+      // somewhere to send it, and the app shows who it would go to.
+      fromEmail: fromEmail(header(m, "From")),
       subject: header(m, "Subject") || "(no subject)",
       snippet: (m.snippet || "").slice(0, 160),
       unread: (m.labelIds || []).includes("UNREAD"),

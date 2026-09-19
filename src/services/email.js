@@ -63,8 +63,11 @@ async function getAccount(userId) {
     "SELECT address, imap_host, smtp_host, secrets_enc FROM email_accounts WHERE user_id=$1",
     [userId]
   );
-  if (!r.rows.length) return null;
-  const row = r.rows[0];
+  // db.query() resolves to the ROWS ARRAY, not a pg result object —
+  // reading r.rows here threw on every single call, which is why the
+  // assistant answered "I can't do that" even with Gmail fully linked.
+  if (!r.length) return null;
+  const row = r[0];
   const sec = decryptSecrets(row.secrets_enc);
   if (!sec || !sec.password) return null; // key rotated — treat as unlinked
   return {
@@ -164,12 +167,19 @@ async function googleLinked(userId) {
   }
 }
 
-function gmailQuery({ from, text, unreadOnly }) {
-  const parts = ["in:inbox"];
+// WHAT "IMPORTANT" MEANS HERE (his spec, 2026-09-19): the primary inbox
+// with promotions, social, updates, forums, spam and trash all excluded —
+// the mail a person actually wants read to them, not newsletters.
+const IMPORTANT_ONLY =
+  "in:inbox category:primary -category:promotions -category:social " +
+  "-category:updates -category:forums -in:spam -in:trash";
+
+function gmailQuery({ from, text, unreadOnly, important }) {
+  const parts = [important === false ? "in:inbox" : IMPORTANT_ONLY];
   if (from) parts.push(`from:${String(from).replace(/\s+/g, "")}`);
   if (text) parts.push(String(text));
   if (unreadOnly) parts.push("is:unread");
-  if (!from && !text) parts.push("newer_than:7d");
+  if (!from && !text) parts.push("newer_than:14d");
   return parts.join(" ");
 }
 
@@ -177,29 +187,33 @@ function gmailQuery({ from, text, unreadOnly }) {
  * Latest messages, newest first. `from`/`text` narrow the search.
  * Returns [{uid, from, fromAddr, subject, date, snippet, unread}].
  */
-async function listRecent(userId, { from, text, unreadOnly, limit } = {}) {
+async function listRecent(
+  userId,
+  { from, text, unreadOnly, limit, important } = {}
+) {
   const acc = await getAccount(userId);
   if (!acc) {
     if (await googleLinked(userId)) {
       const gapi = require("../google/api");
-      const n = Math.min(Math.max(Number(limit) || 5, 1), 10);
+      const n = Math.min(Math.max(Number(limit) || 5, 1), 25);
       const rows = await gapi.recentEmails(userId, {
         max: n,
-        q: gmailQuery({ from, text, unreadOnly }),
+        q: gmailQuery({ from, text, unreadOnly, important }),
       });
       if (rows === null) throw { code: "no_account" };
       return rows.map((m) => ({
         uid: m.id, // Gmail message id — email_read passes it back for the body
         from: m.from || "unknown sender",
-        fromAddr: "",
+        fromAddr: m.fromEmail || "",
         subject: m.subject,
+        snippet: m.snippet || "",
         date: m.date ? new Date(m.date).toISOString() : null,
         unread: Boolean(m.unread),
       }));
     }
     throw { code: "no_account" };
   }
-  const n = Math.min(Math.max(Number(limit) || 5, 1), 10);
+  const n = Math.min(Math.max(Number(limit) || 5, 1), 25);
   const client = imapClient(acc);
   await withTimeout(client.connect(), 20000, "IMAP connect");
   try {
