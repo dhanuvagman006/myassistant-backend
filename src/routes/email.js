@@ -91,10 +91,18 @@ router.get("/message/:id", async (req, res) => {
 /** POST /email/send { to, subject, body } — used by the app's reply box. */
 router.post("/send", async (req, res) => {
   try {
-    const out = await email.send(uidOf(req), {
+    const uid = uidOf(req);
+    const out = await email.send(uid, {
       to: req.body?.to,
       subject: req.body?.subject,
       body: req.body?.body,
+    });
+    await email.recordSent(uid, {
+      to: String(req.body?.to || ""),
+      label: String(req.body?.label || ""),
+      subject: req.body?.subject,
+      body: req.body?.body,
+      gmailId: out.messageId || "",
     });
     res.json({ ok: true, draft: Boolean(out.draft) });
   } catch (e) {
@@ -102,6 +110,19 @@ router.post("/send", async (req, res) => {
     if (e?.code === "bad_address") return res.status(400).json({ error: "invalid address" });
     console.error("email send:", e.message || e);
     res.status(502).json({ error: "could not send" });
+  }
+});
+
+/** GET /email/sent — everything the assistant has sent for this user. */
+router.get("/sent", async (req, res) => {
+  try {
+    const sent = await email.listSent(uidOf(req), {
+      limit: Number(req.query.limit) || 30,
+    });
+    res.json({ sent });
+  } catch (e) {
+    console.error("email sent list:", e.message || e);
+    res.status(502).json({ error: "could not read sent mail" });
   }
 });
 

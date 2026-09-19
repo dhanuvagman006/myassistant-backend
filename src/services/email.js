@@ -46,6 +46,111 @@ function hostsFor(address, imapHost, smtpHost) {
   };
 }
 
+// ---- SENT LEDGER + REMEMBERED RECIPIENTS -----------------------------
+// Every send is recorded: the Email screen IS this list (his call,
+// 2026-09-19 — "whatever mail I have sent should be visible here"), and
+// it doubles as the address book, so "send it to the same address again"
+// resolves without him repeating it.
+
+async function ensureSentTable() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS email_sent (
+      id         BIGSERIAL PRIMARY KEY,
+      user_id    INTEGER NOT NULL,
+      to_addr    TEXT NOT NULL,
+      to_label   TEXT NOT NULL DEFAULT '',
+      subject    TEXT NOT NULL DEFAULT '',
+      body       TEXT NOT NULL DEFAULT '',
+      gmail_id   TEXT NOT NULL DEFAULT '',
+      created_at BIGINT NOT NULL
+    )`);
+  await query(
+    "CREATE INDEX IF NOT EXISTS email_sent_user_idx ON email_sent (user_id, created_at DESC)"
+  );
+}
+
+async function recordSent(userId, { to, label, subject, body, gmailId }) {
+  try {
+    await ensureSentTable();
+    await query(
+      `INSERT INTO email_sent (user_id, to_addr, to_label, subject, body, gmail_id, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [userId, to, (label || "").slice(0, 60), String(subject || "").slice(0, 300),
+       String(body || "").slice(0, 8000), gmailId || "", Date.now()]
+    );
+  } catch (e) {
+    console.warn("email sent-ledger write failed:", e.message);
+  }
+}
+
+/** The sent list for the app. Newest first. */
+async function listSent(userId, { limit = 30 } = {}) {
+  await ensureSentTable();
+  const rows = await query(
+    `SELECT id, to_addr, to_label, subject, body, gmail_id, created_at
+       FROM email_sent WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2`,
+    [userId, Math.min(Number(limit) || 30, 100)]
+  );
+  return rows.map((r) => ({
+    id: String(r.id),
+    to: r.to_addr,
+    label: r.to_label || "",
+    subject: r.subject,
+    preview: String(r.body || "").replace(/\s+/g, " ").slice(0, 120),
+    gmailId: r.gmail_id || "",
+    at: Number(r.created_at),
+  }));
+}
+
+/** Addresses this user has written to before, most recent first. */
+async function recentRecipients(userId, limit = 12) {
+  await ensureSentTable();
+  return await query(
+    `SELECT to_addr, MAX(to_label) AS to_label, MAX(created_at) AS last_at
+       FROM email_sent WHERE user_id=$1
+      GROUP BY to_addr ORDER BY MAX(created_at) DESC LIMIT $2`,
+    [userId, limit]
+  );
+}
+
+const ADDRESS_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const SAME_RE =
+  /^(the\s+)?(same|that|previous|last|usual)(\s+(address|one|person|email|id))?$/i;
+
+/**
+ * Turn whatever the user said into a real address.
+ * An address passes through; "the same address", a name, or a label is
+ * matched against who they have written to before. Returns
+ * { address, label } or { need: "..." } when it must be asked for.
+ */
+async function resolveRecipient(userId, spoken) {
+  const raw = String(spoken || "").trim();
+  if (!raw) return { need: "who should it go to" };
+  // Spoken addresses arrive as words: "ravi at gmail dot com".
+  const spelled = raw
+    .replace(/\s+at\s+/gi, "@")
+    .replace(/\s+dot\s+/gi, ".")
+    .replace(/\s+underscore\s+/gi, "_")
+    .replace(/\s+(dash|hyphen)\s+/gi, "-")
+    .replace(/\s+/g, "");
+  if (ADDRESS_RE.test(raw)) return { address: raw.toLowerCase(), label: "" };
+  if (ADDRESS_RE.test(spelled)) return { address: spelled.toLowerCase(), label: "" };
+
+  const known = await recentRecipients(userId, 20);
+  if (!known.length) return { need: `the email address for "${raw}"` };
+  if (SAME_RE.test(raw)) {
+    return { address: known[0].to_addr, label: known[0].to_label || "" };
+  }
+  const q = raw.toLowerCase();
+  const hit =
+    known.find((k) => (k.to_label || "").toLowerCase() === q) ||
+    known.find((k) => (k.to_label || "").toLowerCase().includes(q)) ||
+    known.find((k) => k.to_addr.toLowerCase().split("@")[0] === q) ||
+    known.find((k) => k.to_addr.toLowerCase().includes(q));
+  if (hit) return { address: hit.to_addr, label: hit.to_label || "" };
+  return { need: `the email address for "${raw}"` };
+}
+
 async function ensureTable() {
   await query(`
     CREATE TABLE IF NOT EXISTS email_accounts (
@@ -448,6 +553,10 @@ async function listImportant(userId, { limit = 12, force = false } = {}) {
 module.exports = {
   getAccount,
   listImportant,
+  listSent,
+  recentRecipients,
+  resolveRecipient,
+  recordSent,
   connectAccount,
   disconnectAccount,
   listRecent,

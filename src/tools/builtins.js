@@ -1584,7 +1584,19 @@ function registerBuiltins() {
     inputSchema: {
       type: "object",
       properties: {
-        to: { type: "string", description: "Recipient email address (required, must contain @)" },
+        to: {
+          type: "string",
+          description:
+            "Who it goes to: a real email address, OR — when the user " +
+            "refers to someone they have mailed before — their name/label " +
+            "or 'the same address'. The server resolves those against the " +
+            "user's own sent history and asks only if it cannot.",
+        },
+        remember_as: {
+          type: "string",
+          description:
+            "What the user calls this recipient ('my professor', 'Ravi'), when they named them. Saved so the same words work next time.",
+        },
         subject: { type: "string", description: "Short subject line" },
         body: { type: "string", description: "The message body, plain text" },
       },
@@ -1595,13 +1607,30 @@ function registerBuiltins() {
       const email = require("../services/email");
       const uid = Number(ctx?.userId || ctx?.uid || 0);
       try {
-        const out = await email.send(uid, args);
+        // "Send it to the same address" / "mail my professor" — resolve
+        // against who this user has actually written to before.
+        const who = await email.resolveRecipient(uid, args.to);
+        if (who.need) {
+          return {
+            ok: false,
+            error: `recipient unresolved — ask the user for ${who.need}`,
+            speak: `What's ${who.need}?`,
+          };
+        }
+        const out = await email.send(uid, { ...args, to: who.address });
+        await email.recordSent(uid, {
+          to: who.address,
+          label: (args.remember_as || who.label || "").trim(),
+          subject: args.subject,
+          body: args.body,
+          gmailId: out.messageId || "",
+        });
         return {
           ok: true,
-          data: out,
+          data: { ...out, to: who.address },
           speak: out.draft
             ? `The mail is ready as a draft in your Gmail — open Gmail and tap send. To let me send directly, reconnect Google in the Hub once.`
-            : `Sent — your mail to ${args.to} is on its way.`,
+            : `Sent — your mail to ${who.address} is on its way.`,
         };
       } catch (e) {
         if (e?.code === "no_account") {
