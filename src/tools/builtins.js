@@ -1513,7 +1513,7 @@ function registerBuiltins() {
         from: { type: "string", description: "Sender name or address to filter by" },
         query: { type: "string", description: "Words to search in subject/body" },
         unread_only: { type: "boolean", description: "Only unread mail" },
-        uid: { type: "number", description: "Read this ONE message in full (uid from an earlier email_read result)" },
+        uid: { type: "string", description: "Read this ONE message in full (uid from an earlier email_read result, passed back EXACTLY as received)" },
         limit: { type: "number", description: "How many to fetch (default 5, max 10)" },
       },
     },
@@ -1522,7 +1522,7 @@ function registerBuiltins() {
       const uid = Number(ctx?.userId || ctx?.uid || 0);
       try {
         if (args.uid) {
-          const m = await email.readBody(uid, Number(args.uid));
+          const m = await email.readBody(uid, args.uid);
           if (!m) return { ok: false, error: "couldn't fetch that message any more" };
           return { ok: true, data: m };
         }
@@ -1587,7 +1587,9 @@ function registerBuiltins() {
         return {
           ok: true,
           data: out,
-          speak: `Sent — your mail to ${args.to} is on its way.`,
+          speak: out.draft
+            ? `The mail is ready as a draft in your Gmail — open Gmail and tap send. To let me send directly, reconnect Google in the Hub once.`
+            : `Sent — your mail to ${args.to} is on its way.`,
         };
       } catch (e) {
         if (e?.code === "no_account") {

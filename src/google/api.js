@@ -37,11 +37,11 @@ function fromName(v) {
  * @returns null when Gmail isn't linked; else
  *   [{ id, from, subject, snippet, unread, date }]
  */
-async function recentEmails(userId, { max = 10 } = {}) {
+async function recentEmails(userId, { max = 10, q } = {}) {
   const list = await gget(
     userId,
     "https://gmail.googleapis.com/gmail/v1/users/me/messages" +
-      `?maxResults=${max}&q=${encodeURIComponent("in:inbox category:primary newer_than:3d")}`
+      `?maxResults=${max}&q=${encodeURIComponent(q || "in:inbox category:primary newer_than:3d")}`
   );
   if (list === null) return null;
   const ids = (list.messages || []).map((m) => m.id);
@@ -66,6 +66,61 @@ async function recentEmails(userId, { max = 10 } = {}) {
       unread: (m.labelIds || []).includes("UNREAD"),
       date: Number(m.internalDate) || null,
     }));
+}
+
+/** Decode a Gmail base64url body chunk. */
+function b64urlText(data) {
+  try {
+    return Buffer.from(String(data).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+  } catch (_) {
+    return "";
+  }
+}
+
+/** Walk a message payload for the best plain-text body. */
+function bestBody(payload) {
+  if (!payload) return "";
+  if (payload.mimeType === "text/plain" && payload.body?.data) {
+    return b64urlText(payload.body.data);
+  }
+  for (const p of payload.parts || []) {
+    const t = bestBody(p);
+    if (t) return t;
+  }
+  if (payload.mimeType === "text/html" && payload.body?.data) {
+    return b64urlText(payload.body.data).replace(/<[^>]+>/g, " ");
+  }
+  return "";
+}
+
+/** Full plain-text body of one message ("read that one out"). */
+async function messageBody(userId, id) {
+  const m = await gget(
+    userId,
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`
+  );
+  if (m === null) return null;
+  if (!m || !m.id) return undefined;
+  return {
+    from: header(m, "From") || "",
+    subject: header(m, "Subject") || "(no subject)",
+    date: Number(m.internalDate)
+      ? new Date(Number(m.internalDate)).toISOString()
+      : null,
+    body: bestBody(m.payload).replace(/\s+/g, " ").trim().slice(0, 4000),
+  };
+}
+
+/** ACTUALLY send (gmail.send scope). Throws with "scope" in the message
+ *  on a 403 so callers can fall back to a draft for older grants. */
+async function sendEmail(userId, { to, subject, body }) {
+  const j = await gsend(
+    userId,
+    "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+    "POST",
+    { raw: rawEmail({ to, subject, body }) }
+  );
+  return j === null ? null : { id: j.id || null };
 }
 
 /**
@@ -326,5 +381,5 @@ function describeMeetingPrep(prep, tzOffsetMin) {
 module.exports = {
   recentEmails, upcomingEvents, describeEmails, describeEvents,
   createDraft, messageMeta, createEvent, updateEvent, deleteEvent,
-  meetingPrep, describeMeetingPrep,
+  meetingPrep, describeMeetingPrep, messageBody, sendEmail,
 };

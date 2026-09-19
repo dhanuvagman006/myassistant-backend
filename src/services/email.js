@@ -151,13 +151,54 @@ function cleanErr(e) {
     .slice(0, 160);
 }
 
+// ---- GOOGLE ONE-TAP PATH ----------------------------------------------
+// A user who linked Google (google_tokens) gets Gmail through the REST
+// API — no password ever typed. The IMAP account, when present, wins
+// (it is the more deliberate setup); Google is the seamless default.
+
+async function googleLinked(userId) {
+  try {
+    return await require("../google/tokens").isConnected(userId);
+  } catch (_) {
+    return false;
+  }
+}
+
+function gmailQuery({ from, text, unreadOnly }) {
+  const parts = ["in:inbox"];
+  if (from) parts.push(`from:${String(from).replace(/\s+/g, "")}`);
+  if (text) parts.push(String(text));
+  if (unreadOnly) parts.push("is:unread");
+  if (!from && !text) parts.push("newer_than:7d");
+  return parts.join(" ");
+}
+
 /**
  * Latest messages, newest first. `from`/`text` narrow the search.
  * Returns [{uid, from, fromAddr, subject, date, snippet, unread}].
  */
 async function listRecent(userId, { from, text, unreadOnly, limit } = {}) {
   const acc = await getAccount(userId);
-  if (!acc) throw { code: "no_account" };
+  if (!acc) {
+    if (await googleLinked(userId)) {
+      const gapi = require("../google/api");
+      const n = Math.min(Math.max(Number(limit) || 5, 1), 10);
+      const rows = await gapi.recentEmails(userId, {
+        max: n,
+        q: gmailQuery({ from, text, unreadOnly }),
+      });
+      if (rows === null) throw { code: "no_account" };
+      return rows.map((m) => ({
+        uid: m.id, // Gmail message id — email_read passes it back for the body
+        from: m.from || "unknown sender",
+        fromAddr: "",
+        subject: m.subject,
+        date: m.date ? new Date(m.date).toISOString() : null,
+        unread: Boolean(m.unread),
+      }));
+    }
+    throw { code: "no_account" };
+  }
   const n = Math.min(Math.max(Number(limit) || 5, 1), 10);
   const client = imapClient(acc);
   await withTimeout(client.connect(), 20000, "IMAP connect");
@@ -218,7 +259,14 @@ function toSummary(msg) {
 /** Full plain-text body of one message (for "read that one out"). */
 async function readBody(userId, uid) {
   const acc = await getAccount(userId);
-  if (!acc) throw { code: "no_account" };
+  if (!acc) {
+    if (await googleLinked(userId)) {
+      const m = await require("../google/api").messageBody(userId, String(uid));
+      if (m === null) throw { code: "no_account" };
+      return m || null;
+    }
+    throw { code: "no_account" };
+  }
   const client = imapClient(acc);
   await withTimeout(client.connect(), 20000, "IMAP connect");
   try {
@@ -249,9 +297,35 @@ async function readBody(userId, uid) {
 
 async function send(userId, { to, subject, body }) {
   const acc = await getAccount(userId);
-  if (!acc) throw { code: "no_account" };
   const addr = String(to || "").trim();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr)) throw { code: "bad_address" };
+  if (!acc) {
+    if (await googleLinked(userId)) {
+      const gapi = require("../google/api");
+      try {
+        const out = await gapi.sendEmail(userId, {
+          to: addr,
+          subject: String(subject || "").slice(0, 200) || "(no subject)",
+          body: String(body || "").slice(0, 20000),
+        });
+        if (out === null) throw { code: "no_account" };
+        return { messageId: out.id, from: "your Gmail" };
+      } catch (e) {
+        if (/scope/.test(String(e?.message))) {
+          // Older grant without gmail.send — leave a ready draft instead.
+          const d = await gapi.createDraft(userId, {
+            to: addr,
+            subject: String(subject || "").slice(0, 200) || "(no subject)",
+            body: String(body || "").slice(0, 20000),
+          });
+          if (d === null) throw { code: "no_account" };
+          return { draft: true, from: "your Gmail" };
+        }
+        throw e;
+      }
+    }
+    throw { code: "no_account" };
+  }
   const info = await withTimeout(
     smtpTransport(acc).sendMail({
       from: acc.address,
