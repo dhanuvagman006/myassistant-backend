@@ -1565,14 +1565,21 @@ function registerBuiltins() {
   registry.register({
     name: "email_send",
     description:
-      "SEND an email from the user's own mailbox — 'mail ravi@x.com " +
-      "that I'll be late', 'send the report follow-up to my professor'. " +
-      "Needs a real email ADDRESS in `to`: if the user only named a " +
-      "person, ASK for the address (or find it in an earlier email_read " +
-      "result) — never guess one. Compose a short professional body in " +
-      "the user's language and normal prose (no markdown), read the " +
-      "GIST back, and call this only after the user agrees. If it " +
-      "reports no mailbox is connected, point the user to Hub → Email.",
+      "SEND an email from the user's own mailbox. THIS IS THE MAIN EMAIL " +
+      "SKILL — writing, not reading. 'Mail ravi@x.com that I'll be late', " +
+      "'write an email to my professor asking for an extension'. " +
+      "SPOKEN ADDRESSES: speech-to-text writes them out loud, so " +
+      "normalise before sending — 'ravi at gmail dot com' is " +
+      "ravi@gmail.com, 'dot' is '.', 'at' is '@', 'underscore' is '_', " +
+      "'dash'/'hyphen' is '-', and spaces inside an address are removed. " +
+      "Read the finished address back digit by digit ONLY if it sounded " +
+      "ambiguous. If the user named a person with no address, ask for it " +
+      "once — never invent one. Write the body yourself: short, " +
+      "professional, in the user's language, normal prose with no " +
+      "markdown, signed with the user's name when you know it. Read the " +
+      "GIST back (who it goes to and what it says) and send only after " +
+      "they agree. If it reports no mailbox is connected, point the user " +
+      "to Hub → Email.",
     risk: "high",
     inputSchema: {
       type: "object",
