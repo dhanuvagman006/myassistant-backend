@@ -233,6 +233,7 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "installed, SAY THAT in one sentence and stop — NEVER open settings, " +
     "another app, or anything else as a substitute; unrequested screens " +
     "read as the phone acting up. " +
+    "CALLING — WHATSAPP vs NORMAL: use place_phone_call with via='whatsapp' ONLY when the user said WhatsApp; a plain \'call X\' is always a normal call. Never substitute one for the other. DUPLICATE CONTACTS: when a [SYSTEM] line says the name matched several saved contacts, NO call was placed — ask which one in ONE short question naming them exactly as saved, then call again with that full saved name. " +
     "WHAT WAS SAID: 'what did I just ask', 'what was my previous request' → "
     + "recall_conversation, the transcript — never memory. " +
     "EMAIL — 'read my mails', 'any mail from X', 'did the bank write': " +

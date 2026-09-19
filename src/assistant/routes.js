@@ -72,6 +72,7 @@ function newSession(userSub, userName) {
     pending: null, // { action, contact } awaiting confirm
     pendingContactName: null, // waiting for device contact matches
     pendingCallTask: null, // agent-call task ("tell her I'll be late")
+    pendingCallVia: "phone", // 'phone' | 'whatsapp' | 'whatsapp_video'
     agentRetries: 0, // retries used on the current agent-call request
     interpreter: null, // { a, b } while acting as an interpreter
   };
@@ -476,9 +477,10 @@ async function runViaAgent(s, req, userText) {
       else if (a.type === "resolve_and_call") {
         s.pendingContactName = a.name;
         s.pendingCallTask = a.message || null;
+        s.pendingCallVia = a.via || "phone";
         s.agentRetries = 0;
         state(s, "finding_contact");
-        emit(s, { type: "contact_lookup", name: a.name });
+        emit(s, { type: "contact_lookup", name: a.name, via: s.pendingCallVia });
         return true; // waits for POST /contacts
       }
       // Anything else the phone knows how to perform — capture_document,
@@ -918,7 +920,8 @@ router.post("/:sid/contacts", (req, res) => {
     // short codes (112/108/…) are never relayed through the call service —
     // the handset must dial them itself.
     const digits = String(matches[0].phone || "").replace(/\D/g, "");
-    if (s.pendingCallTask && digits.length > 5)
+    if (s.pendingCallTask && digits.length > 5 &&
+        (s.pendingCallVia || "phone") === "phone")
       return startAgentCall(s, matches[0], s.pendingCallTask, req);
     s.pendingCallTask = null;
     return askCallConfirm(s, matches[0]);
@@ -1510,9 +1513,10 @@ router.post("/:sid/confirm", (req, res) => {
           else if (a.type === "resolve_and_call") {
             s.pendingContactName = a.name;
             s.pendingCallTask = a.message || null;
+            s.pendingCallVia = a.via || "phone";
             s.agentRetries = 0;
             state(s, "finding_contact");
-            emit(s, { type: "contact_lookup", name: a.name });
+            emit(s, { type: "contact_lookup", name: a.name, via: s.pendingCallVia });
             return;
           } else if (a.type === "fulfillment_call") {
             if (res.speak) {

@@ -1632,6 +1632,17 @@ function registerBuiltins() {
       "call' — pass the literal name 'me' plus the reminder as `message`; " +
       "the assistant rings the user's own registered number, and if they " +
       "don't pick up it automatically calls again a few minutes later. " +
+      "WHATSAPP vs NORMAL: pass via='whatsapp' ONLY when the " +
+      "user actually said WhatsApp ('WhatsApp call amma', 'call him on " +
+      "WhatsApp'), and via='whatsapp_video' for a WhatsApp video call. " +
+      "Any other call — including a plain 'call amma' — is via='phone'. " +
+      "Never swap one for the other: they ring differently and a WhatsApp " +
+      "call uses the other person's data. " +
+      "DUPLICATE CONTACTS: if the phone reports that the name matches " +
+      "several saved contacts (e.g. 'Ravi 1', 'Ravi 2', 'Ravi 3'), NO " +
+      "call was placed — ask which one in one short question, saying the " +
+      "names exactly as saved, then call this tool again with the full " +
+      "saved name the user picked. " +
       "IMPORTANT: this tool only ASKS the phone to try — the contact is " +
       "not even looked up yet, so NEVER say 'calling X now'; say you are " +
       "finding them. The contact may not exist or permissions may be off. " +
@@ -1655,16 +1666,32 @@ function registerBuiltins() {
           description:
             "The message to deliver or question to ask on the call, when the user asked you to pass one on",
         },
+        via: {
+          type: "string",
+          enum: ["phone", "whatsapp", "whatsapp_video"],
+          description:
+            "How to place it. 'phone' (default) for a normal call; 'whatsapp' ONLY when the user said WhatsApp; 'whatsapp_video' for a WhatsApp video call.",
+        },
       },
       required: ["name"],
     },
-    confirmSummary: (a) =>
-      a.message ? `Call ${a.name} and say: ${a.message}` : `Call ${a.name}`,
+    confirmSummary: (a) => {
+      const how = a.via === "whatsapp_video"
+        ? "WhatsApp video call"
+        : a.via === "whatsapp" ? "WhatsApp call" : "Call";
+      return a.message ? `${how} ${a.name} and say: ${a.message}` : `${how} ${a.name}`;
+    },
     async execute(args, ctx) {
       // The app decides HOW to act on this from agent_available: with a
       // message and the relay configured it asks the server to place the
       // call (Hari speaks it herself); otherwise it dials directly.
-      const agentAvailable = require("../agents/agentCall").enabled();
+      const via = ["whatsapp", "whatsapp_video"].includes(String(args.via))
+        ? String(args.via)
+        : "phone";
+      // A WhatsApp call is placed by the handset's WhatsApp, so the relay
+      // (normal telephony only) never applies to one.
+      const agentAvailable =
+        via === "phone" && require("../agents/agentCall").enabled();
       const relaying = Boolean(args.message) && agentAvailable;
 
       // "Call ME" — wake-up call to the user's own verified number, placed
@@ -1728,12 +1755,15 @@ function registerBuiltins() {
           name: args.name,
           message: args.message || null,
           agent_available: agentAvailable,
+          via,
         },
         // NOT "calling X now": the contact has not even been looked up
         // yet. Testers were told "Calling Dikshit Pujari now" and then, a
         // beat later, that no such contact exists — the phone reports the
         // truth on /call_result and the model speaks THAT.
-        speak: relaying
+        speak: via !== "phone"
+          ? `Looking up ${args.name} for a WhatsApp call…`
+          : relaying
           ? `Let me find ${args.name} and call them — I'll tell you how it goes.`
           : args.message
             ? `I can't speak on calls myself on this setup, so I'll connect you to ${args.name} directly.`
