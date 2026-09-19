@@ -274,6 +274,19 @@ function morningBody(b, tzOffsetMin) {
   return bits.join(" · ").slice(0, 320);
 }
 
+/** One short line for a morning with nothing on it. Rotates by date so
+ *  the same sentence does not arrive every quiet day of the week. */
+function quietMorningLine() {
+  const lines = [
+    "Nothing scheduled today. Tell me what to line up.",
+    "Your day is clear. Want me to plan it with you?",
+    "No meetings, no promises due. Ask me for anything.",
+    "A clear day. Say the word and I'll set your reminders.",
+    "Nothing waiting. Shall I check your mail or your week?",
+  ];
+  return lines[new Date().getDate() % lines.length];
+}
+
 async function sweepMorningBriefs() {
   if (process.env.MORNING_BRIEF === "off") return 0;
 
@@ -318,14 +331,24 @@ async function sweepMorningBriefs() {
       [k, String(Date.now())]
     ).catch(() => {});
 
-    if (!b.agenda.length && !b.messages.length && !b.promises.length) continue;
+    // A QUIET DAY IS STILL A DAY. This used to `continue` here, which
+    // meant anyone with an empty calendar — most people, most mornings —
+    // never heard from their assistant at all, and the one habit that
+    // brings them back never formed. They still get ONE short line, and
+    // it offers the next useful thing instead of pretending to be news.
+    // Silence is still available: brief_push=0 ("stop the morning
+    // notifications") turns it off entirely.
+    const quietDay =
+      !b.agenda.length && !b.messages.length && !b.promises.length;
 
     const first = u.name ? String(u.name).split(" ")[0] : null;
     try {
       const ok = await push.sendNotification(
         u.fcm_token,
         first ? `Good morning, ${first} ☀️` : "Good morning ☀️",
-        morningBody(b, tz) || "Your day is ready — tap for your brief.",
+        quietDay
+          ? quietMorningLine()
+          : morningBody(b, tz) || "Your day is ready — tap for your brief.",
         { kind: "morning_brief" }
       );
       if (ok) sent++;
