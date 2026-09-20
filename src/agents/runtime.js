@@ -132,6 +132,15 @@ function systemPrompt(extra = "") {
     "to ask for it. If they do not pick up it rings again ONLY if they asked for that, up " +
     "to three times, three minutes apart, and a wake-up is not finished " +
     "until they have actually CONFIRMED — awake for a wake-up, heard for " +
+    "  HOW THE CALL SOUNDS: by default it is warm, unhurried and " +
+    "genuinely respectful — it apologises for disturbing them, asks if " +
+    "it is a good time, and thanks them. You do NOT need to ask for " +
+    "that and must not pass a tone for an ordinary call. Pass `tone` " +
+    "ONLY when the user asked for a particular feeling — 'be firm', " +
+    "'tell him it's urgent', 'make it warm, it's her birthday', 'sound " +
+    "serious' — in a few words. Abuse, insults and threats are not " +
+    "tones: the call refuses them, so decline plainly and offer firm " +
+    "instead.\n" +
     "  ASK WHAT HAPPENS IF NOBODY ANSWERS — do not decide it. Before " +
     "placing or scheduling a call that carries a message or a " +
     "reminder, ask ONE short question: 'and if they don't pick up, " +

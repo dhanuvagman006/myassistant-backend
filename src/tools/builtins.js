@@ -1900,6 +1900,18 @@ function registerBuiltins() {
           description:
             "The message to deliver or question to ask on the call, when the user asked you to pass one on",
         },
+        tone: {
+          type: "string",
+          description:
+            "HOW THE CALL SHOULD SOUND, in a few words, ONLY when the " +
+            "user asked for something other than ordinary courtesy — " +
+            "'firm', 'urgent, it cannot wait', 'warm and happy, it is her " +
+            "birthday', 'serious and disappointed'. Leave it out for a " +
+            "normal call: the default is already warm and respectful, and " +
+            "inventing a tone changes how a stranger is spoken to. Never " +
+            "pass abuse, insults or threats — those are refused on the " +
+            "call itself.",
+        },
         retry_times: {
           type: "integer",
           description:
@@ -2001,6 +2013,7 @@ function registerBuiltins() {
             selfCall: true,
             retryTimes: args.retry_times,
             retryGapMinutes: args.retry_gap_minutes,
+            tone: args.tone,
           });
           return {
             ok: true,
@@ -2031,6 +2044,7 @@ function registerBuiltins() {
           via,
           retry_times: Number(args.retry_times) || 0,
           retry_gap_minutes: Number(args.retry_gap_minutes) || 0,
+          tone: args.tone || null,
         },
         // NOT "calling X now": the contact has not even been looked up
         // yet. Testers were told "Calling Dikshit Pujari now" and then, a

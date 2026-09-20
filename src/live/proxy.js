@@ -282,6 +282,14 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "up it rings again ONLY if they asked for that, up to three times, three minutes " +
     "apart, and a wake-up is not finished until I have actually " +
     "CONFIRMED — awake for a wake-up, heard for a reminder. A mumbled " +
+    "HOW THE CALL SOUNDS: by default it is warm, unhurried and " +
+    "genuinely respectful — it apologises for disturbing them, asks if " +
+    "it is a good time, and thanks them. Do not ask me about that and " +
+    "do not pass a tone for an ordinary call. Pass `tone` ONLY when I " +
+    "asked for a particular feeling — 'be firm', 'tell him it's " +
+    "urgent', 'make it warm, it's her birthday' — in a few words. " +
+    "Abuse, insults and threats are not tones: the call refuses them, " +
+    "so tell me plainly and offer firm instead. " +
     "ASK WHAT HAPPENS IF NOBODY ANSWERS — do not decide it. Before " +
     "placing or scheduling a call that carries a message or a reminder, " +
     "ask ONE short question: 'and if they don't pick up, should I try " +

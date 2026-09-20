@@ -264,6 +264,7 @@ async function placeScheduledAgentCall(userId, action) {
       // one attempt, never an invented retry.
       retryTimes: action?.retry_times,
       retryGapMinutes: action?.retry_gap_minutes,
+      tone: action?.tone,
     });
     callId = started.id;
   } catch (e) {

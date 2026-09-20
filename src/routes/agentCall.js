@@ -76,6 +76,7 @@ router.post("/", async (req, res) => {
       // means one attempt.
       retryTimes: Number(req.body?.retryTimes) || 0,
       retryGapMinutes: Number(req.body?.retryGapMinutes) || 0,
+      tone: req.body?.tone,
     });
     res.status(202).json({ id });
   } catch (e) {
