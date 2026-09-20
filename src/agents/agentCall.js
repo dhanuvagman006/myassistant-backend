@@ -165,6 +165,12 @@ function spokenName(name) {
 
 async function bolnaPlaceCall({ to, rec }) {
   const c = cfg();
+  // A user who customised their calling agent has their OWN Bolna agent;
+  // everyone else shares the deployment one. See agents/callingPersona.
+  let agentId = c.bolnaAgent;
+  try {
+    agentId = (await require("./callingPersona").agentIdFor(rec.userId)) || c.bolnaAgent;
+  } catch (_) {}
   const r = await fetch("https://api.bolna.ai/call", {
     method: "POST",
     headers: {
@@ -173,7 +179,7 @@ async function bolnaPlaceCall({ to, rec }) {
     },
     signal: AbortSignal.timeout(15000),
     body: JSON.stringify({
-      agent_id: c.bolnaAgent,
+      agent_id: agentId,
       recipient_phone_number: to,
       from_phone_number: c.bolnaFrom,
       user_data: {
