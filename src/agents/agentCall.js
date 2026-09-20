@@ -359,6 +359,9 @@ function settle(rec) {
       .updateByExternalId(rec.id, {
         status: rec.state,
         detail: rec.result ? String(rec.result).slice(0, 400) : rec.task,
+        // The conversation itself, so "what did he say?" is answerable
+        // from the Calls screen days later, not just in the moment.
+        transcript: rec.answer || "",
       })
       .catch(() => {});
     if (rec.pushOutcome && rec.userId && !rec.pushed) {
@@ -425,6 +428,26 @@ async function start({ userId, userName, toNumber, contactName, task, lang, self
     selfCall: Boolean(selfCall),
   };
   calls.set(rec.id, rec);
+
+  // EVERY CALL LEAVES A ROW, whoever started it.
+  //
+  // Only the scheduled path used to create one, so a call placed from the
+  // app — the way they are actually made — existed nowhere afterwards:
+  // the spoken result was the whole record, and missing it meant it was
+  // gone. settle() updates this row by external id when the provider
+  // reports back, which is what fills the Calls screen.
+  if (userId) {
+    require("../outcomes/store")
+      .create(userId, {
+        kind: "agent_call",
+        target: contactName || to,
+        detail: task || "",
+        status: "dialing",
+        path: "relay",
+        externalId: rec.id,
+      })
+      .catch(() => {});
+  }
 
   try {
     rec.providerRef = await placeByProvider(rec);

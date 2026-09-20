@@ -231,7 +231,24 @@ async function placeScheduledAgentCall(userId, action) {
   } catch (e) {
     if (!e?.skip) console.warn("scheduled agent call resolve failed:", e.message);
   }
-  if (!phone) return placeScheduledCall(userId, action); // user dials themselves
+  if (!phone) {
+    // A MESSAGE TO DELIVER IS NEVER HANDED BACK TO THE USER'S PHONE.
+    //
+    // This used to fall through to placeScheduledCall, which pushes a
+    // "📞 Time to call X" notification and returns ok:true — so the job
+    // was filed as DONE and the user was told the call was "starting on
+    // your phone now". At 4 a.m. nobody taps that notification, and the
+    // message they asked to be delivered simply never was. Say what
+    // actually happened instead.
+    return {
+      ok: false,
+      replaceOutcome: true,
+      line:
+        `I couldn't place the call to ${name} — I don't have a number for ` +
+        `them in your contacts, so nothing was dialled and the message was ` +
+        `not delivered. Save their number, or give me the number itself.`,
+    };
+  }
 
   let callId;
   try {
@@ -249,12 +266,8 @@ async function placeScheduledAgentCall(userId, action) {
     console.warn("scheduled agent call start failed:", e?.message || e?.code);
     return placeScheduledCall(userId, action);
   }
-  try {
-    require("../outcomes/store").create(userId, {
-      kind: "agent_call", target: resolvedName, detail: message,
-      status: "dialing", path: "relay", externalId: callId,
-    }).catch(() => {});
-  } catch (_) {}
+  // The row is created by agentCall.start() now, for every caller — a
+  // second one here would give the Calls screen two rows per call.
 
   // Wait for the terminal state — the whole point is reporting the answer.
   const deadline = Date.now() + 3 * 60 * 1000;
@@ -300,7 +313,10 @@ async function placeScheduledCall(userId, action) {
     );
     return {
       ok: true,
-      line: `I've asked your phone to dial ${name} — the call should be starting on it now.`,
+      // NOT "the call is starting now" — this is a notification waiting
+      // for a tap, and saying otherwise is how a call nobody made got
+      // reported as a call that happened.
+      line: `I've sent a reminder to your phone to call ${name} — it needs a tap to dial.`,
     };
   } catch (e) {
     return {

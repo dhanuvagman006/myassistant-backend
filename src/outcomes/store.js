@@ -44,6 +44,12 @@ function migrate() {
         created_at  BIGINT NOT NULL,
         updated_at  BIGINT NOT NULL
       );
+      -- WHAT THEY ACTUALLY SAID. The detail column is the one-line
+      -- result the assistant speaks; this is the conversation itself, so
+      -- the Calls screen can show the exchange rather than a summary of
+      -- it. Added 2026-09-20: before this the transcript lived only in
+      -- the in-memory call record and was gone on the next deploy.
+      ALTER TABLE task_outcomes ADD COLUMN IF NOT EXISTS transcript TEXT NOT NULL DEFAULT '';
       CREATE INDEX IF NOT EXISTS idx_outcomes_user ON task_outcomes(user_id, id DESC);
       CREATE INDEX IF NOT EXISTS idx_outcomes_time ON task_outcomes(created_at DESC);
     `).catch((e) => {
@@ -71,16 +77,21 @@ async function create(userId, { kind, target, detail, status = "requested", path
 
 /** Update status/reason/detail. A terminal row is never demoted back to a
  *  non-terminal one (a late "dialing" after "failed" must not hide the failure). */
-async function update(userId, id, { status, reason, detail }) {
+async function update(userId, id, { status, reason, detail, transcript }) {
   await migrate();
   const row = await one("SELECT * FROM task_outcomes WHERE id = $1 AND user_id = $2", [Number(id), Number(userId)]);
   if (!row) return null;
   const next = STATUSES.has(status) ? status : row.status;
   if (TERMINAL.has(row.status) && !TERMINAL.has(next)) return row;
   await run(
-    `UPDATE task_outcomes SET status=$1, reason=$2, detail=$3, updated_at=$4 WHERE id=$5`,
+    `UPDATE task_outcomes SET status=$1, reason=$2, detail=$3, transcript=$4, updated_at=$5 WHERE id=$6`,
     [next, reason !== undefined ? clean(reason, 300) : row.reason,
-     detail !== undefined ? clean(detail, 400) : row.detail, Date.now(), row.id]
+     detail !== undefined ? clean(detail, 400) : row.detail,
+     // Never blank an existing transcript with an update that carries none.
+     transcript !== undefined && String(transcript).trim()
+       ? clean(transcript, 6000)
+       : (row.transcript || ""),
+     Date.now(), row.id]
   );
   return one("SELECT * FROM task_outcomes WHERE id = $1", [row.id]);
 }
@@ -164,6 +175,7 @@ function toClient(r) {
     status: r.status,
     reason: r.reason,
     path: r.path,
+    transcript: r.transcript || "",
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
     ok: isSuccess(r.status) ? true : isFailure(r.status) ? false : null,
