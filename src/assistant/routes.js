@@ -831,6 +831,7 @@ router.post("/:sid/capabilities", (req, res) => {
     build: Math.max(0, Number(req.body?.build) || 0),
     model: String(req.body?.model || "").slice(0, 60),
     osVersion: String(req.body?.osVersion || "").slice(0, 40),
+    diag: req.body?.diag && typeof req.body.diag === "object" ? req.body.diag : null,
     granted: granted.map((g) => String(g).slice(0, 40)).slice(0, 40),
     denied: denied.map((g) => String(g).slice(0, 40)).slice(0, 40),
     at: Date.now(),
@@ -843,16 +844,17 @@ router.post("/:sid/capabilities", (req, res) => {
     if (Number.isInteger(uid) && uid > 0) {
       const { run } = require("../db");
       run(
-        `INSERT INTO user_devices (user_id, platform, build, model, os_version, granted, denied, seen_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        `INSERT INTO user_devices (user_id, platform, build, model, os_version, granted, denied, seen_at, diag)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
          ON CONFLICT (user_id) DO UPDATE SET
            platform=EXCLUDED.platform, build=EXCLUDED.build,
            model=EXCLUDED.model, os_version=EXCLUDED.os_version,
            granted=EXCLUDED.granted, denied=EXCLUDED.denied,
-           seen_at=EXCLUDED.seen_at`,
+           seen_at=EXCLUDED.seen_at, diag=EXCLUDED.diag`,
         [uid, s.deviceCaps.platform, s.deviceCaps.build, s.deviceCaps.model,
          s.deviceCaps.osVersion, s.deviceCaps.granted.join(","),
-         s.deviceCaps.denied.join(","), Date.now()]
+         s.deviceCaps.denied.join(","), Date.now(),
+         JSON.stringify(s.deviceCaps.diag || {}).slice(0, 4000)]
       ).catch(() => {});
     }
   } catch (_) {}

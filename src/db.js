@@ -289,7 +289,8 @@ async function init() {
       os_version TEXT NOT NULL DEFAULT '',
       granted    TEXT NOT NULL DEFAULT '',
       denied     TEXT NOT NULL DEFAULT '',
-      seen_at    BIGINT NOT NULL DEFAULT 0
+      seen_at    BIGINT NOT NULL DEFAULT 0,
+      diag       TEXT NOT NULL DEFAULT '{}'
     );
     CREATE TABLE IF NOT EXISTS documents (
       id         SERIAL PRIMARY KEY,

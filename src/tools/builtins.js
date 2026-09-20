@@ -3719,7 +3719,12 @@ function registerBuiltins() {
       "asked for Swiggy is worse than admitting you could not.\n" +
       "When they want something DONE rather than opened — order a dish, " +
       "book a cab, get tickets — use order_food, book_ride or " +
-      "book_movie_tickets instead; those prepare the real target.",
+      "book_movie_tickets instead; those prepare the real target.\n" +
+      "'DOWNLOAD X', 'INSTALL X', 'GET X': use this tool with " +
+      "store_if_missing true. People say download for an app they already " +
+      "have — so it OPENS when the phone has it, and goes to the Play " +
+      "Store page only when it genuinely does not. Never set it for a " +
+      "plain 'open X'.",
     risk: "low",
     deviceAction: true,
     inputSchema: {
@@ -3730,6 +3735,11 @@ function registerBuiltins() {
           description:
             "The app's name exactly as the user said it — 'Swiggy', " +
             "'BigBasket', 'PhonePe'. Free text; any installed app works.",
+        },
+        store_if_missing: {
+          type: "boolean",
+          description:
+            "True when the user asked to download/install/get the app: it still opens the app if they already have it, and only falls back to the Play Store when they do not.",
         },
       },
       required: ["app"],
@@ -3798,8 +3808,14 @@ function registerBuiltins() {
       // failure and the assistant is corrected.
       return {
         ok: true,
-        deviceAction: { type: "open_any_app", name: asked },
-        speak: `Opening ${asked}.`,
+        deviceAction: {
+          type: "open_any_app",
+          name: asked,
+          store_if_missing: args.store_if_missing === true,
+        },
+        speak: args.store_if_missing === true
+          ? `Let me open ${asked} — I'll get you the Play Store if it isn't installed.`
+          : `Opening ${asked}.`,
       };
     },
   });
