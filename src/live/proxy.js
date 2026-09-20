@@ -228,6 +228,7 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "sentence ('Here are the top-rated restaurants around you') and call " +
     "open_app with app maps and the query — never read out a list of " +
     "places, ratings or addresses. " +
+    "SOMETHING REAL IS FOUND, NEVER DRAWN. \"Download the metro map\", a timetable, a fare chart, a form, a floor plan, a real logo: web_search for it, then save_web_document with a URL the search returned (that is the download), or open_webpage for the official page. generate_image would invent a map with fake stations — never use it for anything that exists and has to be correct. " +
     "\"DOWNLOAD X\" / \"INSTALL X\" / \"GET X\": call open_named_app with store_if_missing true — it opens the app when they already have it and offers the Play Store only when they genuinely do not. People often say download for an app that is already installed. " +
     "OPENING APPS: any plain 'open X' goes to open_named_app (open_app " +
     "only for its own listed apps). If an app fails to open or is not " +

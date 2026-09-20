@@ -3043,7 +3043,18 @@ function registerBuiltins() {
       "cannot infer any of this, and there is no negative prompt to undo it " +
       "with. Pick `aspect` from what it is for. The image appears on their " +
       "screen and is saved to their documents. Takes a few seconds — never " +
-      "refuse a creative request.",
+      "refuse a creative request.\n" +
+      "NEVER USE THIS FOR SOMETHING THAT REALLY EXISTS AND HAS TO BE " +
+      "CORRECT. A metro or route map, a timetable, a fare chart, a form, " +
+      "a floor plan, a real company's logo, a diagram of a real system, a " +
+      "real place or person or document — this tool would INVENT it. Asked " +
+      "to 'download the Bangalore metro map' it once produced a picture of " +
+      "a metro map with made-up lines and stations, which is worse than no " +
+      "answer because it looks real. For anything of that kind: web_search " +
+      "for it, then save_web_document with the image or PDF URL from the " +
+      "results (that is what 'download' means), or open_webpage so they can " +
+      "see the official one. Generation is for pictures that did not exist " +
+      "until they asked for them.",
     risk: "low",
     deviceAction: true,
     inputSchema: {
@@ -6532,10 +6543,16 @@ function registerBuiltins() {
     name: "save_web_document",
     description:
       "Download a document from the web INTO the user's documents — a court " +
-      "judgment PDF, a form, a report: 'download that judgment', 'save this " +
-      "PDF'. Pass the direct file URL (from a web_search result). Only real " +
-      "PDFs and images can be saved; if the link is a web page, say so and " +
-      "offer to open it instead — never claim a download that did not happen.",
+      "judgment PDF, a form, a report, a METRO OR ROUTE MAP, a timetable, a " +
+      "fare chart: 'download that judgment', 'save this PDF', 'download the " +
+      "Bangalore metro map'. THIS is what answers a request to download " +
+      "something real — never generate_image, which would invent it.\n" +
+      "Pass a direct file URL that a web_search actually RETURNED. Do not " +
+      "hand-build one: constructed Google Static Maps and similar URLs have " +
+      "come back 403 and 404, so search first and use a real result. Only " +
+      "real PDFs and images can be saved; if the link is a web page, say so " +
+      "and offer to open it instead — never claim a download that did not " +
+      "happen.",
     risk: "medium",
     inputSchema: {
       type: "object",
