@@ -5,8 +5,12 @@
  * bidirectional stream: the app sends raw PCM (16 kHz mono s16le) up as it
  * is captured, and Gemini's native-audio model streams SPOKEN AUDIO back
  * (24 kHz mono s16le). There is no transcription step, end-of-speech is
- * detected server-side by Google (no client VAD guessing), and barge-in is
- * native: talking over Hari interrupts her mid-word.
+ * detected server-side by Google (no client VAD guessing).
+ *
+ * THERE IS NO BARGE-IN as of 2026-09-20: talking over Hari does not
+ * interrupt her. It was native, and on a Samsung S24 the echo canceller
+ * leaked enough of her own voice back that she interrupted herself
+ * constantly — see realtimeInputConfig below.
  *
  * The API key must never reach the app, so the app connects HERE and this
  * module proxies frames to Google:
@@ -1087,6 +1091,21 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           // silenceDurationMs is what the user actually feels: the gap
           // between them stopping and Hari starting.
           realtimeInputConfig: {
+            // BARGE-IN IS OFF. His call, 2026-09-20: "remove the
+            // interruption or barge-in completely… it fails on a Samsung
+            // S24" — on that handset the echo canceller leaks enough of
+            // her own voice back that Google heard it as the user and cut
+            // her off mid-sentence, repeatedly.
+            //
+            // The app already stops sending microphone audio while she
+            // speaks, so in practice there is nothing here to interrupt
+            // on. This is the second lock: whatever does reach Google
+            // during her turn cannot end it. Verified accepted by the
+            // live endpoint on gemini-2.5-flash-native-audio-preview
+            // before shipping; env-overridable back to
+            // START_OF_ACTIVITY_INTERRUPTS without a rebuild.
+            activityHandling:
+              process.env.LIVE_ACTIVITY_HANDLING || "NO_INTERRUPTION",
             automaticActivityDetection: {
               disabled: false,
               startOfSpeechSensitivity:
