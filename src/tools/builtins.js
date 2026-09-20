@@ -6623,7 +6623,15 @@ function registerBuiltins() {
       return {
         ok: true,
         data: { document: shape, filedUnder },
-        deviceAction: { type: "documents", documents: [shape] },
+        // A DOWNLOAD OPENS THE LIST, NOT THE DOCUMENT.
+        //
+        // This used to throw the file full-screen over whatever was on
+        // the phone — which in the middle of a voice conversation means
+        // the conversation disappears behind a PDF nobody asked to read
+        // yet (his call, 2026-09-20: "it should not open there itself…
+        // open the my documents page, that's enough"). The saved file is
+        // the first row there, one tap away.
+        deviceAction: { type: "open_app_screen", screen: "documents" },
         speak: filedUnder ? `Saved to ${filedUnder}'s file.` : "Saved to your documents.",
       };
     },
