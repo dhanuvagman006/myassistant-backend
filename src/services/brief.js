@@ -55,18 +55,28 @@ async function agendaOf(uid, tzOffsetMin) {
   const endOfToday =
     Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + 1) -
     tzOffsetMin * 60_000;
+  // AND NOT YESTERDAY'S. Anything overdue used to qualify, with no lower
+  // bound at all, so a meeting at 5:30pm on Saturday was still sitting
+  // under "Today's agenda" on Sunday — and would have sat there next
+  // month too. A section called TODAY must mean today: from local
+  // midnight. Undone items from previous days are not lost; they stay in
+  // Reminders, which is the list that is meant to keep them.
+  const startOfToday =
+    Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate()) -
+    tzOffsetMin * 60_000;
 
   try {
     const rows = await reminders.list(uid);
     for (const r of rows) {
       if (r.done) continue;
       const due = Number(r.due_at);
-      if (Number.isFinite(due) && due > 0 && due >= endOfToday) continue;
+      const timed = Number.isFinite(due) && due > 0;
+      if (timed && (due >= endOfToday || due < startOfToday)) continue;
       out.push({
         kind: "reminder",
         id: r.id,
         title: String(r.text || "").slice(0, 140),
-        at: Number.isFinite(due) && due > 0 ? due : null,
+        at: timed ? due : null,
       });
     }
   } catch (_) {}
@@ -77,6 +87,10 @@ async function agendaOf(uid, tzOffsetMin) {
     const events = await gapi.upcomingEvents(uid, { days: 1, max: 8 });
     for (const e of events || []) {
       const at = Date.parse(e.start);
+      // upcomingEvents already starts at "now", but an all-day event
+      // returns a bare date that parses to midnight — which is behind us
+      // for most of the day and would read as something still to come.
+      if (Number.isFinite(at) && at < startOfToday) continue;
       out.push({
         kind: "meeting",
         title:
