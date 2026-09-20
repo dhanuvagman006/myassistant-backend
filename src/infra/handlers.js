@@ -576,6 +576,9 @@ function install() {
   jobs.register("scheduled_task", scheduledTask);
   jobs.register("deep_research", deepResearch);
   jobs.register("generate_video", videoJob);
+  // A call retry that survives a restart — see agentCall.handleNoAnswer.
+  jobs.register("agent_call_retry", (payload) =>
+    require("../agents/agentCall").retryFromJob(payload));
 }
 
 module.exports = { install };

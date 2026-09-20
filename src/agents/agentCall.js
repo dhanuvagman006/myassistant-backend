@@ -376,9 +376,79 @@ function handleNoAnswer(rec) {
     `${rec.selfCall ? "You" : rec.contactName} didn't pick up. ` +
     `I'll call again in ${mins} minute${mins === 1 ? "" : "s"} and let you know.`;
   rec.pushOutcome = true;
-  if (rec.retryTimer) clearTimeout(rec.retryTimer);
-  rec.retryTimer = setTimeout(() => redial(rec), c.retryMs);
-  rec.retryTimer.unref?.();
+
+  // THE RETRY IS A JOB, NOT A TIMER.
+  //
+  // It used to be an in-process setTimeout, so a restart anywhere inside
+  // the six minutes between attempts silently dropped the remaining
+  // calls — and a 5 a.m. wake-up that stops after one unanswered ring is
+  // the product failing at the only job it had. The queue survives a
+  // deploy, a crash and a node move; the worker picks it up on its next
+  // 2-second poll.
+  if (rec.retryTimer) { clearTimeout(rec.retryTimer); rec.retryTimer = null; }
+  require("../infra/jobs")
+    .enqueue("agent_call_retry", {
+      id: rec.id,
+      userId: rec.userId,
+      userName: rec.userName,
+      to: rec.to,
+      contactName: rec.contactName,
+      task: rec.task,
+      lang: rec.lang,
+      mode: rec.mode,
+      selfCall: rec.selfCall,
+      attempt: rec.attempt + 1,
+    }, { userId: rec.userId, delayMs: c.retryMs })
+    .catch((e) => {
+      // Falling back to the timer is better than losing the retry
+      // outright, and it is loud so the queue failure gets noticed.
+      console.error("agent-call retry could not be queued:", e.message);
+      rec.retryTimer = setTimeout(() => redial(rec), c.retryMs);
+      rec.retryTimer.unref?.();
+    });
+}
+
+/**
+ * Run a queued retry. The in-memory record is usually still here; after a
+ * restart it is not, so the job payload carries everything needed to dial
+ * again — and REUSES THE SAME id, so the task_outcomes row keeps being
+ * updated instead of a second one appearing for the same call.
+ */
+async function retryFromJob(payload = {}) {
+  const id = String(payload.id || "");
+  if (!id || !enabled()) return;
+  let rec = calls.get(id);
+
+  if (rec) {
+    // A later attempt already reached them, or one is on the line right
+    // now — either way this job is stale.
+    if (["completed", "failed"].includes(rec.state)) return;
+    if (rec.state === "dialing" || rec.state === "in_progress") return;
+  } else {
+    rec = {
+      id,
+      token: crypto.randomBytes(8).toString("hex"),
+      userId: payload.userId || null,
+      to: payload.to,
+      contactName: payload.contactName,
+      task: payload.task || "",
+      lang: payload.lang || "en",
+      userName: payload.userName || null,
+      mode: payload.mode || "inform",
+      state: "no_answer",
+      result: null,
+      answer: null,
+      providerRef: null,
+      createdAt: Date.now(),
+      attempt: Math.max(1, Number(payload.attempt) || 2) - 1,
+      retryPending: true,
+      pushOutcome: true,
+      selfCall: Boolean(payload.selfCall),
+    };
+    calls.set(id, rec);
+  }
+  rec.attempt = Math.max(1, Number(payload.attempt) || rec.attempt + 1) - 1;
+  await redial(rec);
 }
 
 async function redial(rec) {
@@ -540,6 +610,7 @@ function normalizeNumber(n) {
 }
 
 module.exports = {
+  retryFromJob,
   enabled,
   provider,
   bolnaWebhook,

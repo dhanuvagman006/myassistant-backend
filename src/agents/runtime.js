@@ -48,6 +48,30 @@ const MAX_TOOL_ROUNDS = 3; // guards against a tool-calling loop
  * not care whether the model took 10 s or 60 s, only whether it finished.
  * Interactive turns keep the shorter budget, where latency is the product.
  */
+/**
+ * WHAT A BACKGROUND TURN IS EVEN ALLOWED TO SEE.
+ *
+ * MEASURED 2026-09-20: the tool catalogue, not the prompt, is what makes a
+ * turn slow — 104 declarations are 81 KB and ~26 s, which is why every
+ * scheduled task used to die on the 30 s timeout. Two thirds of that
+ * weight is tools that CANNOT RUN with nobody holding the phone: opening
+ * an app, the camera, navigation, an alarm, the screen. The handler
+ * already has to apologise for those after the fact ("part of this needed
+ * your phone in hand"), so offering them at 4 a.m. buys a slower turn and
+ * a worse answer.
+ *
+ * Dropping them leaves 71 tools and ~50 KB. The three device tools kept
+ * are the ones whose real work happens on the SERVER: the relay places
+ * the call itself, and generated images and video are rendered and filed
+ * server-side. Everything a background task can actually finish, it can
+ * still see.
+ */
+const BACKGROUND_DEVICE_TOOLS = new Set([
+  "place_phone_call",
+  "generate_image",
+  "generate_video",
+]);
+
 const BACKGROUND_TURN_TIMEOUT_MS =
   Number(process.env.BACKGROUND_TURN_TIMEOUT_MS) || 90_000;
 
@@ -645,6 +669,13 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
     userId: ctx.userId,
     // A tool whose permission the phone has denied is not offered at all.
     deviceCaps: ctx.deviceCaps || null,
+    // …and with no phone in the loop at all, neither is one that needs it.
+    only: ctx.background
+      ? registry
+          .list()
+          .filter((t) => !t.deviceAction || BACKGROUND_DEVICE_TOOLS.has(t.name))
+          .map((t) => t.name)
+      : null,
   });
   const contents = [];
 
