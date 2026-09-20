@@ -635,6 +635,8 @@ async function runTurn(s, req, userText) {
         userId: Number(s.userSub) > 0 ? Number(s.userSub) : null,
         messages: s.history,
         tzOffsetMin: Number(req.get("X-TZ-Offset")) || 330,
+        batteryPct: Number(req.get("X-Battery")),
+        batteryCharging: req.get("X-Charging") === "1",
         lat: parseFloat(req.get("X-Geo-Lat")),
         lng: parseFloat(req.get("X-Geo-Lng")),
       });
@@ -663,6 +665,8 @@ async function runTurn(s, req, userText) {
       tzOffsetMin: Number(req.get("X-TZ-Offset")) || 330,
       lat: parseFloat(req.get("X-Geo-Lat")),
       lng: parseFloat(req.get("X-Geo-Lng")),
+      batteryPct: Number(req.get("X-Battery")),
+      batteryCharging: req.get("X-Charging") === "1",
       toolBlock,
     };
 

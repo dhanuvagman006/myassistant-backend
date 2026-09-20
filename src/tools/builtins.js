@@ -1902,28 +1902,53 @@ function registerBuiltins() {
         },
         via: {
           type: "string",
-          enum: ["phone", "whatsapp", "whatsapp_video"],
           description:
-            "How to place it. 'phone' (default) for a normal call; 'whatsapp' ONLY when the user said WhatsApp; 'whatsapp_video' for a WhatsApp video call.",
+            "WHICH APP PLACES IT. 'phone' (default) for a normal call. " +
+            "Otherwise the app the user NAMED, lowercased, exactly as they " +
+            "said it: 'whatsapp', 'telegram', 'signal', 'viber', 'skype', " +
+            "'botim' — any calling app on their phone works, because the " +
+            "app is looked up on the contact rather than from a fixed " +
+            "list. Add '_video' for a video call: 'whatsapp_video', " +
+            "'telegram_video'. Use an app ONLY when they said one; a bare " +
+            "'call Ravi' is always 'phone'. Never substitute one for " +
+            "another — they ring differently and an app call uses the " +
+            "other person's data.",
         },
       },
       required: ["name"],
     },
     confirmSummary: (a) => {
-      const how = a.via === "whatsapp_video"
-        ? "WhatsApp video call"
-        : a.via === "whatsapp" ? "WhatsApp call" : "Call";
+      const v = String(a.via || "phone").toLowerCase();
+      const app = v === "phone" || !v ? "" : v.replace(/_video$/, "");
+      // Apps people will read back: spelled the way they spell themselves.
+      // Anything else is simply capitalised — the list is a courtesy, not
+      // a gate, so a new app still reads sensibly.
+      const BRAND = {
+        whatsapp: "WhatsApp", telegram: "Telegram", signal: "Signal",
+        viber: "Viber", skype: "Skype", botim: "BOTIM", imo: "imo",
+        messenger: "Messenger", duo: "Duo", meet: "Google Meet",
+        instagram: "Instagram", snapchat: "Snapchat", zoom: "Zoom",
+      };
+      const pretty = app
+        ? BRAND[app] || app.charAt(0).toUpperCase() + app.slice(1)
+        : "";
+      const how = !app
+        ? "Call"
+        : `${pretty}${v.endsWith("_video") ? " video" : ""} call`;
       return a.message ? `${how} ${a.name} and say: ${a.message}` : `${how} ${a.name}`;
     },
     async execute(args, ctx) {
       // The app decides HOW to act on this from agent_available: with a
       // message and the relay configured it asks the server to place the
       // call (Hari speaks it herself); otherwise it dials directly.
-      const via = ["whatsapp", "whatsapp_video"].includes(String(args.via))
-        ? String(args.via)
-        : "phone";
-      // A WhatsApp call is placed by the handset's WhatsApp, so the relay
-      // (normal telephony only) never applies to one.
+      // ANY named app, not a fixed list — the phone looks it up on the
+      // contact. Only a bare/absent value means a normal call.
+      const rawVia = String(args.via || "phone").trim().toLowerCase()
+        .replace(/[^a-z0-9_]/g, "");
+      const via = !rawVia || rawVia === "phone" || rawVia === "normal" ? "phone" : rawVia;
+      // An in-app call is placed by that app on the handset, so the relay
+      // — which dials real telephony from our own number — never applies
+      // to one, whichever app it is.
       const agentAvailable =
         via === "phone" && require("../agents/agentCall").enabled();
       const relaying = Boolean(args.message) && agentAvailable;

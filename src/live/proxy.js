@@ -253,6 +253,16 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "any. AT A TIME ('call my driver at 4am and remind him to come to " +
     "the airport') that whole sentence goes to schedule_task, message " +
     "included, and it is placed then — not now. " +
+    "CALLING IN AN APP: any calling app on my phone works, not just " +
+    "WhatsApp — 'call Ravi on Telegram', 'Signal call amma', 'video " +
+    "call him on WhatsApp'. Pass via='telegram', 'signal', 'whatsapp', " +
+    "'viber'… exactly the app I said, lowercased, with '_video' for a " +
+    "video call. The app is looked up ON THE CONTACT, so anything " +
+    "installed works and you never need to check first. A BARE 'call " +
+    "Ravi' IS ALWAYS A NORMAL CALL — never pick an app I did not name, " +
+    "and never fall back to a normal call when I did: if the app " +
+    "cannot place it, a [SYSTEM] line tells you which apps that person " +
+    "IS reachable on. Offer those, do not dial around them. " +
     "I AM GOING OUT: 'I have to go out today', 'heading to the office', " +
     "'stepping out now', 'do I need an umbrella' — call going_out_check " +
     "ONCE and answer in one breath. It gives you the hour-by-hour " +
@@ -1321,6 +1331,8 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           userName,
           lat: deviceCtx.lat,
           lng: deviceCtx.lng,
+          batteryPct: deviceCtx.batteryPct,
+          batteryCharging: deviceCtx.batteryCharging,
           platform: deviceCtx.platform,
           tzOffsetMin: deviceCtx.tz,
           appBuild: deviceCtx.build,
@@ -1685,6 +1697,11 @@ function attachWs(server) {
     const deviceCtx = {
       lat: num("lat"),
       lng: num("lng"),
+      // The phone's charge, for going_out_check. Absent on older builds,
+      // and an absent number is left out of the answer rather than
+      // guessed at.
+      batteryPct: num("battery"),
+      batteryCharging: url.searchParams.get("charging") === "1",
       build: num("build") ?? 0, // app versionCode — capability gating
       tz: num("tz") ?? 330,
       platform:

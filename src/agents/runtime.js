@@ -104,6 +104,17 @@ function systemPrompt(extra = "") {
     "any. AT A TIME ('call my driver at 4am and remind him to come to " +
     "the airport') that whole sentence goes to schedule_task, message " +
     "included, and it is placed then — not now. " +
+    "- CALLING IN AN APP: any calling app on their phone works, not " +
+    "just WhatsApp — 'call Ravi on Telegram', 'Signal call amma', " +
+    "'video call him on WhatsApp'. Pass via='telegram', 'signal', " +
+    "'whatsapp', 'viber'… exactly the app they said, lowercased, with " +
+    "'_video' appended for a video call. The app is looked up ON THE " +
+    "CONTACT, so anything installed works and you never need to check " +
+    "first. A BARE 'call Ravi' IS ALWAYS A NORMAL CALL — never pick an " +
+    "app they did not name, and never fall back to a normal call when " +
+    "they did: if the app cannot place it, a [SYSTEM] line says so and " +
+    "tells you which apps that person IS reachable on. Offer those, do " +
+    "not dial around them.\n" +
     "- THEY ARE GOING OUT: 'I have to go out today', 'heading to the " +
     "office', 'stepping out now', 'do I need an umbrella' → call " +
     "going_out_check ONCE and answer in one breath. It returns the " +
