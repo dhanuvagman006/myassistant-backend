@@ -90,7 +90,12 @@ async function createDocument(userId, { buffer, filename, mime, note = "" }) {
 async function setMetadata(userId, id, { title, category, docDate, summary, tags, fullText }) {
   const CATS = new Set(["medical", "prescription", "receipt", "bill", "id", "ticket", "other"]);
   await run(
-    `UPDATE documents SET title=$1, category=$2, doc_date=$3, summary=$4, tags=$5, full_text=$6
+    // A BLANK TITLE NEVER WINS. The analyser returning nothing (a scan it
+    // could not read, a 3 MB map, a parse miss) used to erase the title
+    // the download already had, leaving untitled rows in the documents
+    // list — seen on two saved metro maps, 2026-09-20.
+    `UPDATE documents SET title=CASE WHEN $1 = '' THEN title ELSE $1 END,
+       category=$2, doc_date=$3, summary=$4, tags=$5, full_text=$6
      WHERE id=$7 AND user_id=$8`,
     [
       String(title || "").trim().slice(0, 160),
