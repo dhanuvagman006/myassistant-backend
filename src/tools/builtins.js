@@ -3540,7 +3540,12 @@ function registerBuiltins() {
         x: (t) => `https://x.com/search?q=${encodeURIComponent(t)}`,
         linkedin: (t) => `https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(t)}`,
         maps: (t) => `https://www.google.com/maps/search/${encodeURIComponent(t)}`,
-        google_images: (t) => `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(t)}`,
+        // udm=2 is Google's CURRENT images tab. The old tbm=isch lands on
+        // the normal web results page on mobile, which is exactly what
+        // "show me images of a golden duck" produced (2026-09-20). Both
+        // are sent: udm wins where it is honoured, tbm covers the rest.
+        google_images: (t) =>
+          `https://www.google.com/search?q=${encodeURIComponent(t)}&udm=2&tbm=isch`,
         google: (t) => `https://www.google.com/search?q=${encodeURIComponent(t)}`,
         youtube: (t) => `https://www.youtube.com/results?search_query=${encodeURIComponent(t)}`,
         spotify: (t) => `https://open.spotify.com/search/${encodeURIComponent(t)}`,
