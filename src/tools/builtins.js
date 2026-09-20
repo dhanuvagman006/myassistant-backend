@@ -3407,7 +3407,7 @@ function registerBuiltins() {
   registry.register({
     name: "open_app",
     description:
-      "Open an app on the user's phone, optionally straight at a PERSON'S " +
+      "NOT FOR A METRO OR ROUTE MAP: app=maps answers \"what is near me\", so a request for the Bangalore metro map, a rail or bus route diagram or a timetable must go to web_search + save_web_document instead — Maps cannot show a system map. Open an app on the user's phone, optionally straight at a PERSON'S " +
       "PROFILE or a search — 'open Instagram', 'open the Prime Minister's " +
       "Instagram', 'show me Virat Kohli on X', 'open WhatsApp'. This DOES " +
       "open the app on their phone; say you're opening it.\n" +
