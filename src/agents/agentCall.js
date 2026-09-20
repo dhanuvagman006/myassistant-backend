@@ -23,7 +23,11 @@ function cfg() {
     bolnaKey: process.env.BOLNA_API_KEY || "",
     bolnaFrom: process.env.BOLNA_FROM_NUMBER || "",
     bolnaAgent: process.env.BOLNA_AGENT_ID || "",
-    retryMs: Number(process.env.AGENT_CALL_RETRY_MS || 5 * 60 * 1000),
+    // Three minutes between attempts, three attempts (his spec,
+    // 2026-09-20: "max call agent can make is 3 calls and also with 3
+    // min gap"). Long enough to reach a phone in another room, short
+    // enough that a 5 a.m. wake-up still works as a wake-up.
+    retryMs: Number(process.env.AGENT_CALL_RETRY_MS || 3 * 60 * 1000),
     maxAttempts: Number(process.env.AGENT_CALL_MAX_ATTEMPTS || 3),
   };
 }
@@ -237,15 +241,30 @@ function bolnaWebhook(body) {
   if (status === "completed") {
     const secs = Number(body?.conversation_duration || 0);
     const transcript = String(body?.transcript || "");
+    rec.answer = transcript.slice(0, 4000) || rec.answer;
+
+    // "COMPLETED" IS THE PROVIDER'S WORD, NOT THE OUTCOME.
+    //
+    // A voicemail picks up, talks for thirty seconds and completes. So
+    // does a phone answered and put straight down. Neither delivered
+    // anything, and for a 5 a.m. wake-up neither means the user is awake.
+    //
+    //   voicemail     → never counts, whatever the duration
+    //   any call      → somebody has to have SPOKEN; an answering machine
+    //                   that never says "user:" is not a delivery
+    //   wake-up       → they must actually CONFIRM (see confirmedAwake):
+    //                   a mumbled "hello" is how people answer in their
+    //                   sleep, and he asked to be called again until he
+    //                   confirms he is up.
+    const voicemail = body?.answered_by_voice_mail === true;
     const theySpoke = /^user\s*:/im.test(transcript);
-    // An INFORM call counts once it was heard (secs > 0); an ASK needs the
-    // contact's words; a WAKE-UP call needs the USER'S words — a voicemail
-    // greeting must never count as the user being awake.
-    if (secs <= 0 || (!theySpoke && (rec.selfCall || rec.mode === "ask"))) {
+    const reached = secs > 0 && theySpoke && !voicemail;
+    const done = rec.selfCall ? reached && confirmedAwake(transcript) : reached;
+
+    if (!done) {
       handleNoAnswer(rec);
       return true;
     }
-    rec.answer = transcript.slice(0, 4000) || rec.answer;
     finishCompleted(rec, String(body?.summary || "").trim());
     return true;
   }
@@ -258,6 +277,36 @@ function bolnaWebhook(body) {
       : `I couldn't complete the call to ${rec.selfCall ? "your phone" : rec.contactName}.`;
   settle(rec);
   return true;
+}
+
+/**
+ * DID THEY ACTUALLY WAKE UP?
+ *
+ * His spec, 2026-09-20: "if I don't pick, call again until I confirm I
+ * woke up". Answering is not confirming — "hello" is exactly what someone
+ * says half asleep, and treating it as success is how a wake-up call
+ * stops one ring before it has done its job.
+ *
+ * So a wake-up counts only when they either say something affirmative, in
+ * any of the languages these calls happen in, or hold a real exchange
+ * (three words or more). The bias is deliberate: an extra call at 5 a.m.
+ * is a mild annoyance, a missed flight is not.
+ */
+const AFFIRMATIVE =
+  /\b(yes|yeah|yep|ya|ok|okay|okey|sure|awake|i'?m up|got it|alright|right|hmm+|understood|thanks|thank you)\b|हाँ|हां|जी|ठीक|उठ|समझ|ಹೌದು|ಸರಿ|ಎದ್ದೆ|ಎದ್ದಿದ್ದೇನೆ|ಗೊತ್ತಾಯ್ತು|ஆம்|சரி|எழுந்த|అవును|సరే|లేచ|ശരി|ഉണർന്ന/i;
+
+function confirmedAwake(transcript) {
+  const said = String(transcript || "")
+    .split(/\r?\n/)
+    .filter((l) => /^\s*user\s*:/i.test(l))
+    .map((l) => l.replace(/^\s*user\s*:/i, "").trim())
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  if (!said) return false;
+  if (AFFIRMATIVE.test(said)) return true;
+  // A real exchange, even without a word we recognise.
+  return said.split(/\s+/).filter((w) => w.length > 1).length >= 3;
 }
 
 // ---------------- OUTCOME + REDIAL ----------------
