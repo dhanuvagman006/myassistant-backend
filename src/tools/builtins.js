@@ -6558,7 +6558,11 @@ function registerBuiltins() {
       "come back 403 and 404, so search first and use a real result. Only " +
       "real PDFs and images can be saved; if the link is a web page, say so " +
       "and offer to open it instead — never claim a download that did not " +
-      "happen.",
+      "happen.\n" +
+      "ACT, DO NOT ASK. Choose the best result yourself and save it. No " +
+      "question about which image, which format or whether to proceed, " +
+      "and no narration of what you are about to do — one short sentence " +
+      "after it is saved is the whole reply.",
     risk: "medium",
     inputSchema: {
       type: "object",
