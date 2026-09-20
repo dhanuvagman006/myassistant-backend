@@ -30,7 +30,16 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 18 * 1024 * 1024 },
 });
-const OK_MIME = new Set(["image/jpeg", "image/png", "image/webp", "application/pdf"]);
+// WHAT MAY BE SAVED. Images and PDFs are read natively by the analyser;
+// the Office and text formats below are converted to text first
+// (docs/extract.js) so a shared spreadsheet or deck is as answerable as a
+// photographed report. Anything not listed is refused rather than stored
+// as an unreadable blob.
+const { EXTRACTABLE } = require("../docs/extract");
+const OK_MIME = new Set([
+  "image/jpeg", "image/png", "image/webp", "application/pdf",
+  ...EXTRACTABLE,
+]);
 
 function uid(req, res) {
   let sub = req.user?.sub;
@@ -45,9 +54,9 @@ function uid(req, res) {
 
 /** Analyze + attach metadata — shared by fresh
  *  uploads and the lazy healing pass below. Never throws. */
-async function analyzeInBackground(userId, row, buffer, mime) {
+async function analyzeInBackground(userId, row, buffer, mime, filename = "") {
   try {
-    const meta = await analyzeDocument(buffer, mime);
+    const meta = await analyzeDocument(buffer, mime, filename || row.filename || "");
     if (!meta) return;
     const updated = (await docs.setMetadata(userId, row.id, meta)) || row;
 
@@ -302,7 +311,7 @@ router.post(
   );
 
   healAttempted.add(row.id);
-  await analyzeInBackground(id, row, f.buffer, f.mimetype);
+  await analyzeInBackground(id, row, f.buffer, f.mimetype, f.originalname);
 });
 
 // GET /docs?scope=personal|clients|all — the app's "My Documents" screen
@@ -324,7 +333,7 @@ router.get("/", async (req, res) => {
     healAttempted.add(row.id);
     fs.promises
       .readFile(row.path)
-      .then((buf) => analyzeInBackground(id, row, buf, row.mime))
+      .then((buf) => analyzeInBackground(id, row, buf, row.mime, row.filename))
       .catch((e) => console.error("docs heal read:", e.message));
   }
 });

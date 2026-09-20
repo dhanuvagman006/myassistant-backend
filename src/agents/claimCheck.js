@@ -75,6 +75,11 @@ const FAMILIES = [
       "show_alarms",
       // "Opening the installer" is the same claim again.
       "update_app",
+      // In-app panels the model announces the same way ("here's your
+      // schedule", "pulling up the headlines"). Both were orphans — no
+      // family backed them, so the assistant could apologise for a
+      // schedule the user was looking at.
+      "show_schedule", "show_news",
     ],
     claim: /\b(opening|opened|launching|launched|pulling up|bringing up)\b/i,
     // खोल…, ओपन कर…, ತೆರೆ…/ಓಪನ್ ಮಾಡ…, திறக்க…, తెరుస్…, തുറക്ക…
@@ -127,6 +132,30 @@ const FAMILIES = [
     // बजा/चला रहा…, ಪ್ಲೇ ಮಾಡ…, இசைக்க…, ప్లే చేస…, പ്ലേ ചെയ്യ…
     claimIntl: /(बजा\s*रहा|चला\s*रहा|प्ले\s*कर|ಪ್ಲೇ\s*ಮಾಡ|ಹಾಡು\s*ಹಾಕ|இசைக்கிற|பிளே\s*செய்|ప్లే\s*చేస|പ്ലേ\s*ചെയ്)/,
     honest: () => "I couldn't start the music.",
+  },
+  {
+    // THINGS THE ASSISTANT PRODUCED. create_document hands back a real
+    // .pdf/.pptx/.docx/.xlsx, and the model narrates that as "I've made
+    // your deck" / "your report is ready" — words no existing family
+    // recognised, which would have left a brand-new capability apologising
+    // for work the user can see in their documents list.
+    //
+    // THE NOUN IS LOAD-BEARING. A bare "created"/"made" also fits "I've
+    // created that reminder", which belongs to `remind` and would be
+    // denied here — so a sentence only counts as this family's claim when
+    // it names the THING that was produced.
+    //
+    // Membership overlaps `record` on purpose: "I've saved the report to
+    // your documents" satisfies both readings, and whichever family
+    // classifies first must find the tool that ran.
+    id: "create",
+    tools: ["create_document", "save_web_document", "present_text",
+            "generate_image", "generate_video", "capture_document"],
+    claim:
+      /\b(created|made|prepared|generated|built|drafted|put together|written up|drawn up|ready|done)\b[^.]{0,40}\b(pdf|document|report|letter|deck|presentation|slides?|powerpoint|word file|spreadsheet|sheet|excel|workbook|invoice|proposal|resume|cv|file|image|picture|poster|photo|video)\b|\b(your|the)\b\s+\b(pdf|deck|presentation|slides?|powerpoint|spreadsheet|report|document|file|image|video)\b[^.]{0,20}\b(is|'s)\s+(ready|done|saved|in your documents)\b/i,
+    // बना दिया…, ತಯಾರಿಸ…/ಮಾಡಿದೆ…, உருவாக்க…, తయారు చేస…, ഉണ്ടാക്കി…
+    claimIntl: /(बना\s*(दिया|दी|लिया)|तैयार\s*(कर|है)|ತಯಾರಿಸ|ಮಾಡಿ\s*(ದೆ|ಕೊಟ್ಟ)|ಸಿದ್ಧ|உருவாக்க|தயாரித்த|తయారు\s*చేస|సిద్ధం|ഉണ്ടാക്കി|തയ്യാറാക്കി)/,
+    honest: () => "I couldn't create that file — nothing was saved.",
   },
   {
     id: "record",

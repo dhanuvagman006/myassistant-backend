@@ -44,8 +44,20 @@ FROM node:20-slim
 # lands, Veo takes over the same code path.
 #
 # ffmpeg here is the headless Debian build (no X, no GUI deps).
+#
+# FONTS are for PDF GENERATION. PDFKit's built-in fonts are WinAnsi only:
+# they cannot draw a single Devanagari, Kannada, Tamil, Telugu, Malayalam
+# or Bengali glyph, so a report asked for in Hindi would come out as a
+# page of empty boxes. DejaVu covers Latin properly (the built-ins have no
+# ₹ either); Noto covers the Indian scripts. docgen.js DISCOVERS whichever
+# of these exist at runtime and falls back to the built-ins when none do,
+# so removing them degrades PDFs rather than breaking the service.
+#
+# The Office formats (.docx/.pptx/.xlsx) need none of this — the reader on
+# the phone supplies the fonts.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates ffmpeg fonts-dejavu-core fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

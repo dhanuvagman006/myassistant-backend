@@ -3029,6 +3029,176 @@ function registerBuiltins() {
     },
   });
 
+  // ---------------- DOCUMENT STUDIO ----------------
+  //
+  // present_text puts words on the SCREEN. This makes a FILE — the thing
+  // you attach to an email, print, or open in PowerPoint. It is the one
+  // job people still went to a laptop (and to ChatGPT) for.
+  registry.register({
+    name: "create_document",
+    description:
+      "MAKE A REAL FILE and save it to the user's documents — a PDF, a " +
+      "PowerPoint deck, a Word document or an Excel sheet. This is the " +
+      "tool for 'make me a PPT on solar energy', 'prepare a two-page " +
+      "report on this', 'create an invoice for Mehta', 'draft a proposal " +
+      "as a PDF', 'build me a budget spreadsheet', 'make my resume', " +
+      "'turn these notes into a presentation', 'give me a leave letter I " +
+      "can print'.\n" +
+      "PICK THE KIND FROM WHAT THEY WILL DO WITH IT: slides for anything " +
+      "presented or shown to a room; sheet for numbers, budgets, " +
+      "trackers, lists that get sorted or summed; doc when they said Word " +
+      "or will edit it themselves; pdf for everything else that is read, " +
+      "printed, signed or emailed as-is.\n" +
+      "YOU DO NOT WRITE THE CONTENT HERE. Pass a one-line `topic` and, in " +
+      "`brief`, anything the user specified — length, sections, the ask, " +
+      "the occasion, the numbers to hit. A dedicated writer expands it " +
+      "into the finished document, so a rich brief is worth more than a " +
+      "long topic. If the user or an earlier step already supplied the " +
+      "material (figures, notes, an email, a transcript, search results), " +
+      "put it in `source_text` VERBATIM — it is then used as the source " +
+      "of truth instead of being invented.\n" +
+      "ACT, DO NOT ASK. Choose the kind, the length and the structure " +
+      "yourself and build it. No question about format, no confirming the " +
+      "outline first, no narrating what you are about to do — one short " +
+      "sentence after it exists is the whole reply. It takes several " +
+      "seconds; that is normal.\n" +
+      "NOT FOR SOMETHING THAT ALREADY EXISTS IN THE WORLD — a metro map, " +
+      "a government form, a real company's report, a court judgment. Those " +
+      "are web_search plus save_web_document; this tool would write a " +
+      "plausible imitation. And not for a quick answer or a short note the " +
+      "user only wants to read on their screen — that is present_text.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          enum: ["pdf", "slides", "doc", "sheet"],
+          description:
+            "pdf = report/letter/invoice to read or print; slides = .pptx " +
+            "presentation; doc = .docx the user will edit; sheet = .xlsx " +
+            "for numbers and lists.",
+        },
+        topic: {
+          type: "string",
+          description:
+            "One line saying what the document IS ('Q3 sales review for " +
+            "the board', 'leave letter to my manager for 12-14 October').",
+        },
+        brief: {
+          type: "string",
+          description:
+            "Everything the user specified: length, sections, tone, the " +
+            "point it must land, constraints, names, dates, amounts.",
+        },
+        source_text: {
+          type: "string",
+          description:
+            "Material already supplied — notes, figures, an email, search " +
+            "findings. Used as the source of truth. Paste it verbatim.",
+        },
+        title: {
+          type: "string",
+          description: "File name. Defaults to a title the writer chooses.",
+        },
+        slide_count: {
+          type: "integer",
+          description: "Slides for kind=slides (default 10, max 30).",
+        },
+        language: {
+          type: "string",
+          description:
+            "Language to write in. Default English. Use the language the " +
+            "user asked for the DOCUMENT in, which is not always the one " +
+            "they are speaking.",
+        },
+        tone: { type: "string", description: "e.g. formal, warm, persuasive, plain." },
+        audience: { type: "string", description: "Who reads it — board, client, teacher, bank." },
+        client_name: {
+          type: "string",
+          description: "File it under this client/patient instead of My Documents.",
+        },
+      },
+      required: ["kind", "topic"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const docgen = require("../services/docgen");
+      const kind = String(args.kind || "").trim().toLowerCase();
+      if (!docgen.KINDS.includes(kind)) {
+        return { ok: false, error: `kind must be one of ${docgen.KINDS.join(", ")}` };
+      }
+      const topic = String(args.topic || "").trim();
+      if (!topic) return { ok: false, error: "say what the document should be about" };
+
+      let made;
+      try {
+        made = await docgen.create(kind, {
+          topic,
+          brief: String(args.brief || "").slice(0, 4000),
+          content: String(args.source_text || "").slice(0, 12000),
+          title: String(args.title || "").slice(0, 140),
+          count: args.slide_count,
+          language: String(args.language || "").slice(0, 40),
+          tone: String(args.tone || "").slice(0, 120),
+          audience: String(args.audience || "").slice(0, 120),
+          tzOffsetMin: ctx.tzOffsetMin,
+        });
+      } catch (e) {
+        return {
+          ok: false,
+          error: `couldn't build that ${docgen.LABEL[kind]}: ${String(e.message).slice(0, 160)}`,
+        };
+      }
+
+      const docsStore = require("../docs/store");
+      const people = require("../clients/store");
+      let row;
+      try {
+        row = await docsStore.createDocument(ctx.userId, {
+          buffer: made.buffer,
+          filename: made.filename,
+          mime: made.mime,
+          note: made.title,
+        });
+        // The file the assistant just wrote is searchable and answerable
+        // like any uploaded one — no second AI pass needed, we already
+        // know exactly what is in it.
+        await docsStore.setMetadata(ctx.userId, row.id, {
+          title: made.title,
+          category: row.category || "other",
+          docDate: "",
+          summary: `${made.label} created by MYASSISTANT — ${made.summary}.`,
+          tags: "",
+          fullText: made.text,
+        });
+      } catch (e) {
+        return { ok: false, error: `couldn't save it: ${String(e.message).slice(0, 140)}` };
+      }
+
+      let filedUnder = null;
+      if (args.client_name) {
+        const rc = await people.resolveByName(ctx.userId, args.client_name);
+        if (rc.client && (await people.linkDocument(ctx.userId, row.id, rc.client.id))) {
+          filedUnder = rc.client.name;
+        }
+      }
+
+      const saved = (await docsStore.getDocument(ctx.userId, row.id)) || row;
+      return {
+        ok: true,
+        data: { document: docsStore.toClient(saved), kind, filedUnder, summary: made.summary },
+        // Same contract as a download: the LIST opens, not the file. A
+        // deck thrown full-screen over a live voice conversation buries
+        // the conversation behind it.
+        deviceAction: { type: "open_app_screen", screen: "documents" },
+        speak: filedUnder
+          ? `Your ${made.label} is in ${filedUnder}'s file — ${made.summary}.`
+          : `Your ${made.label} is ready in your documents — ${made.summary}.`,
+      };
+    },
+  });
+
   registry.register({
     name: "generate_image",
     description:

@@ -415,6 +415,16 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "plan): write the COMPLETE piece and call present_text to put it on " +
     "screen — speak only one short line, never read the whole piece aloud " +
     "unless asked. " +
+    "A FILE I CAN SEND — a presentation, a PDF report, a Word document " +
+    "or an Excel sheet — means create_document: 'make a PPT on X', " +
+    "'prepare a two-page report', 'draft the proposal as a PDF', 'build " +
+    "me a budget sheet', 'make my resume', 'turn these notes into " +
+    "slides', 'give me a letter I can print'. present_text is what I only " +
+    "READ on screen; create_document is a real file I attach, print or " +
+    "open in PowerPoint. Choose the kind and the length yourself and " +
+    "build it — never ask which format, never show an outline first; put " +
+    "what I asked for in `brief` and anything I already gave you in " +
+    "`source_text`. It takes a few seconds, which is normal. " +
     "DECISION SUPPORT: when I ask for help deciding, be a decisive advisor " +
     "— a clear recommendation with the 2-3 reasons that matter and the " +
     "main risk, never 'it depends'; for consequential decisions also put a " +

@@ -45,10 +45,28 @@ function userDir(userId) {
   return dir;
 }
 
+const MIME_EXT = {
+  "application/pdf": ".pdf",
+  "image/png": ".png",
+  "image/webp": ".webp",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+  "text/csv": ".csv",
+  "text/tab-separated-values": ".tsv",
+  "text/plain": ".txt",
+  "text/markdown": ".md",
+  "application/json": ".json",
+  "text/html": ".html",
+  "application/rtf": ".rtf",
+  "text/rtf": ".rtf",
+};
+
 function extOf(mime, filename) {
-  if (mime === "application/pdf") return ".pdf";
-  if (mime === "image/png") return ".png";
-  if (mime === "image/webp") return ".webp";
+  // The extension is what the phone uses to pick a viewer, so a .pptx
+  // saved as .jpg simply cannot be opened. Mime wins; the filename is
+  // only consulted for types not listed here.
+  if (MIME_EXT[mime]) return MIME_EXT[mime];
   const e = path.extname(filename || "");
   return /^\.[a-z0-9]{2,5}$/i.test(e) ? e.toLowerCase() : ".jpg";
 }

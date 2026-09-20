@@ -5,7 +5,19 @@
  */
 // Sanitized: a stray inline comment in .env must not become the model name.
 const { envModel } = require("../services/ai/router");
+const { extractText } = require("./extract");
 const MODEL = () => envModel("GEMINI_VISION_MODEL", "gemini-2.5-flash");
+
+// What the multimodal call can read as BYTES. Everything else (Word,
+// Excel, PowerPoint, CSV, plain text) is turned into text first — see
+// docs/extract.js — because handing a ZIP-based Office file to
+// inline_data returns nothing usable, which is why a shared spreadsheet
+// used to land in the documents list with no title and no searchable
+// content at all.
+const NATIVE = new Set([
+  "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif",
+  "application/pdf",
+]);
 
 const PROMPT = `You are filing a document into a personal assistant's memory.
 Look at the attached file and reply with STRICT JSON only (no markdown fences):
@@ -21,9 +33,26 @@ Look at the attached file and reply with STRICT JSON only (no markdown fences):
  * the caller keeps filename-based placeholders so saving NEVER fails just
  * because analysis did.
  */
-async function analyzeDocument(buffer, mime) {
+async function analyzeDocument(buffer, mime, filename = "") {
   const key = process.env.GEMINI_API_KEY;
   if (!key) return null;
+
+  // Office/text formats: read the words out first, then analyse those.
+  let parts;
+  if (NATIVE.has(mime)) {
+    parts = [
+      { inline_data: { mime_type: mime, data: buffer.toString("base64") } },
+      { text: PROMPT },
+    ];
+  } else {
+    const text = await extractText(buffer, mime, filename);
+    if (!text) return null;
+    parts = [
+      { text: `The document is named "${filename || "document"}". Its full contents follow.\n\n${text.slice(0, 120000)}` },
+      { text: PROMPT },
+    ];
+  }
+
   try {
     const r = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${MODEL()}:generateContent`,
@@ -32,15 +61,7 @@ async function analyzeDocument(buffer, mime) {
         headers: { "content-type": "application/json", "x-goog-api-key": key },
         signal: AbortSignal.timeout(45_000),
         body: JSON.stringify({
-          contents: [
-            {
-              role: "user",
-              parts: [
-                { inline_data: { mime_type: mime, data: buffer.toString("base64") } },
-                { text: PROMPT },
-              ],
-            },
-          ],
+          contents: [{ role: "user", parts }],
           generationConfig: {
             response_mime_type: "application/json",
             temperature: 0.2,
