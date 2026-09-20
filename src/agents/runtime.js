@@ -33,6 +33,24 @@ require("./taskTools").registerTaskTools();
 
 const MAX_TOOL_ROUNDS = 3; // guards against a tool-calling loop
 
+/**
+ * HOW LONG A BACKGROUND TURN MAY TAKE.
+ *
+ * MEASURED on this VPS, 2026-09-20: one tool turn is dominated by the
+ * TOOL CATALOGUE, not the prompt — 5 declarations answer in ~10 s, all
+ * 107 (84 KB of schemas) take ~26 s, and ~30 s once the full system
+ * prompt is added. Thirty seconds is exactly the interactive timeout, so
+ * EVERY scheduled task died on its first model call: the job was marked
+ * failed, and the call it existed to place was never dialled. Found by
+ * queueing a real one and watching it abort 25 s in.
+ *
+ * A background turn has nobody waiting on it — a 4 a.m. wake-up call does
+ * not care whether the model took 10 s or 60 s, only whether it finished.
+ * Interactive turns keep the shorter budget, where latency is the product.
+ */
+const BACKGROUND_TURN_TIMEOUT_MS =
+  Number(process.env.BACKGROUND_TURN_TIMEOUT_MS) || 90_000;
+
 function systemPrompt(extra = "") {
   return (
     "You are the user's personal assistant — warm, quick-witted, from India. " +
@@ -636,6 +654,7 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
         contents,
         system: systemPrompt(ctx.extraSystem || ""),
         declarations,
+        timeoutMs: ctx.background ? BACKGROUND_TURN_TIMEOUT_MS : 0,
         onDelta: (d) => splitter.push(d),
       });
     } catch (e) {
@@ -645,6 +664,7 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
         contents,
         system: systemPrompt(ctx.extraSystem || ""),
         declarations,
+        timeoutMs: ctx.background ? BACKGROUND_TURN_TIMEOUT_MS : 0,
       });
       if (out.text) splitter.push(out.text);
     }

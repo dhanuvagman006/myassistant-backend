@@ -755,7 +755,7 @@ async function synthesizeSpeech(text, opts = {}) {
  * The caller (agents/runtime) executes the tools, appends the results and
  * calls again — that loop is what replaces the old regex dispatch.
  */
-async function generateWithTools({ contents, system, declarations = [], _model = null }) {
+async function generateWithTools({ contents, system, declarations = [], _model = null, timeoutMs = 0 }) {
   const key = requireKey();
   const model = _model || chatModel();
   const body = {
@@ -773,7 +773,7 @@ async function generateWithTools({ contents, system, declarations = [], _model =
     {
       method: "POST",
       headers: { "content-type": "application/json", "x-goog-api-key": key },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs || TIMEOUT_MS),
       body: JSON.stringify(body),
     }
   );
@@ -781,7 +781,7 @@ async function generateWithTools({ contents, system, declarations = [], _model =
     const errBody = await r.text().catch(() => "");
     if (r.status === 429 && !_model && fallbackModel() !== model) {
       console.warn(`gemini tools: ${model} out of quota — retrying on ${fallbackModel()}`);
-      return generateWithTools({ contents, system, declarations, _model: fallbackModel() });
+      return generateWithTools({ contents, system, declarations, timeoutMs, _model: fallbackModel() });
     }
     throw new Error(
       `gemini tools ${r.status} [model=${model}] ${errBody.slice(0, 300) || "(empty body)"}`
@@ -821,7 +821,7 @@ async function generateWithTools({ contents, system, declarations = [], _model =
  * non-streaming call, so the tool loop in agents/runtime is unchanged.
  */
 async function generateWithToolsStream(
-  { contents, system, declarations = [], onDelta = () => {}, _model = null },
+  { contents, system, declarations = [], onDelta = () => {}, _model = null, timeoutMs = 0 },
   _retry = false
 ) {
   const key = requireKey();
@@ -841,7 +841,7 @@ async function generateWithToolsStream(
     {
       method: "POST",
       headers: { "content-type": "application/json", "x-goog-api-key": key },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs || TIMEOUT_MS),
       body: JSON.stringify(body),
     }
   );
