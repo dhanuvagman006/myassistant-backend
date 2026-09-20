@@ -2,13 +2,12 @@
  * AGENT CALLS — Hari phones a real number, speaks on the user's behalf
  * (or wakes the user themself), and reports the true outcome.
  *
- * Providers, in order: BOLNA (Indian +91 caller ID; the live choice),
- * RETELL (US +1 number; complete fallback). Both are hosted agents driven
- * by per-call variables; both report back through a webhook. The feature
- * is hidden (503 → app falls back to a direct dial) until one provider's
- * three env vars are set:
+ * Provider: BOLNA — an Indian +91 caller ID, a hosted agent driven by
+ * per-call variables, reporting back through a webhook. It is the only
+ * one: Retell was removed on 2026-09-20 (his call), Plivo and Exotel
+ * before it. The feature stays hidden (503 → the app falls back to a
+ * direct dial) until all three env vars are set:
  *   BOLNA_API_KEY  BOLNA_FROM_NUMBER  BOLNA_AGENT_ID
- *   RETELL_API_KEY RETELL_FROM_NUMBER RETELL_AGENT_ID
  * plus PUBLIC_BASE_URL for webhooks. No answer → automatic redial after
  * AGENT_CALL_RETRY_MS (default 5 min), up to AGENT_CALL_MAX_ATTEMPTS
  * (default 3); the final outcome is pushed to the user's phone.
@@ -21,9 +20,6 @@ function cfg() {
   return {
     base: (process.env.PUBLIC_BASE_URL || "").replace(/\/$/, ""),
     dailyLimit: Number(process.env.AGENT_CALL_DAILY_LIMIT || 20),
-    retellKey: process.env.RETELL_API_KEY || "",
-    retellFrom: process.env.RETELL_FROM_NUMBER || "",
-    retellAgent: process.env.RETELL_AGENT_ID || "",
     bolnaKey: process.env.BOLNA_API_KEY || "",
     bolnaFrom: process.env.BOLNA_FROM_NUMBER || "",
     bolnaAgent: process.env.BOLNA_AGENT_ID || "",
@@ -34,8 +30,10 @@ function cfg() {
 
 function provider() {
   const c = cfg();
+  // BOLNA ONLY (his call, 2026-09-20: "use Bolna AI, remove other call
+  // services"). Retell was removed with its engine, webhook and env —
+  // one provider means one code path to keep honest.
   if (c.bolnaKey && c.bolnaFrom && c.bolnaAgent) return "bolna";
-  if (c.retellKey && c.retellFrom && c.retellAgent) return "retell";
   return null;
 }
 
@@ -125,78 +123,6 @@ async function buildScript({ userName, contactName, task, lang }) {
 
 function stripFences(s) {
   return String(s || "").replace(/```json/gi, "").replace(/```/g, "").trim();
-}
-
-// ---------------- RETELL ----------------
-
-/** One dashboard agent; the per-call task rides in as {{variables}}. */
-async function retellPlaceCall({ to, rec }) {
-  const c = cfg();
-  const r = await fetch("https://api.retellai.com/v2/create-phone-call", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${c.retellKey}`,
-      "Content-Type": "application/json",
-    },
-    signal: AbortSignal.timeout(15000),
-    body: JSON.stringify({
-      from_number: c.retellFrom,
-      to_number: to,
-      override_agent_id: c.retellAgent,
-      retell_llm_dynamic_variables: {
-        task: rec.task || "",
-        contact_name: rec.contactName || "there",
-        user_name: rec.userName || "the caller",
-        // "self" = ringing the user THEMSELF (wake-up call); the dashboard
-        // prompt branches on it and drops "on behalf of".
-        mode: rec.selfCall ? "self" : rec.mode || "inform",
-      },
-      metadata: { rec_id: rec.id, token: rec.token },
-    }),
-  });
-  if (!r.ok) {
-    const body = await r.text().catch(() => "");
-    throw new Error(`retell create-phone-call ${r.status}: ${body.slice(0, 200)}`);
-  }
-  const j = await r.json();
-  return j.call_id || rec.id;
-}
-
-/** Webhook: gated by the URL secret + per-call metadata token. */
-function retellWebhook(body) {
-  const event = String(body?.event || "");
-  const call = body?.call || {};
-  const rec = calls.get(String(call?.metadata?.rec_id || ""));
-  if (!rec || String(call?.metadata?.token || "") !== rec.token) return false;
-
-  if (event === "call_started") {
-    if (rec.state === "dialing") rec.state = "in_progress";
-    return true;
-  }
-  if (event === "call_ended") {
-    const why = String(call?.disconnection_reason || "").toLowerCase();
-    if (/dial_failed|invalid/.test(why)) {
-      // A number that doesn't connect won't start connecting in 5 minutes.
-      rec.retryPending = false;
-      rec.state = "failed";
-      rec.result = `The call to ${rec.contactName} didn't connect — the number may be wrong.`;
-      settle(rec);
-    } else if (/busy|no.?answer|voicemail/.test(why)) {
-      handleNoAnswer(rec);
-    } else if (rec.state !== "completed") {
-      // Ended normally; call_analyzed lands seconds later with the summary.
-      rec.state = "summarizing";
-      rec.answer = String(call?.transcript || "").slice(0, 4000) || rec.answer;
-    }
-    return true;
-  }
-  if (event === "call_analyzed") {
-    if (!["dialing", "in_progress", "summarizing"].includes(rec.state)) return true;
-    rec.answer = String(call?.transcript || rec.answer || "").slice(0, 4000);
-    finishCompleted(rec, String(call?.call_analysis?.call_summary || "").trim());
-    return true;
-  }
-  return true;
 }
 
 // ---------------- BOLNA ----------------
@@ -349,9 +275,7 @@ async function redial(rec) {
 }
 
 function placeByProvider(rec) {
-  return provider() === "bolna"
-    ? bolnaPlaceCall({ to: rec.to, rec })
-    : retellPlaceCall({ to: rec.to, rec });
+  return bolnaPlaceCall({ to: rec.to, rec });
 }
 
 /** Terminal states only: mirror into task_outcomes, and push the outcome
@@ -466,7 +390,6 @@ function normalizeNumber(n) {
 module.exports = {
   enabled,
   provider,
-  retellWebhook,
   bolnaWebhook,
   preview,
   start,

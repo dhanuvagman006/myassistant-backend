@@ -5220,7 +5220,7 @@ function registerBuiltins() {
   // clinic that had never heard of them.
   //
   // It now uses the real agent-call engine (src/agents/agentCall.js,
-  // Bolna/Retell), pointed at a business number resolved from Google
+  // Bolna), pointed at a business number resolved from Google
   // Places. Hari genuinely dials, genuinely asks, and reports what the
   // business genuinely said. When telephony is not configured on this
   // deployment, it says so instead of pretending.

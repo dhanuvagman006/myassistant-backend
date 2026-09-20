@@ -10,7 +10,6 @@
  *
  * Provider webhooks (public — mounted WITHOUT appAuth in server.js, gated
  * by a URL secret = sha256(provider api key)[:32]):
- *   POST /agent-call/retell/webhook/:secret
  *   POST /agent-call/bolna/webhook/:secret
  */
 
@@ -121,7 +120,6 @@ function providerWebhook(envKey, handle) {
   return r;
 }
 
-const retellWebhooks = providerWebhook("RETELL_API_KEY", agent.retellWebhook);
 const bolnaWebhooks = providerWebhook("BOLNA_API_KEY", agent.bolnaWebhook);
 
-module.exports = { router, retellWebhooks, bolnaWebhooks };
+module.exports = { router, bolnaWebhooks };
