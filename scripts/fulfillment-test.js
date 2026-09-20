@@ -592,19 +592,32 @@ test("the app actually handles the voice-change action it is sent", () => {
     "and must actually rebuild the session");
 });
 
-test("barge-in: the mic keeps streaming while she is speaking locally", () => {
+test("barge-in is GONE: nothing goes upstream while she is speaking", () => {
   const fs = require("fs");
   const live = fs.readFileSync(
     __dirname + "/../../myassistant-flutter/lib/services/live_service.dart",
     "utf8"
   );
-  // Google decides an interruption happened, and can only decide it about
-  // audio it receives. This used to `return` without sending anything.
-  assert.match(live, /if \(!remoteSpeaking && !_gateActive && l != null\)/,
-    "mic frames must still go upstream during local playback, or barge-in cannot work");
-  assert.match(live, /if \(l > bargeFloor\) _ch\?\.sink\.add/,
-    "and only audio above the echo residue, or she interrupts herself");
-  assert.match(live, /_bargeInFactor/, "the threshold must be a named, tunable constant");
+  // REVERSED ON PURPOSE, 2026-09-20: "remove the interruption or barge-in
+  // completely… it fails on a Samsung S24". On that phone the hardware
+  // echo canceller left enough of her own voice in the mic that Google
+  // heard it as the user and cut her off mid-sentence. Google can only
+  // decide an interruption happened about audio it RECEIVES, so the fix
+  // is to send none. This test used to assert the opposite; it is kept,
+  // inverted, so the old behaviour cannot creep back in unnoticed.
+  assert.match(live, /if \(playing \|\| remoteSpeaking\) \{/,
+    "playback must still gate the microphone");
+  assert.doesNotMatch(live, /bargeFloor/,
+    "the barge-in threshold must be gone, not merely raised");
+  assert.doesNotMatch(live, /_bargeInFactor/,
+    "and so must its tuning constant");
+  assert.match(live, /_micOpenAt = DateTime\.now\(\)\.add\(_speakerTail\)/,
+    "the speaker tail must stay shut out, or her last word reopens the mic");
+
+  // The server half of the same decision.
+  const proxy = fs.readFileSync(__dirname + "/../src/live/proxy.js", "utf8");
+  assert.match(proxy, /NO_INTERRUPTION/,
+    "the live session must tell Google not to interrupt either");
 });
 
 test("neither surface may hand the task back to the user", () => {

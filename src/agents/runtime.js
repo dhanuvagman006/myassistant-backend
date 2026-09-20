@@ -665,17 +665,27 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   }
   // Built-ins plus ONLY this user's MCP tools (§6). One selection path for
   // both sources — the runtime does not know MCP exists (§1).
+  // WHICH TOOLS THIS TURN GETS. Two independent narrowings, and both are
+  // about the same measured fact: the catalogue, not the prompt, is the
+  // latency (81 KB / ~26 s for all of them, ~10 s for a handful).
+  //   • background — drop what cannot run with nobody holding the phone
+  //   • foreground — offer what THIS turn plausibly needs, and the whole
+  //     catalogue whenever that cannot be judged confidently
+  // tools/relevance.js carries the reasoning and the fallbacks.
+  const only = ctx.background
+    ? registry
+        .list()
+        .filter((t) => !t.deviceAction || BACKGROUND_DEVICE_TOOLS.has(t.name))
+        .map((t) => t.name)
+    : require("../tools/relevance").selectForTurn(registry.list(), userText, {
+        history: ctx.history || [],
+        sessionId: ctx.sessionId || "",
+      });
   const declarations = registry.declarations({
     userId: ctx.userId,
     // A tool whose permission the phone has denied is not offered at all.
     deviceCaps: ctx.deviceCaps || null,
-    // …and with no phone in the loop at all, neither is one that needs it.
-    only: ctx.background
-      ? registry
-          .list()
-          .filter((t) => !t.deviceAction || BACKGROUND_DEVICE_TOOLS.has(t.name))
-          .map((t) => t.name)
-      : null,
+    only,
   });
   const contents = [];
 
