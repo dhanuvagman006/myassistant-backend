@@ -131,6 +131,34 @@ function stripFences(s) {
 // execution id, and only the CURRENT attempt's id is live on the record.
 const bolnaExecs = new Map(); // execution_id -> rec
 
+/**
+ * WHAT THE AGENT CALLS THEM ON THE PHONE.
+ *
+ * Contacts are saved the way the OWNER files them, not the way the person
+ * is addressed: "Jeevan Aironotic", "Jeevan friend", "Ravi office". The
+ * agent read the whole label out — "Hello, Jeevan Aironotic?" — which is
+ * how nobody greets anybody (his call, 2026-09-20).
+ *
+ * So the spoken name is the first real word, past any honorific. The full
+ * saved name is kept on the record, because that is what the USER is told
+ * afterwards and they may know two Jeevans.
+ */
+const TITLES = /^(dr|doctor|mr|mrs|ms|miss|shri|smt|sri|prof|professor|sir|madam)\.?$/i;
+function spokenName(name) {
+  const words = String(name || "")
+    .replace(/[_\-.]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  for (const w of words) {
+    if (TITLES.test(w)) continue;
+    // A contact saved as a bare number would otherwise be greeted by
+    // having its digits read aloud.
+    if (!/[a-z\u0900-\u0DFF]/i.test(w)) continue;
+    return w.slice(0, 40);
+  }
+  return "there";
+}
+
 async function bolnaPlaceCall({ to, rec }) {
   const c = cfg();
   const r = await fetch("https://api.bolna.ai/call", {
@@ -146,7 +174,8 @@ async function bolnaPlaceCall({ to, rec }) {
       from_phone_number: c.bolnaFrom,
       user_data: {
         task: rec.task || "",
-        contact_name: rec.contactName || "there",
+        // First name only — see spokenName().
+        contact_name: spokenName(rec.contactName),
         user_name: rec.userName || "the caller",
         mode: rec.selfCall ? "self" : rec.mode || "inform",
       },

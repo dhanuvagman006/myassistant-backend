@@ -526,7 +526,14 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
  * with the same context they get on the SSE path.
  */
 async function bridge(appWs, user, room, deviceCtx = {}) {
-  const key = process.env.GEMINI_API_KEY;
+  // The live socket takes whichever key still has allowance for the live
+  // model. A WebSocket cannot be re-keyed mid-session, so this is a
+  // best-first choice rather than the rotation the request paths do —
+  // see services/ai/keys.js.
+  const key = (() => {
+    try { return require("../services/ai/keys").currentKey(LIVE_MODEL()); }
+    catch { return ""; }
+  })();
   if (!key) {
     appWs.send(JSON.stringify({ type: "error", message: "no API key" }));
     appWs.close();

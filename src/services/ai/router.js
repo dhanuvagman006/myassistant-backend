@@ -58,6 +58,8 @@ const TIMEOUT_MS = 30_000;
 // Default chat model. NOTE: the gemini-2.5-* family has a published shutdown
 // date of 2026-10-16 — set GEMINI_MODEL to a current model (e.g.
 // gemini-3.5-flash) well before then.
+const keys = require("./keys");
+
 const DEFAULT_MODEL = "gemini-2.5-flash";
 
 // ---------------- GEMINI 3 TUNING (latency) ----------------
@@ -170,64 +172,67 @@ const TTS_TIMEOUT_MS = Math.min(
 // ---------------- GEMINI ----------------
 
 async function callGemini(messages, system = SYSTEM_PROMPT, _retry = false, _model = null) {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) throw new Error("gemini: key missing");
   const model = _model || chatModel();
-
   const generationConfig = tuning(model);
+  const payload = JSON.stringify({
+    system_instruction: { parts: [{ text: system }] },
+    contents: messages.map((m) => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }],
+    })),
+    ...(Object.keys(generationConfig).length ? { generationConfig } : {}),
+  });
 
-  // Key goes in a header, never the URL — URLs end up in proxy/server logs.
-  const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-goog-api-key": key,
-      },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: system }] },
-        contents: messages.map((m) => ({
-          role: m.role === "assistant" ? "model" : "user",
-          parts: [{ text: m.content }],
-        })),
-        ...(Object.keys(generationConfig).length ? { generationConfig } : {}),
-      }),
-    }
-  );
-  if (!r.ok) {
-    const body = await r.text().catch(() => "");
-    // A rejected tuning field must never take chat down: drop it and retry.
-    if (!_retry && generationConfig.thinkingConfig &&
-        rejectsField(r.status, body, "thinking")) {
-      UNSUPPORTED_FIELDS.add("thinkingConfig");
-      console.error(
-        `gemini: thinkingLevel "${THINKING_LEVEL}" rejected — continuing ` +
-          `without it (responses will be slower). Set GEMINI_THINKING_LEVEL.`
+  try {
+    // KEYS FIRST, THEN MODELS. A 429 means this KEY has no allowance left
+    // for this model; another key usually does, and the configured model
+    // is the one we actually want answering. Only once every key is spent
+    // is it worth changing family.
+    return await keys.withKeyRotation(model, async (key) => {
+      // Key goes in a header, never the URL — URLs end up in proxy logs.
+      const r = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-goog-api-key": key },
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+          body: payload,
+        }
       );
-      return callGemini(messages, system, true, _model);
-    }
-    // Out of free-tier quota on THIS model — the other family usually
-    // still has allowance; never fail the turn without trying it.
-    if (r.status === 429 && !_model && fallbackModel() !== model) {
-      console.warn(`gemini: ${model} out of quota — retrying on ${fallbackModel()}`);
+      if (!r.ok) {
+        const body = await r.text().catch(() => "");
+        // A rejected tuning field must never take chat down.
+        if (!_retry && generationConfig.thinkingConfig &&
+            rejectsField(r.status, body, "thinking")) {
+          UNSUPPORTED_FIELDS.add("thinkingConfig");
+          console.error(
+            `gemini: thinkingLevel "${THINKING_LEVEL}" rejected — continuing ` +
+              `without it (responses will be slower). Set GEMINI_THINKING_LEVEL.`
+          );
+          throw Object.assign(new Error("retry without thinking"), { retryNoThinking: true });
+        }
+        throw Object.assign(
+          new Error(`gemini ${r.status} [model=${model}] ${body.slice(0, 300) || "(empty body)"}`),
+          { status: r.status, body }
+        );
+      }
+      const data = await r.json();
+      return data.candidates?.[0]?.content?.parts?.map((p) => p.text).join("\n") || "";
+    });
+  } catch (e) {
+    if (e?.retryNoThinking) return callGemini(messages, system, true, _model);
+    if (e?.status === 429 && !_model && fallbackModel() !== model) {
+      console.warn(`gemini: every key is spent on ${model} — retrying on ${fallbackModel()}`);
       return callGemini(messages, system, _retry, fallbackModel());
     }
-    throw new Error(
-      `gemini ${r.status} [model=${model}] ${body.slice(0, 300) || "(empty body)"}`
-    );
+    throw e;
   }
-  const data = await r.json();
-  return data.candidates?.[0]?.content?.parts?.map((p) => p.text).join("\n") || "";
 }
 
 // ---------------- SINGLE PROVIDER: GEMINI ----------------
 
-function requireKey() {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) throw new Error("no AI provider configured — set GEMINI_API_KEY");
-  return key;
+function requireKey(model = null) {
+  return keys.currentKey(model);
 }
 
 /**
@@ -262,9 +267,9 @@ async function generateReply(messages, opts = {}) {
  * falls back to the non-streaming generateReply.
  */
 async function* generateReplyStream(messages, opts = {}) {
-  const key = requireKey();
   const system = opts.system || SYSTEM_PROMPT + (opts.extraSystem || "");
   const model = opts._model || chatModel();
+  const key = requireKey(model);
 
   // The streaming path is what the user actually waits on before hearing
   // Hari speak, so low thinking matters most here.
@@ -291,6 +296,7 @@ async function* generateReplyStream(messages, opts = {}) {
   );
   if (!r.ok || !r.body) {
     const body = r.ok ? "" : await r.text().catch(() => "");
+    if (keys.isQuotaError(r.status, body)) keys.markSpent(key, model);
     // Drop a rejected tuning field and let the caller's retry/fallback run.
     if (generationConfig.thinkingConfig && rejectsField(r.status, body, "thinking")) {
       UNSUPPORTED_FIELDS.add("thinkingConfig");
@@ -375,7 +381,6 @@ function isTransient(status, err) {
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
 async function transcribeAudio(buffer, mimeType, opts = {}) {
-  const key = requireKey();
   // STT is an easy task for the model, so a lighter/faster model can cut
   // transcription latency noticeably. Override with GEMINI_STT_MODEL (e.g.
   // "gemini-3.5-flash-lite") without touching chat quality; defaults to the
@@ -383,6 +388,9 @@ async function transcribeAudio(buffer, mimeType, opts = {}) {
   const mainModel = chatModel();
   const wanted = envModel("GEMINI_STT_MODEL", mainModel);
   const model = DEAD_MODELS.has(wanted) ? mainModel : wanted;
+  // Resolved AFTER the model, so a key already known to be spent on this
+  // particular model is skipped rather than burned on another 429.
+  const key = requireKey(model);
   // The app records .m4a (AAC in an MP4 container). Normalize the label,
   // and keep a fallback: some Gemini deployments accept audio/mp4 but not
   // audio/aac, others the reverse — a 4xx triggers ONE retry with the
@@ -756,7 +764,6 @@ async function synthesizeSpeech(text, opts = {}) {
  * calls again — that loop is what replaces the old regex dispatch.
  */
 async function generateWithTools({ contents, system, declarations = [], _model = null, timeoutMs = 0 }) {
-  const key = requireKey();
   const model = _model || chatModel();
   const body = {
     system_instruction: { parts: [{ text: system }] },
@@ -768,26 +775,36 @@ async function generateWithTools({ contents, system, declarations = [], _model =
   const gen = tuning(model);
   if (Object.keys(gen).length) body.generationConfig = gen;
 
-  const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-goog-api-key": key },
-      signal: AbortSignal.timeout(timeoutMs || TIMEOUT_MS),
-      body: JSON.stringify(body),
-    }
-  );
-  if (!r.ok) {
-    const errBody = await r.text().catch(() => "");
-    if (r.status === 429 && !_model && fallbackModel() !== model) {
-      console.warn(`gemini tools: ${model} out of quota — retrying on ${fallbackModel()}`);
+  let data;
+  try {
+    data = await keys.withKeyRotation(model, async (key) => {
+      const r = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-goog-api-key": key },
+          signal: AbortSignal.timeout(timeoutMs || TIMEOUT_MS),
+          body: JSON.stringify(body),
+        }
+      );
+      if (!r.ok) {
+        const errBody = await r.text().catch(() => "");
+        throw Object.assign(
+          new Error(`gemini tools ${r.status} [model=${model}] ${errBody.slice(0, 300) || "(empty body)"}`),
+          { status: r.status, body: errBody }
+        );
+      }
+      return r.json();
+    });
+  } catch (e) {
+    // Every key spent on this model — the other family usually still has
+    // allowance, and a tool turn is what the user is waiting on.
+    if (e?.status === 429 && !_model && fallbackModel() !== model) {
+      console.warn(`gemini tools: every key is spent on ${model} — retrying on ${fallbackModel()}`);
       return generateWithTools({ contents, system, declarations, timeoutMs, _model: fallbackModel() });
     }
-    throw new Error(
-      `gemini tools ${r.status} [model=${model}] ${errBody.slice(0, 300) || "(empty body)"}`
-    );
+    throw e;
   }
-  const data = await r.json();
   const parts = data.candidates?.[0]?.content?.parts || [];
   // thoughtSignature MUST be captured and echoed back with each part when
   // the tool results are returned (Gemini 3 rejects the follow-up request
@@ -824,8 +841,8 @@ async function generateWithToolsStream(
   { contents, system, declarations = [], onDelta = () => {}, _model = null, timeoutMs = 0 },
   _retry = false
 ) {
-  const key = requireKey();
   const model = _model || chatModel();
+  const key = requireKey(model);
   const body = {
     system_instruction: { parts: [{ text: system }] },
     contents,
@@ -857,6 +874,7 @@ async function generateWithToolsStream(
       );
       return generateWithToolsStream({ contents, system, declarations, onDelta, _model }, true);
     }
+    if (keys.isQuotaError(r.status, errBody)) keys.markSpent(key, model);
     if (r.status === 429 && !_model && fallbackModel() !== model) {
       console.warn(`gemini tools stream: ${model} out of quota — retrying on ${fallbackModel()}`);
       return generateWithToolsStream(

@@ -34,8 +34,8 @@ Look at the attached file and reply with STRICT JSON only (no markdown fences):
  * because analysis did.
  */
 async function analyzeDocument(buffer, mime, filename = "") {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) return null;
+  const keys = require("../services/ai/keys");
+  if (!keys.pool().length) return null;
 
   // Office/text formats: read the words out first, then analyse those.
   let parts;
@@ -54,23 +54,30 @@ async function analyzeDocument(buffer, mime, filename = "") {
   }
 
   try {
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL()}:generateContent`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-goog-api-key": key },
-        signal: AbortSignal.timeout(45_000),
-        body: JSON.stringify({
-          contents: [{ role: "user", parts }],
-          generationConfig: {
-            response_mime_type: "application/json",
-            temperature: 0.2,
-          },
-        }),
+    // One spent key must not mean a shared document arrives with no title
+    // and no searchable text — see services/ai/keys.js.
+    const data = await keys.withKeyRotation(MODEL(), async (key) => {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${MODEL()}:generateContent`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-goog-api-key": key },
+          signal: AbortSignal.timeout(45_000),
+          body: JSON.stringify({
+            contents: [{ role: "user", parts }],
+            generationConfig: {
+              response_mime_type: "application/json",
+              temperature: 0.2,
+            },
+          }),
+        }
+      );
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw Object.assign(new Error(`analyze ${res.status}`), { status: res.status, body });
       }
-    );
-    if (!r.ok) return null;
-    const data = await r.json();
+      return res.json();
+    });
     const text =
       data.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") || "";
     const j = JSON.parse(text);

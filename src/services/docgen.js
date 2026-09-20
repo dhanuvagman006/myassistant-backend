@@ -252,8 +252,7 @@ function authorPrompt(kind, o) {
 }
 
 async function authorSpec(kind, o) {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) throw new Error("document generation is not configured on the server");
+  const keys = require("./ai/keys");
   const model = DOC_MODEL();
   const generationConfig = {
     response_mime_type: "application/json",
@@ -263,23 +262,29 @@ async function authorSpec(kind, o) {
   if (/^gemini-2\.5-flash/i.test(model)) {
     generationConfig.thinkingConfig = { thinkingBudget: DOC_THINKING() };
   }
-  const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-goog-api-key": key },
-      signal: AbortSignal.timeout(75_000), // inside the tool's own 120s budget
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: authorPrompt(kind, o) }] }],
-        generationConfig,
-      }),
+  // One spent key must not mean "no documents today" — see ai/keys.js.
+  const data = await keys.withKeyRotation(model, async (key) => {
+    const r = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-goog-api-key": key },
+        signal: AbortSignal.timeout(75_000), // inside the tool's own 120s budget
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: authorPrompt(kind, o) }] }],
+          generationConfig,
+        }),
+      }
+    );
+    if (!r.ok) {
+      const body = await r.text().catch(() => "");
+      throw Object.assign(
+        new Error(`the writer is busy (${r.status})${body ? ": " + body.slice(0, 160) : ""}`),
+        { status: r.status, body }
+      );
     }
-  );
-  if (!r.ok) {
-    const body = await r.text().catch(() => "");
-    throw new Error(`the writer is busy (${r.status})${body ? ": " + body.slice(0, 160) : ""}`);
-  }
-  const data = await r.json();
+    return r.json();
+  });
   const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") || "";
   let spec;
   try {
