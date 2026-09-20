@@ -173,13 +173,35 @@ function bolnaWebhook(body) {
   if (!rec || rec.bolnaExec !== execId) return false; // stale attempt / unknown
 
   const status = String(body?.status || "").toLowerCase();
-  if (["queued", "scheduled", "rescheduled", "ringing", "in-progress"].includes(status)) {
-    if (rec.state === "dialing" && status === "in-progress") rec.state = "in_progress";
+  // AN UNRECOGNISED STATUS IS NOT A FAILURE.
+  //
+  // This used to be a whitelist of "still going" values with everything
+  // else falling through to the failure branch. On 2026-09-20 a real call
+  // to a contact was declared "I couldn't complete the call to Jeevan"
+  // FOUR SECONDS after it started — while the assistant was still
+  // speaking to him. The call ran 26 seconds, delivered its message and
+  // was recorded by Bolna as completed; only our reading of one
+  // intermediate status was wrong.
+  //
+  // So the test is inverted: only statuses we KNOW to be terminal end the
+  // record, and anything unfamiliar is treated as progress and logged, so
+  // a provider adding a status to its vocabulary can never again make the
+  // assistant deny a call that is happening.
+  const TERMINAL = new Set([
+    "completed", "busy", "no-answer", "no_answer", "failed", "error",
+    "canceled", "cancelled", "stopped", "balance-low", "balance_low",
+  ]);
+  if (!TERMINAL.has(status)) {
+    if (rec.state === "dialing" && /progress|answered|connected|started|ongoing/.test(status)) {
+      rec.state = "in_progress";
+    } else if (!["queued", "scheduled", "rescheduled", "ringing", "in-progress", "in_progress"].includes(status)) {
+      console.warn("bolna: unfamiliar status", JSON.stringify(status), "— treated as still running");
+    }
     return true;
   }
   if (!["dialing", "in_progress", "summarizing"].includes(rec.state)) return true; // duplicate
 
-  if (status === "busy" || status === "no-answer") {
+  if (status === "busy" || status === "no-answer" || status === "no_answer") {
     handleNoAnswer(rec);
     return true;
   }
@@ -211,11 +233,31 @@ function bolnaWebhook(body) {
 
 // ---------------- OUTCOME + REDIAL ----------------
 
+/**
+ * WHAT THEY ACTUALLY SAID, straight from the transcript.
+ *
+ * Bolna's own `summary` comes back null often enough that relying on it
+ * loses the one thing the user asked for — "report me what he said". The
+ * transcript is always there, so their own words are the fallback, not a
+ * generic "I passed on your message".
+ */
+function theirWords(transcript) {
+  const lines = String(transcript || "")
+    .split(/\r?\n/)
+    .filter((l) => /^user\s*:/i.test(l))
+    .map((l) => l.replace(/^user\s*:/i, "").trim())
+    .filter((l) => l.length > 1);
+  if (!lines.length) return "";
+  const said = lines.join(" ").replace(/\s+/g, " ").trim();
+  return said.length > 300 ? said.slice(0, 297) + "…" : said;
+}
+
 function finishCompleted(rec, summary) {
-  rec.result = summary
+  const said = summary || theirWords(rec.answer);
+  rec.result = said
     ? rec.selfCall
-      ? `I called you as asked. ${summary}`
-      : `I spoke with ${rec.contactName}. ${summary}`
+      ? `I called you as asked. ${said}`
+      : `I spoke with ${rec.contactName}. ${summary ? said : `They said: "${said}"`}`
     : rec.result ||
       (rec.selfCall
         ? `I called you and delivered the reminder: ${rec.task}`
