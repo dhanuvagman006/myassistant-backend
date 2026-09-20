@@ -205,7 +205,21 @@ async function placeScheduledAgentCall(userId, action) {
 
   let phone = null;
   let resolvedName = name;
+
+  // A SPOKEN NUMBER IS ALREADY THE ANSWER. "Call my driver on 63601 39965
+  // at 4am" reaches here with the NUMBER as the name, and searching the
+  // address book for a digit string never matches — so the whole thing
+  // fell through to "I've asked your phone to dial it", which at 4 a.m.
+  // is a tap nobody is awake to make. The app's live path has handled
+  // this since day one; the scheduled path never learned it.
+  const dialled = name.replace(/[^\d+]/g, "");
+  if (dialled.replace(/\D/g, "").length >= 7 && dialled.length >= name.length - 4) {
+    phone = dialled;
+    resolvedName = action?.contact_name || action?.contactName || "there";
+  }
+
   try {
+    if (phone) throw { skip: true }; // already have it
     const out = await require("../users/resolve").resolveContact(userId, name, { limit: 2 });
     if (out.match?.phone) {
       phone = out.match.phone;
@@ -215,7 +229,7 @@ async function placeScheduledAgentCall(userId, action) {
       resolvedName = out.candidates[0].name || name;
     }
   } catch (e) {
-    console.warn("scheduled agent call resolve failed:", e.message);
+    if (!e?.skip) console.warn("scheduled agent call resolve failed:", e.message);
   }
   if (!phone) return placeScheduledCall(userId, action); // user dials themselves
 
