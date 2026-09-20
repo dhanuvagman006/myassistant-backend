@@ -260,6 +260,10 @@ async function placeScheduledAgentCall(userId, action) {
       contactName: resolvedName,
       task: message,
       lang: null,
+      // Whatever the user decided when they scheduled it; absent means
+      // one attempt, never an invented retry.
+      retryTimes: action?.retry_times,
+      retryGapMinutes: action?.retry_gap_minutes,
     });
     callId = started.id;
   } catch (e) {

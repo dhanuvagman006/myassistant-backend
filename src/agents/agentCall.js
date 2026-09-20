@@ -360,8 +360,12 @@ function finishCompleted(rec, summary) {
  */
 function handleNoAnswer(rec) {
   const c = cfg();
-  const mins = Math.max(1, Math.round(c.retryMs / 60000));
-  if (rec.attempt >= c.maxAttempts) {
+  // The POLICY ON THIS CALL wins; the deployment values are only a
+  // fallback for records made before the policy existed.
+  const maxAttempts = Number(rec.maxAttempts) || 1;
+  const retryMs = Number(rec.retryMs) || c.retryMs;
+  const mins = Math.max(1, Math.round(retryMs / 60000));
+  if (rec.attempt >= maxAttempts) {
     rec.retryPending = false;
     rec.state = "no_answer";
     rec.result = rec.selfCall
@@ -398,12 +402,14 @@ function handleNoAnswer(rec) {
       mode: rec.mode,
       selfCall: rec.selfCall,
       attempt: rec.attempt + 1,
-    }, { userId: rec.userId, delayMs: c.retryMs })
+      maxAttempts: rec.maxAttempts,
+      retryMs: rec.retryMs,
+    }, { userId: rec.userId, delayMs: retryMs })
     .catch((e) => {
       // Falling back to the timer is better than losing the retry
       // outright, and it is loud so the queue failure gets noticed.
       console.error("agent-call retry could not be queued:", e.message);
-      rec.retryTimer = setTimeout(() => redial(rec), c.retryMs);
+      rec.retryTimer = setTimeout(() => redial(rec), retryMs);
       rec.retryTimer.unref?.();
     });
 }
@@ -444,6 +450,8 @@ async function retryFromJob(payload = {}) {
       retryPending: true,
       pushOutcome: true,
       selfCall: Boolean(payload.selfCall),
+      maxAttempts: Number(payload.maxAttempts) || 1,
+      retryMs: Number(payload.retryMs) || cfg().retryMs,
     };
     calls.set(id, rec);
   }
@@ -527,7 +535,7 @@ async function preview({ userName, contactName, task, lang }) {
  * Place an agent call. Returns { id } (202). Throws { code:"unavailable" }
  * when telephony isn't configured, or { code:"quota" } over the daily limit.
  */
-async function start({ userId, userName, toNumber, contactName, task, lang, selfCall }) {
+async function start({ userId, userName, toNumber, contactName, task, lang, selfCall, retryTimes, retryGapMinutes }) {
   if (!enabled()) throw { code: "unavailable" };
   const to = normalizeNumber(toNumber);
   if (!to) throw { code: "bad_number" };
@@ -554,6 +562,16 @@ async function start({ userId, userName, toNumber, contactName, task, lang, self
     // start; relayed calls start polled and switch to push on first retry.
     pushOutcome: Boolean(selfCall),
     selfCall: Boolean(selfCall),
+    // WHAT TO DO IF NOBODY PICKS UP — the USER'S decision, not ours.
+    //
+    // This used to be a fixed 3 attempts / 3 minutes for every call.
+    // Retrying a call nobody asked to have retried is the assistant
+    // deciding to ring someone repeatedly on the user's behalf, which is
+    // theirs to choose (his call, 2026-09-20: "if you are not specified
+    // to remind them three times or call after three minutes, do not do
+    // that — just ask the user"). Absent an instruction: ONE attempt.
+    maxAttempts: Math.min(Math.max(Number(retryTimes) >= 0 ? Number(retryTimes) + 1 : 1, 1), 5),
+    retryMs: Math.min(Math.max((Number(retryGapMinutes) || 0) * 60_000, 60_000), 60 * 60_000),
   };
   calls.set(rec.id, rec);
 

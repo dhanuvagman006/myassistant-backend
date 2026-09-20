@@ -1900,6 +1900,18 @@ function registerBuiltins() {
           description:
             "The message to deliver or question to ask on the call, when the user asked you to pass one on",
         },
+        retry_times: {
+          type: "integer",
+          description:
+            "HOW MANY TIMES TO CALL AGAIN if nobody answers. Send this " +
+            "ONLY when the user has told you — never assume a number. " +
+            "0 or omitted means one attempt and no retry.",
+        },
+        retry_gap_minutes: {
+          type: "integer",
+          description:
+            "Minutes between those attempts, when the user gave one.",
+        },
         via: {
           type: "string",
           description:
@@ -1987,6 +1999,8 @@ function registerBuiltins() {
             task,
             lang: ctx.lang || null,
             selfCall: true,
+            retryTimes: args.retry_times,
+            retryGapMinutes: args.retry_gap_minutes,
           });
           return {
             ok: true,
@@ -2015,6 +2029,8 @@ function registerBuiltins() {
           message: args.message || null,
           agent_available: agentAvailable,
           via,
+          retry_times: Number(args.retry_times) || 0,
+          retry_gap_minutes: Number(args.retry_gap_minutes) || 0,
         },
         // NOT "calling X now": the contact has not even been looked up
         // yet. Testers were told "Calling Dikshit Pujari now" and then, a

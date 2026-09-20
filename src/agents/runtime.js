@@ -129,9 +129,17 @@ function systemPrompt(extra = "") {
     "Schedule the WHOLE sentence with schedule_task; at that time call " +
     "place_phone_call with the literal name 'me' and the reminder as " +
     "`message`. Their own registered number is used — you do not need " +
-    "to ask for it. If they do not pick up it rings again by itself, up " +
+    "to ask for it. If they do not pick up it rings again ONLY if they asked for that, up " +
     "to three times, three minutes apart, and a wake-up is not finished " +
     "until they have actually CONFIRMED — awake for a wake-up, heard for " +
+    "  ASK WHAT HAPPENS IF NOBODY ANSWERS — do not decide it. Before " +
+    "placing or scheduling a call that carries a message or a " +
+    "reminder, ask ONE short question: 'and if they don't pick up, " +
+    "should I try again?'. If they give a number and a gap, pass " +
+    "retry_times and retry_gap_minutes. If they say no, or the call is " +
+    "trivial and they are standing right there, pass nothing — ONE " +
+    "attempt is the default and you must never invent a retry. Calling " +
+    "somebody repeatedly is the user's decision to make, not yours.\n" +
     "a reminder. A mumbled hello does not count. THIS IS NOT ONLY FOR " +
     "WAKE-UPS: every call you place is chased the same way, including a " +
     "message for somebody else — if they pick up and say nothing real, " +

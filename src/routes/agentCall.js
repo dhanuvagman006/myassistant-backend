@@ -72,6 +72,10 @@ router.post("/", async (req, res) => {
       contactName,
       task,
       lang,
+      // The user's own answer to "and if they don't pick up?" — absent
+      // means one attempt.
+      retryTimes: Number(req.body?.retryTimes) || 0,
+      retryGapMinutes: Number(req.body?.retryGapMinutes) || 0,
     });
     res.status(202).json({ id });
   } catch (e) {

@@ -279,9 +279,16 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "sentence with schedule_task, and at that time call place_phone_call " +
     "with the literal name 'me' and the reminder as `message`. My own " +
     "registered number is used, so never ask me for it. If I do not pick " +
-    "up it rings again by itself, up to three times, three minutes " +
+    "up it rings again ONLY if they asked for that, up to three times, three minutes " +
     "apart, and a wake-up is not finished until I have actually " +
     "CONFIRMED — awake for a wake-up, heard for a reminder. A mumbled " +
+    "ASK WHAT HAPPENS IF NOBODY ANSWERS — do not decide it. Before " +
+    "placing or scheduling a call that carries a message or a reminder, " +
+    "ask ONE short question: 'and if they don't pick up, should I try " +
+    "again?'. If I give a number and a gap, pass retry_times and " +
+    "retry_gap_minutes. If I say no, pass nothing — ONE attempt is the " +
+    "default and you must never invent a retry. Calling somebody " +
+    "repeatedly is my decision, not yours. " +
     "hello does not count. THIS IS NOT ONLY FOR WAKE-UPS: every call you " +
     "place is chased the same way, including a message for somebody else " +
     "— if they pick up and say nothing real it counts as not delivered " +
