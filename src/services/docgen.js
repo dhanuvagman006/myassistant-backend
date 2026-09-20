@@ -132,13 +132,16 @@ function pickFonts(sample) {
   for (const sc of SCRIPTS) {
     if (!sc.re.test(s)) continue;
     const regular = findFont([`${sc.base}-Regular.ttf`, `${sc.base}.ttf`]);
-    if (regular) return { regular, bold: findFont([`${sc.base}-Bold.ttf`]) || regular };
+    if (regular) {
+      return { regular, bold: findFont([`${sc.base}-Bold.ttf`]) || regular, script: sc.base };
+    }
   }
   const regular = findFont(["DejaVuSans.ttf", "NotoSans-Regular.ttf", "LiberationSans-Regular.ttf", "Arial.ttf"]);
-  if (!regular) return { regular: null, bold: null };
+  if (!regular) return { regular: null, bold: null, script: null };
   return {
     regular,
     bold: findFont(["DejaVuSans-Bold.ttf", "NotoSans-Bold.ttf", "LiberationSans-Bold.ttf", "Arial-Bold.ttf"]) || regular,
+    script: null,
   };
 }
 
@@ -265,7 +268,7 @@ async function authorSpec(kind, o) {
     {
       method: "POST",
       headers: { "content-type": "application/json", "x-goog-api-key": key },
-      signal: AbortSignal.timeout(90_000),
+      signal: AbortSignal.timeout(75_000), // inside the tool's own 120s budget
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text: authorPrompt(kind, o) }] }],
         generationConfig,
@@ -397,6 +400,7 @@ async function renderPdf(spec, accent) {
   const finished = new Promise((res) => doc.on("end", res));
 
   const f = pickFonts(specText(spec));
+  const plainNums = !!f.script; // see fmtNum
   let F = "Helvetica", FB = "Helvetica-Bold";
   if (f.regular) {
     try {
@@ -524,7 +528,8 @@ async function renderPdf(spec, accent) {
     doc.font(F).fontSize(7).fillColor(MUTED);
     for (let i = 0; i <= 3; i++) {
       const v = max - (span / 3) * i;
-      doc.text(fmtNum(v), M, top + (plotH / 3) * i - 3.5, { width: 36, align: "right" });
+      doc.text(fmtNum(v, plainNums), M, top + (plotH / 3) * i - 3.5,
+        { width: 36, align: "right", lineBreak: false });
     }
 
     const step = plotW / c.labels.length;
@@ -622,9 +627,24 @@ async function renderPdf(spec, accent) {
   return Buffer.concat(chunks);
 }
 
-function fmtNum(v) {
+/**
+ * Axis labels. The k/L/Cr suffixes are Latin letters, and a document set
+ * in a script font (Noto Sans Devanagari and friends) has no glyph for
+ * them — a Hindi report's y-axis read "52.0□". So when the page is set in
+ * a script font the numbers are written in full with Indian grouping,
+ * which every one of those fonts can draw.
+ */
+function fmtNum(v, plain = false) {
   const n = Number(v);
   if (!Number.isFinite(n)) return "";
+  if (plain) {
+    const r = Math.round(n);
+    const neg = r < 0 ? "-" : "";
+    const d = String(Math.abs(r));
+    if (d.length <= 3) return neg + d;
+    const head = d.slice(0, d.length - 3);
+    return neg + head.replace(/\B(?=(\d{2})+(?!\d))/g, ",") + "," + d.slice(-3);
+  }
   const a = Math.abs(n);
   if (a >= 1e7) return (n / 1e7).toFixed(1) + "Cr";
   if (a >= 1e5) return (n / 1e5).toFixed(1) + "L";

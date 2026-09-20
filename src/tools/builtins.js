@@ -3062,12 +3062,22 @@ function registerBuiltins() {
       "outline first, no narrating what you are about to do — one short " +
       "sentence after it exists is the whole reply. It takes several " +
       "seconds; that is normal.\n" +
+      "BUILD ON WHAT ALREADY EXISTS. 'Make a deck out of that report' or " +
+      "'turn my notes into a PDF' means find_document or get_last_document " +
+      "FIRST, then pass what it returns as `source_text`. A topic that " +
+      "needs current facts — this year's numbers, a live price, recent " +
+      "news — means web_search first and the findings in `source_text`, " +
+      "so the document is researched rather than remembered.\n" +
       "NOT FOR SOMETHING THAT ALREADY EXISTS IN THE WORLD — a metro map, " +
       "a government form, a real company's report, a court judgment. Those " +
       "are web_search plus save_web_document; this tool would write a " +
       "plausible imitation. And not for a quick answer or a short note the " +
       "user only wants to read on their screen — that is present_text.",
     risk: "low",
+    // Writing + rendering a document measures 3-8s; a 30-slide deck or a
+    // long report can run past the 30s default, and a document that
+    // arrives late still beats one the user has to ask for twice.
+    timeoutMs: 120_000,
     inputSchema: {
       type: "object",
       properties: {
