@@ -829,10 +829,33 @@ router.post("/:sid/capabilities", (req, res) => {
   s.deviceCaps = {
     platform: String(req.body?.platform || "android").slice(0, 20),
     build: Math.max(0, Number(req.body?.build) || 0),
+    model: String(req.body?.model || "").slice(0, 60),
+    osVersion: String(req.body?.osVersion || "").slice(0, 40),
     granted: granted.map((g) => String(g).slice(0, 40)).slice(0, 40),
     denied: denied.map((g) => String(g).slice(0, 40)).slice(0, 40),
     at: Date.now(),
   };
+  // KEEP IT. Held only in the session before, so the moment a user hung
+  // up there was no way to answer "what phone is he on, what did he
+  // grant, which build" — the questions every remote bug starts with.
+  try {
+    const uid = Number(req.user?.sub);
+    if (Number.isInteger(uid) && uid > 0) {
+      const { run } = require("../db");
+      run(
+        `INSERT INTO user_devices (user_id, platform, build, model, os_version, granted, denied, seen_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (user_id) DO UPDATE SET
+           platform=EXCLUDED.platform, build=EXCLUDED.build,
+           model=EXCLUDED.model, os_version=EXCLUDED.os_version,
+           granted=EXCLUDED.granted, denied=EXCLUDED.denied,
+           seen_at=EXCLUDED.seen_at`,
+        [uid, s.deviceCaps.platform, s.deviceCaps.build, s.deviceCaps.model,
+         s.deviceCaps.osVersion, s.deviceCaps.granted.join(","),
+         s.deviceCaps.denied.join(","), Date.now()]
+      ).catch(() => {});
+    }
+  } catch (_) {}
   res.json({ ok: true });
 });
 

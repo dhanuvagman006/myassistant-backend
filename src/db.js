@@ -281,6 +281,16 @@ async function init() {
     ALTER TABLE documents ADD COLUMN IF NOT EXISTS
       understanding TEXT NOT NULL DEFAULT '';
 
+    CREATE TABLE IF NOT EXISTS user_devices (
+      user_id    INTEGER PRIMARY KEY,
+      platform   TEXT NOT NULL DEFAULT '',
+      build      INTEGER NOT NULL DEFAULT 0,
+      model      TEXT NOT NULL DEFAULT '',
+      os_version TEXT NOT NULL DEFAULT '',
+      granted    TEXT NOT NULL DEFAULT '',
+      denied     TEXT NOT NULL DEFAULT '',
+      seen_at    BIGINT NOT NULL DEFAULT 0
+    );
     CREATE TABLE IF NOT EXISTS documents (
       id         SERIAL PRIMARY KEY,
       user_id    INTEGER NOT NULL,
