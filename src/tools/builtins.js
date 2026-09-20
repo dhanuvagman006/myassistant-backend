@@ -2711,7 +2711,13 @@ function registerBuiltins() {
       "`search` instead and the user gets Google results to choose from. " +
       "A guessed domain that doesn't exist is far worse than a search " +
       "page: NEVER invent or approximate a URL. Prefer the dedicated " +
-      "tools for YouTube, shopping, food, cabs and movies.",
+      "tools for YouTube, shopping, food, cabs and movies.\n" +
+      "NEVER open a document you saved for them this way. A URL on this " +
+      "assistant's own API (…/docs/<id>/file) needs their session and a " +
+      "browser has none, so it shows 'sign in required'. Their saved " +
+      "documents already appear on screen when saved; to show one again " +
+      "use find_document or get_last_document, which open it inside the " +
+      "app.",
     risk: "low",
     deviceAction: true,
     inputSchema: {
