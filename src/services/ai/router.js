@@ -542,7 +542,8 @@ async function transcribeAudio(buffer, mimeType, opts = {}) {
 // ---- Gemini TTS config ----
 // Default voices per Gemini TTS: warm, natural, well-suited to an assistant.
 // Full list (30): Kore, Puck, Zephyr, Charon, Leda, Aoede, Callirrhoe, etc.
-const TTS_DEFAULT_VOICE = envModel("GEMINI_TTS_VOICE", "Kore");
+// Fenrir by default — see the note in live/proxy.js.
+const TTS_DEFAULT_VOICE = envModel("GEMINI_TTS_VOICE", "Fenrir");
 const TTS_MODEL = envModel("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts");
 const TTS_SAMPLE_RATE = 24000;
 

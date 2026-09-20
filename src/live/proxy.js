@@ -40,7 +40,10 @@ const db = require("../db");
 const LIVE_MODEL = () =>
   envModel("GEMINI_LIVE_MODEL", "gemini-2.5-flash-native-audio-preview");
 
-const LIVE_VOICE = () => envModel("GEMINI_TTS_VOICE", "Kore");
+// FENRIR IS THE DEFAULT VOICE (his call, 2026-09-20) — a new account
+// hears it until they pick another in Settings. Overridable per
+// deployment with GEMINI_TTS_VOICE.
+const LIVE_VOICE = () => envModel("GEMINI_TTS_VOICE", "Fenrir");
 
 const GOOGLE_WS =
   "wss://generativelanguage.googleapis.com/ws/" +

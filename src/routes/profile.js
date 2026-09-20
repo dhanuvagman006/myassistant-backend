@@ -119,7 +119,34 @@ router.post("/conversational", async (req, res) => {
 router.put("/assistant", async (req, res) => {
   const uid = uidOf2(req);
   if (!uid) return res.status(401).json({ error: "sign in" });
-  const a = await userCtx.setAssistantProfile(uid, req.body || {});
+  const body = req.body || {};
+
+  // A FEMALE VOICE MAY NOT CARRY A MALE NAME, OR THE REVERSE (his rule,
+  // 2026-09-20). Checked on EVERY save, against whichever half is not
+  // being changed — setting just the name must be judged against the
+  // voice already stored, and vice versa.
+  try {
+    const current = (await userCtx.getProfile(uid))?.assistant || {};
+    const name = body.name !== undefined && body.name !== ""
+      ? body.name : current.name;
+    let voice = body.voice !== undefined && body.voice !== ""
+      ? body.voice : current.voice;
+    if (voice === "default") voice = "";
+    const verdict = await require("../users/voiceGender").check(name, voice);
+    if (!verdict.ok) {
+      return res.status(409).json({
+        error: "voice_name_mismatch",
+        message: verdict.message,
+        nameGender: verdict.nameGender,
+        voiceGender: verdict.voiceGender,
+      });
+    }
+  } catch (e) {
+    // The check must never be the reason a setting cannot be saved.
+    console.warn("voice/name check skipped:", e.message);
+  }
+
+  const a = await userCtx.setAssistantProfile(uid, body);
   res.json({ assistant: a });
 });
 
