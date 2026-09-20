@@ -1214,14 +1214,24 @@ function registerBuiltins() {
         userId: ctx.userId,
         delayMs,
       });
-      // A call-task confirmation must promise the RIGHT thing: the user's
-      // own phone dials the contact at that time. "I've scheduled a call
-      // with Allen" sounds like a meeting was arranged — it wasn't.
+      // A call-task confirmation must promise the RIGHT thing, and there
+      // are TWO right things. A bare "call X at 6" rings the user's own
+      // phone so they can speak; "call X at 6 and tell them Y" is placed
+      // by the assistant from its own number, which is a different promise
+      // — and the old wording made both sound like the first, so a user
+      // who asked for a message to be delivered was told their phone would
+      // dial. It also depends on the relay being configured at all.
       const isCall = /\b(call|dial|ring)\b/i.test(payload.task);
+      const delivers =
+        isCall &&
+        /\b(tell|inform|ask|say|remind|let\s+(him|her|them)\s+know|convey|check\s+with)\b/i.test(payload.task) &&
+        require("../agents/agentCall").enabled();
       return {
         ok: true,
         data: { id, runAt: new Date(at).toISOString(), repeat },
-        speak: isCall
+        speak: delivers
+          ? `Done — I'll call them myself at that time${repeat ? `, ${repeat}` : ""}, and tell you what they say.`
+          : isCall
           ? `Done — at that time your phone will place the call itself${repeat ? `, ${repeat}` : ""}.`
           : repeat
             ? `Scheduled ${repeat} — I'll do it each time and send you the outcome.`
