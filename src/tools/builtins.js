@@ -75,6 +75,151 @@ function registerBuiltins() {
     },
   });
 
+  // ---------------- LEAVING THE HOUSE ----------------
+  //
+  // One tool, because the answer to "I'm heading out" is several facts at
+  // once and asking for them one at a time is exactly the friction this
+  // app exists to remove.
+  registry.register({
+    name: "going_out_check",
+    description:
+      "EVERYTHING THEY NEED BEFORE LEAVING, in one go — the user said " +
+      "they are going out, heading somewhere, leaving now, stepping out, " +
+      "going to the office/airport/hospital, or asked 'do I need an " +
+      "umbrella', 'what's it like outside', 'am I okay to head out'.\n" +
+      "Returns the hour-by-hour weather for the next several hours (not a " +
+      "daily summary — whether it rains WHILE THEY ARE OUT is the whole " +
+      "question), the exact rain window if there is one, heat, UV and " +
+      "wind, their phone's charge, and what is still on their calendar " +
+      "today.\n" +
+      "ANSWER IT IN ONE BREATH AND DO NOT ASK ANYTHING BACK. Lead with " +
+      "what changes their behaviour — take an umbrella, charge the phone, " +
+      "you have 40 minutes before your meeting — then stop. No lists, no " +
+      "'would you like me to…', no reading out every number you were " +
+      "given. If nothing needs acting on, say so in one short sentence.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        hours: {
+          type: "integer",
+          description: "How long they will be out, in hours. Default 6.",
+        },
+        city: {
+          type: "string",
+          description:
+            "Only when they named somewhere other than where they are.",
+        },
+      },
+    },
+    async execute(args, ctx) {
+      const hours = Math.min(Math.max(Number(args.hours) || 6, 1), 12);
+      const where = args.city
+        ? { city: String(args.city).slice(0, 60) }
+        : { lat: ctx.lat, lng: ctx.lng };
+      if (!args.city && !Number.isFinite(ctx.lat)) {
+        return {
+          ok: false,
+          error:
+            "location is off, so the weather can't be checked — ask which " +
+            "city they are in, or tell them to turn location on",
+        };
+      }
+
+      const weather = require("../services/tools/weather");
+      const out = { advice: [] };
+
+      let wx = null;
+      try {
+        wx = await weather.hourlyOutlook(where, hours);
+      } catch (_) {}
+      if (wx) {
+        out.weather = {
+          place: wx.label,
+          now: `${Math.round(wx.nowC)}°C, ${wx.condition}`,
+          feelsC: Math.round(wx.feelsC),
+          rainWindow: wx.rainWindow,
+          maxUv: wx.maxUv,
+          maxWindKmh: Math.round(wx.maxWindKmh),
+          byHour: wx.hours.map((h) => ({
+            hour: `${String(h.hour).padStart(2, "0")}:00`,
+            tempC: Math.round(h.tempC),
+            rainChance: h.rainChance,
+            condition: h.condition,
+          })),
+        };
+        // ONLY THINGS THAT CHANGE WHAT THEY DO.
+        if (wx.rainWindow) {
+          out.advice.push(
+            `Take an umbrella — ${wx.rainWindow.peak}% rain between ` +
+              `${wx.rainWindow.from} and ${wx.rainWindow.to}.`
+          );
+        }
+        if (wx.maxUv >= 7) out.advice.push("Strong sun — sunscreen or a cap.");
+        if (wx.maxWindKmh >= 35) out.advice.push(`Windy, up to ${Math.round(wx.maxWindKmh)} km/h.`);
+        if (Number.isFinite(wx.feelsC)) {
+          if (wx.feelsC >= 36) out.advice.push(`Feels like ${Math.round(wx.feelsC)}°C — carry water.`);
+          else if (wx.feelsC <= 14) out.advice.push(`Feels like ${Math.round(wx.feelsC)}°C — take a jacket.`);
+        }
+      }
+
+      // PHONE CHARGE. Sent by the app with the turn; absent on older
+      // builds, and a missing number is simply left out rather than
+      // guessed at.
+      const pct = Number(ctx.batteryPct);
+      if (Number.isFinite(pct) && pct >= 0) {
+        out.battery = { percent: Math.round(pct), charging: ctx.batteryCharging === true };
+        if (pct <= 30 && ctx.batteryCharging !== true) {
+          out.advice.push(`Phone is at ${Math.round(pct)}% — charge it or take a power bank.`);
+        }
+      }
+
+      // WHAT THEY STILL HAVE TODAY, so "when do I need to be back" is
+      // answered before it is asked.
+      try {
+        // The same check every other Google-backed tool uses — there is
+        // no google_accounts table, the tokens live in google_tokens and
+        // this helper is the one place that knows it.
+        const linked = await require("../google/tokens").isConnected(ctx.userId);
+        if (linked) {
+          const gapi = require("../google/api");
+          const events = await gapi.upcomingEvents(ctx.userId, { days: 1, max: 10 });
+          const tz = Number.isFinite(ctx.tzOffsetMin) ? ctx.tzOffsetMin : 330;
+          const endOfDay = (() => {
+            const local = new Date(Date.now() + tz * 60_000);
+            return Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + 1) - tz * 60_000;
+          })();
+          const left = (events || [])
+            .filter((e) => {
+              const t = Date.parse(e.start || e.startTime || "");
+              return Number.isFinite(t) && t >= Date.now() && t < endOfDay;
+            })
+            .slice(0, 4)
+            .map((e) => ({
+              title: String(e.summary || e.title || "Event").slice(0, 80),
+              at: e.start || e.startTime,
+            }));
+          if (left.length) {
+            out.calendarToday = left;
+            const next = left[0];
+            const mins = Math.round((Date.parse(next.at) - Date.now()) / 60000);
+            if (mins > 0 && mins <= 120) {
+              out.advice.push(`${next.title} in ${mins} minutes.`);
+            }
+          }
+        }
+      } catch (_) {}
+
+      return {
+        ok: true,
+        data: out,
+        note:
+          "Say only what changes their behaviour, in one or two sentences. " +
+          "Do not read the hourly table aloud and do not ask a follow-up.",
+      };
+    },
+  });
+
   registry.register({
     name: "get_news",
     description:

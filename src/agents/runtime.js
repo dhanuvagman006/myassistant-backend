@@ -104,6 +104,15 @@ function systemPrompt(extra = "") {
     "any. AT A TIME ('call my driver at 4am and remind him to come to " +
     "the airport') that whole sentence goes to schedule_task, message " +
     "included, and it is placed then — not now. " +
+    "- THEY ARE GOING OUT: 'I have to go out today', 'heading to the " +
+    "office', 'stepping out now', 'do I need an umbrella' → call " +
+    "going_out_check ONCE and answer in one breath. It returns the " +
+    "hour-by-hour weather, the exact rain window, heat, UV, wind, their " +
+    "phone's charge and what is left on their calendar today. Say ONLY " +
+    "what changes what they do — take an umbrella, charge the phone, " +
+    "you have 40 minutes before your meeting — and then stop. Never " +
+    "read the hourly numbers out, never ask where they are going, never " +
+    "ask a follow-up: they are already putting their shoes on.\n" +
     "- WAKE-UP AND REMINDER CALLS TO THE USER THEMSELF: 'call me at 5am " +
     "and wake me up', 'ring me at 4 and remind me about the flight'. " +
     "Schedule the WHOLE sentence with schedule_task; at that time call " +

@@ -41,24 +41,32 @@ const CORE = new Set([
   "open_named_app", "check_recent_actions",
 ]);
 
-/** Words that carry no signal about which tool is wanted. */
+/**
+ * Words that carry no signal about which tool is wanted.
+ *
+ * KEPT DELIBERATELY SHORT. The first version also stopped "out", "need",
+ * "make", "get", "tell" and "say" — which are not filler, they are how
+ * people name actions. "I have to go out today" reduced to the single
+ * token "today" and matched nothing, so the one tool written for that
+ * sentence was never selected. Only true grammar goes here.
+ */
 const STOP = new Set(
   ("a an the and or but if then than that this these those is are was were be " +
    "been being do does did doing done have has had having i me my mine we us " +
    "our you your he she it they them his her its their to for of in on at by " +
-   "with from up down out off over under again once here there when where why " +
-   "how all any both each few more most other some such no nor not only own " +
-   "same so too very can will just should now please hey okay ok yes yeah " +
-   "want need let make get got give tell say said what which who whom")
+   "with from again once such no nor not only own same so too very can will " +
+   "just please hey okay ok yes yeah what which who whom")
     .split(" ")
 );
 
+// TWO LETTERS IS A WORD: "go", "up", "AC", "hi". Three was chosen for
+// tidiness and it cost the shortest, most common requests their signal.
 const words = (s) =>
   String(s || "")
     .toLowerCase()
     .replace(/[^a-z0-9ऀ-෿\s]/g, " ")
     .split(/\s+/)
-    .filter((w) => w.length > 2 && !STOP.has(w));
+    .filter((w) => w.length >= 2 && !STOP.has(w));
 
 /** Token set per tool, built once from its name and description. */
 const vocab = new Map();

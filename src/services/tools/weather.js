@@ -99,4 +99,96 @@ function describe(w) {
   return s;
 }
 
-module.exports = { getWeather, describe };
+/**
+ * THE NEXT FEW HOURS, NOT THE DAY.
+ *
+ * "Should I take an umbrella?" is an hourly question — a 60% daily rain
+ * chance says nothing about whether it rains while you are actually out,
+ * and a day summary is what makes an assistant sound like a weather app
+ * instead of someone who knows. Open-Meteo gives this in the same call
+ * shape; only the fields differ.
+ *
+ * @returns {Promise<{label:string, hours:Array, rainWindow:?{from:string,to:string,peak:number}}>}
+ */
+async function hourlyOutlook(where, hoursAhead = 8) {
+  let lat = where.lat, lng = where.lng, label = where.city || null;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    if (!where.city) return null;
+    const g = await geocodeCity(where.city);
+    if (!g) return null;
+    ({ lat, lng, label } = g);
+  }
+  const key = `wxh:${lat.toFixed(2)},${lng.toFixed(2)}`;
+  const hit = cache.get(key);
+  let j = hit && Date.now() - hit.ts < TTL ? hit.data : null;
+  if (!j) {
+    j = await getJson(
+      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}` +
+        "&hourly=temperature_2m,apparent_temperature,precipitation_probability,precipitation,weather_code,wind_speed_10m,uv_index" +
+        "&current=temperature_2m,apparent_temperature,weather_code" +
+        "&timezone=auto&forecast_days=2"
+    );
+    cache.set(key, { ts: Date.now(), data: j });
+  }
+
+  const times = j.hourly?.time || [];
+  // START FROM THE CURRENT HOUR *THERE*, NOT HERE.
+  //
+  // timezone=auto means every timestamp comes back in the LOCATION's
+  // local time, so comparing them against a UTC clock slides the whole
+  // outlook by the offset — at 20:00 IST it opened the forecast at 14:00
+  // and reported hours that had already happened. `current.time` is the
+  // API's own local clock, which is the only correct anchor.
+  const nowLocal = String(j.current?.time || "").slice(0, 13);
+  const anchor =
+    nowLocal ||
+    new Date(Date.now() + Number(j.utc_offset_seconds || 0) * 1000)
+      .toISOString()
+      .slice(0, 13);
+  let start = times.findIndex((t) => t.slice(0, 13) >= anchor);
+  if (start < 0) start = 0;
+
+  const hours = [];
+  for (let i = start; i < Math.min(start + hoursAhead, times.length); i++) {
+    hours.push({
+      at: times[i],
+      hour: Number(times[i].slice(11, 13)),
+      tempC: j.hourly.temperature_2m?.[i],
+      feelsC: j.hourly.apparent_temperature?.[i],
+      rainChance: j.hourly.precipitation_probability?.[i] ?? 0,
+      mm: j.hourly.precipitation?.[i] ?? 0,
+      windKmh: j.hourly.wind_speed_10m?.[i],
+      uv: j.hourly.uv_index?.[i],
+      condition: WMO[j.hourly.weather_code?.[i]] || "unknown",
+    });
+  }
+
+  // The first stretch worth warning about, and how bad it gets.
+  let rainWindow = null;
+  const wet = hours.filter((h) => h.rainChance >= 40);
+  if (wet.length) {
+    const first = wet[0];
+    let last = first;
+    for (const h of wet) {
+      if (h.hour - last.hour <= 2) last = h; else break;
+    }
+    rainWindow = {
+      from: String(first.hour).padStart(2, "0") + ":00",
+      to: String(last.hour + 1).padStart(2, "0") + ":00",
+      peak: Math.max(...wet.map((h) => h.rainChance)),
+    };
+  }
+
+  return {
+    label: label || `${lat.toFixed(2)}, ${lng.toFixed(2)}`,
+    nowC: j.current?.temperature_2m,
+    feelsC: j.current?.apparent_temperature,
+    condition: WMO[j.current?.weather_code] || "unknown",
+    hours,
+    rainWindow,
+    maxUv: hours.length ? Math.max(...hours.map((h) => h.uv || 0)) : 0,
+    maxWindKmh: hours.length ? Math.max(...hours.map((h) => h.windKmh || 0)) : 0,
+  };
+}
+
+module.exports = { getWeather, describe, hourlyOutlook };
