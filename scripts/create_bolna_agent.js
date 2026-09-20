@@ -52,6 +52,9 @@ const payload = {
         toolchain: { execution: "parallel", pipelines: [["transcriber", "llm", "synthesizer"]] },
         tools_config: {
           llm_agent: {
+            // Required by the API (it 400s by name without it); streaming
+            // is what makes the reply start before the sentence is finished.
+            agent_flow_type: "streaming",
             agent_type: "simple_llm_agent",
             llm_config: {
               provider: "openai",
@@ -62,15 +65,14 @@ const payload = {
           },
           transcriber: {
             provider: "deepgram",
-            // "let it talk in any language" — so the default is the
-            // multilingual model rather than one language. Both are
-            // env-overridable because the account's catalogue decides
-            // what is actually available: if the API rejects these it
-            // prints the body verbatim, and you re-run with
-            //   BOLNA_STT_MODEL=nova-2 BOLNA_STT_LANG=hi
-            // (nova-2 + hi still handles Hinglish well).
+            // MEASURED against the real account, 2026-09-20: "multi" is
+            // refused on both nova-3 and nova-2 ("Provided language: multi
+            // is not available for the model"), so nova-3 + hi is what
+            // actually exists here. That covers Hindi and English
+            // including code-switching, which is what the calls are.
+            // Override per account if the catalogue differs.
             model: process.env.BOLNA_STT_MODEL || "nova-3",
-            language: process.env.BOLNA_STT_LANG || "multi",
+            language: process.env.BOLNA_STT_LANG || "hi",
             stream: true,
           },
           synthesizer: {
