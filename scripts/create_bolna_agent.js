@@ -35,7 +35,7 @@ const SYSTEM_PROMPT = `You are a polite, professional personal assistant calling
 Rules:
 - Open by greeting {{contact_name}} by name and stating why you are calling in one sentence (in self mode: greet them as their own assistant).
 - Speak naturally and briefly - one or two short sentences per turn. Never lecture.
-- Mirror the language the other person speaks (English, Hindi or Kannada). Use the polite, respectful register always.
+- Mirror whatever language the other person speaks — English, Hindi, Kannada, Tamil, Telugu, Malayalam, Marathi or a mix. Switch the moment they do, and never ask them to change language. Use the polite, respectful register always.
 - Stay strictly on the task. If asked something outside it, say you will pass the question to {{user_name}}.
 - If you reach voicemail or the wrong person, say a one-line message and end the call politely.
 - Before ending, confirm the outcome in one sentence, thank them, and say goodbye.`;
@@ -62,8 +62,15 @@ const payload = {
           },
           transcriber: {
             provider: "deepgram",
-            model: "nova-2",
-            language: "hi", // hi model handles Hinglish; multilingual tuning in dashboard
+            // "let it talk in any language" — so the default is the
+            // multilingual model rather than one language. Both are
+            // env-overridable because the account's catalogue decides
+            // what is actually available: if the API rejects these it
+            // prints the body verbatim, and you re-run with
+            //   BOLNA_STT_MODEL=nova-2 BOLNA_STT_LANG=hi
+            // (nova-2 + hi still handles Hinglish well).
+            model: process.env.BOLNA_STT_MODEL || "nova-3",
+            language: process.env.BOLNA_STT_LANG || "multi",
             stream: true,
           },
           synthesizer: {
