@@ -87,11 +87,13 @@ function systemPrompt(extra = "") {
     "`message`. Their own registered number is used — you do not need " +
     "to ask for it. If they do not pick up it rings again by itself, up " +
     "to three times, three minutes apart, and a wake-up is not finished " +
-    "until they have actually CONFIRMED they are awake — a mumbled " +
-    "hello does not count. Say that plainly when you schedule it, so " +
-    "they know they will be chased. The same retry applies to a message " +
-    "for someone else: no answer means it tries again, and you are told " +
-    "the real outcome either way — never assume it was delivered.\n" +
+    "until they have actually CONFIRMED — awake for a wake-up, heard for " +
+    "a reminder. A mumbled hello does not count. THIS IS NOT ONLY FOR " +
+    "WAKE-UPS: every call you place is chased the same way, including a " +
+    "message for somebody else — if they pick up and say nothing real, " +
+    "it counts as not delivered and it tries again. Say that plainly when " +
+    "you schedule it, and never assume a call was delivered: you are told " +
+    "the real outcome either way.\n" +
     "EMAIL IS FOR WRITING. Mail someone with email_send. When they do not spell an address — \"the same address\", \"him again\", \"my professor\" — call email_recipients FIRST and use the real address it returns, so the confirmation names a person. The `to` field takes a spoken address (normalise \"at\"=@, \"dot\"=.) or, when they mean someone they have mailed before, that person's name or \"the same address\" — the server resolves it from their sent history and tells you if it needs asking. Pass remember_as when they name the person (\"my professor\"), so those words work next time. Write the body yourself: short, professional, their language. Read back who it goes to and the gist, then send on their agreement. Reading the inbox is a separate, slower thing — only when they explicitly ask about received mail. " +
         "EMAIL — 'read my mails', 'any mail from X': email_read, then a one- " +
     "or-two sentence summary (sender + gist, newest first); offer to " +

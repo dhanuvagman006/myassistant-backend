@@ -252,14 +252,17 @@ function bolnaWebhook(body) {
     //   voicemail     → never counts, whatever the duration
     //   any call      → somebody has to have SPOKEN; an answering machine
     //                   that never says "user:" is not a delivery
-    //   wake-up       → they must actually CONFIRM (see confirmedAwake):
-    //                   a mumbled "hello" is how people answer in their
-    //                   sleep, and he asked to be called again until he
-    //                   confirms he is up.
+    //   every call    → they must ACKNOWLEDGE (see acknowledged): a
+    //                   mumbled "hello" is how people answer in their
+    //                   sleep and how they answer before hanging up, and
+    //                   he asked for the chasing to apply to reminders
+    //                   and to messages for other people, not only to
+    //                   wake-up calls.
     const voicemail = body?.answered_by_voice_mail === true;
     const theySpoke = /^user\s*:/im.test(transcript);
     const reached = secs > 0 && theySpoke && !voicemail;
-    const done = rec.selfCall ? reached && confirmedAwake(transcript) : reached;
+    // EVERY call, not just a wake-up — see acknowledged().
+    const done = reached && acknowledged(transcript);
 
     if (!done) {
       handleNoAnswer(rec);
@@ -280,22 +283,28 @@ function bolnaWebhook(body) {
 }
 
 /**
- * DID THEY ACTUALLY WAKE UP?
+ * DID THE CALL ACTUALLY LAND?
  *
- * His spec, 2026-09-20: "if I don't pick, call again until I confirm I
- * woke up". Answering is not confirming — "hello" is exactly what someone
- * says half asleep, and treating it as success is how a wake-up call
- * stops one ring before it has done its job.
+ * His spec, 2026-09-20: "call again until I confirm I woke up" — and then,
+ * explicitly: "this should not work only for wake up task, even for other
+ * reminder tasks it should work… even informing someone".
  *
- * So a wake-up counts only when they either say something affirmative, in
- * any of the languages these calls happen in, or hold a real exchange
- * (three words or more). The bias is deliberate: an extra call at 5 a.m.
- * is a mild annoyance, a missed flight is not.
+ * So the bar is the same for every call the assistant places, whoever it
+ * is to. ANSWERING IS NOT ACKNOWLEDGING: "hello" is what someone says
+ * half asleep, and it is also what someone says before putting the phone
+ * straight down — in both cases nothing was delivered, and treating it as
+ * success stops the calling one ring before it has done its job.
+ *
+ * A call counts only when the other person says something affirmative, in
+ * any of the languages these calls happen in, or holds a real exchange
+ * (three words or more). The bias is deliberate: one more attempt is a
+ * mild annoyance, an undelivered 5 a.m. wake-up or an unpassed message is
+ * the product failing at the only job it had.
  */
 const AFFIRMATIVE =
   /\b(yes|yeah|yep|ya|ok|okay|okey|sure|awake|i'?m up|got it|alright|right|hmm+|understood|thanks|thank you)\b|हाँ|हां|जी|ठीक|उठ|समझ|ಹೌದು|ಸರಿ|ಎದ್ದೆ|ಎದ್ದಿದ್ದೇನೆ|ಗೊತ್ತಾಯ್ತು|ஆம்|சரி|எழுந்த|అవును|సరే|లేచ|ശരി|ഉണർന്ന/i;
 
-function confirmedAwake(transcript) {
+function acknowledged(transcript) {
   const said = String(transcript || "")
     .split(/\r?\n/)
     .filter((l) => /^\s*user\s*:/i.test(l))
