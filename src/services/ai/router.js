@@ -778,23 +778,36 @@ async function generateWithTools({ contents, system, declarations = [], _model =
   let data;
   try {
     data = await keys.withKeyRotation(model, async (key) => {
-      const r = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json", "x-goog-api-key": key },
-          signal: AbortSignal.timeout(timeoutMs || TIMEOUT_MS),
-          body: JSON.stringify(body),
-        }
-      );
-      if (!r.ok) {
+      // A TRANSIENT 5xx MUST NOT KILL THE TURN. Google answers 503 "this
+      // model is currently experiencing high demand" often enough that a
+      // scheduled 4 a.m. call died on one — the job was marked failed and
+      // nothing was dialled. generateReply already retried these; the tool
+      // path, which is the one background work uses, did not.
+      const TRANSIENT = new Set([500, 502, 503, 504]);
+      let lastErr;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt) await new Promise((res) => setTimeout(res, 700 * attempt));
+        const r = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-goog-api-key": key },
+            signal: AbortSignal.timeout(timeoutMs || TIMEOUT_MS),
+            body: JSON.stringify(body),
+          }
+        );
+        if (r.ok) return r.json();
         const errBody = await r.text().catch(() => "");
-        throw Object.assign(
+        lastErr = Object.assign(
           new Error(`gemini tools ${r.status} [model=${model}] ${errBody.slice(0, 300) || "(empty body)"}`),
           { status: r.status, body: errBody }
         );
+        // Quota/auth belong to the KEY — hand them straight back so the
+        // pool rotates instead of hammering a key that has nothing left.
+        if (!TRANSIENT.has(r.status)) throw lastErr;
+        console.warn(`gemini tools ${r.status} on ${model} — retry ${attempt + 1}/2`);
       }
-      return r.json();
+      throw lastErr;
     });
   } catch (e) {
     // Every key spent on this model — the other family usually still has
