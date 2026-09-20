@@ -63,26 +63,62 @@ const CHARACTERS = {
 };
 
 /**
- * Voices, pinned by ElevenLabs voice_id.
+ * VOICES — read off the platform, not guessed.
  *
- * THE ID IS WHAT MATTERS. Bolna accepts ANY voice NAME on an update
- * without checking it — a made-up name saves happily and then fails when
- * a real call is placed — so every entry here carries a real ElevenLabs
- * library id, which is what actually selects the voice.
+ * The first version of this file offered six ElevenLabs voices with ids I
+ * had looked up, and a warning that Bolna accepts any voice NAME without
+ * checking it. That was working around the wrong provider. The platform
+ * carries SEVEN voice providers, and Sarvam is the one built for Indian
+ * languages: 16 voices, each published with a gender and a style, and —
+ * unlike ElevenLabs — the id is VALIDATED on save ("does not exist in
+ * voice_profiles"), so a typo can never reach a real call.
+ *
+ * That is why the whole list is exposed here and the ElevenLabs entry is
+ * kept as one option rather than the default: Sarvam speaks Kannada,
+ * Tamil, Telugu, Malayalam and the rest, which is the thing that could
+ * not be done before.
+ *
+ * Verified on his account 2026-09-20: bulbul:v3 + voice_id (lowercase
+ * name) + language kn-IN is accepted; a made-up id is refused.
  */
+const SARVAM = (voice, gender, style) => ({
+  id: voice.toLowerCase(),
+  label: voice,
+  gender,
+  style,
+  provider: "sarvam",
+  model: "bulbul:v3",
+  voice,
+  voiceId: voice.toLowerCase(),
+  indian: true,
+});
+
 const VOICES = [
-  { id: "monika", label: "Monika", gender: "female", accent: "Indian",
-    voice: "Monika", voiceId: "2zRM7PkgwBPiau2jvVXc", verified: true },
-  { id: "rachel", label: "Rachel", gender: "female", accent: "Neutral",
-    voice: "Rachel", voiceId: "21m00Tcm4TlvDq8ikWAM" },
-  { id: "bella", label: "Bella", gender: "female", accent: "Soft",
-    voice: "Bella", voiceId: "EXAVITQu4vr4xnSDxMaL" },
-  { id: "adam", label: "Adam", gender: "male", accent: "Deep",
-    voice: "Adam", voiceId: "pNInz6obpgDQGcFmaJgB" },
-  { id: "josh", label: "Josh", gender: "male", accent: "Warm",
-    voice: "Josh", voiceId: "TxGEqnHWrfWFTfGW9XjX" },
-  { id: "charlie", label: "Charlie", gender: "male", accent: "Casual",
-    voice: "Charlie", voiceId: "IKne3meq5aSn9XLyUdCD" },
+  // male
+  SARVAM("Sumit", "male", "Conversational"),
+  SARVAM("Amit", "male", "Business"),
+  SARVAM("Rahul", "male", "Warm, persuasive"),
+  SARVAM("Ashutosh", "male", "Clear, news-reader"),
+  SARVAM("Ratan", "male", "Measured"),
+  SARVAM("Shubh", "male", "Calm, support"),
+  SARVAM("Manan", "male", "Brisk"),
+  // female
+  SARVAM("Priya", "female", "Conversational"),
+  SARVAM("Kavya", "female", "Conversational"),
+  SARVAM("Simran", "female", "Friendly"),
+  SARVAM("Pooja", "female", "Assistant"),
+  SARVAM("Ishita", "female", "Business"),
+  SARVAM("Shreya", "female", "Clear, news-reader"),
+  SARVAM("Ritu", "female", "Warm"),
+  SARVAM("Suhani", "female", "Gentle"),
+  SARVAM("Shruti", "female", "Expressive"),
+  // Kept for languages outside India, and as the rollback path if Sarvam
+  // ever feels slower on the line.
+  {
+    id: "monika", label: "Monika", gender: "female", style: "Multilingual",
+    provider: "elevenlabs", model: "eleven_turbo_v2_5",
+    voice: "Monika", voiceId: "2zRM7PkgwBPiau2jvVXc", indian: false,
+  },
 ];
 
 /** Three tiers rather than a model list — the user is choosing how sharp
@@ -102,21 +138,51 @@ const BRAINS = {
   },
 };
 
-/** Transcription language. Measured: this account refuses "multi". */
+/**
+ * LANGUAGES, and the transcription that can actually hear them.
+ *
+ * The user picks a language; they should never have to know that a
+ * speech-to-text provider exists, let alone which one does Kannada.
+ * Deepgram has no Kannada at all — that is why "it struggles in Kannada"
+ * was never fixable by changing the voice alone. Sarvam's saaras:v4 does,
+ * and handles code-switching under "unknown".
+ *
+ * Verified accepted on his account 2026-09-20.
+ */
 const LANGUAGES = [
-  { id: "hi", label: "Hindi + English", hint: "Handles Hinglish mixing", model: "nova-3" },
-  { id: "en", label: "English only", hint: "Clearest for English calls", model: "nova-3" },
-  { id: "ta", label: "Tamil", model: "nova-2" },
-  { id: "te", label: "Telugu", model: "nova-2" },
-  { id: "mr", label: "Marathi", model: "nova-2" },
+  { id: "multi", label: "Indian languages", hint: "Switches as they do — the safe default",
+    asr: { provider: "sarvam", model: "saaras:v4", language: "unknown" }, tts: "hi-IN" },
+  { id: "hi", label: "Hindi", hint: "With English mixed in",
+    asr: { provider: "sarvam", model: "saaras:v4", language: "hi" }, tts: "hi-IN" },
+  { id: "kn", label: "Kannada", hint: "",
+    asr: { provider: "sarvam", model: "saaras:v4", language: "kn" }, tts: "kn-IN" },
+  { id: "ta", label: "Tamil", hint: "",
+    asr: { provider: "sarvam", model: "saaras:v4", language: "ta" }, tts: "ta-IN" },
+  { id: "te", label: "Telugu", hint: "",
+    asr: { provider: "sarvam", model: "saaras:v4", language: "te" }, tts: "te-IN" },
+  { id: "ml", label: "Malayalam", hint: "",
+    asr: { provider: "sarvam", model: "saaras:v4", language: "ml" }, tts: "ml-IN" },
+  { id: "mr", label: "Marathi", hint: "",
+    asr: { provider: "sarvam", model: "saaras:v4", language: "mr" }, tts: "mr-IN" },
+  { id: "bn", label: "Bengali", hint: "",
+    asr: { provider: "sarvam", model: "saaras:v4", language: "bn" }, tts: "bn-IN" },
+  { id: "gu", label: "Gujarati", hint: "",
+    asr: { provider: "sarvam", model: "saaras:v4", language: "gu" }, tts: "gu-IN" },
+  { id: "pa", label: "Punjabi", hint: "",
+    asr: { provider: "sarvam", model: "saaras:v4", language: "pa" }, tts: "pa-IN" },
+  { id: "en", label: "English only", hint: "Clearest for English-only calls",
+    asr: { provider: "deepgram", model: "nova-3", language: "en" }, tts: "en-IN" },
 ];
 
 const DEFAULTS = {
   character: "polite",
   persona: "",
-  voice: "monika",
+  // An Indian voice that can speak every Indian language, and a
+  // transcriber that can hear them — the combination that makes Kannada
+  // work at all. Monika (ElevenLabs) remains one tap away.
+  voice: "sumit",
   brain: "balanced",
-  language: "hi",
+  language: "multi",
 };
 
 /* ------------------------------------------------------------------ */
@@ -136,20 +202,22 @@ const DEFAULTS = {
  */
 const RATES = {
   transcriber: 0.0043,
-  voice: 0.075,
+  voice: { elevenlabs: 0.075, sarvam: 0.048 },
   telephony: 0.009,
   platform: 0.018,
 };
 
 function costPerMinute(prefs) {
   const brain = BRAINS[prefs.brain] || BRAINS.balanced;
+  const voice = VOICES.find((v) => v.id === prefs.voice) || VOICES[0];
+  const voiceRate = RATES.voice[voice.provider] ?? RATES.voice.elevenlabs;
   const total =
-    RATES.transcriber + RATES.voice + RATES.telephony + RATES.platform +
+    RATES.transcriber + voiceRate + RATES.telephony + RATES.platform +
     brain.costPerMin;
   return {
     total: Number(total.toFixed(3)),
     breakdown: {
-      voice: RATES.voice,
+      voice: voiceRate,
       brain: brain.costPerMin,
       transcription: RATES.transcriber,
       telephony: RATES.telephony,
@@ -250,18 +318,40 @@ async function syncAgent(userId, prefs) {
 
   const tasks = JSON.parse(JSON.stringify(base.tasks));
   const tc = tasks[0].tools_config;
-  tc.synthesizer.provider_config = {
-    ...tc.synthesizer.provider_config,
-    voice: voice.voice,
-    voice_id: voice.voiceId,
+
+  // VOICE. The whole synthesizer block is replaced rather than merged:
+  // provider_config fields are provider-specific, and leaving an
+  // ElevenLabs model behind while switching to Sarvam is exactly the kind
+  // of half-applied config that fails only when a real call is placed.
+  tc.synthesizer = {
+    ...tc.synthesizer,
+    provider: voice.provider,
+    provider_config: {
+      model: voice.model,
+      voice: voice.voice,
+      voice_id: voice.voiceId,
+      // Sarvam wants the language on the voice too; ElevenLabs does not
+      // take one at all.
+      ...(voice.provider === "sarvam" ? { language: lang.tts } : {}),
+    },
   };
+
   tc.llm_agent.llm_config = {
     ...tc.llm_agent.llm_config,
     provider: brain.provider,
     model: brain.model,
     ...(brain.temperature !== undefined ? { temperature: brain.temperature } : {}),
   };
-  tc.transcriber = { ...tc.transcriber, language: lang.id, model: lang.model };
+
+  // HEARING follows the language automatically. The user picked a
+  // language, not a speech-to-text vendor, and Deepgram simply has no
+  // Kannada — which is why changing the voice alone never fixed it.
+  tc.transcriber = {
+    ...tc.transcriber,
+    provider: lang.asr.provider,
+    model: lang.asr.model,
+    language: lang.asr.language,
+  };
 
   const basePrompt =
     base.agent_prompts?.task_1?.system_prompt ||
@@ -343,7 +433,8 @@ async function optionsFor(userId) {
       id, label: c.label, hint: c.hint,
     })),
     voices: VOICES.map((v) => ({
-      id: v.id, label: v.label, gender: v.gender, accent: v.accent,
+      id: v.id, label: v.label, gender: v.gender, style: v.style,
+      indian: v.indian !== false,
     })),
     brains: Object.entries(BRAINS).map(([id, b]) => ({
       id, label: b.label, hint: b.hint,
