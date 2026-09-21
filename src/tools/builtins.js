@@ -100,6 +100,59 @@ async function reverseGeocode(lat, lng) {
   return null;
 }
 
+/**
+ * A SEARCH RESULT TITLE → THE NAME OF AN ACTUAL PLACE, OR NOTHING.
+ *
+ * "best restaurants near me" returns directory pages far more often than
+ * restaurants: measured on his own coordinates, the top three were "Best
+ * Restaurants in Mallikatte, Mangalore - magicpin | April, 2026",
+ * "Mallikatte Restaurants, Mangalore" and a Justdial roundup. Reading
+ * those out is worse than saying nothing — the user hears three
+ * confident recommendations, none of which is a restaurant.
+ *
+ * So a title is trimmed to the part before the site's own furniture
+ * ("… | Zomato", "… - Justdial") and before the address that usually
+ * follows a comma, and anything still shaped like a LISTING rather than
+ * a PLACE is dropped entirely. "Green Chilli, Mallikatte, Mangalore |
+ * Zomato" becomes "Green Chilli"; the magicpin roundup becomes nothing.
+ *
+ * @returns {string} the place name, or "" when the title is not one
+ */
+const LISTING_RX = new RegExp(
+  [
+    "^(the\\s+)?(best|top|good|cheap|famous|popular|\\d+)\\b",
+    "\\b(restaurants?|hotels?|cafes?|caf\u00e9s?|places|shops?|stores?|" +
+      "clinics?|hospitals?|doctors?|salons?|gyms?|bars?|pubs?)\\s+" +
+      "(in|near|around|at)\\b",
+    "^(list|guide|explore|discover|find|search)\\b",
+    "\\b(near me|nearby|open now|delivery|menu, reviews)\\b",
+    // "Mallikatte Restaurants" is a directory page for an area, not a
+    // restaurant — a real one is almost never named in the plural.
+    "\\b(restaurants|hotels|cafes|caf\u00e9s|places|shops|stores|clinics|" +
+      "hospitals|doctors|salons|gyms|bars|pubs|dentists|pharmacies|" +
+      "chemists|listings)\\s*$",
+  ].join("|"),
+  "i"
+);
+const SITE_ONLY_RX =
+  /^(justdial|zomato|swiggy|tripadvisor|magicpin|yelp|google maps|dineout|eazydiner|practo|facebook|instagram|youtube)$/i;
+
+function placeName(title) {
+  let t = String(title || "").trim();
+  if (!t) return "";
+  // The site's own furniture, always after a pipe or a spaced dash.
+  t = t.split(/\s+[|\u2013\u2014]\s+|\s+-\s+/)[0].trim();
+  // "Green Chilli, Mallikatte, Mangalore" — the address starts at the comma.
+  t = t.split(",")[0].trim();
+  t = t.replace(/\s*[\(\[].*$/, "").trim();
+  if (t.length < 3 || t.length > 40) return "";
+  if (SITE_ONLY_RX.test(t)) return "";
+  if (LISTING_RX.test(t)) return "";
+  // A name with no letters (a phone number, a date) is not a place.
+  if (!/[a-z\u0900-\u0DFF]/i.test(t)) return "";
+  return t;
+}
+
 const weather = require("../services/tools/weather");
 const news = require("../services/tools/news");
 const places = require("../services/tools/places");
@@ -7308,10 +7361,17 @@ function registerBuiltins() {
       try {
         const out = await search.run(area ? `${q} in ${area}` : `${q} near me`, { lat, lng });
         if (out && out.ok && Array.isArray(out.data)) {
-          found = out.data
-            .filter((r) => r && (r.title || r.snippet))
-            .slice(0, 6)
-            .map((r) => ({ name: r.title || "", detail: r.snippet || "", url: r.url || "" }));
+          const seen = new Set();
+          for (const r of out.data) {
+            if (!r || !r.title) continue;
+            const name = placeName(r.title);
+            if (!name) continue;
+            const key = name.toLowerCase();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            found.push({ name, detail: r.snippet || "", url: r.url || "" });
+            if (found.length >= 6) break;
+          }
         }
       } catch (e) {
         console.warn("find_places_nearby search failed:", e.message);
@@ -7329,14 +7389,17 @@ function registerBuiltins() {
         data: { query: q, area, places: found },
         ...(openMap ? { deviceAction: { type: "open_url", url } } : {}),
         speak: found.length
-          ? `Found these near ${area || "them"}: ` +
+          ? `Real places near ${area || "them"}: ` +
             found.slice(0, 3).map((p) => p.name).join("; ") +
             (openMap
-              ? ". Name the best two or three in one short sentence and say the map is open."
-              : ". Name the best two or three in one short sentence. NO map was opened — do not say one was.")
+              ? ". Name these in ONE short sentence and say the map is open. Use ONLY these names."
+              : ". Name these in ONE short sentence. Use ONLY these names. NO map was opened — do not say one was.")
           : openMap
-          ? `Nothing came back from the search, but Maps is opening at "${q}" near ${area || "them"}. Say that honestly — do not name any place you were not given.`
-          : "Nothing came back from the search. Say so plainly and offer to look again — never invent a place.",
+          ? `The search returned only directory pages, no place names${area ? ` in ${area}` : ""}. ` +
+            "Maps IS open at their search — say that in one sentence and ask " +
+            "them to look. NAME NOTHING: you were given no place names."
+          : "The search returned no place names. Say so plainly and offer to " +
+            "open the map — never invent a place.",
       };
     },
   });
