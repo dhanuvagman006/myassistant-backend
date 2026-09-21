@@ -4320,12 +4320,26 @@ function registerBuiltins() {
       const asked = String(args.app || "").trim();
       if (!asked) return { ok: false, error: "no app was named" };
 
-      // A KNOWN PROVIDER STILL GETS ITS DEEP LINK. Swiggy opened by
-      // intent:// lands on its own host with a browser fallback, which is
-      // better than a bare launcher intent — it works even when the app is
-      // not installed. Everything else goes to the phone, which is the
-      // only thing that knows what is actually on it.
-      const link = deeplinks.launch({ name: asked, platform: ctx.platform });
+      // "DOWNLOAD SWIGGY" MUST NEVER TAKE THE DEEP LINK.
+      //
+      // 2026-09-21, his report: asked to download Swiggy, the app opened
+      // the Swiggy WEBSITE. The model had done its part — the ledger
+      // shows open_named_app{app:"Swiggy", store_if_missing:true} — and
+      // this function threw the flag away, because a known provider was
+      // short-circuited to its intent:// deep link two lines before
+      // store_if_missing was ever read. The deep link's whole trick is a
+      // browser fallback, so an app they do not have resolves to its home
+      // page: precisely the wrong answer to "install this".
+      //
+      // Wanting to INSTALL an app is a question only the phone can
+      // answer — is it here? — so that request always goes to
+      // open_any_app, which looks, opens it if it is there, and goes to
+      // the Play Store if it is not. A plain "open X" keeps the deep
+      // link, which has always worked.
+      const wantsStore = args.store_if_missing === true;
+      const link = wantsStore
+        ? null
+        : deeplinks.launch({ name: asked, platform: ctx.platform });
       if (link) {
         return {
           ok: true,
@@ -4382,9 +4396,9 @@ function registerBuiltins() {
         deviceAction: {
           type: "open_any_app",
           name: asked,
-          store_if_missing: args.store_if_missing === true,
+          store_if_missing: wantsStore,
         },
-        speak: args.store_if_missing === true
+        speak: wantsStore
           ? `Let me open ${asked} — I'll get you the Play Store if it isn't installed.`
           : `Opening ${asked}.`,
       };
