@@ -159,8 +159,9 @@ const perUserLimit = rateLimit({
 const agentCall = require("./routes/agentCall");
 app.use("/agent-call/bolna", agentCall.bolnaWebhooks);
 app.use("/agent-call", appAuth, perUserLimit, agentCall.router);
-// Per-user calling agent settings (Hub → Your calling agent).
-app.use("/calling-agent", appAuth, perUserLimit, require("./routes/callingAgent"));
+// (Hub → Your calling agent was removed on 2026-09-21 at his direction.
+// Every call now uses the one agent defined in agents/callAgentConfig.js,
+// so a change to how it speaks reaches every user at once.)
 
 // INBOUND CALLING — Hari answers the user's own number: screens callers,
 // forwards the ones who matter, takes a message from the rest.

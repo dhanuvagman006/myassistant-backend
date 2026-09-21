@@ -15,6 +15,7 @@
 
 const crypto = require("crypto");
 const { generateReply } = require("../services/ai/router");
+const { DEFAULT_TONE } = require("./callAgentConfig");
 
 function cfg() {
   return {
@@ -165,12 +166,15 @@ function spokenName(name) {
 
 async function bolnaPlaceCall({ to, rec }) {
   const c = cfg();
-  // A user who customised their calling agent has their OWN Bolna agent;
-  // everyone else shares the deployment one. See agents/callingPersona.
-  let agentId = c.bolnaAgent;
-  try {
-    agentId = (await require("./callingPersona").agentIdFor(rec.userId)) || c.bolnaAgent;
-  } catch (_) {}
+  // ONE AGENT FOR EVERYBODY. Each user used to be able to build their own
+  // Bolna agent from a settings screen in the Hub; he had that screen
+  // removed on 2026-09-21, and a per-user agent nobody can see or edit is
+  // a copy of the configuration that silently stops receiving fixes —
+  // the polite, human-sounding prompt shipped the same day would have
+  // reached every user EXCEPT the ones who had once opened the screen.
+  // src/agents/callAgentConfig.js is the single definition; this is the
+  // single agent it is pushed to.
+  const agentId = c.bolnaAgent;
   const r = await fetch("https://api.bolna.ai/call", {
     method: "POST",
     headers: {
@@ -188,6 +192,13 @@ async function bolnaPlaceCall({ to, rec }) {
         contact_name: spokenName(rec.contactName),
         user_name: rec.userName || "the caller",
         mode: rec.selfCall ? "self" : rec.mode || "inform",
+        // THE PROMPT SAYS "HOW YOU SOUND: {{tone}}" AND NOTHING WAS
+        // FILLING IT IN. The tool collected a tone, the route passed it,
+        // start() dropped it on the floor and the agent was left reading
+        // its own placeholder — so every call, including the ones he
+        // said were not polite enough, went out with no manner
+        // specified at all. The default is the polite one.
+        tone: rec.tone || DEFAULT_TONE,
       },
     }),
   });
@@ -406,6 +417,7 @@ function handleNoAnswer(rec) {
       task: rec.task,
       lang: rec.lang,
       mode: rec.mode,
+      tone: rec.tone || "",
       selfCall: rec.selfCall,
       attempt: rec.attempt + 1,
       maxAttempts: rec.maxAttempts,
@@ -447,6 +459,9 @@ async function retryFromJob(payload = {}) {
       lang: payload.lang || "en",
       userName: payload.userName || null,
       mode: payload.mode || "inform",
+      // A retry must sound like the call it is retrying — a pod restart
+      // in between must not turn a firm reminder into a cheerful one.
+      tone: String(payload.tone || "").slice(0, 200),
       state: "no_answer",
       result: null,
       answer: null,
@@ -541,7 +556,7 @@ async function preview({ userName, contactName, task, lang }) {
  * Place an agent call. Returns { id } (202). Throws { code:"unavailable" }
  * when telephony isn't configured, or { code:"quota" } over the daily limit.
  */
-async function start({ userId, userName, toNumber, contactName, task, lang, selfCall, retryTimes, retryGapMinutes }) {
+async function start({ userId, userName, toNumber, contactName, task, lang, selfCall, retryTimes, retryGapMinutes, tone }) {
   if (!enabled()) throw { code: "unavailable" };
   const to = normalizeNumber(toNumber);
   if (!to) throw { code: "bad_number" };
@@ -557,6 +572,9 @@ async function start({ userId, userName, toNumber, contactName, task, lang, self
     lang: lang || "en",
     userName: userName || null,
     mode: detectMode(task),
+    // Only when the user asked for one ("be firm", "it's her birthday").
+    // Empty means the default manner, which is the polite one.
+    tone: String(tone || "").trim().slice(0, 200),
     state: "dialing",
     result: null,
     answer: null,

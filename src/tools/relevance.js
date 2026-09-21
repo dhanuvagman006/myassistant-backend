@@ -34,6 +34,9 @@ const CORE = new Set([
   "remember_fact", "recall_memory", "lookup_person", "update_my_profile",
   // The things asked for constantly, in any context
   "web_search", "get_weather", "daily_brief", "create_reminder",
+  // "what's near me" is asked constantly and has no near-synonym the
+  // scorer would catch from a two-word question.
+  "find_places_nearby", "get_current_location",
   "list_reminders", "schedule_task", "place_phone_call",
   "send_agent_message", "send_whatsapp_message",
   "search_documents", "create_document",

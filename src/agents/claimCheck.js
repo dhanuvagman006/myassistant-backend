@@ -61,6 +61,9 @@ const FAMILIES = [
     tools: [
       "open_app", "open_named_app", "open_webpage", "open_service_app",
       "open_video_mode", "phone_control", "start_navigation",
+      // Opens Google Maps at what it just found — "showing them on the
+      // map" is the same claim by the same words.
+      "find_places_nearby",
       "capture_document", "analyze_camera",
       // Farewells carry no "opening…" claim, but every device action must
       // live in SOME family or the membership test (rightly) fails.

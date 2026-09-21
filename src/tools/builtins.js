@@ -25,6 +25,81 @@ function parseUserTime(s, tzOffsetMin) {
   return hasOffset ? ms : ms - tz * 60_000;
 }
 
+/**
+ * COORDINATES → A PLACE NAME.
+ *
+ * Google's geocoder needs GOOGLE_PLACES_API_KEY, and the Places API on
+ * this project has been returning 403 since it was disabled — which is
+ * why the assistant was heard reading "12.876, 74.844" out loud to a
+ * user instead of saying "Kadri, Mangaluru". OpenStreetMap's reverse
+ * geocoder needs no key and is enough to name an area, so it backs
+ * Google up rather than letting a dead key strand the answer.
+ *
+ * Nominatim asks for a real User-Agent and no more than one call a
+ * second; both are honoured here, and either provider failing just
+ * returns null so the caller can say so honestly.
+ *
+ * @returns {Promise<{address:string, area:string, city:string}|null>}
+ */
+let lastNominatimAt = 0;
+async function reverseGeocode(lat, lng) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+  const key = process.env.GOOGLE_PLACES_API_KEY;
+  if (key) {
+    try {
+      const r = await fetch(
+        `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${key}`,
+        { signal: AbortSignal.timeout(6000) }
+      );
+      const j = await r.json();
+      const best = (j.results || [])[0];
+      if (best && best.formatted_address) {
+        const parts = best.address_components || [];
+        const pick = (type) =>
+          (parts.find((p) => (p.types || []).includes(type)) || {}).long_name;
+        return {
+          address: best.formatted_address,
+          area: pick("sublocality") || pick("locality") || "",
+          city: pick("locality") || pick("administrative_area_level_2") || "",
+        };
+      }
+      if (j.status && j.status !== "ZERO_RESULTS") {
+        console.warn("google reverse geocode:", j.status, j.error_message || "");
+      }
+    } catch (e) {
+      console.warn("google reverse geocode failed:", e.message);
+    }
+  }
+
+  try {
+    const wait = 1100 - (Date.now() - lastNominatimAt);
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    lastNominatimAt = Date.now();
+    const r = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=16&lat=${lat}&lon=${lng}`,
+      {
+        signal: AbortSignal.timeout(6000),
+        headers: {
+          "User-Agent": "HariAssistant/1.0 (+https://hariassistant.tech)",
+          "Accept-Language": "en",
+        },
+      }
+    );
+    if (!r.ok) throw new Error(`nominatim ${r.status}`);
+    const j = await r.json();
+    const a = j.address || {};
+    const city = a.city || a.town || a.village || a.county || a.state_district || "";
+    const area =
+      a.suburb || a.neighbourhood || a.city_district || a.village || a.town || city;
+    if (!j.display_name && !area) return null;
+    return { address: j.display_name || area, area, city };
+  } catch (e) {
+    console.warn("osm reverse geocode failed:", e.message);
+  }
+  return null;
+}
+
 const weather = require("../services/tools/weather");
 const news = require("../services/tools/news");
 const places = require("../services/tools/places");
@@ -3803,7 +3878,7 @@ function registerBuiltins() {
   registry.register({
     name: "open_app",
     description:
-      "NOT FOR A METRO OR ROUTE MAP: app=maps answers \"what is near me\", so a request for the Bangalore metro map, a rail or bus route diagram or a timetable must go to web_search + save_web_document instead — Maps cannot show a system map. Open an app on the user's phone, optionally straight at a PERSON'S " +
+      "Open an app on the user's phone, optionally straight at a PERSON'S " +
       "PROFILE or a search — 'open Instagram', 'open the Prime Minister's " +
       "Instagram', 'show me Virat Kohli on X', 'open WhatsApp'. This DOES " +
       "open the app on their phone; say you're opening it.\n" +
@@ -3817,6 +3892,11 @@ function registerBuiltins() {
       "('open @virat.kohli'). If the lookup cannot find them the tool falls " +
       "back to a search page, which is correct — showing a choice beats " +
       "confidently opening a stranger.\n" +
+      "MAPS: for 'what is near me' questions use find_places_nearby, which " +
+      "finds the actual places AND opens the map. app=maps here is for " +
+      "'open Maps' and for showing one named place. Never for a metro, " +
+      "rail or bus ROUTE map or a timetable — Maps cannot show a system " +
+      "map, so those go to web_search + save_web_document.\n" +
       "THE APP MUST BE ONE OF THE LISTED VALUES. For anything else the user " +
       "names — Swiggy, Zomato, Uber, Ola, BookMyShow, Blinkit — use " +
       "open_named_app instead. Never substitute a different app from this " +
@@ -7121,39 +7201,142 @@ function registerBuiltins() {
           },
         };
       }
-      const key = process.env.GOOGLE_PLACES_API_KEY;
-      if (key) {
-        try {
-          const r = await fetch(
-            `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${key}`,
-            { signal: AbortSignal.timeout(6000) }
-          );
-          const j = await r.json();
-          const best = (j.results || [])[0];
-          if (best && best.formatted_address) {
-            const parts = (best.address_components || []);
-            const pick = (type) =>
-              (parts.find((p) => (p.types || []).includes(type)) || {}).long_name;
-            const area = pick("sublocality") || pick("locality") || "";
-            const city = pick("locality") || pick("administrative_area_level_2") || "";
-            return {
-              ok: true,
-              data: { lat, lng, address: best.formatted_address, area, city },
-              speak: area && city && area !== city
-                ? `They are in ${area}, ${city}.`
-                : `They are at ${best.formatted_address}.`,
-            };
-          }
-        } catch (e) {
-          console.warn("reverse geocode failed:", e.message);
-        }
+      const place = await reverseGeocode(lat, lng);
+      if (place) {
+        return {
+          ok: true,
+          data: { lat, lng, address: place.address, area: place.area, city: place.city },
+          speak: place.area && place.city && place.area !== place.city
+            ? `They are in ${place.area}, ${place.city}.`
+            : `They are at ${place.address}.`,
+        };
       }
+      // NO COORDINATES OUT LOUD, AND NO OFFER TO OPEN MAPS.
+      //
+      // This used to say "give that as an approximate position and offer
+      // to open Maps" — so the assistant read "12.876, 74.844" to a user
+      // (observed 2026-09-21) and then offered a map, which is the exact
+      // sentence that later got claimed without any tool behind it.
+      // Somebody who asks where they are wants a place name; failing
+      // that they want an honest "I can't tell".
       return {
         ok: true,
         data: { lat, lng },
         speak:
-          `The phone reports ${lat.toFixed(3)}, ${lng.toFixed(3)} — give that as ` +
-          "an approximate position and offer to open Maps for the exact place.",
+          "The phone gave coordinates but no place name could be looked " +
+          "up. Say you can see roughly where they are but cannot name the " +
+          "area right now. NEVER read the numbers out.",
+      };
+    },
+  });
+
+  /**
+   * WHAT IS NEAR ME — the tool that did not exist.
+   *
+   * 2026-09-21, from his own conversation: "Which is the best restaurant
+   * near me?" The assistant called get_current_location, then said "Here
+   * are the top rated restaurants around you. Opening Maps so you can see
+   * them" — and neither half was true. There WERE no restaurants: no tool
+   * could find any, so the list came out of the model's head. And no map
+   * opened, because no tool was called to open one; the claim checker
+   * caught the lie three seconds later and apologised, which is how the
+   * screen ended up sitting there doing nothing.
+   *
+   * A capability the model narrates but cannot perform is worse than one
+   * it does not have — it produces confident, invented answers. So this
+   * does both halves for real: the names come from a live web search, and
+   * the map opens on the phone through the same device action every other
+   * "open" tool uses.
+   */
+  registry.register({
+    name: "find_places_nearby",
+    requiresPermission: "location",
+    description:
+      "REAL places near the user, and the map on their phone — 'which is " +
+      "the best restaurant near me', 'good restaurants nearby', 'where can " +
+      "I get a hair patch near me', 'is there a petrol pump around here', " +
+      "'ATM close by', 'best hospital near me', 'chemist nearby'. " +
+      "ALWAYS USE THIS INSTEAD OF ANSWERING FROM YOUR OWN KNOWLEDGE: you " +
+      "do not know what is around this person today, and a list of " +
+      "plausible-sounding names is an invented list. It searches for the " +
+      "actual places and opens Google Maps at them, so you may say you are " +
+      "showing them on the map — but only because THIS tool did it. " +
+      "Set open_map to false only when they said they just want to hear " +
+      "the names. For directions to one named place use start_navigation.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description:
+            "What they are looking for, in their own words — 'best " +
+            "restaurants', 'ENT doctor', 'petrol pump', 'saree shop'.",
+        },
+        open_map: {
+          type: "boolean",
+          description: "Also show them on Google Maps. Defaults to true.",
+        },
+      },
+      required: ["query"],
+    },
+    async execute(args, ctx = {}) {
+      const q = String(args.query || "").trim().slice(0, 120);
+      if (!q) return { ok: false, error: "no_query" };
+      const lat = Number(ctx.lat);
+      const lng = Number(ctx.lng);
+      const haveGeo = Number.isFinite(lat) && Number.isFinite(lng);
+      if (!haveGeo) {
+        return {
+          ok: false,
+          error: "no_location",
+          data: {
+            hint:
+              "The phone has not shared a location this session — usually " +
+              "the location permission is off. Say that plainly, ask which " +
+              "area they are in, and search for that instead. Do not open " +
+              "anything unasked and do not invent nearby places.",
+          },
+        };
+      }
+
+      const where = await reverseGeocode(lat, lng);
+      const area = where ? (where.area || where.city || "") : "";
+      const search = require("./webSearch");
+      let found = [];
+      try {
+        const out = await search.run(area ? `${q} in ${area}` : `${q} near me`, { lat, lng });
+        if (out && out.ok && Array.isArray(out.data)) {
+          found = out.data
+            .filter((r) => r && (r.title || r.snippet))
+            .slice(0, 6)
+            .map((r) => ({ name: r.title || "", detail: r.snippet || "", url: r.url || "" }));
+        }
+      } catch (e) {
+        console.warn("find_places_nearby search failed:", e.message);
+      }
+
+      const openMap = args.open_map !== false;
+      // geo: centres the phone's own Maps app on where they actually are
+      // and runs the search there. A maps.google.com link would open a
+      // browser tab for anyone without the app, which is the honest
+      // fallback when we have no coordinates — but here we do.
+      const url = `geo:${lat},${lng}?q=${encodeURIComponent(q)}`;
+
+      return {
+        ok: true,
+        data: { query: q, area, places: found },
+        ...(openMap ? { deviceAction: { type: "open_url", url } } : {}),
+        speak: found.length
+          ? `Found these near ${area || "them"}: ` +
+            found.slice(0, 3).map((p) => p.name).join("; ") +
+            (openMap
+              ? ". Name the best two or three in one short sentence and say the map is open."
+              : ". Name the best two or three in one short sentence. NO map was opened — do not say one was.")
+          : openMap
+          ? `Nothing came back from the search, but Maps is opening at "${q}" near ${area || "them"}. Say that honestly — do not name any place you were not given.`
+          : "Nothing came back from the search. Say so plainly and offer to look again — never invent a place.",
       };
     },
   });
