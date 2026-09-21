@@ -151,9 +151,16 @@ const NOT_A_PLACE_WORD_RX =
 function placeName(title, url) {
   let t = String(title || "").trim();
   if (!t) return "";
+  let brand = "";
   if (url) {
     try {
-      if (NOT_A_PLACE_HOST_RX.test(new URL(url).hostname)) return "";
+      const host = new URL(url).hostname;
+      if (NOT_A_PLACE_HOST_RX.test(host)) return "";
+      // The site's OWN name, whatever it is: naukri.com titled a result
+      // "Naukri" and mappls.com titled one "Mappls", and both came back
+      // as chemists near him. A hand-kept list of sites will always be
+      // one site behind, so the brand is taken from the domain itself.
+      brand = host.replace(/^www\./i, "").split(".")[0].replace(/[^a-z0-9]/gi, "").toLowerCase();
     } catch (_) {/* an unparseable url is judged on its title alone */}
   }
   // The site's own furniture, always after a pipe or a spaced dash.
@@ -163,6 +170,8 @@ function placeName(title, url) {
   t = t.replace(/\s*[\(\[].*$/, "").trim();
   if (t.length < 3 || t.length > 40) return "";
   if (SITE_ONLY_RX.test(t)) return "";
+  if (brand && brand.length > 2 &&
+      t.replace(/[^a-z0-9]/gi, "").toLowerCase() === brand) return "";
   if (LISTING_RX.test(t)) return "";
   if (NOT_A_PLACE_WORD_RX.test(t)) return "";
   // A name with no letters (a phone number, a date) is not a place.
