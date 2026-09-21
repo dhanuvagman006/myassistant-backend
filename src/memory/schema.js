@@ -217,6 +217,46 @@ async function migrate(exec) {
     );
     CREATE INDEX IF NOT EXISTS idx_chat_group_messages_group
       ON chat_group_messages(group_id, id);
+
+    -- ──────────────────────────────────────────────────────────────
+    --  THE THINGS EVERY MESSENGER HAS, 2026-09-22.
+    --
+    --  His ask: "in the chat option need more options like deleting
+    --  chat, msg and much more useful."
+    --
+    --  TWO TABLES, NOT SIX. Mute, clear-this-chat and hide-this-message
+    --  are the same shape for a group and for a direct thread, so they
+    --  share one row format keyed by (kind, ref) instead of growing a
+    --  column on every message table and a table per feature.
+    -- ──────────────────────────────────────────────────────────────
+
+    -- Per-person settings for one conversation. "ref" is the group id as
+    -- text, or the other person's phone number for a direct thread.
+    CREATE TABLE IF NOT EXISTS chat_prefs (
+      user_id        INTEGER NOT NULL,
+      kind           TEXT    NOT NULL,          -- 'group' | 'direct'
+      ref            TEXT    NOT NULL,
+      muted          INTEGER NOT NULL DEFAULT 0,
+      -- "Clear chat" hides everything up to here FOR THIS PERSON ONLY.
+      -- Deleting your own copy must never delete anybody else's.
+      cleared_before BIGINT  NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_id, kind, ref)
+    );
+
+    -- One message, hidden for one person ("delete for me").
+    CREATE TABLE IF NOT EXISTS chat_hidden_messages (
+      user_id    INTEGER NOT NULL,
+      kind       TEXT    NOT NULL,              -- 'group' | 'direct'
+      message_id BIGINT  NOT NULL,
+      PRIMARY KEY (user_id, kind, message_id)
+    );
+
+    -- "Delete for everyone" — a tombstone, not a DELETE. The row has to
+    -- survive so the other side's client can replace what it already
+    -- showed with "This message was deleted"; removing it outright just
+    -- leaves the old text on their screen forever.
+    ALTER TABLE chat_group_messages ADD COLUMN IF NOT EXISTS deleted INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE agent_messages      ADD COLUMN IF NOT EXISTS deleted INTEGER NOT NULL DEFAULT 0;
   `);
 }
 

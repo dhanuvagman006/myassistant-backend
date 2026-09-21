@@ -63,7 +63,10 @@ async function onGroupMessage({ groupId, messageId, fromUserId, text }) {
   const [group, members] = await Promise.all([
     db.one(`SELECT title FROM chat_groups WHERE id=$1`, [groupId]).catch(() => null),
     db.query(
-      `SELECT x.user_id, x.agent_replies, u.name, u.fcm_token
+      `SELECT x.user_id, x.agent_replies, u.name, u.fcm_token,
+              COALESCE((SELECT muted FROM chat_prefs p
+                         WHERE p.user_id = x.user_id AND p.kind='group'
+                           AND p.ref = x.group_id::text), 0) AS muted
          FROM chat_group_members x
          JOIN users u ON u.id = x.user_id
         WHERE x.group_id=$1 AND x.user_id <> $2`,
@@ -77,7 +80,10 @@ async function onGroupMessage({ groupId, messageId, fromUserId, text }) {
   const title = group?.title || "Group";
 
   for (const m of members) {
-    if (m.fcm_token) {
+    // MUTED MEANS MUTED. A mute that still buzzes is worse than no mute
+    // at all — the assistant may still answer for them, it just does not
+    // make their phone light up about the group they asked to quieten.
+    if (m.fcm_token && Number(m.muted) !== 1) {
       push
         .sendNotification(m.fcm_token, title, `${senderName}: ${String(text).slice(0, 140)}`, {
           kind: "group_message",
@@ -333,7 +339,10 @@ async function notifyOthers(groupId, fromUserId, text) {
     db.one(`SELECT title FROM chat_groups WHERE id=$1`, [groupId]).catch(() => null),
     db.query(
       `SELECT u.fcm_token FROM chat_group_members x JOIN users u ON u.id = x.user_id
-        WHERE x.group_id=$1 AND x.user_id <> $2 AND u.fcm_token IS NOT NULL`,
+        WHERE x.group_id=$1 AND x.user_id <> $2 AND u.fcm_token IS NOT NULL
+          AND COALESCE((SELECT muted FROM chat_prefs p
+                         WHERE p.user_id = x.user_id AND p.kind='group'
+                           AND p.ref = x.group_id::text), 0) <> 1`,
       [groupId, fromUserId]
     ).catch(() => []),
     db.one(`SELECT name FROM users WHERE id=$1`, [fromUserId]).catch(() => null),

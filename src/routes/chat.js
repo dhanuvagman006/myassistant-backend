@@ -95,7 +95,7 @@ router.get("/thread/:phone", async (req, res) => {
 
   const [out, inc] = await Promise.all([
     query(
-      `SELECT id, message, created_at, status, auto, document_id, from_document_id
+      `SELECT id, message, created_at, status, auto, deleted, document_id, from_document_id
          FROM agent_messages
         WHERE from_user_id = $1 AND to_phone_number = $2
         ORDER BY id ASC LIMIT 500`,
@@ -103,7 +103,7 @@ router.get("/thread/:phone", async (req, res) => {
     ),
     mine
       ? query(
-          `SELECT m.id, m.message, m.created_at, m.status, m.auto,
+          `SELECT m.id, m.message, m.created_at, m.status, m.auto, m.deleted,
                   m.document_id, m.from_document_id
              FROM agent_messages m
              JOIN users u ON u.id = m.from_user_id
@@ -124,20 +124,40 @@ router.get("/thread/:phone", async (req, res) => {
     ).catch(() => {});
   }
 
+  // WHAT THIS PERSON HAS CLEARED OR HIDDEN. Their own copy of a
+  // conversation is theirs to prune; nobody else's view changes.
+  const [pref, hidden] = await Promise.all([
+    one(
+      `SELECT cleared_before FROM chat_prefs
+        WHERE user_id=$1 AND kind='direct' AND ref=$2`,
+      [uid, them]
+    ).catch(() => null),
+    query(
+      `SELECT message_id FROM chat_hidden_messages WHERE user_id=$1 AND kind='direct'`,
+      [uid]
+    ).catch(() => []),
+  ]);
+  const clearedBefore = Number(pref?.cleared_before || 0);
+  const hiddenIds = new Set(hidden.map((h) => Number(h.message_id)));
+  const visible = (m) =>
+    Number(m.id) > clearedBefore && !hiddenIds.has(Number(m.id));
+
   const items = [
-    ...out.map((m) => ({
+    ...out.filter(visible).map((m) => ({
       id: Number(m.id),
       mine: true,
-      text: m.message,
+      deleted: Number(m.deleted) === 1,
+      text: Number(m.deleted) === 1 ? "" : m.message,
       at: Number(m.created_at),
       auto: m.auto === 1,
       // Each side references the copy it OWNS (auth on /docs/:id/file).
       documentId: m.from_document_id ? Number(m.from_document_id) : null,
     })),
-    ...inc.map((m) => ({
+    ...inc.filter(visible).map((m) => ({
       id: Number(m.id),
       mine: false,
-      text: m.message,
+      deleted: Number(m.deleted) === 1,
+      text: Number(m.deleted) === 1 ? "" : m.message,
       at: Number(m.created_at),
       auto: m.auto === 1,
       documentId: m.document_id ? Number(m.document_id) : null,
@@ -146,6 +166,93 @@ router.get("/thread/:phone", async (req, res) => {
 
   res.json({ items });
 });
+
+/* ------------------------------------------------------------------ */
+/* MANAGING A DIRECT THREAD                                            */
+/* ------------------------------------------------------------------ */
+
+/** Clear my copy of a conversation. Theirs is untouched. */
+router.post("/thread/:phone/clear", async (req, res) => {
+  const uid = uidOf(req);
+  if (!uid) return res.status(401).json({ error: "sign in" });
+  const them = normalizePhone(req.params.phone) || req.params.phone;
+  const mine = await myPhone(uid);
+  const last = await one(
+    `SELECT COALESCE(MAX(id),0) AS id FROM agent_messages
+      WHERE (from_user_id=$1 AND to_phone_number=$2)
+         OR (to_phone_number=$3 AND from_user_id IN
+              (SELECT id FROM users WHERE phone_number=$2))`,
+    [uid, them, mine || ""]
+  ).catch(() => ({ id: 0 }));
+  await setPref(uid, them, { cleared_before: Number(last.id) });
+  res.json({ cleared: true });
+});
+
+router.post("/thread/:phone/mute", async (req, res) => {
+  const uid = uidOf(req);
+  if (!uid) return res.status(401).json({ error: "sign in" });
+  const them = normalizePhone(req.params.phone) || req.params.phone;
+  const muted = req.body?.muted === true;
+  await setPref(uid, them, { muted: muted ? 1 : 0 });
+  res.json({ muted });
+});
+
+/**
+ * Delete one message. ?everyone=1 unsends your own — a tombstone, not a
+ * row removal, because the other side has already seen it and their
+ * client needs something to replace it with.
+ */
+router.delete("/message/:id", async (req, res) => {
+  const uid = uidOf(req);
+  if (!uid) return res.status(401).json({ error: "sign in" });
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "bad id" });
+  const mine = await myPhone(uid);
+  const msg = await one(
+    `SELECT from_user_id, to_phone_number FROM agent_messages WHERE id=$1`, [id]
+  ).catch(() => null);
+  if (!msg) return res.status(404).json({ error: "no such message" });
+  // It has to be a message I can see at all — mine, or addressed to me.
+  const involved =
+    Number(msg.from_user_id) === uid ||
+    (mine && String(msg.to_phone_number) === String(mine));
+  if (!involved) return res.status(403).json({ error: "not your message" });
+
+  if (String(req.query.everyone || "") === "1") {
+    if (Number(msg.from_user_id) !== uid) {
+      return res.status(403).json({ error: "you can only unsend your own messages" });
+    }
+    await run(`UPDATE agent_messages SET deleted=1, message='' WHERE id=$1`, [id])
+      .catch(() => {});
+    return res.json({ deleted: "everyone" });
+  }
+  await run(
+    `INSERT INTO chat_hidden_messages (user_id, kind, message_id)
+     VALUES ($1,'direct',$2) ON CONFLICT DO NOTHING`,
+    [uid, id]
+  ).catch(() => {});
+  res.json({ deleted: "me" });
+});
+
+/**
+ * Shared upsert for a direct thread's per-person settings.
+ *
+ * The placeholders start at $3 because 'direct' is written as a literal
+ * rather than a parameter. The first cut numbered them from $4 (copied
+ * from the group version, where kind IS a parameter) and then filtered a
+ * placeholder out of the array to compensate — which silently wrote the
+ * wrong column. Values are never juggled to fit a query string.
+ */
+async function setPref(userId, phone, patch) {
+  const cols = Object.keys(patch);
+  const sets = cols.map((c, i) => `${c}=$${i + 3}`).join(", ");
+  await run(
+    `INSERT INTO chat_prefs (user_id, kind, ref, ${cols.join(", ")})
+     VALUES ($1,'direct',$2,${cols.map((_, i) => `$${i + 3}`).join(",")})
+     ON CONFLICT (user_id, kind, ref) DO UPDATE SET ${sets}`,
+    [userId, phone, ...cols.map((c) => patch[c])]
+  ).catch((e) => console.error("chat pref:", e.message));
+}
 
 router.post("/send", async (req, res) => {
   const uid = uidOf(req);

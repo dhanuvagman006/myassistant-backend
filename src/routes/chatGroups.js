@@ -8,6 +8,12 @@
  *   GET  /chat/groups/:id       the messages, and marks them read
  *   POST /chat/groups/:id/send  {text}
  *   POST /chat/groups/:id/agent {enabled} → may my assistant answer here
+ *   PATCH  /chat/groups/:id            rename
+ *   POST   /chat/groups/:id/members    {members:[userId]} add people
+ *   POST   /chat/groups/:id/leave      leave the group
+ *   POST   /chat/groups/:id/clear      clear MY copy of the history
+ *   POST   /chat/groups/:id/mute       {muted}
+ *   DELETE /chat/groups/:id/messages/:mid?everyone=1
  *
  * His ask, 2026-09-22: a new-chat button for people already using the
  * app, an invite section for those who are not, groups built from the
@@ -170,7 +176,10 @@ router.get("/groups", async (req, res) => {
               (SELECT COUNT(*)::int FROM chat_group_messages m
                 WHERE m.group_id = g.id AND m.id > me.last_read_id
                   AND m.from_user_id <> $1) AS unread,
-              me.agent_replies
+              me.agent_replies,
+              COALESCE((SELECT muted FROM chat_prefs p
+                         WHERE p.user_id=$1 AND p.kind='group'
+                           AND p.ref=g.id::text), 0) AS muted
          FROM chat_groups g
          JOIN chat_group_members me ON me.group_id = g.id AND me.user_id = $1
         ORDER BY COALESCE(
@@ -188,6 +197,7 @@ router.get("/groups", async (req, res) => {
         lastAt: Number(r.last_at || r.created_at),
         unread: r.unread || 0,
         agentReplies: Number(r.agent_replies) === 1,
+        muted: Number(r.muted) === 1,
       })),
     });
   } catch (e) {
@@ -208,12 +218,19 @@ router.get("/groups/:id", async (req, res) => {
     const [group, rows, people] = await Promise.all([
       one(`SELECT id, title FROM chat_groups WHERE id=$1`, [gid]),
       query(
-        `SELECT m.id, m.from_user_id, m.body, m.via, m.created_at, u.name
+        `SELECT m.id, m.from_user_id, m.body, m.via, m.deleted, m.created_at, u.name
            FROM chat_group_messages m
            LEFT JOIN users u ON u.id = m.from_user_id
           WHERE m.group_id = $1
+            -- everything the reader has cleared or hidden for themselves
+            AND m.id > COALESCE(
+              (SELECT cleared_before FROM chat_prefs
+                WHERE user_id=$2 AND kind='group' AND ref=$1::text), 0)
+            AND NOT EXISTS (
+              SELECT 1 FROM chat_hidden_messages h
+               WHERE h.user_id=$2 AND h.kind='group' AND h.message_id=m.id)
           ORDER BY m.id DESC LIMIT 300`,
-        [gid]
+        [gid, uid]
       ),
       query(
         `SELECT u.id, u.name FROM chat_group_members x
@@ -242,7 +259,8 @@ router.get("/groups/:id", async (req, res) => {
           id: Number(r.id),
           from: Number(r.from_user_id),
           name: r.name || "",
-          text: r.body,
+          text: Number(r.deleted) === 1 ? "" : r.body,
+          deleted: Number(r.deleted) === 1,
           mine: Number(r.from_user_id) === uid,
           at: Number(r.created_at),
         }))
@@ -296,6 +314,160 @@ router.post("/groups/:id/agent", async (req, res) => {
   res.json({ enabled: on });
 });
 
+/* ------------------------------------------------------------------ */
+/* MANAGING A CONVERSATION                                             */
+/* ------------------------------------------------------------------ */
+
+/** Rename — anyone in the group; it is a shared room, not a possession. */
+router.patch("/groups/:id", async (req, res) => {
+  const uid = me(req, res);
+  if (uid === null) return;
+  const gid = Number(req.params.id);
+  const title = String(req.body?.title || "").trim().slice(0, 80);
+  if (!title) return res.status(400).json({ error: "a name is required" });
+  if (!(await membership(gid, uid))) {
+    return res.status(404).json({ error: "not in that group" });
+  }
+  await run(`UPDATE chat_groups SET title=$2 WHERE id=$1`, [gid, title]).catch(() => {});
+  res.json({ title });
+});
+
+/** Add people — again only from the caller's own address book. */
+router.post("/groups/:id/members", async (req, res) => {
+  const uid = me(req, res);
+  if (uid === null) return;
+  const gid = Number(req.params.id);
+  if (!(await membership(gid, uid))) {
+    return res.status(404).json({ error: "not in that group" });
+  }
+  const ids = [...new Set((req.body?.members || []).map(Number))]
+    .filter((n) => Number.isInteger(n) && n > 0)
+    .slice(0, 100);
+  if (!ids.length) return res.json({ added: 0 });
+  const ok = await query(
+    `SELECT DISTINCT u.id FROM users u
+       JOIN contacts c ON c.phone = u.phone_number AND c.user_id = $1
+      WHERE u.id = ANY($2::int[])`,
+    [uid, ids]
+  ).catch(() => []);
+  let added = 0;
+  for (const r of ok) {
+    const n = await run(
+      `INSERT INTO chat_group_members (group_id, user_id, joined_at)
+       VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+      [gid, Number(r.id), Date.now()]
+    ).catch(() => 0);
+    if (n) added++;
+  }
+  res.json({ added });
+});
+
+/**
+ * Leave.
+ *
+ * The messages they already sent stay: a group where half the history
+ * vanishes when someone walks out is unreadable for everyone left in it.
+ * What goes is their membership, and with it their assistant's licence
+ * to speak there.
+ */
+router.post("/groups/:id/leave", async (req, res) => {
+  const uid = me(req, res);
+  if (uid === null) return;
+  const gid = Number(req.params.id);
+  await run(`DELETE FROM chat_group_members WHERE group_id=$1 AND user_id=$2`, [gid, uid])
+    .catch(() => {});
+  // Nobody left — nothing to keep.
+  const left = await one(
+    `SELECT COUNT(*)::int AS n FROM chat_group_members WHERE group_id=$1`, [gid]
+  ).catch(() => ({ n: 1 }));
+  if (Number(left.n) === 0) {
+    await run(`DELETE FROM chat_group_messages WHERE group_id=$1`, [gid]).catch(() => {});
+    await run(`DELETE FROM chat_groups WHERE id=$1`, [gid]).catch(() => {});
+  }
+  res.json({ left: true });
+});
+
+/** Clear MY copy. Everyone else's history is untouched. */
+router.post("/groups/:id/clear", async (req, res) => {
+  const uid = me(req, res);
+  if (uid === null) return;
+  const gid = Number(req.params.id);
+  if (!(await membership(gid, uid))) {
+    return res.status(404).json({ error: "not in that group" });
+  }
+  const last = await one(
+    `SELECT COALESCE(MAX(id),0) AS id FROM chat_group_messages WHERE group_id=$1`, [gid]
+  ).catch(() => ({ id: 0 }));
+  await upsertPref(uid, "group", String(gid), { cleared_before: Number(last.id) });
+  res.json({ cleared: true });
+});
+
+router.post("/groups/:id/mute", async (req, res) => {
+  const uid = me(req, res);
+  if (uid === null) return;
+  const gid = Number(req.params.id);
+  if (!(await membership(gid, uid))) {
+    return res.status(404).json({ error: "not in that group" });
+  }
+  const muted = req.body?.muted === true;
+  await upsertPref(uid, "group", String(gid), { muted: muted ? 1 : 0 });
+  res.json({ muted });
+});
+
+/**
+ * Delete one message.
+ *
+ * ?everyone=1 is only yours to use on your OWN message, and it leaves a
+ * tombstone rather than removing the row — the other side has already
+ * seen it, and their client needs something to replace it with.
+ * Otherwise it is hidden for you alone.
+ */
+router.delete("/groups/:id/messages/:mid", async (req, res) => {
+  const uid = me(req, res);
+  if (uid === null) return;
+  const gid = Number(req.params.id);
+  const mid = Number(req.params.mid);
+  if (!Number.isInteger(gid) || !Number.isInteger(mid)) {
+    return res.status(400).json({ error: "bad request" });
+  }
+  if (!(await membership(gid, uid))) {
+    return res.status(404).json({ error: "not in that group" });
+  }
+  const msg = await one(
+    `SELECT from_user_id FROM chat_group_messages WHERE id=$1 AND group_id=$2`,
+    [mid, gid]
+  ).catch(() => null);
+  if (!msg) return res.status(404).json({ error: "no such message" });
+
+  const everyone = String(req.query.everyone || "") === "1";
+  if (everyone) {
+    if (Number(msg.from_user_id) !== uid) {
+      return res.status(403).json({ error: "you can only unsend your own messages" });
+    }
+    await run(`UPDATE chat_group_messages SET deleted=1, body='' WHERE id=$1`, [mid])
+      .catch(() => {});
+    return res.json({ deleted: "everyone" });
+  }
+  await run(
+    `INSERT INTO chat_hidden_messages (user_id, kind, message_id)
+     VALUES ($1,'group',$2) ON CONFLICT DO NOTHING`,
+    [uid, mid]
+  ).catch(() => {});
+  res.json({ deleted: "me" });
+});
+
+/** One upsert for every per-conversation setting. */
+async function upsertPref(userId, kind, ref, patch) {
+  const cols = Object.keys(patch);
+  const sets = cols.map((c, i) => `${c}=$${i + 4}`).join(", ");
+  await run(
+    `INSERT INTO chat_prefs (user_id, kind, ref, ${cols.join(", ")})
+     VALUES ($1,$2,$3,${cols.map((_, i) => `$${i + 4}`).join(",")})
+     ON CONFLICT (user_id, kind, ref) DO UPDATE SET ${sets}`,
+    [userId, kind, ref, ...cols.map((c) => patch[c])]
+  ).catch((e) => console.error("chat pref:", e.message));
+}
+
 /** The one place a group message is written, whoever is speaking. */
 async function insertMessage(groupId, fromUserId, body, via) {
   return one(
@@ -307,3 +479,4 @@ async function insertMessage(groupId, fromUserId, body, via) {
 
 module.exports = router;
 module.exports.insertMessage = insertMessage;
+module.exports.upsertPref = upsertPref;
