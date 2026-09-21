@@ -213,9 +213,25 @@ async function replyFromJob(payload = {}) {
   // RULE 4: never answer another assistant.
   if (String(msg.via) === "agent") return;
 
+  // WHO IS WHO, UNAMBIGUOUSLY.
+  //
+  // The first cut wrote every line as "<first name>: body", and in a
+  // group with two Rahuls — or, in the test that caught it, two people
+  // whose names both shortened to "Test" — the model read the incoming
+  // message as having come from its own user and declined: "the last
+  // message is from test themselves, so no reply is needed". Two people
+  // sharing a first name is not an edge case in India, it is Tuesday.
+  //
+  // So the user's own lines are marked as theirs and everyone else is
+  // named, and the message under consideration is called out by id.
   const history = recent
     .reverse()
-    .map((r) => `${String(r.name || "someone").split(" ")[0]}: ${r.body}`)
+    .map((r) => {
+      const who = Number(r.from_user_id) === Number(forUserId)
+        ? `${facts.name || "you"} (this is YOU)`
+        : String(r.name || "someone").split(" ")[0];
+      return `${who}: ${r.body}`;
+    })
     .join("\n");
 
   const system =
@@ -249,10 +265,13 @@ async function replyFromJob(payload = {}) {
     `Reply with STRICT JSON only: ` +
     `{"answer":true|false,"text":"…","why":"a few words for their own log"}`;
 
+  const senderName = String(msg.name || "someone").split(" ")[0];
   const user =
-    `The group so far:\n${history}\n\n` +
-    `The message to consider is the last one, from ` +
-    `${String(msg.name || "someone").split(" ")[0]}.`;
+    `The group so far (your own lines are marked):\n${history}\n\n` +
+    `The message to consider is the LAST one. It was sent by ` +
+    `${senderName}, who is NOT you — you are writing as ` +
+    `${facts.name || "the user"}. Decide whether to answer it on their ` +
+    `behalf.`;
 
   let decision = null;
   try {
