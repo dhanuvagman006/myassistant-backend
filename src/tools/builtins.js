@@ -137,9 +137,25 @@ const LISTING_RX = new RegExp(
 const SITE_ONLY_RX =
   /^(justdial|zomato|swiggy|tripadvisor|magicpin|yelp|google maps|dineout|eazydiner|practo|facebook|instagram|youtube)$/i;
 
-function placeName(title) {
+/**
+ * Pages that are never a place, however place-like the title reads.
+ * "petrol pump" near Mangalore returned "image 117 of 215 photos on
+ * Flickr" as its best result — a photograph of one, which the model
+ * would have recommended as somewhere to buy fuel.
+ */
+const NOT_A_PLACE_HOST_RX =
+  /(^|\.)(flickr|pinterest|wikipedia|wikimedia|youtube|youtu|facebook|instagram|twitter|x|reddit|quora|linkedin|amazon|flipkart|alamy|shutterstock|istockphoto|gettyimages|dreamstime|123rf|indiamart|olx|tumblr|medium)\./i;
+const NOT_A_PLACE_WORD_RX =
+  /\b(photos?|image|images|stock|wallpapers?|wikipedia|videos?|meaning|definition|download|pdf)\b/i;
+
+function placeName(title, url) {
   let t = String(title || "").trim();
   if (!t) return "";
+  if (url) {
+    try {
+      if (NOT_A_PLACE_HOST_RX.test(new URL(url).hostname)) return "";
+    } catch (_) {/* an unparseable url is judged on its title alone */}
+  }
   // The site's own furniture, always after a pipe or a spaced dash.
   t = t.split(/\s+[|\u2013\u2014]\s+|\s+-\s+/)[0].trim();
   // "Green Chilli, Mallikatte, Mangalore" — the address starts at the comma.
@@ -148,6 +164,7 @@ function placeName(title) {
   if (t.length < 3 || t.length > 40) return "";
   if (SITE_ONLY_RX.test(t)) return "";
   if (LISTING_RX.test(t)) return "";
+  if (NOT_A_PLACE_WORD_RX.test(t)) return "";
   // A name with no letters (a phone number, a date) is not a place.
   if (!/[a-z\u0900-\u0DFF]/i.test(t)) return "";
   return t;
@@ -7364,7 +7381,7 @@ function registerBuiltins() {
           const seen = new Set();
           for (const r of out.data) {
             if (!r || !r.title) continue;
-            const name = placeName(r.title);
+            const name = placeName(r.title, r.url);
             if (!name) continue;
             const key = name.toLowerCase();
             if (seen.has(key)) continue;
