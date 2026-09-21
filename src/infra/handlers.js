@@ -627,6 +627,10 @@ async function reminderCall(payload, job) {
 function install() {
   jobs.register("document.index", documentIndex);
   jobs.register("reminder_call", reminderCall);
+  // An assistant answering in a group for a member who is away — runs a
+  // few minutes after the message so the person gets first refusal.
+  jobs.register("group_agent_reply", (payload) =>
+    require("../agents/groupAgent").replyFromJob(payload));
   jobs.register("scheduled_task", scheduledTask);
   jobs.register("deep_research", deepResearch);
   jobs.register("generate_video", videoJob);

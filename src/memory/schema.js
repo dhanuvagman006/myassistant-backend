@@ -164,6 +164,59 @@ async function migrate(exec) {
     -- triggers so two assistants can never chat in a loop, and phrased
     -- differently when spoken ("their assistant replied" vs "X said").
     ALTER TABLE agent_messages ADD COLUMN IF NOT EXISTS auto INTEGER NOT NULL DEFAULT 0;
+
+    -- ──────────────────────────────────────────────────────────────
+    --  GROUPS, 2026-09-22.
+    --
+    --  His ask: a chat section with a new-chat button for people who
+    --  already use the app, an invite section for people who do not, and
+    --  groups — "and here the twist is our agent has the access to the
+    --  group", answering for a member who is away, from what it actually
+    --  knows about them.
+    --
+    --  DELIBERATELY BESIDE agent_messages, NOT INSTEAD OF IT. Direct
+    --  chat is phone-addressed and works; groups are membership-based and
+    --  need a different shape. Folding one into the other would have
+    --  meant rewriting the path every existing user's messages go
+    --  through, a week before release, for no gain.
+    -- ──────────────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS chat_groups (
+      id         BIGSERIAL PRIMARY KEY,
+      title      TEXT NOT NULL,
+      created_by INTEGER NOT NULL,
+      created_at BIGINT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_group_members (
+      group_id   BIGINT  NOT NULL,
+      user_id    INTEGER NOT NULL,
+      joined_at  BIGINT  NOT NULL,
+      -- The id of the last message this member has actually seen. Unread
+      -- counts, and — more importantly — the agent's decision about
+      -- whether anyone is going to answer, both read from this.
+      last_read_id BIGINT NOT NULL DEFAULT 0,
+      -- Their own switch: may my assistant answer for me in this group?
+      -- OFF by default. Something that speaks as you is opted into, never
+      -- assumed, however much the feature is the point.
+      agent_replies INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (group_id, user_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_group_members_user
+      ON chat_group_members(user_id);
+
+    CREATE TABLE IF NOT EXISTS chat_group_messages (
+      id           BIGSERIAL PRIMARY KEY,
+      group_id     BIGINT  NOT NULL,
+      from_user_id INTEGER NOT NULL,
+      body         TEXT    NOT NULL,
+      -- 'user' or 'agent'. The RECORD is always honest about which, even
+      -- where the UI does not label it — an audit trail you cannot
+      -- reconstruct later is not an audit trail.
+      via          TEXT    NOT NULL DEFAULT 'user',
+      created_at   BIGINT  NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_group_messages_group
+      ON chat_group_messages(group_id, id);
   `);
 }
 

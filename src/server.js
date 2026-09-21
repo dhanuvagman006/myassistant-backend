@@ -157,6 +157,11 @@ const perUserLimit = rateLimit({
 // back. The provider webhook is PUBLIC (Bolna can't send our app key):
 // gated by a key-derived URL secret, mounted before appAuth.
 const agentCall = require("./routes/agentCall");
+// GROUPS — mounted BEFORE the direct-chat router so /chat/groups and
+// /chat/directory are matched here rather than by its /chat/thread/:phone
+// pattern. Direct chat is untouched; this only adds paths beside it.
+app.use("/chat", appAuth, perUserLimit, require("./routes/chatGroups"));
+
 app.use("/agent-call/bolna", agentCall.bolnaWebhooks);
 app.use("/agent-call", appAuth, perUserLimit, agentCall.router);
 // (Hub → Your calling agent was removed on 2026-09-21 at his direction.
