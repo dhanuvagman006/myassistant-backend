@@ -164,6 +164,29 @@ function spokenName(name) {
   return "there";
 }
 
+/**
+ * SIR OR MA'AM.
+ *
+ * His instruction, 2026-09-21: "say hello Sir, don't say their name
+ * directly". Which honorific is not a guess we can dodge — "sir" to
+ * somebody's mother is worse than using her name — so it is read from
+ * the contact's own name through the table that already exists for
+ * assistant names (users/voiceGender), which knows Indian names and asks
+ * the model once for anything it does not.
+ *
+ * Unknown stays "sir", because that is the word he asked for and because
+ * a neutral greeting with no honorific at all sounds like a robocall.
+ */
+async function honorificFor(name) {
+  try {
+    const g = await require("../users/voiceGender").nameGender(name);
+    if (g === "female") return "ma'am";
+  } catch (_) {
+    // The model being unreachable must never stop a call going out.
+  }
+  return "sir";
+}
+
 async function bolnaPlaceCall({ to, rec }) {
   const c = cfg();
   // ONE AGENT FOR EVERYBODY. Each user used to be able to build their own
@@ -192,6 +215,15 @@ async function bolnaPlaceCall({ to, rec }) {
         contact_name: spokenName(rec.contactName),
         user_name: rec.userName || "the caller",
         mode: rec.selfCall ? "self" : rec.mode || "inform",
+        // How she addresses them, and what the welcome line says. A
+        // self-call is the user's own assistant talking to them, so
+        // their own name is warm rather than presumptuous — and an
+        // EMPTY honorific here would have opened every wake-up call
+        // with a literal "Hello, ?", because the welcome message is
+        // built from this same variable.
+        honorific: rec.selfCall
+          ? spokenName(rec.contactName)
+          : await honorificFor(rec.contactName),
         // THE PROMPT SAYS "HOW YOU SOUND: {{tone}}" AND NOTHING WAS
         // FILLING IT IN. The tool collected a tone, the route passed it,
         // start() dropped it on the floor and the agent was left reading

@@ -576,8 +576,57 @@ async function videoJob(payload = {}) {
   }
 }
 
+/**
+ * A REMINDER THAT RINGS THE PHONE.
+ *
+ * His instruction, 2026-09-21: "when user says remind me, by default it
+ * should be call and reminder, not just push notification."
+ *
+ * Deliberately NOT a scheduled_task. That runs a whole agent turn to
+ * decide what to do; there is nothing to decide here — the words are
+ * already written and the number is the user's own. This dials, speaks
+ * them, and stops, which is both cheaper and impossible to get wrong.
+ *
+ * The local notification the phone scheduled fires regardless, so a
+ * declined call is still a reminder seen.
+ */
+async function reminderCall(payload, job) {
+  const userId = job?.user_id || payload?.userId;
+  const text = String(payload?.text || "").trim();
+  if (!userId || !text) return;
+
+  // The user may have ticked it off, moved it or deleted it between the
+  // queueing and now — the row is the truth, not this job.
+  const row = await one(
+    "SELECT done, deliver, due_at FROM reminders WHERE user_id=$1 AND id=$2",
+    [userId, Number(payload.reminderId) || 0]
+  ).catch(() => null);
+  if (payload.reminderId && (!row || row.done || row.deliver !== "call")) return;
+
+  const agent = require("../agents/agentCall");
+  if (!agent.enabled()) return; // the push already went out
+
+  const me = await require("../db").findById(userId).catch(() => null);
+  const name = me?.name ? String(me.name).split(" ")[0] : "you";
+  try {
+    await agent.start({
+      userId,
+      userName: name,
+      toNumber: me?.phone_number,
+      contactName: name,
+      task: `Remind them: ${text}`,
+      selfCall: true,
+    });
+  } catch (e) {
+    // Quota, an unverified number, or the provider being down. The
+    // notification is the fallback and it has already been scheduled.
+    console.warn("reminder call not placed:", e?.message || e?.code || e);
+  }
+}
+
 function install() {
   jobs.register("document.index", documentIndex);
+  jobs.register("reminder_call", reminderCall);
   jobs.register("scheduled_task", scheduledTask);
   jobs.register("deep_research", deepResearch);
   jobs.register("generate_video", videoJob);

@@ -154,6 +154,15 @@ async function init() {
     -- 'alarm' when the user asked to be WOKEN — an app that blares at
     -- midnight uninvited gets uninstalled.
     ALTER TABLE reminders ADD COLUMN IF NOT EXISTS ring TEXT NOT NULL DEFAULT 'gentle';
+    -- HOW IT IS DELIVERED, which is a different question from how loud.
+    -- His instruction, 2026-09-21: "when user says remind me, by default
+    -- it should be a call and a reminder, not just a push notification".
+    -- 'call' places a real phone call at the due time AND leaves the
+    -- notification; 'notify' is the old behaviour and is what an undated
+    -- note or an explicitly quiet reminder gets. The queued call's job id
+    -- is kept so cancelling the reminder cancels the call with it.
+    ALTER TABLE reminders ADD COLUMN IF NOT EXISTS deliver TEXT NOT NULL DEFAULT 'notify';
+    ALTER TABLE reminders ADD COLUMN IF NOT EXISTS call_job_id INTEGER;
     -- REPEATS. "every morning at 7" used to produce one reminder that
     -- fired once and then sat in the list as done. '' means it happens
     -- once. anchor_day carries the day-of-month a monthly series belongs

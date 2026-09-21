@@ -1185,15 +1185,23 @@ function registerBuiltins() {
   registry.register({
     name: "create_reminder",
     description:
-      "Create a reminder or task for the user, optionally with a due time. " +
-      "This only NOTIFIES the user at that time — if they want the " +
-      "assistant to actually DO the thing then (place a call, order food, " +
-      "send a message), use schedule_task instead. " +
+      "Create a reminder for the user at a time. AT THAT TIME THE " +
+      "ASSISTANT PHONES THEM and says it, and the notification appears as " +
+      "well — a reminder is a call by default, because a notification is " +
+      "easy to miss and impossible to acknowledge. Say so when you " +
+      "confirm: 'I'll call you at four and remind you.'\n" +
+      "THEY SAID 'ALARM' → USE set_alarm, NOT THIS. 'Set an alarm for 6', " +
+      "'alarm at 5:30' means a real alarm in the phone's own clock app, " +
+      "which rings with the app closed and the phone on silent. Only " +
+      "'remind me' comes here.\n" +
+      "Set quiet true when they asked NOT to be called — 'just remind me', " +
+      "'don't call, notify me', 'silent reminder' — or for an undated " +
+      "note-to-self, which has no time to ring at.\n" +
       "Set wake_me ONLY when they asked to be WOKEN or insisted it must " +
-      "not be missed ('wake me at 5', 'make sure I get up', 'ring loudly') " +
-      "— that rings like a clock alarm through silent mode. Everything " +
-      "else stays a normal notification. To create a real alarm in the " +
-      "phone's own clock app instead, use set_alarm.",
+      "not be missed — that also makes the notification ring like a clock " +
+      "through silent mode.\n" +
+      "If they want the assistant to actually DO something at that time " +
+      "(order food, send a message, call SOMEONE ELSE), use schedule_task.",
     risk: "medium",
     inputSchema: {
       type: "object",
@@ -1207,6 +1215,13 @@ function registerBuiltins() {
           type: "boolean",
           description:
             "True ONLY if the user asked to be woken or said it must not be missed. Rings like an alarm through silent mode.",
+        },
+        quiet: {
+          type: "boolean",
+          description:
+            "True when they asked NOT to be phoned about it — 'just " +
+            "remind me', 'don't call me', 'silent'. Leave it off " +
+            "otherwise: a reminder is a call by default.",
         },
         repeat: {
           type: "string",
@@ -1252,16 +1267,23 @@ function registerBuiltins() {
       const r = await reminders.create(ctx.userId, args.text, due, ring, {
         repeat,
         tzOffsetMin: ctx.tzOffsetMin,
+        deliver: args.quiet === true ? "notify" : "call",
       });
       if (!r) return { ok: false, error: "could not save the reminder" };
       const every = { daily: "every day", weekly: "every week",
                       monthly: "every month", yearly: "every year" }[r.repeat];
+      // SAY WHAT WILL ACTUALLY HAPPEN. The store downgrades to a plain
+      // notification when calling is not configured or the queue refused,
+      // so promising a call here would be a promise the row cannot keep.
+      const willCall = r.deliver === "call";
       return {
         ok: true,
         data: r,
         speak: every
-          ? `Saved — ${every}.`
-          : ring === "alarm" ? "Set — it'll ring like an alarm." : "Saved.",
+          ? (willCall ? `Saved — I'll call you ${every}.` : `Saved — ${every}.`)
+          : willCall
+            ? "Saved — I'll call you then and remind you."
+            : ring === "alarm" ? "Set — it'll ring like an alarm." : "Saved.",
       };
     },
   });

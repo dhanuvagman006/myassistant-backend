@@ -45,6 +45,47 @@ async function rollForward(userId, tzOffsetMin = 330) {
   return stale.length;
 }
 
+/**
+ * QUEUE THE CALL THAT GOES WITH A REMINDER.
+ *
+ * His instruction, 2026-09-21: "when user says remind me, by default it
+ * should be call and reminder, not just push notification." A push is
+ * easy to miss and impossible to acknowledge; a call is neither.
+ *
+ * ONE JOB ROW, not a poller — the queue already survives restarts and
+ * already knows how to run something at a time. The phone still gets its
+ * local notification either way, so a user who is in a meeting sees the
+ * reminder even if they decline the call.
+ *
+ * Returns the job id so cancelling the reminder can cancel the call.
+ */
+async function queueCall(userId, reminderId, text, dueAt) {
+  if (!userId || !dueAt || dueAt <= Date.now()) return null;
+  try {
+    const agent = require("../agents/agentCall");
+    if (!agent.enabled()) return null; // calling not configured — push only
+    return await require("../infra/jobs").enqueue(
+      "reminder_call",
+      { reminderId, text: String(text || "").slice(0, 300) },
+      { userId, delayMs: dueAt - Date.now() }
+    );
+  } catch (e) {
+    // A reminder that saved but could not queue its call is still a
+    // reminder. Never fail the save over the call.
+    console.warn("reminder call could not be queued:", e.message);
+    return null;
+  }
+}
+
+/** Drop a queued reminder call — the reminder moved, was done, or is gone. */
+async function cancelCall(jobId) {
+  if (!jobId) return;
+  await run(
+    "UPDATE jobs SET status='cancelled', updated_at=$2 WHERE id=$1 AND status='pending'",
+    [jobId, Date.now()]
+  ).catch((e) => console.warn("reminder call cancel failed:", e.message));
+}
+
 async function create(userId, text, dueAt = null, ring = "gentle", opts = {}) {
   const t = String(text || "").trim().slice(0, 300);
   if (!t) return null;
@@ -54,6 +95,11 @@ async function create(userId, text, dueAt = null, ring = "gentle", opts = {}) {
   const anchorDay = repeat && dueAt
     ? recurrence.anchorDayOf(dueAt, opts.tzOffsetMin) : 0;
   const wantRing = ring === "alarm" ? "alarm" : "gentle";
+  // CALL BY DEFAULT, but only when there is a time to call AT. An
+  // undated note-to-self has nothing to ring about, and "notify" is
+  // honoured when the caller explicitly asked for a quiet one.
+  const wantDeliver =
+    opts.deliver === "notify" || !dueAt ? "notify" : "call";
 
   // THE SAME REMINDER, SAID TWICE, IS ONE REMINDER.
   //
@@ -81,20 +127,43 @@ async function create(userId, text, dueAt = null, ring = "gentle", opts = {}) {
     // an upgrade, and silently keeping the gentle setting would ignore
     // what they just asked for.
     const nextRing = wantRing === "alarm" || existing.ring === "alarm" ? "alarm" : "gentle";
+    // The time may have just moved, so the old call is wrong — drop it
+    // and queue one for the time that now stands.
+    await cancelCall(existing.call_job_id);
+    const when = dueAt || existing.due_at;
+    const jobId = wantDeliver === "call"
+      ? await queueCall(userId, existing.id, t, when) : null;
     return one(
-      `UPDATE reminders SET due_at = $3, ring = $4, repeat = $5, anchor_day = $6
+      `UPDATE reminders SET due_at = $3, ring = $4, repeat = $5, anchor_day = $6,
+              deliver = $7, call_job_id = $8
         WHERE user_id = $1 AND id = $2 RETURNING *`,
-      [userId, existing.id, dueAt || existing.due_at, nextRing,
-       dueAt ? repeat : existing.repeat, anchorDay || existing.anchor_day]
+      [userId, existing.id, when, nextRing,
+       dueAt ? repeat : existing.repeat, anchorDay || existing.anchor_day,
+       wantDeliver, jobId]
     );
   }
 
-  return one(
-    `INSERT INTO reminders (user_id, text, due_at, created_at, ring, repeat, anchor_day)
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+  const row = await one(
+    `INSERT INTO reminders (user_id, text, due_at, created_at, ring, repeat, anchor_day, deliver)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
     [userId, t, dueAt || null, Date.now(), wantRing,
-     dueAt ? repeat : "", anchorDay]
+     dueAt ? repeat : "", anchorDay, wantDeliver]
   );
+  if (row && wantDeliver === "call") {
+    const jobId = await queueCall(userId, row.id, t, dueAt);
+    if (jobId) {
+      await run("UPDATE reminders SET call_job_id = $2 WHERE id = $1", [row.id, jobId])
+        .catch(() => {});
+      row.call_job_id = jobId;
+    } else {
+      // Calling is off on this deployment, or the queue refused. Say so
+      // in the row rather than leaving a promise nothing will keep.
+      await run("UPDATE reminders SET deliver = 'notify' WHERE id = $1", [row.id])
+        .catch(() => {});
+      row.deliver = "notify";
+    }
+  }
+  return row;
 }
 
 async function setDone(userId, id, done, { tzOffsetMin = 330 } = {}) {
@@ -103,18 +172,24 @@ async function setDone(userId, id, done, { tzOffsetMin = 330 } = {}) {
     // today's "take the tablets" moves it to tomorrow; only remove()
     // ends it.
     const cur = await one(
-      "SELECT due_at, repeat, anchor_day FROM reminders WHERE user_id = $1 AND id = $2",
+      "SELECT * FROM reminders WHERE user_id = $1 AND id = $2",
       [userId, id]
     );
+    // DONE MEANS DON'T RING ME. Ticking a reminder off and then being
+    // phoned about it anyway is the app arguing with the user.
+    await cancelCall(cur && cur.call_job_id);
     if (cur && cur.repeat && cur.due_at) {
       const next = recurrence.advanceTo(Date.now(), Number(cur.due_at), cur.repeat, {
         tzOffsetMin,
         anchorDay: Number(cur.anchor_day) || 0,
       });
       if (next) {
+        // The series continues, so the NEXT occurrence gets its own call.
+        const jobId = cur.deliver === "call"
+          ? await queueCall(userId, id, cur.text, next) : null;
         return (await run(
-          "UPDATE reminders SET due_at = $1, done = 0 WHERE user_id = $2 AND id = $3",
-          [next, userId, id]
+          "UPDATE reminders SET due_at = $1, done = 0, call_job_id = $4 WHERE user_id = $2 AND id = $3",
+          [next, userId, id, jobId]
         )) > 0;
       }
     }
@@ -128,18 +203,27 @@ async function setDone(userId, id, done, { tzOffsetMin = 330 } = {}) {
 async function update(userId, id, text, dueAt) {
   const cur = await one("SELECT * FROM reminders WHERE user_id = $1 AND id = $2", [userId, id]);
   if (!cur) return null;
+  const nextText = text != null ? String(text).trim().slice(0, 300) : cur.text;
+  const nextDue = dueAt !== undefined ? dueAt : cur.due_at;
+  // MOVING A REMINDER MOVES ITS CALL. Without this, "push it to five"
+  // left the four o'clock call queued and the phone rang at four.
+  let jobId = cur.call_job_id;
+  if (cur.deliver === "call" && (nextDue !== cur.due_at || nextText !== cur.text)) {
+    await cancelCall(cur.call_job_id);
+    jobId = await queueCall(userId, id, nextText, nextDue);
+  }
   return one(
-    "UPDATE reminders SET text = $1, due_at = $2 WHERE user_id = $3 AND id = $4 RETURNING *",
-    [
-      text != null ? String(text).trim().slice(0, 300) : cur.text,
-      dueAt !== undefined ? dueAt : cur.due_at,
-      userId,
-      id,
-    ]
+    "UPDATE reminders SET text = $1, due_at = $2, call_job_id = $5 WHERE user_id = $3 AND id = $4 RETURNING *",
+    [nextText, nextDue, userId, id, jobId]
   );
 }
 
 async function remove(userId, id) {
+  const cur = await one(
+    "SELECT call_job_id FROM reminders WHERE user_id = $1 AND id = $2",
+    [userId, id]
+  ).catch(() => null);
+  await cancelCall(cur && cur.call_job_id);
   return (await run("DELETE FROM reminders WHERE user_id = $1 AND id = $2", [userId, id])) > 0;
 }
 
@@ -155,4 +239,5 @@ async function upcomingText(userId, { max = 8 } = {}) {
     .join("\n");
 }
 
-module.exports = { list, create, setDone, update, remove, upcomingText, rollForward };
+module.exports = {
+  queueCall, cancelCall, list, create, setDone, update, remove, upcomingText, rollForward };
