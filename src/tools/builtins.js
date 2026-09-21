@@ -7378,11 +7378,16 @@ function registerBuiltins() {
       }
 
       const openMap = args.open_map !== false;
-      // geo: centres the phone's own Maps app on where they actually are
-      // and runs the search there. A maps.google.com link would open a
-      // browser tab for anyone without the app, which is the honest
-      // fallback when we have no coordinates — but here we do.
-      const url = `geo:${lat},${lng}?q=${encodeURIComponent(q)}`;
+      // A google.com/maps SEARCH URL centred on where they are, not a
+      // "geo:" URI. Google Maps claims these as app links, so the app
+      // opens at the right place — and on a phone without Maps it opens
+      // a map in the browser instead of failing. "geo:" would have been
+      // the neater URI and needs the scheme declared in the manifest
+      // (it now is, for start_navigation's sake), but it has nothing to
+      // fall back to.
+      const url =
+        `https://www.google.com/maps/search/${encodeURIComponent(q)}/` +
+        `@${lat},${lng},15z`;
 
       return {
         ok: true,
