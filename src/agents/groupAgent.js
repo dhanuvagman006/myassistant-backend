@@ -106,7 +106,7 @@ async function factsFor(userId) {
   const now = Date.now();
   const end = now + 21 * 86400_000;
   const [profile, busy, memories] = await Promise.all([
-    db.one(`SELECT name FROM users WHERE id=$1`, [userId]).catch(() => null),
+    db.one(`SELECT name, timezone FROM users WHERE id=$1`, [userId]).catch(() => null),
     db
       .query(
         `SELECT text, due_at FROM reminders
@@ -122,12 +122,40 @@ async function factsFor(userId) {
     require("./memory").listMemories(userId).catch(() => []),
   ]);
 
-  const commitments = busy
-    .map((r) => `- ${new Date(Number(r.due_at)).toISOString().slice(0, 16).replace("T", " ")} — ${r.text}`)
-    .join("\n");
+  // WITHOUT TODAY'S DATE THIS FEATURE CANNOT ANSWER ANYTHING.
+  //
+  // Measured against production before release: asked "are you tied up
+  // the day after tomorrow?" with a dentist appointment sitting in the
+  // data, the model declined — and said why: "the current date is
+  // unknown so I cannot determine if Bilal is free". Nearly every real
+  // question is relative ("tomorrow", "this weekend", "tonight"), so an
+  // assistant with no clock declines all of them and the feature looks
+  // like it is working while never once firing.
+  //
+  // Their own zone, not the server's: "Saturday" has to mean their
+  // Saturday. India when we have not been told otherwise, which is
+  // where this product lives.
+  const zone = String(profile?.timezone || "").trim() || "Asia/Kolkata";
+  const when = (ms) => {
+    try {
+      return new Date(Number(ms)).toLocaleString("en-IN", {
+        timeZone: zone,
+        weekday: "short",
+        day: "numeric",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch (_) {
+      return new Date(Number(ms)).toISOString().slice(0, 16).replace("T", " ");
+    }
+  };
+
+  const commitments = busy.map((r) => `- ${when(r.due_at)} — ${r.text}`).join("\n");
   const known = memories.map((m) => `- ${m.fact}`).join("\n");
   return {
     name: String(profile?.name || "").split(" ")[0] || "",
+    nowText: when(now),
     commitments: commitments || "(nothing in the next three weeks)",
     known: known || "(nothing recorded)",
   };
@@ -194,6 +222,9 @@ async function replyFromJob(payload = {}) {
     `You are ${facts.name || "the user"}'s personal assistant, writing ONE ` +
     `message in a group chat on their behalf because they have not seen ` +
     `it for a few minutes.\n\n` +
+    `RIGHT NOW IT IS ${facts.nowText} where they are. Work out "tomorrow", ` +
+    `"the weekend", "tonight" and "the day after" from that — their ` +
+    `schedule below is written in the same clock.\n\n` +
     `YOU MAY ONLY USE THE FACTS BELOW. You do not know anything else ` +
     `about ${facts.name || "them"} — not their opinions, not their plans, ` +
     `not what they would think. If answering would need a fact that is ` +
@@ -230,9 +261,21 @@ async function replyFromJob(payload = {}) {
       String(reply || "").replace(/```json/gi, "").replace(/```/g, "").trim()
     );
   } catch (e) {
+    // A FAILURE AND A DECISION TO STAY QUIET MUST NOT LOOK THE SAME.
+    // They did in the first cut, and the only reason the missing-clock
+    // bug above was found is that the reason was printed by hand.
     console.warn("group agent could not decide:", e.message);
     return; // silence is the safe failure
   }
+  console.log(
+    "group agent decision:",
+    JSON.stringify({
+      group: groupId,
+      forUser: forUserId,
+      answer: decision?.answer === true,
+      why: String(decision?.why || "").slice(0, 120),
+    })
+  );
 
   const text = String(decision?.text || "").trim();
   if (decision?.answer !== true || !text) {
