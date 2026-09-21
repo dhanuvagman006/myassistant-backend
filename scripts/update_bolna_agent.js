@@ -46,6 +46,11 @@ function summarise(agent) {
   const t = tc.transcriber;
   return {
     pipeline: (agent?.tasks?.[0]?.toolchain?.pipelines || []).flat().join(" → "),
+    // PRINTED BECAUSE LOSING IT BROKE EVERY CALL. A PUT replaces the
+    // whole tools_config, and dropping input/output silently reverts
+    // telephony to Twilio — the agent still looks right, and the next
+    // dial returns "from_number doesn't exist for twilio".
+    telephony: `${tc.input?.provider || "MISSING"} in / ${tc.output?.provider || "MISSING"} out`,
     voice: s
       ? `${s.provider}/${s.provider_config?.model} ${s.provider_config?.voice_id}`
       : tc.s2s
@@ -65,6 +70,17 @@ function summarise(agent) {
   console.log("BEFORE:", JSON.stringify(summarise(await before.json()), null, 1));
 
   const body = agentConfig({ webhookUrl });
+
+  // REFUSE TO PUBLISH A CONFIG THAT CANNOT DIAL. Cheap, and it is the
+  // one mistake in this file that is invisible until a real call fails.
+  const sending = body.agent_config.tasks[0].tools_config;
+  if (!sending.input?.provider || !sending.output?.provider) {
+    console.error(
+      "REFUSED: agentConfig has no telephony provider in input/output. " +
+      "Bolna would fall back to Twilio and every call would 400."
+    );
+    process.exit(1);
+  }
   if (DRY) {
     console.log("\n--dry: would send", VOICE.provider, VOICE.model, VOICE.id,
       "| hearing", TRANSCRIBER.provider, TRANSCRIBER.model, TRANSCRIBER.language);

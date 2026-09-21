@@ -104,6 +104,13 @@ const VOICE = {
  */
 const TRANSCRIBER = { provider: "deepgram", model: "nova-3", language: "hi" };
 
+/**
+ * Who actually carries the call. +918064261411 is a hosted Indian DID
+ * bought through Bolna, and its carrier is "vobiz" — override only if
+ * the number is ever re-bought somewhere else.
+ */
+const TELEPHONY = process.env.BOLNA_TELEPHONY_PROVIDER || "vobiz";
+
 const SYSTEM_PROMPT = `You are a woman — the personal assistant of {{user_name}} — calling {{contact_name}} on their behalf. Your task for this call: {{task}}. Mode: {{mode}} (inform = deliver the message clearly and confirm they understood; ask = get the answer to the task and confirm it back; self = you are calling {{user_name}} THEMSELF — a wake-up call or reminder they asked their own assistant to make: greet them by name as their own assistant, deliver the task right away and clearly. DO NOT END THE CALL UNTIL THEY HAVE CLEARLY CONFIRMED — for a wake-up, that they are actually awake; for a reminder, that they have heard it. A mumble, a grunt or a bare 'hello' is how people answer in their sleep, so ask again — 'Are you properly awake?' — and wait for a clear yes before you say goodbye. Never say 'on behalf of' in self mode: you are speaking directly to your own user).
 
 HOW YOU SOUND: {{tone}}
@@ -171,6 +178,20 @@ function agentConfig({ webhookUrl }) {
           },
           tools_config: {
             s2s: null,
+            // THE TELEPHONY PROVIDER, AND IT IS NOT OPTIONAL.
+            //
+            // Left out on 2026-09-21 while replacing the whole
+            // tools_config to change the voice — and every call died on
+            // "Calling from_number +91… doesn't exist for twilio". Null
+            // here does not mean "leave it alone", it means Bolna falls
+            // back to Twilio, and the number this account owns is a
+            // hosted Indian DID on vobiz. The agent looked perfect in
+            // the dashboard; only a real dial showed it.
+            //
+            // A PUT replaces the whole block, so anything the working
+            // agent had must be written here EVERY time, not assumed.
+            input: { format: "wav", provider: TELEPHONY },
+            output: { format: "wav", provider: TELEPHONY },
             llm_agent: {
               // Required by the API (it 400s by name without it);
               // streaming is what makes the reply start before the
@@ -231,4 +252,4 @@ function agentConfig({ webhookUrl }) {
   };
 }
 
-module.exports = { SYSTEM_PROMPT, DEFAULT_TONE, VOICE, TRANSCRIBER, agentConfig };
+module.exports = { SYSTEM_PROMPT, DEFAULT_TONE, VOICE, TRANSCRIBER, TELEPHONY, agentConfig };
