@@ -148,20 +148,44 @@ const NOT_A_PLACE_HOST_RX =
 const NOT_A_PLACE_WORD_RX =
   /\b(photos?|image|images|stock|wallpapers?|wikipedia|videos?|meaning|definition|download|pdf)\b/i;
 
+// A title that is just a domain, and the placeholder titles a search
+// backend uses when it has no title at all.
+const BARE_DOMAIN_RX = /^(www\.)?[a-z0-9-]+(\.[a-z0-9-]+)+\.?$/i;
+const GENERIC_TITLE_RX =
+  /^(web answer|answer|source|sources|result|results|untitled|link|home|homepage|search)$/i;
+
 function placeName(title, url) {
   let t = String(title || "").trim();
   if (!t) return "";
+  // A RESULT WE CANNOT TRACE TO A SITE IS NOT A PLACE.
+  //
+  // Every host check below hung off `if (url)`, so a result with no URL
+  // skipped the lot. The grounding fallback returns exactly that — a
+  // lead row titled "Web answer" with an empty url, and sources titled
+  // "source" — and both sailed through to be read out as restaurants by
+  // the tool built to stop invented place lists. No usable link, no name.
+  let host = "";
+  try {
+    const u = new URL(String(url || ""));
+    if (u.protocol !== "http:" && u.protocol !== "https:") return "";
+    host = u.hostname;
+  } catch (_) {
+    return "";
+  }
+  // "justdial.com" defeated the site list by one character, because that
+  // list is anchored on the bare name. A domain is never a place name.
+  if (BARE_DOMAIN_RX.test(t)) return "";
+  if (GENERIC_TITLE_RX.test(t)) return "";
   let brand = "";
-  if (url) {
+  {
     try {
-      const host = new URL(url).hostname;
       if (NOT_A_PLACE_HOST_RX.test(host)) return "";
       // The site's OWN name, whatever it is: naukri.com titled a result
       // "Naukri" and mappls.com titled one "Mappls", and both came back
       // as chemists near him. A hand-kept list of sites will always be
       // one site behind, so the brand is taken from the domain itself.
       brand = host.replace(/^www\./i, "").split(".")[0].replace(/[^a-z0-9]/gi, "").toLowerCase();
-    } catch (_) {/* an unparseable url is judged on its title alone */}
+    } catch (_) {/* a host we cannot read is judged on its title alone */}
   }
   // The site's own furniture, always after a pipe or a spaced dash.
   t = t.split(/\s+[|\u2013\u2014]\s+|\s+-\s+/)[0].trim();
@@ -5580,7 +5604,12 @@ function registerBuiltins() {
       // A nudge, not the message itself. The words are spoken by their own
       // assistant when they open the app; putting them in the banner would
       // also put them on a lock screen anyone can read.
-      if (appUser.fcm_token) {
+      // A muted thread still receives the message — it just does not make
+      // their phone light up. Same contract as the group mute.
+      const muted = await require("../routes/chat")
+        .mutedBy(appUser.id, ctx.userId)
+        .catch(() => false);
+      if (appUser.fcm_token && !muted) {
         await push.sendNotification(
           appUser.fcm_token,
           ctx.userName ? `${ctx.userName} sent you a message` : "You have a new message",
@@ -5811,7 +5840,10 @@ function registerBuiltins() {
       );
       // A nudge, not the content — same contract as send_agent_message:
       // the recipient's own assistant speaks it when they open the app.
-      if (appUser.fcm_token) {
+      const docMuted = await require("../routes/chat")
+        .mutedBy(appUser.id, ctx.userId)
+        .catch(() => false);
+      if (appUser.fcm_token && !docMuted) {
         try {
           await require("../services/push").sendNotification(
             appUser.fcm_token,

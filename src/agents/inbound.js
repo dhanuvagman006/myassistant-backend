@@ -118,7 +118,10 @@ async function onMessageDelivered({ toUserId, fromUserId, fromName, text }) {
       [uid, asker.phone_number, reply, Date.now()]
     );
     console.log(`inbound: auto-replied for user ${uid} to ${askerFirst} (user ${fid})`);
-    if (asker.fcm_token) {
+    const muted = await require("../routes/chat")
+      .mutedBy(fid, uid)
+      .catch(() => false);
+    if (asker.fcm_token && !muted) {
       await push.sendNotification(
         asker.fcm_token,
         `${ownerFirst}'s assistant replied`,

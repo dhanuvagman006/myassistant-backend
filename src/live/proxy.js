@@ -1062,6 +1062,10 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   // True while the assistant is acting as an interpreter rather than an
   // assistant. Tracked so the app can show it and so it survives the turn.
   let interpreting = false;
+  // Device actions that background the app. Held until turnComplete so
+  // the reply she was told to speak is actually spoken first.
+  const EXIT_ACTIONS = new Set(["open_url"]);
+  const pendingExitActions = [];
   // Mic audio that arrives before Google's setupComplete would be lost —
   // buffer a little so the first word is never clipped.
   const pending = [];
@@ -1370,7 +1374,21 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         // If the tool produced a device action (like open_camera or contact_lookup),
         // we send it down the WebSocket so the app can perform the action.
         if (res.deviceAction) {
-          appWs.send(JSON.stringify(res.deviceAction));
+          // AN ACTION THAT LEAVES THE APP WAITS FOR HER TO FINISH TALKING.
+          //
+          // This send used to fire the instant the tool returned — before
+          // the tool result had even reached the model, so no reply
+          // existed yet. find_places_nearby returns the map URL *and*
+          // speak text telling her to name the places, so Maps opened,
+          // the app was backgrounded, playback was silenced, and the
+          // three places she had just found were never spoken. The
+          // classic runtime already drains its device actions after the
+          // sentences go out; this makes live match it.
+          if (EXIT_ACTIONS.has(res.deviceAction.type)) {
+            pendingExitActions.push(res.deviceAction);
+          } else {
+            appWs.send(JSON.stringify(res.deviceAction));
+          }
 
           // Hari is now on the phone to a business. The call takes up to a
           // couple of minutes, which is far too long to hold the tool
@@ -1591,6 +1609,14 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       flushUserTurn();
       flushModelTurn();
       appWs.send(JSON.stringify({ type: "turn_complete" }));
+      // Now that she has said her piece, send her out of the app.
+      if (pendingExitActions.length) {
+        for (const a of pendingExitActions.splice(0)) {
+          try {
+            appWs.send(JSON.stringify(a));
+          } catch (_) {}
+        }
+      }
     }
   });
 

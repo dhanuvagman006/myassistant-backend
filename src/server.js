@@ -157,11 +157,6 @@ const perUserLimit = rateLimit({
 // back. The provider webhook is PUBLIC (Bolna can't send our app key):
 // gated by a key-derived URL secret, mounted before appAuth.
 const agentCall = require("./routes/agentCall");
-// GROUPS — mounted BEFORE the direct-chat router so /chat/groups and
-// /chat/directory are matched here rather than by its /chat/thread/:phone
-// pattern. Direct chat is untouched; this only adds paths beside it.
-app.use("/chat", appAuth, perUserLimit, require("./routes/chatGroups"));
-
 app.use("/agent-call/bolna", agentCall.bolnaWebhooks);
 app.use("/agent-call", appAuth, perUserLimit, agentCall.router);
 // (Hub → Your calling agent was removed on 2026-09-21 at his direction.
@@ -180,7 +175,16 @@ app.use("/inbound", appAuth, inbound.router);
 
 // Chat requires the app key so strangers can't burn your AI credits.
 // Order: authenticate → per-user throttle → plan allowance → handler.
-app.use("/chat", appAuth, perUserLimit, chatRoute);
+//
+// ONE MOUNT, TWO ROUTERS. Groups and direct chat were mounted separately
+// on the same path with the same rate-limiter instance, so any request
+// that fell through the groups router to this one was counted TWICE —
+// silently halving the budget to 15/min, which the app's own polling
+// nearly exhausts on its own — and re-ran appAuth. Listing both handlers
+// on one mount runs the middleware once and keeps the order (groups are
+// matched first; chat.js registers /thread/:phone, never a bare /:phone,
+// so nothing was ever at risk of being shadowed either way).
+app.use("/chat", appAuth, perUserLimit, require("./routes/chatGroups"), chatRoute);
 
 // ASSISTANT — the realtime voice-loop module the app's home screen uses
 // (session + SSE event stream + mic-clip turns). The SSE stream route

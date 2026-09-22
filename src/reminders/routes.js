@@ -27,6 +27,10 @@ const shape = (r) => ({
   // 'alarm' reminders ring like a clock on the phone; 'gentle' ones are
   // an ordinary notification (see the ring column in src/db.js).
   ring: r.ring || "gentle",
+  // 'call' reminders phone the user at due_at; 'notify' ones only push.
+  // Surfaced so the app can show which is which rather than the user
+  // discovering it when the phone rings.
+  deliver: r.deliver === "call" ? "call" : "notify",
   done: !!r.done,
   createdAt: r.created_at,
 });

@@ -198,6 +198,18 @@ async function bolnaPlaceCall({ to, rec }) {
   // src/agents/callAgentConfig.js is the single definition; this is the
   // single agent it is pushed to.
   const agentId = c.bolnaAgent;
+  // RESOLVED BEFORE THE DIAL CLOCK STARTS.
+  //
+  // This used to sit inline in the body object, AFTER
+  // `signal: AbortSignal.timeout(15000)`. Object properties evaluate in
+  // source order, so the 15-second dial budget began ticking and THEN we
+  // waited on honorificFor — which, for a name outside the built-in
+  // table, makes a model call with a 30-second ceiling of its own. A
+  // slow lookup burned the whole budget and fetch was handed an
+  // already-aborted signal, so the call never left the building.
+  const honorific = rec.selfCall
+    ? spokenName(rec.contactName)
+    : await honorificFor(rec.contactName);
   const r = await fetch("https://api.bolna.ai/call", {
     method: "POST",
     headers: {
@@ -220,10 +232,8 @@ async function bolnaPlaceCall({ to, rec }) {
         // their own name is warm rather than presumptuous — and an
         // EMPTY honorific here would have opened every wake-up call
         // with a literal "Hello, ?", because the welcome message is
-        // built from this same variable.
-        honorific: rec.selfCall
-          ? spokenName(rec.contactName)
-          : await honorificFor(rec.contactName),
+        // built from this same variable. Resolved above the fetch.
+        honorific,
         // THE PROMPT SAYS "HOW YOU SOUND: {{tone}}" AND NOTHING WAS
         // FILLING IT IN. The tool collected a tone, the route passed it,
         // start() dropped it on the floor and the agent was left reading

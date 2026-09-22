@@ -185,7 +185,10 @@ async function buildToolContext({ userId, messages, tzOffsetMin = 330, lat, lng 
       // ---- REMINDER: CREATE (deterministic side effect) ----
       if (userId && RE.remindSet.test(msg)) {
         const { text, dueAt } = parseReminder(msg, now, tzOffsetMin);
-        const r = await reminders.create(userId, text, dueAt);
+        // Spoken "remind me" — the one path that opts in to a call.
+        const r = await reminders.create(userId, text, dueAt, "gentle", {
+          deliver: "call",
+        });
         if (r) {
           blocks.push(
             "TOOL RESULT — a reminder WAS JUST CREATED for the user: " +

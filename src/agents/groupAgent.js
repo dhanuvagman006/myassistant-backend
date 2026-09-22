@@ -111,16 +111,31 @@ async function onGroupMessage({ groupId, messageId, fromUserId, text }) {
 async function factsFor(userId) {
   const now = Date.now();
   const end = now + 21 * 86400_000;
-  const [profile, busy, memories] = await Promise.all([
+  const [profile, busy, events, memories] = await Promise.all([
     db.one(`SELECT name, timezone FROM users WHERE id=$1`, [userId]).catch(() => null),
+    // CHECKING ONE SOURCE AND CALLING THE DAY FREE IS HOW A REAL MEETING
+    // GETS MISSED — the rule the runtime states to the model, which this
+    // query did not follow. Reminders alone answered "yeah he's free
+    // saturday" for a user whose Saturday was already spoken for: a
+    // promise picked up from a call ("I'll send it Saturday") lands in
+    // `commitments`, never in `reminders`. The receptionist path in
+    // agents/inbound.js has always unioned the two; this matches it.
     db
       .query(
         `SELECT text, due_at FROM reminders
           WHERE user_id=$1 AND done=0 AND due_at BETWEEN $2 AND $3
-          ORDER BY due_at LIMIT 40`,
+         UNION ALL
+         SELECT text, due_at FROM commitments
+          WHERE user_id=$1 AND status='open' AND due_at BETWEEN $2 AND $3
+         ORDER BY due_at LIMIT 40`,
         [userId, now, end]
       )
       .catch(() => []),
+    // And what is actually BOOKED. Returns null when Google is not
+    // linked, which is not an error — it just means no calendar to read.
+    require("../google/api")
+      .upcomingEvents(userId, { days: 21, max: 25 })
+      .catch(() => null),
     // The user's own remembered facts, through the same reader the
     // assistant uses everywhere else — `agent_memories`, valid rows
     // only, so something they asked to forget cannot resurface here of
@@ -157,7 +172,18 @@ async function factsFor(userId) {
     }
   };
 
-  const commitments = busy.map((r) => `- ${when(r.due_at)} — ${r.text}`).join("\n");
+  const booked = (events || [])
+    .map((e) => {
+      const t = Date.parse(String(e.start || ""));
+      return Number.isFinite(t)
+        ? `- ${e.allDay ? when(t).split(",")[0] + " (all day)" : when(t)} — ${e.title}`
+        : null;
+    })
+    .filter(Boolean);
+  const commitments = [
+    ...busy.map((r) => `- ${when(r.due_at)} — ${r.text}`),
+    ...booked,
+  ].join("\n");
   const known = memories.map((m) => `- ${m.fact}`).join("\n");
   return {
     name: String(profile?.name || "").split(" ")[0] || "",

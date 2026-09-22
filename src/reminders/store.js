@@ -28,7 +28,7 @@ async function list(userId, { tzOffsetMin = 330 } = {}) {
 async function rollForward(userId, tzOffsetMin = 330) {
   const now = Date.now();
   const stale = await query(
-    `SELECT id, due_at, repeat, anchor_day FROM reminders
+    `SELECT id, text, due_at, repeat, anchor_day, deliver, call_job_id FROM reminders
       WHERE user_id = $1 AND repeat <> '' AND due_at IS NOT NULL AND due_at <= $2
       LIMIT 50`,
     [userId, now]
@@ -39,8 +39,21 @@ async function rollForward(userId, tzOffsetMin = 330) {
       anchorDay: Number(r.anchor_day) || 0,
     });
     if (!next) continue;
+    // A SERIES THAT CALLS MUST KEEP CALLING. The occurrence that just
+    // passed spent its job. Rolling the time forward without queueing a
+    // call for the new one turned "I'll call you every day" into a push
+    // after day one — and only setDone() re-queued, which never runs for
+    // someone who answers the call instead of ticking the row off.
+    let jobId = null;
+    if (r.deliver === "call") {
+      await cancelCall(r.call_job_id);
+      jobId = await queueCall(userId, r.id, r.text, next);
+    }
     // done is reset too: the next occurrence has not happened yet.
-    await run("UPDATE reminders SET due_at = $1, done = 0 WHERE id = $2", [next, r.id]);
+    await run(
+      "UPDATE reminders SET due_at = $1, done = 0, call_job_id = $3 WHERE id = $2",
+      [next, r.id, jobId]
+    );
   }
   return stale.length;
 }
@@ -95,11 +108,17 @@ async function create(userId, text, dueAt = null, ring = "gentle", opts = {}) {
   const anchorDay = repeat && dueAt
     ? recurrence.anchorDayOf(dueAt, opts.tzOffsetMin) : 0;
   const wantRing = ring === "alarm" ? "alarm" : "gentle";
-  // CALL BY DEFAULT, but only when there is a time to call AT. An
-  // undated note-to-self has nothing to ring about, and "notify" is
-  // honoured when the caller explicitly asked for a quiet one.
-  const wantDeliver =
-    opts.deliver === "notify" || !dueAt ? "notify" : "call";
+  // A CALL IS PLACED ONLY WHEN THE CALLER ASKED FOR ONE.
+  //
+  // "Remind me at 9" spoken to the assistant passes deliver:"call"
+  // explicitly, which is what he asked for. But defaulting to "call"
+  // also armed every path that files a reminder ON the user's behalf —
+  // a shared timetable filing 15 dated events, the action items from a
+  // call transcript, the Today screen's + button — so the phone rang for
+  // things nobody asked to be rung about, at real money per call.
+  // Opting IN keeps his instruction and stops the surprises.
+  // An undated note-to-self has nothing to ring about either way.
+  const wantDeliver = opts.deliver === "call" && dueAt ? "call" : "notify";
 
   // THE SAME REMINDER, SAID TWICE, IS ONE REMINDER.
   //

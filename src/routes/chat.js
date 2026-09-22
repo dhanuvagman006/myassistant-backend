@@ -35,7 +35,7 @@ router.get("/threads", async (req, res) => {
   const [out, inc] = await Promise.all([
     query(
       `SELECT m.id, m.to_phone_number AS phone, m.message, m.created_at,
-              m.document_id, m.from_document_id, u.name
+              m.deleted, m.document_id, m.from_document_id, u.name
          FROM agent_messages m
          LEFT JOIN users u ON u.phone_number = m.to_phone_number
         WHERE m.from_user_id = $1
@@ -45,7 +45,7 @@ router.get("/threads", async (req, res) => {
     mine
       ? query(
           `SELECT m.id, u.phone_number AS phone, m.message, m.created_at,
-                  m.status, m.document_id, m.from_document_id, u.name
+                  m.status, m.deleted, m.document_id, m.from_document_id, u.name
              FROM agent_messages m
              LEFT JOIN users u ON u.id = m.from_user_id
             WHERE m.to_phone_number = $1
@@ -54,6 +54,29 @@ router.get("/threads", async (req, res) => {
         )
       : [],
   ]);
+
+  // WHAT THIS PERSON HAS CLEARED OR HIDDEN, applied to the LIST too.
+  // The thread view filtered these from the first cut; the list did not,
+  // so a cleared chat came back empty when opened and still showed its
+  // last message — and its unread count — on the way out.
+  const [prefs, hidden] = await Promise.all([
+    query(
+      `SELECT ref, cleared_before FROM chat_prefs
+        WHERE user_id=$1 AND kind='direct' AND cleared_before > 0`,
+      [uid]
+    ).catch(() => []),
+    query(
+      `SELECT message_id FROM chat_hidden_messages WHERE user_id=$1 AND kind='direct'`,
+      [uid]
+    ).catch(() => []),
+  ]);
+  const clearedFor = new Map(
+    prefs.map((p) => [String(p.ref), Number(p.cleared_before || 0)])
+  );
+  const hiddenIds = new Set(hidden.map((h) => Number(h.message_id)));
+  const visible = (phone, id) =>
+    Number(id) > (clearedFor.get(String(phone)) || 0) &&
+    !hiddenIds.has(Number(id));
 
   const threads = new Map(); // phone -> {phone,name,last,lastAt,unread}
   const touch = (phone, name, text, at, unreadDelta) => {
@@ -69,9 +92,18 @@ router.get("/threads", async (req, res) => {
     t.unread += unreadDelta;
     threads.set(phone, t);
   };
-  for (const m of out) touch(m.phone, m.name, m.message, m.created_at, 0);
+  // A row the owner cleared or hid contributes neither preview nor count,
+  // but the thread still exists if anything else in it survives.
+  const preview = (m) =>
+    Number(m.deleted) === 1 ? "This message was deleted" : m.message;
+  for (const m of out) {
+    if (!visible(m.phone, m.id)) continue;
+    touch(m.phone, m.name, preview(m), m.created_at, 0);
+  }
   for (const m of inc) {
-    touch(m.phone, m.name, m.message, m.created_at, m.status === "unread" ? 1 : 0);
+    if (!visible(m.phone, m.id)) continue;
+    touch(m.phone, m.name, preview(m), m.created_at,
+          m.status === "unread" ? 1 : 0);
   }
 
   res.json({
@@ -128,7 +160,7 @@ router.get("/thread/:phone", async (req, res) => {
   // conversation is theirs to prune; nobody else's view changes.
   const [pref, hidden] = await Promise.all([
     one(
-      `SELECT cleared_before FROM chat_prefs
+      `SELECT cleared_before, muted FROM chat_prefs
         WHERE user_id=$1 AND kind='direct' AND ref=$2`,
       [uid, them]
     ).catch(() => null),
@@ -164,7 +196,10 @@ router.get("/thread/:phone", async (req, res) => {
     })),
   ].sort((a, b) => a.at - b.at || a.id - b.id);
 
-  res.json({ items });
+  // Returned so the thread's menu can render "Unmute" on a thread that
+  // IS muted. Without it the flag was write-only on the client too: the
+  // label reset on every reopen and the first tap could only re-mute.
+  res.json({ items, muted: Number(pref?.muted || 0) === 1 });
 });
 
 /* ------------------------------------------------------------------ */
@@ -222,8 +257,17 @@ router.delete("/message/:id", async (req, res) => {
     if (Number(msg.from_user_id) !== uid) {
       return res.status(403).json({ error: "you can only unsend your own messages" });
     }
-    await run(`UPDATE agent_messages SET deleted=1, message='' WHERE id=$1`, [id])
-      .catch(() => {});
+    // AN UNSEND MUST NOT STILL BE DELIVERED. The three readers that
+    // hand a message to the user — the pop-up inbox (routes/messages),
+    // the unread block in the live prompt, and the daily brief — all
+    // select status='unread' and know nothing about `deleted`, so a
+    // tombstone left unread was still announced (as an empty message)
+    // and then marked read. Retiring it from the unread rail here is
+    // what makes the unsend actually stop the delivery.
+    await run(
+      `UPDATE agent_messages SET deleted=1, message='', status='read' WHERE id=$1`,
+      [id]
+    ).catch(() => {});
     return res.json({ deleted: "everyone" });
   }
   await run(
@@ -243,6 +287,28 @@ router.delete("/message/:id", async (req, res) => {
  * placeholder out of the array to compensate — which silently wrote the
  * wrong column. Values are never juggled to fit a query string.
  */
+/**
+ * HAS `recipient` MUTED THE THREAD WITH `sender`?
+ *
+ * The mute row is written by POST /thread/:phone/mute, keyed on the OTHER
+ * party's number. Nothing read it, so the switch was inert and every
+ * message still buzzed. Same contract as the group mute in groupAgent:
+ * it silences the PUSH only — the message still arrives, still shows in
+ * the thread, and the assistant still reads it when asked.
+ *
+ * Never throws: a failed lookup must not swallow a message.
+ */
+async function mutedBy(recipientUserId, senderUserId) {
+  if (!recipientUserId || !senderUserId) return false;
+  const row = await one(
+    `SELECT 1 AS muted FROM chat_prefs p
+      WHERE p.user_id = $1 AND p.kind = 'direct' AND p.muted = 1
+        AND p.ref = (SELECT phone_number FROM users WHERE id = $2)`,
+    [recipientUserId, senderUserId]
+  ).catch(() => null);
+  return !!row;
+}
+
 async function setPref(userId, phone, patch) {
   const cols = Object.keys(patch);
   const sets = cols.map((c, i) => `${c}=$${i + 3}`).join(", ");
@@ -274,7 +340,7 @@ router.post("/send", async (req, res) => {
      VALUES ($1,$2,$3,$4) RETURNING id, created_at`,
     [uid, them, text, Date.now()]
   );
-  if (recipient.fcm_token) {
+  if (recipient.fcm_token && !(await mutedBy(recipient.id, uid))) {
     try {
       const me = await one(`SELECT name FROM users WHERE id=$1`, [uid]);
       await require("../services/push").sendNotification(
@@ -292,3 +358,6 @@ router.post("/send", async (req, res) => {
 });
 
 module.exports = router;
+// Used by the other paths that deliver a direct message (the assistant's
+// send_agent_message / send_document tools and the inbound auto-reply).
+module.exports.mutedBy = mutedBy;

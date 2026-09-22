@@ -164,27 +164,40 @@ router.get("/groups", async (req, res) => {
   const uid = me(req, res);
   if (uid === null) return;
   try {
+    // THE LIST OBEYS THE SAME CLEAR AND HIDE THE THREAD DOES. Reading
+    // the newest row straight off the table showed a message the owner
+    // had just cleared, and counted it as unread on the way out. One
+    // LATERAL applies the filter once for the preview, and the unread
+    // count uses it too (it also replaces four correlated subqueries).
     const rows = await query(
       `SELECT g.id, g.title, g.created_at,
               (SELECT COUNT(*)::int FROM chat_group_members x WHERE x.group_id = g.id) AS members,
-              (SELECT body FROM chat_group_messages m
-                WHERE m.group_id = g.id ORDER BY m.id DESC LIMIT 1) AS last,
-              (SELECT from_user_id FROM chat_group_messages m
-                WHERE m.group_id = g.id ORDER BY m.id DESC LIMIT 1) AS last_from,
-              (SELECT created_at FROM chat_group_messages m
-                WHERE m.group_id = g.id ORDER BY m.id DESC LIMIT 1) AS last_at,
+              last.body AS last, last.from_user_id AS last_from,
+              last.created_at AS last_at, last.deleted AS last_deleted,
               (SELECT COUNT(*)::int FROM chat_group_messages m
                 WHERE m.group_id = g.id AND m.id > me.last_read_id
-                  AND m.from_user_id <> $1) AS unread,
+                  AND m.from_user_id <> $1
+                  AND m.id > COALESCE(p.cleared_before, 0)
+                  AND NOT EXISTS (
+                        SELECT 1 FROM chat_hidden_messages h
+                         WHERE h.user_id=$1 AND h.kind='group' AND h.message_id=m.id)
+              ) AS unread,
               me.agent_replies,
-              COALESCE((SELECT muted FROM chat_prefs p
-                         WHERE p.user_id=$1 AND p.kind='group'
-                           AND p.ref=g.id::text), 0) AS muted
+              COALESCE(p.muted, 0) AS muted
          FROM chat_groups g
          JOIN chat_group_members me ON me.group_id = g.id AND me.user_id = $1
-        ORDER BY COALESCE(
-          (SELECT created_at FROM chat_group_messages m
-            WHERE m.group_id = g.id ORDER BY m.id DESC LIMIT 1), g.created_at) DESC
+         LEFT JOIN chat_prefs p
+                ON p.user_id = $1 AND p.kind = 'group' AND p.ref = g.id::text
+         LEFT JOIN LATERAL (
+           SELECT m.body, m.from_user_id, m.created_at, m.deleted
+             FROM chat_group_messages m
+            WHERE m.group_id = g.id
+              AND m.id > COALESCE(p.cleared_before, 0)
+              AND NOT EXISTS (
+                    SELECT 1 FROM chat_hidden_messages h
+                     WHERE h.user_id=$1 AND h.kind='group' AND h.message_id=m.id)
+            ORDER BY m.id DESC LIMIT 1) last ON true
+        ORDER BY COALESCE(last.created_at, g.created_at) DESC
         LIMIT 200`,
       [uid]
     );
@@ -193,7 +206,9 @@ router.get("/groups", async (req, res) => {
         id: Number(r.id),
         title: r.title,
         members: r.members,
-        last: r.last || "",
+        last: Number(r.last_deleted) === 1
+          ? "This message was deleted"
+          : r.last || "",
         lastAt: Number(r.last_at || r.created_at),
         unread: r.unread || 0,
         agentReplies: Number(r.agent_replies) === 1,
@@ -216,7 +231,17 @@ router.get("/groups/:id", async (req, res) => {
 
   try {
     const [group, rows, people] = await Promise.all([
-      one(`SELECT id, title FROM chat_groups WHERE id=$1`, [gid]),
+      one(
+        `SELECT g.id, g.title,
+                COALESCE((SELECT muted FROM chat_prefs p
+                           WHERE p.user_id=$2 AND p.kind='group'
+                             AND p.ref=g.id::text), 0) AS muted,
+                COALESCE((SELECT cleared_before FROM chat_prefs p
+                           WHERE p.user_id=$2 AND p.kind='group'
+                             AND p.ref=g.id::text), 0) AS cleared_before
+           FROM chat_groups g WHERE g.id=$1`,
+        [gid, uid]
+      ),
       query(
         `SELECT m.id, m.from_user_id, m.body, m.via, m.deleted, m.created_at, u.name
            FROM chat_group_messages m
@@ -242,7 +267,15 @@ router.get("/groups/:id", async (req, res) => {
     // READING IS READING. Marking here (rather than on a separate call
     // the app might never make) is what stops a member's assistant
     // answering a question they have already seen.
-    const newest = rows.length ? Number(rows[0].id) : Number(mine.last_read_id);
+    // `rows` is already filtered by cleared_before, so a member who
+    // cleared everything saw rows.length === 0 and last_read_id frozen —
+    // while the list went on counting those same messages as unread, for
+    // good. Clearing is reading: the watermark moves past them too.
+    const newest = Math.max(
+      rows.length ? Number(rows[0].id) : 0,
+      Number(group?.cleared_before || 0),
+      Number(mine.last_read_id)
+    );
     if (newest > Number(mine.last_read_id)) {
       await run(
         `UPDATE chat_group_members SET last_read_id=$3
@@ -252,7 +285,15 @@ router.get("/groups/:id", async (req, res) => {
     }
 
     res.json({
-      group: { id: gid, title: group?.title || "", agentReplies: Number(mine.agent_replies) === 1 },
+      group: {
+        id: gid,
+        title: group?.title || "",
+        agentReplies: Number(mine.agent_replies) === 1,
+        // The screen reads this back on every poll; without it the menu
+        // reset to "Mute notifications" and the first tap could only
+        // ever re-mute.
+        muted: Number(group?.muted) === 1,
+      },
       members: people.map((p) => ({ userId: Number(p.id), name: p.name || "" })),
       messages: rows
         .map((r) => ({
