@@ -341,15 +341,19 @@ test("an app the server has no deep link for is handed to the PHONE, not refused
   assert.strictEqual(res.deviceAction.name, "BigBasket");
 });
 
-test("a known provider still gets its deep link rather than a bare launch", async () => {
+test("a known provider is opened BY THE PHONE, by package — never its website", async () => {
   const registry = require("../src/tools/registry");
-  // Swiggy by intent:// lands on its own host WITH a browser fallback, so
-  // it still works on a phone that does not have the app.
+  // Owner, 2026-09-23: "open swiggy" opened the website on a phone
+  // without the app — the intent:// link's browser fallback. The phone
+  // now decides: the app if installed, its Play Store listing if not.
   const res = await registry.get("open_named_app").execute(
-    { app: "Swiggy" }, { platform: "android" }
+    { app: "Swiggy" }, { platform: "android", appBuild: 99 }
   );
-  assert.strictEqual(res.deviceAction.type, "open_url");
-  assert.ok(res.deviceAction.url.includes("package=in.swiggy.android"));
+  assert.strictEqual(res.deviceAction.type, "open_any_app");
+  assert.strictEqual(res.deviceAction.pkg, "in.swiggy.android");
+  assert.strictEqual(res.deviceAction.store_if_missing, true,
+    "a missing app goes to the Play Store, for a plain 'open' too");
+  assert.ok(!JSON.stringify(res).includes("swiggy.com"), "no website");
 });
 
 test("the app resolves an unknown name against what is actually installed", () => {
@@ -381,17 +385,14 @@ test("the app resolves an unknown name against what is actually installed", () =
     "the manifest must declare visibility of launchable apps");
 });
 
-test("open_named_app hands the phone a launchable intent for Swiggy", async () => {
+test("open_named_app names the app and its package for the phone", async () => {
   const registry = require("../src/tools/registry");
   const res = await registry.get("open_named_app").execute(
-    { app: "Swiggy" }, { platform: "android" }
+    { app: "swiggy app" }, { platform: "android" }
   );
   assert.strictEqual(res.ok, true);
-  assert.strictEqual(res.deviceAction.type, "open_url");
-  assert.ok(res.deviceAction.url.startsWith("intent://"), res.deviceAction.url);
-  assert.ok(res.deviceAction.url.includes("package=in.swiggy.android"));
-  // Without the browser fallback a phone that lacks the app dead-ends.
-  assert.ok(res.deviceAction.url.includes("browser_fallback_url"));
+  assert.strictEqual(res.deviceAction.name, "Swiggy");
+  assert.strictEqual(res.deviceAction.pkg, "in.swiggy.android");
   assert.match(res.speak, /Opening Swiggy/i);
 });
 
@@ -965,12 +966,12 @@ test("an app too old to open by name is told so, not lied to", async () => {
   }
 });
 
-test("a deep-linked provider still opens on any build", async () => {
+test("a known provider still opens on a build too old to ask the phone", async () => {
   const registry = require("../src/tools/registry");
-  // Swiggy and the rest go out as a plain URL, which every build has
-  // always handled — the build gate must not break them.
+  // Builds before 34 cannot handle open_any_app; the deep link, which
+  // every build has always handled, is still better than a refusal there.
   const res = await registry.get("open_named_app").execute(
-    { app: "Swiggy" }, { platform: "android", appBuild: 0 }
+    { app: "Swiggy" }, { platform: "android", appBuild: 20 }
   );
   assert.strictEqual(res.ok, true);
   assert.strictEqual(res.deviceAction.type, "open_url");

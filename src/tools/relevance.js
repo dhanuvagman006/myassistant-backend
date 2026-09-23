@@ -42,6 +42,9 @@ const CORE = new Set([
   "search_documents", "create_document",
   "list_calendar_events", "create_calendar_event",
   "open_named_app", "check_recent_actions",
+  // Disappointment rarely names the tool: "this is useless", "why can't
+  // you…" must still reach the developer.
+  "send_developer_feedback",
 ]);
 
 /**

@@ -959,6 +959,36 @@ router.get("/api/activity", async (req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
+/* Feedback — what the assistant told the developer                    */
+/* ------------------------------------------------------------------ */
+
+router.get("/api/feedback", async (req, res) => {
+  const fb = require("../feedback/store");
+  try {
+    const [rows, counts] = await Promise.all([
+      fb.list({
+        status: String(req.query.status || ""),
+        q: String(req.query.q || "").trim(),
+        limit: req.query.limit,
+        offset: req.query.offset,
+      }),
+      fb.counts(),
+    ]);
+    res.json({ feedback: rows, counts });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post("/api/feedback/:id(\\d+)", async (req, res) => {
+  const ok = await require("../feedback/store")
+    .setStatus(req.params.id, String(req.body?.status || ""))
+    .catch(() => false);
+  if (!ok) return res.status(400).json({ error: "unknown feedback or status" });
+  res.json({ ok: true });
+});
+
+/* ------------------------------------------------------------------ */
 /* Feature flags (live overrides, read by /config)                     */
 /* ------------------------------------------------------------------ */
 

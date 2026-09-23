@@ -216,6 +216,7 @@ const NAV = [
   ["#/recordings", "Recordings"],
   ["#/documents", "Documents"],
   ["#/activity", "Activity"],
+  ["#/feedback", "Feedback"],
   ["#/outcomes", "Task outcomes"],
   ["#/broadcast", "Notifications"],
   ["#/flags", "Feature flags"],
@@ -268,6 +269,7 @@ async function render() {
     if (hash.startsWith("#/recordings")) return await viewRecordings();
     if (hash.startsWith("#/documents")) return await viewDocuments();
     if (hash.startsWith("#/activity")) return await viewActivity();
+    if (hash.startsWith("#/feedback")) return await viewFeedback();
     if (hash.startsWith("#/outcomes")) return await viewOutcomes();
     if (hash.startsWith("#/broadcast")) return await viewBroadcast();
     if (hash.startsWith("#/flags")) return await viewFlags();
@@ -1024,6 +1026,94 @@ async function viewActivity() {
     h("div", { class: "card table-card" },
       h("table", {},
         h("thead", {}, h("tr", {}, h("th", {}, "When"), h("th", {}, "User"), h("th", {}, "Action"), h("th", {}, "Detail"))),
+        body),
+      moreBtn)));
+  await load(false);
+}
+
+/* ------------------------------------------------------------------ */
+/* Feedback — what the assistant told the developer                    */
+/* ------------------------------------------------------------------ */
+
+const FEEDBACK_KIND = {
+  bug: ["Bug", "danger"],
+  complaint: ["Complaint", "warn"],
+  feature: ["Feature request", "accent"],
+  improvement: ["Improvement", "neutral"],
+  praise: ["Praise", "good"],
+};
+
+async function viewFeedback() {
+  shell("#/feedback", loading());
+  let status = "new", q = "", offset = 0;
+  const body = h("tbody", {});
+  const moreBtn = h("button", { class: "btn", style: "margin:12px;" }, "Load more");
+  const tabs = h("div", { style: "display:flex; gap:8px;" });
+
+  function drawTabs(counts) {
+    const tab = (value, label) => h("button", {
+      class: "btn sm" + (status === value ? " primary" : ""),
+      onclick: () => { status = value; offset = 0; load(false).catch((e) => toast(e.message, true)); },
+    }, label);
+    tabs.replaceChildren(
+      tab("new", `New (${counts.new})`),
+      tab("seen", `Seen (${counts.seen})`),
+      tab("done", `Done (${counts.done})`),
+      tab("", "All"));
+  }
+
+  async function setStatus(id, next) {
+    try {
+      await api("/feedback/" + id, { method: "POST", body: { status: next } });
+      toast(next === "done" ? "Marked done." : "Marked seen.");
+      offset = 0;
+      await load(false);
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function load(append) {
+    const d = await api(`/feedback?status=${status}&q=${encodeURIComponent(q)}&offset=${offset}&limit=50`);
+    drawTabs(d.counts);
+    const rows = d.feedback.map((f) => {
+      const [kindLabel, tone] = FEEDBACK_KIND[f.kind] || [f.kind, "neutral"];
+      const actions = h("div", { style: "display:flex; gap:6px; justify-content:flex-end;" },
+        f.status === "new" ? h("button", { class: "btn sm", onclick: () => setStatus(f.id, "seen") }, "Seen") : null,
+        f.status !== "done" ? h("button", { class: "btn sm primary", onclick: () => setStatus(f.id, "done") }, "Done") : null,
+        f.status === "done" ? h("button", { class: "btn sm", onclick: () => setStatus(f.id, "new") }, "Reopen") : null);
+      return h("tr", {},
+        h("td", { class: "sub", style: "white-space:nowrap;" }, timeAgo(f.created_at)),
+        h("td", {}, h("span", { class: "badge " + tone }, kindLabel)),
+        h("td", {},
+          h("div", { style: "font-weight:600;" }, f.summary),
+          f.details ? h("div", { class: "sub", style: "margin-top:4px;" }, f.details) : null,
+          f.user_words ? h("div", { class: "sub", style: "margin-top:4px; font-style:italic;" }, "“" + f.user_words + "”") : null),
+        h("td", {}, f.user_id
+          ? h("a", { href: "#/user/" + f.user_id }, f.name || f.email || "#" + f.user_id)
+          : h("span", { class: "faint" }, "—"),
+          h("div", { class: "sub" }, [f.source, f.app_build ? "build " + f.app_build : ""].filter(Boolean).join(" · "))),
+        h("td", {}, actions));
+    });
+    if (!append) body.replaceChildren();
+    if (rows.length) body.append(...rows);
+    else if (!append) body.append(h("tr", {}, h("td", { colspan: 5, class: "chart-empty" },
+      status === "new" ? "No new feedback — all caught up." : "Nothing here.")));
+    moreBtn.disabled = d.feedback.length < 50;
+  }
+  moreBtn.addEventListener("click", () => { offset += 50; load(true).catch((e) => toast(e.message, true)); });
+
+  const search = h("input", {
+    class: "input", style: "max-width:240px;", placeholder: "Search feedback…",
+    oninput: debounce((e) => { q = e.target.value.trim(); offset = 0; load(false).catch((x) => toast(x.message, true)); }, 300),
+  });
+
+  shell("#/feedback", h("div", {},
+    h("div", { class: "page-head" },
+      h("div", {}, h("div", { class: "page-title" }, "Feedback"),
+        h("div", { class: "page-sub" }, "What the assistant reported about the app — bugs, missing features, complaints and ideas from users' conversations.")),
+      h("div", { style: "display:flex; gap:8px; align-items:center;" }, tabs, search)),
+    h("div", { class: "card table-card" },
+      h("table", {},
+        h("thead", {}, h("tr", {}, h("th", {}, "When"), h("th", {}, "Type"), h("th", {}, "Feedback"), h("th", {}, "From"), h("th", {}, ""))),
         body),
       moreBtn)));
   await load(false);

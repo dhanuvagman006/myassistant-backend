@@ -562,6 +562,69 @@ function registerBuiltins() {
     },
   });
 
+  // FEEDBACK TO THE DEVELOPER. Owner's brief, 2026-09-23: the assistant
+  // should be able to tell the developer how to improve the app, and it
+  // should appear in the admin panel (Feedback). No `speak`: the model
+  // decides whether to mention it — only when the user asked it to pass
+  // something on (see agents/owner.js).
+  registry.register({
+    name: "send_developer_feedback",
+    description:
+      "Send feedback about THIS APP to its developer — it lands in the " +
+      "developer's admin panel. Call it when the user is unhappy with you " +
+      "or the app ('this is useless', 'why can't you…'), reports a bug or " +
+      "something that did not work, asks for a feature or suggestion the " +
+      "app does not have, or says 'tell the developer', 'send feedback', " +
+      "'report this' — and when YOU could not do what they asked because " +
+      "the app lacks it. Write a specific summary a developer can act on: " +
+      "what they tried, what happened, what they wanted. Call it alongside " +
+      "your answer; mention it only if they asked you to pass it on.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          enum: ["bug", "feature", "complaint", "improvement", "praise"],
+          description:
+            "bug = something broke; feature = something the app cannot do " +
+            "yet; complaint = they are unhappy with how it behaved; " +
+            "improvement = it works but could be better; praise = they " +
+            "loved something.",
+        },
+        summary: {
+          type: "string",
+          description:
+            "One line a developer can act on, e.g. \"'Open Swiggy' opened " +
+            "the website instead of the app\".",
+        },
+        details: {
+          type: "string",
+          description:
+            "What they asked, what happened, what they expected. Optional.",
+        },
+        user_words: {
+          type: "string",
+          description: "Their own words, if worth quoting. Optional.",
+        },
+      },
+      required: ["summary"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const r = await require("../feedback/store").add(ctx.userId, {
+        kind: args.kind,
+        summary: args.summary,
+        details: args.details,
+        userWords: args.user_words,
+        source: ctx.source || "text",
+        appBuild: ctx.appBuild,
+      });
+      if (!r.ok) return { ok: false, error: r.error };
+      return { ok: true, data: { sent: true, duplicate: r.duplicate } };
+    },
+  });
+
   registry.register({
     name: "call_recall",
     description:
@@ -4339,11 +4402,10 @@ function registerBuiltins() {
       "When they want something DONE rather than opened — order a dish, " +
       "book a cab, get tickets — use order_food, book_ride or " +
       "book_movie_tickets instead; those prepare the real target.\n" +
-      "'DOWNLOAD X', 'INSTALL X', 'GET X': use this tool with " +
-      "store_if_missing true. People say download for an app they already " +
-      "have — so it OPENS when the phone has it, and goes to the Play " +
-      "Store page only when it genuinely does not. Never set it for a " +
-      "plain 'open X'.",
+      "IF IT IS NOT INSTALLED the phone opens its Play Store page so they " +
+      "can install it, and offers to open it once it is in — so 'open X', " +
+      "'download X', 'install X' and 'get X' all go through this tool. " +
+      "Never answer 'open Swiggy' with the website.",
     risk: "low",
     deviceAction: true,
     inputSchema: {
@@ -4358,7 +4420,7 @@ function registerBuiltins() {
         store_if_missing: {
           type: "boolean",
           description:
-            "True when the user asked to download/install/get the app: it still opens the app if they already have it, and only falls back to the Play Store when they do not.",
+            "Kept for older callers; the Play Store fallback now applies to every request.",
         },
       },
       required: ["app"],
@@ -4384,16 +4446,30 @@ function registerBuiltins() {
       // open_any_app, which looks, opens it if it is there, and goes to
       // the Play Store if it is not. A plain "open X" keeps the deep
       // link, which has always worked.
-      const wantsStore = args.store_if_missing === true;
-      const link = wantsStore
-        ? null
-        : deeplinks.launch({ name: asked, platform: ctx.platform });
-      if (link) {
-        return {
-          ok: true,
-          deviceAction: { type: "open_url", url: link.url },
-          speak: `Opening ${link.label}.`,
-        };
+      // OPEN MEANS THE APP. Owner, 2026-09-23: "when I say open swiggy
+      // it opens website… check swiggy is present, if not then open
+      // playstore… and then open that app". A known provider used to be
+      // short-circuited to its intent:// deep link, whose browser fallback
+      // turned "not installed" into the website. On Android the PHONE now
+      // always decides: open it if it is there; if not, the Play Store —
+      // the exact listing when the package is known — and the app offers
+      // to open it once installed. iOS has no package list to ask; its
+      // universal link still opens the app when present.
+      const key = deeplinks.resolveAppName(asked);
+      const known = key ? deeplinks.PROVIDERS[key] : null;
+      const label = known ? known.label : asked;
+      const build = Number(ctx.appBuild) || 0;
+      const OPEN_ANY_APP_FROM = 34;
+      const oldBuild = build > 0 && build < OPEN_ANY_APP_FROM;
+      if (ctx.platform === "ios" || (known && oldBuild)) {
+        const link = deeplinks.launch({ name: asked, platform: ctx.platform });
+        if (link) {
+          return {
+            ok: true,
+            deviceAction: { type: "open_url", url: link.url },
+            speak: `Opening ${link.label}.`,
+          };
+        }
       }
       // AN OLD APP CANNOT DO THIS, AND MUST NOT BE TOLD IT DID.
       //
@@ -4405,8 +4481,6 @@ function registerBuiltins() {
       // Builds that predate version reporting send 0, so unknown counts as
       // too old: guessing in the other direction produces exactly the
       // silent failure this avoids.
-      const OPEN_ANY_APP_FROM = 34;
-      const build = Number(ctx.appBuild) || 0;
       // UNKNOWN IS NOT OLD.
       //
       // Treating a missing build as 0 meant a dropped X-App-Build header
@@ -4419,7 +4493,7 @@ function registerBuiltins() {
       // cannot now ends in an honest device_result failure the assistant
       // reports. So only a build we actually KNOW to be too old is
       // refused.
-      if (build > 0 && build < OPEN_ANY_APP_FROM) {
+      if (oldBuild) {
         return {
           ok: false,
           error: "app_too_old",
@@ -4443,12 +4517,12 @@ function registerBuiltins() {
         ok: true,
         deviceAction: {
           type: "open_any_app",
-          name: asked,
-          store_if_missing: wantsStore,
+          name: label,
+          pkg: known ? known.pkg : "",
+          // Every request: an app they do not have goes to the Store.
+          store_if_missing: true,
         },
-        speak: wantsStore
-          ? `Let me open ${asked} — I'll get you the Play Store if it isn't installed.`
-          : `Opening ${asked}.`,
+        speak: `Opening ${label}.`,
       };
     },
   });

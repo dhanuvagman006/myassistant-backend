@@ -64,6 +64,7 @@ const USER_TABLES = [
   ["mcp_servers", "user_id"],
   ["assistant_profiles", "user_id"], // assistant name/voice/face choices
   ["user_instructions", "user_id"], // standing rules
+  ["developer_feedback", "user_id"], // what the assistant reported for them
   ["inbound_calls", "user_id"],
   ["inbound_numbers", "user_id"],
   ["inbound_settings", "user_id"],

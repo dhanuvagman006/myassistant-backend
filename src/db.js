@@ -294,6 +294,26 @@ async function init() {
     ALTER TABLE call_records ADD COLUMN IF NOT EXISTS
       facts TEXT NOT NULL DEFAULT '[]';
 
+    -- What the assistant tells the developer about the app — bugs,
+    -- missing features, complaints, ideas (send_developer_feedback).
+    -- Read in the admin panel under Feedback.
+    CREATE TABLE IF NOT EXISTS developer_feedback (
+      id         BIGSERIAL PRIMARY KEY,
+      user_id    INTEGER NOT NULL,
+      kind       TEXT NOT NULL DEFAULT 'improvement', -- bug|feature|complaint|improvement|praise
+      summary    TEXT NOT NULL,
+      details    TEXT NOT NULL DEFAULT '',
+      user_words TEXT NOT NULL DEFAULT '',
+      source     TEXT NOT NULL DEFAULT 'assistant',   -- live | text | …
+      app_build  INTEGER NOT NULL DEFAULT 0,
+      status     TEXT NOT NULL DEFAULT 'new',         -- new|seen|done
+      created_at BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_feedback_status
+      ON developer_feedback (status, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_feedback_user
+      ON developer_feedback (user_id, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS user_devices (
       user_id    INTEGER PRIMARY KEY,
       platform   TEXT NOT NULL DEFAULT '',

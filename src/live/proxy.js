@@ -193,6 +193,7 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "could simply do it and tell them afterwards. Asking permission for " +
     "something harmless is another way of handing the work back. ";
   let prompt = `You are ${assistantName}, a warm, quick-witted personal voice assistant from India. ` +
+    require("../agents/owner").OWNER_RULE +
     doItRule +
     actFirstRule +
     noLectureRule +
