@@ -54,20 +54,19 @@ Also update `PUBLIC_BASE_URL` in the ConfigMap to the real https URL
 (OAuth callbacks and Plivo webhooks depend on it), then restart:
 `kubectl -n myassistant rollout restart deploy/myassistant-backend`.
 
-## 4. Autoscaling — read this first
+## 4. Autoscaling — not yet: run ONE replica
 
-The app now runs on Postgres (`k8s/05-postgres.yaml`), so the HPA is
-safe to apply. Install Metrics Server first if the cluster lacks it:
+Postgres is multi-writer, but the app is not yet: assistant sessions,
+agent-call records, the daily call quota, rate limits and the proactive
+scheduler all live in process memory. With two pods, a voice session's
+follow-up request can land on the pod that never saw it (404), a call's
+webhook on the pod that did not place it, and every pod runs the
+scheduler — so a patient recall can be phoned twice. The old
+`k8s/40-hpa.yaml` (minReplicas: 2) was deleted for that reason.
 
-```bash
-kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
-```
-
-Then: `kubectl apply -f k8s/40-hpa.yaml`. The Deployment already uses
-RollingUpdate. Existing SQLite data can be imported with
-`scripts/migrate-sqlite-to-postgres.js` (usage in the file header).
-Note: the document-files PVC is ReadWriteOnce, so replicas co-locate on
-one node; for multi-node scale-out move files to S3-compatible storage.
+Scaling out needs that state moved into Postgres first (tracked in the
+audit plan, P3). The document-files PVC is also ReadWriteOnce, so
+multi-node additionally needs S3-compatible storage.
 
 ## 5. Monitoring, logs, alerts
 

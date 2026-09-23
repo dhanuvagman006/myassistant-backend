@@ -1,11 +1,19 @@
-# Deployment for MYASSISTANT_BACKEND
+# Deployment for MYASSISTANT_BACKEND — the shape production runs.
 #
-# DB is Postgres (see 05-postgres.yaml) → many pods can write safely, so
-# RollingUpdate gives zero-downtime deploys and the HPA (40-hpa.yaml) can
-# scale replicas. The PVC now holds ONLY user document files (DATA_DIR/files);
-# note it is ReadWriteOnce, so all replicas schedule onto the same node —
-# fine on a single-node k3s. For multi-node scaling later, move files to
-# S3-compatible storage or an RWX StorageClass.
+# ██ DO NOT `kubectl apply` THIS FILE TO PRODUCTION YET. ██
+# The live Deployment also carries ~25 env vars set by hand with
+# `kubectl set env` — model names, avatar/LiveKit settings AND several
+# secrets — which are not (and must not be) in this file. Applying it
+# would delete them. Change the live spec with `kubectl patch` until those
+# values have been moved into the myassistant-secrets Secret and the
+# myassistant-config ConfigMap; after that this file is safe to apply.
+#
+# Image: built on the VPS and loaded into k3s by scripts/deploy_vps.sh —
+# there is no registry, hence imagePullPolicy: Never.
+#
+# ONE REPLICA. Assistant sessions, agent-call records, rate limits and the
+# scheduler live in process memory, so a second pod would split them (see
+# DEPLOYMENT.md §4). The PVC is ReadWriteOnce, so it is single-node as well.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -14,7 +22,7 @@ metadata:
   labels:
     app: myassistant-backend
 spec:
-  replicas: 1  # HPA takes over replica count once 40-hpa.yaml is applied
+  replicas: 1 # see header: in-memory state makes more than one unsafe
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -32,8 +40,17 @@ spec:
         fsGroup: 1000 # node user in the image — makes the PVC writable
       containers:
         - name: backend
-          # CI overwrites this tag on every deploy (kubectl set image).
-          image: ghcr.io/dhanuvagman006/myassistant_backend:latest
+          image: docker.io/library/myassistant-backend:local
+          imagePullPolicy: Never
+          # ZERO-DOWNTIME HANDOVER. On SIGTERM the server stops accepting
+          # at once, but the ingress keeps routing to this pod for a few
+          # seconds while the endpoint removal propagates — which showed up
+          # as a 502 during the 2026-09-23 deploy. The pause keeps it
+          # serving through that window; 30 s of grace covers pause + drain.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
           ports:
             - name: http
               containerPort: 3000
@@ -45,6 +62,11 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /app/data
+            # Push + phone verification credential, from a Secret so it
+            # never lands in an image layer.
+            - name: firebase
+              mountPath: /app/firebase-adminsdk.json
+              subPath: firebase-adminsdk.json
           resources:
             requests:
               cpu: 100m
@@ -69,6 +91,9 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: myassistant-data
+        - name: firebase
+          secret:
+            secretName: firebase-adminsdk
 ---
 apiVersion: v1
 kind: Service

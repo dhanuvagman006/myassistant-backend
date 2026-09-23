@@ -368,10 +368,10 @@ Ops: `ADMIN_KEY`, `METRICS_TOKEN`, `NODE_ENV`.
 
 ## Deploy
 Deploy to an **India region** (AWS ap-south-1 Mumbai / GCP asia-south1) per the
-contract's data-residency commitment (Section 5.1). Any Node 20+ host works
-(Railway, Render, EC2, Cloud Run); `Dockerfile`, `docker-compose.yml` and `k8s/`
-are included. Postgres replaces the old single-writer SQLite so the deployment
-can scale horizontally behind the HPA.
+contract's data-residency commitment (Section 5.1). Production today is a
+single-node k3s on a Hostinger VPS in **Mumbai** (verified 2026-09-23), deployed
+with `scripts/deploy_vps.sh` — see DEPLOYMENT.md. Node 22+. Run **one replica**:
+sessions and call state are still in process memory (DEPLOYMENT.md §4).
 
 ## Security notes
 - AI provider keys live only here, never in the app.
