@@ -18,6 +18,7 @@
  * working on built-ins; one bad server never takes the assistant down.
  */
 const registry = require("../tools/registry");
+const { safeFetch } = require("../services/safeFetch");
 
 const CONNECT_TIMEOUT_MS = Number(process.env.MCP_CONNECT_TIMEOUT_MS) || 12_000;
 const CALL_TIMEOUT_MS = Number(process.env.MCP_CALL_TIMEOUT_MS) || 30_000;
@@ -108,16 +109,21 @@ async function buildTransport(row, secrets) {
     headers.Authorization = `Bearer ${secrets.token}`;
   }
 
+  // The URL is user-chosen: every request goes through safeFetch so a
+  // "server" at 10.x or 169.254.169.254 cannot be used to probe the
+  // cluster (SSRF). No overall timeout — an SSE stream is long-lived.
   if (transport === "sse") {
     const { SSEClientTransport } = require("@modelcontextprotocol/sdk/client/sse.js");
     return new SSEClientTransport(new URL(url), {
       requestInit: { headers },
       eventSourceInit: { headers },
+      fetch: safeFetch,
     });
   }
   const { StreamableHTTPClientTransport } = require("@modelcontextprotocol/sdk/client/streamableHttp.js");
   return new StreamableHTTPClientTransport(new URL(url), {
     requestInit: { headers },
+    fetch: safeFetch,
   });
 }
 

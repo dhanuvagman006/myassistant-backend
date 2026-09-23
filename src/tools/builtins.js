@@ -8,6 +8,7 @@
  */
 const registry = require("./registry");
 const { normalizePhone } = require("../users/phone");
+const { safeFetch } = require("../services/safeFetch");
 
 /// Parses a model-supplied datetime as the USER's wall-clock time.
 /// Models routinely emit bare ISO strings ("2026-09-04T17:00:00"); the old
@@ -5330,14 +5331,14 @@ function registerBuiltins() {
       }
       let html, mime;
       try {
-        const r = await fetch(url, {
-          redirect: "follow",
+        // safeFetch: the URL is model-chosen, so it must not reach this
+        // server's own network (SSRF) — see services/safeFetch.js.
+        const r = await safeFetch(url, {
           headers: {
             "user-agent": "Mozilla/5.0 (Android) MyAssistant/1.0",
             accept: "text/html,application/xhtml+xml",
           },
-          signal: AbortSignal.timeout(20000),
-        });
+        }, { timeoutMs: 20000 });
         if (!r.ok) return { ok: false, error: `the site returned ${r.status}` };
         mime = String(r.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
         if (mime && !/^text\/(html|plain)$|xhtml/.test(mime)) {
@@ -7201,11 +7202,9 @@ function registerBuiltins() {
       if (!/^https?:\/\//i.test(url)) return { ok: false, error: "need a full http(s) URL" };
       let buf, mime;
       try {
-        const r = await fetch(url, {
-          redirect: "follow",
+        const r = await safeFetch(url, {
           headers: { "user-agent": "Mozilla/5.0 (Android) MyAssistant/1.0" },
-          signal: AbortSignal.timeout(20000),
-        });
+        }, { timeoutMs: 20000 });
         if (!r.ok) return { ok: false, error: `the site returned ${r.status}` };
         mime = String(r.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
         const OK = new Set(["application/pdf", "image/jpeg", "image/png", "image/webp"]);
@@ -7216,9 +7215,24 @@ function registerBuiltins() {
             data: { hint: "offer to OPEN it with open_webpage instead; do not claim it was saved" },
           };
         }
-        buf = Buffer.from(await r.arrayBuffer());
+        // Cap while downloading: arrayBuffer() pulled the whole file into
+        // memory before the size check could refuse it.
+        const MAX = 18 * 1024 * 1024;
+        const reader = r.body.getReader();
+        const chunks = [];
+        let size = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.length;
+          if (size > MAX) {
+            try { await reader.cancel(); } catch (_) {}
+            return { ok: false, error: "that file is too large to save (18 MB max)" };
+          }
+          chunks.push(value);
+        }
+        buf = Buffer.concat(chunks.map(Buffer.from));
         if (!buf.length) return { ok: false, error: "the file came back empty" };
-        if (buf.length > 18 * 1024 * 1024) return { ok: false, error: "that file is too large to save (18 MB max)" };
       } catch (e) {
         return { ok: false, error: `could not download it: ${String(e.message).slice(0, 120)}` };
       }

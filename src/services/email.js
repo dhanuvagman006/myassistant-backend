@@ -22,6 +22,7 @@ const { simpleParser } = require("mailparser");
 const { query } = require("../db");
 const { generateReply } = require("./ai/router");
 const { encryptSecrets, decryptSecrets } = require("../mcp/schema");
+const { assertPublicHost } = require("./safeFetch");
 
 // Known providers; anything else falls back to imap.<domain>/smtp.<domain>.
 const PRESETS = {
@@ -224,6 +225,16 @@ async function connectAccount(userId, { address, password, imapHost, smtpHost })
   if (pass.length < 6) throw new Error("password looks too short");
   const hosts = hostsFor(addr, imapHost, smtpHost);
   const acc = { address: addr, password: pass, imapHost: hosts.imap, smtpHost: hosts.smtp };
+
+  // The hosts are user-typed and the login error is echoed back, so an
+  // internal host would turn this into a port scanner for the cluster.
+  for (const [what, host] of [["IMAP", hosts.imap], ["SMTP", hosts.smtp]]) {
+    try {
+      await assertPublicHost(host);
+    } catch (_) {
+      throw new Error(`${what} server ${host} is not a public mail server`);
+    }
+  }
 
   const client = imapClient(acc);
   try {
