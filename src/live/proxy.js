@@ -1301,7 +1301,8 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         // between — `userTurns` advances on real input transcription — so
         // the model cannot approve on the user's behalf by immediately
         // calling again.
-        const tool = require("../tools/registry").get(fc.name);
+        const registry = require("../tools/registry");
+        const tool = registry.get(fc.name);
         // TWO DIFFERENT QUESTIONS, ONE FLAG. `approved` used to mean both
         // "this is not high-risk" and "the user confirmed this action" —
         // and because it defaulted to true, the input-quality gate (which
@@ -1310,7 +1311,10 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         // strength of a mis-heard syllable. The high-risk handshake below
         // keeps its own flag; the gate sees the truth.
         let userConfirmed = false;
-        if (tool && tool.risk === "high") {
+        // Same question the registry asks (high risk, or a send after an
+        // email/web page entered this session), so the spoken handshake
+        // and the gate inside execute() cannot disagree.
+        if (tool && registry.requiresConfirmation(fc.name, { session: liveState, turnId: currentTurnId })) {
           const key = `${fc.name}:${JSON.stringify(fc.args || {})}`;
           if (pendingApproval && pendingApproval.key === key && userTurns > pendingApproval.askedAtTurn) {
             userConfirmed = true; // they said yes out loud, in between
