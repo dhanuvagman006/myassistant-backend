@@ -81,6 +81,21 @@ router.post("/login", async (req, res) => {
 
 // ---------------- GOOGLE ----------------
 
+/**
+ * Which Google web clients may mint a sign-in token for us. Normally one:
+ * GOOGLE_WEB_CLIENT_ID. During a move to a new OAuth client, installed
+ * apps still carry the OLD client id until they update, so
+ * GOOGLE_WEB_CLIENT_ID_LEGACY (comma-separated) keeps them signing in.
+ * Google's `sub` is the same person across clients, so an account signed
+ * in through either one is the same account. Remove the legacy value once
+ * every install is on the new build.
+ */
+function googleAudiences() {
+  const legacy = String(process.env.GOOGLE_WEB_CLIENT_ID_LEGACY || "")
+    .split(",").map((s) => s.trim()).filter(Boolean);
+  return [process.env.GOOGLE_WEB_CLIENT_ID, ...legacy].filter(Boolean);
+}
+
 router.post("/google", async (req, res) => {
   const { idToken } = req.body || {};
   if (!idToken) return res.status(400).json({ error: "idToken required" });
@@ -92,7 +107,7 @@ router.post("/google", async (req, res) => {
   try {
     const ticket = await googleClient.verifyIdToken({
       idToken,
-      audience: process.env.GOOGLE_WEB_CLIENT_ID,
+      audience: googleAudiences(),
     });
     const p = ticket.getPayload();
     const { user, created } = await db.upsertSocialUser({
@@ -172,3 +187,4 @@ router.get("/me", async (req, res) => {
 });
 
 module.exports = router;
+module.exports.googleAudiences = googleAudiences; // tests

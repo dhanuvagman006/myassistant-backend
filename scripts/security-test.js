@@ -429,6 +429,23 @@ async function mount(router, userId = 1) {
     }
   });
 
+  await atest("during a Google client move, both the new and the old client may sign in", () => {
+    const saved = { id: process.env.GOOGLE_WEB_CLIENT_ID, legacy: process.env.GOOGLE_WEB_CLIENT_ID_LEGACY };
+    try {
+      const { googleAudiences } = require("../src/routes/auth");
+      process.env.GOOGLE_WEB_CLIENT_ID = "new.apps.googleusercontent.com";
+      delete process.env.GOOGLE_WEB_CLIENT_ID_LEGACY;
+      assert.deepStrictEqual(googleAudiences(), ["new.apps.googleusercontent.com"]);
+      process.env.GOOGLE_WEB_CLIENT_ID_LEGACY = " old.apps.googleusercontent.com , ";
+      assert.deepStrictEqual(googleAudiences(),
+        ["new.apps.googleusercontent.com", "old.apps.googleusercontent.com"]);
+    } finally {
+      for (const [k, v] of [["GOOGLE_WEB_CLIENT_ID", saved.id], ["GOOGLE_WEB_CLIENT_ID_LEGACY", saved.legacy]]) {
+        if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      }
+    }
+  });
+
   await atest("social sign-in refuses when its audience is not configured", async () => {
     const saved = { g: process.env.GOOGLE_WEB_CLIENT_ID, a: process.env.APPLE_BUNDLE_ID };
     delete process.env.GOOGLE_WEB_CLIENT_ID;
