@@ -124,8 +124,12 @@ engine._setIndex(engine.buildIndex(entries));
   test("adding packs does not add tool declarations", () => {
     const registry = require("../src/tools/registry");
     require("../src/tools/builtins").registerBuiltins();
+    // indian_law / indian_case_law (d2cad66) are live Indian Kanoon
+    // lookups, not packs — they are outside this invariant.
+    const LIVE_SOURCES = new Set(["indian_law", "indian_case_law"]);
     const knowledgeTools = registry.list().filter((t) =>
-      /knowledge|legal|law|health|tax|travel|govt/i.test(t.name));
+      /knowledge|legal|law|health|tax|travel|govt/i.test(t.name) &&
+      !LIVE_SOURCES.has(t.name));
     assert.strictEqual(knowledgeTools.length, 1,
       `five domains must cost ONE declaration, got: ${knowledgeTools.map((t) => t.name).join(", ")}`);
     assert.ok(registry.get("consult_knowledge"));

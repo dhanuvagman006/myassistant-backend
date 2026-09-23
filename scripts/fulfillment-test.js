@@ -744,7 +744,7 @@ test("a live question and a settled fact do not get the same lifetime", () => {
 test("the search path consults the shared store before a provider", () => {
   const src = require("fs").readFileSync(__dirname + "/../src/tools/webSearch.js", "utf8");
   const sharedAt = src.indexOf("searchCache.get(");
-  const providerAt = src.indexOf("await BACKENDS[p](q)");
+  const providerAt = src.indexOf("await BACKENDS[p](q");
   assert.ok(sharedAt > 0 && providerAt > 0, "both paths must exist");
   assert.ok(sharedAt < providerAt,
     "the shared cache must be read BEFORE spending a search");
@@ -930,20 +930,25 @@ test("an app too old to open by name is told so, not lied to", async () => {
   // open_any_app is handled from build 34. An older app has no case for
   // that event, ignores it silently — and the tool has already said
   // "Opening it." The claim checker cannot catch that, because the tool
-  // genuinely ran. Builds predating version reporting send 0, so unknown
-  // must count as too old.
-  for (const build of [0, 13, 33]) {
+  // genuinely ran. Only a build KNOWN to be old is refused: since 51378ac
+  // a missing build (0) is attempted, and an old phone that cannot do it
+  // ends in an honest device_result failure instead.
+  for (const build of [13, 33]) {
     const res = await registry.get("open_named_app").execute(
       { app: "BigBasket" }, { platform: "android", appBuild: build }
     );
     assert.strictEqual(res.ok, false, `build ${build} must not be told it opened`);
-    assert.match(res.error, /too old/i);
-    assert.match(res.error, /do NOT claim it opened/i);
+    assert.strictEqual(res.error, "app_too_old");
+    assert.match(res.data.hint, /too old/i);
+    assert.match(res.data.hint, /Never claim .* opened/i);
   }
-  const ok = await registry.get("open_named_app").execute(
-    { app: "BigBasket" }, { platform: "android", appBuild: 34 }
-  );
-  assert.strictEqual(ok.deviceAction.type, "open_any_app");
+  for (const build of [0, 34]) {
+    const ok = await registry.get("open_named_app").execute(
+      { app: "BigBasket" }, { platform: "android", appBuild: build }
+    );
+    assert.strictEqual(ok.deviceAction.type, "open_any_app",
+      `build ${build} must not be refused`);
+  }
 });
 
 test("a deep-linked provider still opens on any build", async () => {
@@ -994,58 +999,51 @@ test("a correction is answered with an action, not a defence", () => {
 /* ------------------------------------------------------------------ *
  * A PLACE THEY NAMED BEATS THE PLACE THEY ARE STANDING
  *
- * Every Places search was biased to a 5 km circle around the user's own
- * coordinates, so "wine shop near the KSRTC bus stand in Bejai,
- * Mangalore" was looked for within 5 km of a phone in another city and
- * answered "I'm not finding any" — three times in one session, for
- * places that plainly exist.
+ * "wine shop near the KSRTC bus stand in Bejai, Mangalore" was once
+ * looked for within 5 km of a phone in another city. The Places API was
+ * dropped for web search in d4ae7ff (owner's decision, 2026-09-14);
+ * services/tools/places.js is now a shim over it, and these pin what the
+ * shim must still get right.
  * ------------------------------------------------------------------ */
 
-test("search_places can be told which area to search", () => {
-  const registry = require("../src/tools/registry");
-  const t = registry.get("search_places");
-  assert.ok(t.inputSchema.properties.near, "there must be a way to name an area");
-  assert.match(t.inputSchema.properties.near.description, /Leave EMPTY/i,
-    "and it must be clear when NOT to set it, or 'near me' breaks");
-});
+async function withStubbedSearch(stub, fn) {
+  const ws = require("../src/tools/webSearch");
+  const real = ws.run;
+  ws.run = stub;
+  try { return await fn(); } finally { ws.run = real; }
+}
 
-test("a named area drops the bias toward the user's own coordinates", () => {
-  const src = require("fs").readFileSync(__dirname + "/../src/services/tools/places.js", "utf8");
-  // The bias must be conditional on `near` being absent. Applied anyway,
-  // it fights the text query and suppresses the right answers.
-  assert.match(src, /\.\.\.\(!near && Number\.isFinite\(lat\)/,
-    "locationBias must only apply when no area was named");
-  assert.match(src, /textQuery: near \? /,
-    "the named area must reach the query itself");
-});
-
-test("distance is only reported when it is measured from the user", () => {
-  const src = require("fs").readFileSync(__dirname + "/../src/services/tools/places.js", "utf8");
-  // "2.3 km" measured from the wrong city reads as a lie.
-  assert.match(src, /if \(!where && Number\.isFinite\(lat\)/,
-    "distances must be skipped for a search about somewhere else");
-});
-
-test("the cache distinguishes the same query in different areas", () => {
-  const src = require("fs").readFileSync(__dirname + "/../src/services/tools/places.js", "utf8");
-  // Without the area in the key, "wine shop" in Mangalore would serve the
-  // cached Bangalore answer to the next person who asked.
-  assert.match(src, /const key = `\$\{q\.toLowerCase\(\)\}\|\$\{where\.toLowerCase\(\)\}/,
-    "the area must be part of the cache key");
-});
-
-test("a miss says WHERE it looked, so the answer is actionable", async () => {
-  const registry = require("../src/tools/registry");
+test("a named area reaches the search itself", async () => {
   const places = require("../src/services/tools/places");
-  const real = places.searchPlaces;
-  places.searchPlaces = async () => [];
-  const res = await registry.get("search_places").execute(
-    { query: "wine shop", near: "Bejai, Mangalore" }, {}
-  );
-  places.searchPlaces = real;
-  assert.strictEqual(res.ok, false);
-  assert.match(res.error, /Bejai, Mangalore/,
-    "'no places found' does not tell the user the search looked in the wrong city");
+  let asked = "";
+  await withStubbedSearch(async (q) => { asked = q; return { ok: true, data: [] }; }, () =>
+    places.searchPlaces({ q: "wine shop", near: "Bejai, Mangalore", lat: 12.97, lng: 77.59 }));
+  assert.strictEqual(asked, "wine shop in Bejai, Mangalore",
+    "the area the user named must be part of what is searched");
+});
+
+test("a web result never carries an invented rating, distance or position", async () => {
+  const places = require("../src/services/tools/places");
+  const rows = await withStubbedSearch(async () => ({
+    ok: true,
+    data: [{ title: "Shetty Lunch Home", snippet: "seafood", url: "https://x" }],
+  }), () => places.searchPlaces({ q: "fish restaurants", lat: 12.9, lng: 74.8 }));
+  assert.strictEqual(rows.length, 1);
+  const [r] = rows;
+  assert.strictEqual(r.name, "Shetty Lunch Home");
+  for (const f of ["rating", "ratingCount", "price", "openNow", "distanceKm", "phone"]) {
+    assert.strictEqual(r[f], null, `${f} must stay empty — a web page cannot supply it`);
+  }
+  assert.strictEqual(r.lat, undefined, "no coordinates may be made up");
+  assert.strictEqual(r.lng, undefined, "no coordinates may be made up");
+});
+
+test("a failed search is an empty list, not a crash", async () => {
+  const places = require("../src/services/tools/places");
+  const rows = await withStubbedSearch(async () => { throw new Error("rate-limited"); },
+    () => places.searchPlaces({ q: "pharmacy" }));
+  assert.deepStrictEqual(rows, []);
+  assert.strictEqual(places.describePlaces(rows), "");
 });
 
 test("an outage is reported as an outage, not as an absence", async () => {

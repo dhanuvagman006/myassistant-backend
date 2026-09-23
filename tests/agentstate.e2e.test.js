@@ -775,7 +775,8 @@ console.log("\nexecution record");
       "confirmation cards carry no timestamp, so none can expire");
     assert.match(routes, /pending\.askedAt && Date\.now\(\) - pending\.askedAt > PENDING_TTL_MS/,
       "an old card is still executable by one POST /confirm");
-    assert.match(routes, /s\.pending = null;\n    s\.ambiguous = null;/,
+    // \r? — a Windows checkout (core.autocrlf) has CRLF line endings.
+    assert.match(routes, /s\.pending = null;\r?\n    s\.ambiguous = null;/,
       "a new utterance no longer retires the previous card");
   });
 
@@ -1016,8 +1017,12 @@ console.log("\nexecution record");
     const t = await registry.execute("set_timer", { minutes: 10, label: "pasta" },
       { userId: USER_A, inputQuality: { quality: "clear" } });
     assert.strictEqual(t.ok, true);
-    assert.match(t.deviceAction.url, /action=android\.intent\.action\.SET_TIMER/);
-    assert.match(t.deviceAction.url, /LENGTH=600\b/, "ten minutes is not 600 seconds");
+    // Structured since 773f7bf: the action and extras travel as data and
+    // the Intent is built natively, not parsed out of an intent URI.
+    assert.strictEqual(t.deviceAction.type, "clock_intent");
+    assert.strictEqual(t.deviceAction.action, "android.intent.action.SET_TIMER");
+    assert.strictEqual(t.deviceAction.extras["android.intent.extra.alarm.LENGTH"], 600,
+      "ten minutes is not 600 seconds");
     assert.match(t.speak, /10 minutes/);
     const bad = await registry.execute("set_timer", { minutes: 0 },
       { userId: USER_A, inputQuality: { quality: "clear" } });
@@ -1156,18 +1161,19 @@ console.log("\nexecution record");
     const res = await registry.execute("set_alarm", { hour: 5, minute: 50 },
       { userId: USER_A, inputQuality: { quality: "clear" } });
     assert.strictEqual(res.ok, true);
-    const url = res.deviceAction.url;
-    assert.match(url, /^intent:\/\/#Intent;/, "the alarm is not an intent URI");
-    // The app used to synthesise https:// from this URI's empty host and
-    // hand THAT to a browser. Asking for an alarm opened Brave, and the
-    // tool had already said the alarm was set.
-    const host = url.substring(9).split('#')[0];
-    assert.strictEqual(host, "", "precondition: the URI has no host");
+    // The app used to synthesise https:// from an intent URI's empty host
+    // and hand THAT to a browser. Asking for an alarm opened Brave, and the
+    // tool had already said the alarm was set. Since 773f7bf there is no
+    // URI at all: a structured clock action the app hands to native code.
+    assert.strictEqual(res.deviceAction.type, "clock_intent",
+      "the alarm is not a structured clock action");
+    assert.strictEqual(res.deviceAction.action, "android.intent.action.SET_ALARM");
+    assert.ok(!res.deviceAction.url, "the alarm still travels as a URL");
     const engine = fs.readFileSync(
       require.resolve("../../myassistant-flutter/lib/features/assistant/state/assistant_engine.dart"),
       "utf8");
-    assert.match(engine, /MethodChannel\('hari\/intent'\)/,
-      "the app still has no native way to launch an intent URI");
+    assert.match(engine, /case 'clock_intent':[\s\S]{0,800}MethodChannel\('hari\/intent'\)/,
+      "the app does not hand clock actions to its native intent channel");
     assert.ok(!/'https:\/\/\$\{url\.substring\(9\)/.test(engine),
       "the app still synthesises an https URL out of an intent URI");
   });
@@ -1488,13 +1494,16 @@ console.log("\nexecution record");
         `${f} still builds the deleted screen`);
     }
 
-    // Its cards moved to Home rather than being dropped with it — a call
-    // still has something to tap.
+    // Its cards moved to Home rather than being dropped with it. A call in
+    // progress is a status light on Home since f4f503d (his call), not a
+    // card — it must still have something to tap.
     const overlay = fs.readFileSync(
       require.resolve(`${APP}/widgets/assistant_result_overlay.dart`), "utf8");
-    for (const card of ["ConfirmationCard", "CallStatusCard", "ScriptCard", "SearchResultCard"]) {
+    for (const card of ["ConfirmationCard", "ScriptCard", "SearchResultCard"]) {
       assert.ok(overlay.includes(card), `${card} was lost with the old screen`);
     }
+    const home = fs.readFileSync(require.resolve(`${APP}/screens/home_dashboard.dart`), "utf8");
+    assert.match(home, /const CallLed\(\)/, "a call in progress has nothing on Home");
     const shell = fs.readFileSync(require.resolve(`${APP}/shell/home_shell.dart`), "utf8");
     assert.match(shell, /const AssistantResultOverlay\(\)/,
       "Home does not render the cards the old screen used to");
