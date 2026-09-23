@@ -11,6 +11,7 @@
  * voice call is the most private thing a phone holds.
  *
  *   POST /calls/upload    multipart "audio" (wav) + fields  -> 202 {id}
+ *                         (200 {skipped} for a repeat or a call over a day old)
  *   GET  /calls/recent    -> { calls: [...] }               (dialer list)
  *   GET  /calls/analysis  -> { enabled, consentAt }         (the toggle)
  *   POST /calls/analysis  { enabled } -> { enabled, consentAt }
@@ -99,7 +100,7 @@ router.get("/recent", async (req, res) => {
   const rows = await db.query(
     `SELECT id, direction, peer_number, peer_name, started_at, duration_s,
             summary, status
-       FROM call_records WHERE user_id = $1
+       FROM call_records WHERE user_id = $1 AND status <> 'duplicate'
       ORDER BY started_at DESC LIMIT 30`,
     [uid]
   );
@@ -121,6 +122,39 @@ router.get("/:id(\\d+)", async (req, res) => {
 });
 
 // ---------------- upload + analysis pipeline ----------------
+
+// Every analysis is paid for on Gemini (transcription + understanding),
+// so the SERVER decides what is new. Twice the phone sent recordings it
+// had sent before: reinstalling the app empties its list of files already
+// uploaded, so it re-sent every recording since consent, and two scans
+// racing on the phone sent each file twice, 300 ms apart. One analysis
+// per (user, start time, peer), and only for calls from the last day.
+const MAX_AGE_MS = 24 * 3600 * 1000;
+const _inflight = new Set();
+
+/**
+ * At boot. The queue lives in memory and the audio in the pod's /tmp, so a
+ * restart loses both: a row still 'processing' can never finish. Say so,
+ * instead of "Understanding this call…" forever. Earlier double uploads
+ * are flagged 'duplicate' (kept, not deleted) so each call shows once.
+ */
+async function recoverInterrupted() {
+  const interrupted = await db.run(
+    `UPDATE call_records SET status='failed',
+            summary = CASE WHEN summary = ''
+              THEN 'Analysis was interrupted before it finished.'
+              ELSE summary END
+      WHERE status='processing'`);
+  const duplicates = await db.run(
+    `WITH ranked AS (
+       SELECT id, row_number() OVER (
+                PARTITION BY user_id, started_at, peer_number, peer_name
+                ORDER BY (status = 'done') DESC, id) AS rn
+         FROM call_records WHERE status <> 'duplicate')
+     UPDATE call_records SET status='duplicate'
+      WHERE id IN (SELECT id FROM ranked WHERE rn > 1)`);
+  return { interrupted, duplicates };
+}
 
 router.post("/upload", upload.single("audio"), async (req, res) => {
   const uid = Number(req.user.sub);
@@ -148,28 +182,67 @@ router.post("/upload", upload.single("audio"), async (req, res) => {
     const startedAt = Number(req.body?.startedAtMs) || Date.now();
     const durationS = Number(req.body?.durationSec) || 0;
 
-    const rec = await db.one(
-      `INSERT INTO call_records
-         (user_id, direction, peer_number, peer_name, started_at,
-          duration_s, consent_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-      [uid, direction, peerNumber, peerName, startedAt, durationS,
-       state.consentAt]
-    );
+    // 200, not 4xx: the app counts any answer under 500 as "handled" and
+    // won't send the file again.
+    if (Date.now() - startedAt > MAX_AGE_MS) {
+      clean();
+      return res.json({ skipped: "older than a day" });
+    }
+    const key = `${uid}|${startedAt}|${peerNumber}|${peerName}`;
+    if (_inflight.has(key)) {
+      clean();
+      return res.json({ skipped: "duplicate" });
+    }
+    _inflight.add(key);
+    let rec;
+    try {
+      const dup = await db.one(
+        `SELECT id FROM call_records
+          WHERE user_id=$1 AND started_at=$2 AND peer_number=$3
+            AND peer_name=$4 AND status <> 'duplicate' LIMIT 1`,
+        [uid, startedAt, peerNumber, peerName]
+      );
+      if (dup) {
+        clean();
+        return res.json({ id: dup.id, skipped: "duplicate" });
+      }
+      rec = await db.one(
+        `INSERT INTO call_records
+           (user_id, direction, peer_number, peer_name, started_at,
+            duration_s, consent_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+        [uid, direction, peerNumber, peerName, startedAt, durationS,
+         state.consentAt]
+      );
+    } finally {
+      _inflight.delete(key);
+    }
 
     // Answer NOW — the app must not hold a spinner through minutes of
     // transcription. The pipeline continues in the background and the
     // record's status tells the story.
     res.status(202).json({ id: rec.id });
 
-    enqueueAnalysis(() =>
-      processCall(rec.id, uid, file.path, { peerName, peerNumber, startedAt })
-        .catch((e) => {
-          console.error(`calls: analysis of #${rec.id} failed —`, e.message);
-          db.run(`UPDATE call_records SET status='failed' WHERE id=$1`,
-            [rec.id]).catch(() => {});
-        })
-        .finally(clean));
+    enqueueAnalysis(async () => {
+      try {
+        // Switched off while this call waited its turn — don't pay for it.
+        if (!(await analysisState(uid)).enabled) {
+          await db.run(
+            `UPDATE call_records SET status='skipped',
+                    summary='Not analysed — call analysis was switched off.'
+              WHERE id=$1`, [rec.id]);
+          return;
+        }
+        await processCall(rec.id, uid, file.path,
+          { peerName, peerNumber, startedAt });
+      } catch (e) {
+        console.error(`calls: analysis of #${rec.id} failed —`, e.message);
+        await db.run(`UPDATE call_records SET status='failed' WHERE id=$1`,
+          [rec.id]).catch(() => {});
+      } finally {
+        clean();
+      }
+    });
   } catch (e) {
     clean();
     console.error("calls: upload failed —", e.message);
@@ -391,4 +464,4 @@ async function processCall(id, uid, filePath, meta) {
   }
 }
 
-module.exports = { router };
+module.exports = { router, recoverInterrupted };

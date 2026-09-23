@@ -284,7 +284,7 @@ async function init() {
       transcript  TEXT NOT NULL DEFAULT '',
       summary     TEXT NOT NULL DEFAULT '',
       actions     TEXT NOT NULL DEFAULT '[]',        -- JSON: extracted items
-      status      TEXT NOT NULL DEFAULT 'processing' -- processing|done|failed
+      status      TEXT NOT NULL DEFAULT 'processing' -- processing|done|failed|skipped|duplicate
     );
     CREATE INDEX IF NOT EXISTS idx_call_records_user
       ON call_records (user_id, started_at DESC);

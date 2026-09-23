@@ -416,6 +416,18 @@ const port = process.env.PORT || 3000;
 // which is exactly what Kubernetes needs to restart/backoff the pod.
 require("./db")
   .init()
+  // CALL NOTES — before the listener, so a fresh upload is never caught
+  // in the sweep of analyses the last restart cut short.
+  .then(() =>
+    require("./routes/calls")
+      .recoverInterrupted()
+      .then((r) => {
+        if (r.interrupted || r.duplicates) {
+          console.log(`  calls: ${r.interrupted} interrupted, ` +
+            `${r.duplicates} duplicate(s) flagged`);
+        }
+      })
+      .catch((e) => console.error("  calls recovery failed:", e.message)))
   .then(() => {
     // KNOWLEDGE PACKS — seed the reference corpus, embed anything new,
     // and load it into memory.
