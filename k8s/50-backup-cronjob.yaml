@@ -1,80 +1,71 @@
-# Nightly SQLite backup.
+# Nightly Postgres backup — the job that actually runs in production.
 #
-# Strategy: a CronJob mounts the SAME PVC read-write, runs `sqlite3 .backup`
-# (the safe online-backup API — never `cp` a live SQLite file), gzips it,
-# and writes to a second "backups" PVC. Keeps the last 14 days.
+# This file used to describe a SQLite backup (sqlite3 .backup of /data/*.db)
+# that stopped matching reality when the app moved to Postgres: the job
+# deployed on the cluster (`postgres-backup`) was created by hand and never
+# committed. This is that job, verbatim in behaviour, plus two fixes:
 #
-# NOTE on RWO volumes: a ReadWriteOnce PVC can be mounted by multiple pods
-# only if they land on the SAME node. The podAffinity below pins the backup
-# job next to the backend pod so this always works.
+#   1. `pipefail`. The live job ran `pg_dump | gzip` under plain `set -e`,
+#      where a pipeline's status is gzip's — so a failed pg_dump still
+#      produced a small, valid .gz and printed "backup done".
+#   2. Verify BEFORE rotating. The dump must gunzip cleanly and end with
+#      pg_dump's completion marker, or the job fails and the 14 older
+#      backups are left alone. Previously a run of bad dumps would have
+#      rotated every good backup out.
 #
-# For real disaster recovery, add an upload step to off-cluster storage
-# (S3/GCS/B2) at the marked line — a cluster-level failure takes both PVCs.
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: myassistant-backups
-  namespace: myassistant
-spec:
-  accessModes: ["ReadWriteOnce"]
-  resources:
-    requests:
-      storage: 10Gi
----
+# Restore: see DEPLOYMENT.md §6.
+#
+# LIMIT — the backups sit on the same PVC, same node, same disk as the
+# data. That protects against a bad deploy or a mistaken DELETE, not
+# against losing the server. An off-server copy is still to be added (see
+# the marked line) once a destination is chosen.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: myassistant-db-backup
+  name: postgres-backup
   namespace: myassistant
 spec:
-  schedule: "30 21 * * *" # 21:30 UTC = 03:00 IST, nightly
+  schedule: "0 21 * * *" # 21:00 UTC = 02:30 IST, nightly
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      backoffLimit: 2
       template:
         spec:
-          restartPolicy: Never
-          affinity:
-            podAffinity:
-              requiredDuringSchedulingIgnoredDuringExecution:
-                - labelSelector:
-                    matchLabels:
-                      app: myassistant-backend
-                  topologyKey: kubernetes.io/hostname
+          restartPolicy: OnFailure
           containers:
             - name: backup
-              image: alpine:3.20
+              image: postgres:16-alpine
               command: ["/bin/sh", "-c"]
               args:
                 - |
-                  set -e
-                  apk add --no-cache sqlite gzip >/dev/null
-                  STAMP=$(date +%Y%m%d-%H%M%S)
+                  set -eo pipefail
+                  TS=$(date +%Y%m%d-%H%M%S)
+                  OUT="/backups/myassistant-$TS.sql.gz"
+                  trap 'rm -f "$OUT.partial"' EXIT # a failed dump leaves nothing behind
                   mkdir -p /backups
-                  for db in /data/*.db /data/*.sqlite; do
-                    [ -e "$db" ] || continue
-                    name=$(basename "$db")
-                    echo "backing up $name"
-                    sqlite3 "$db" ".backup '/backups/${name}.${STAMP}'"
-                    gzip "/backups/${name}.${STAMP}"
-                  done
-                  # ---- optional: upload to S3/GCS here (rclone/aws-cli) ----
-                  # prune backups older than 14 days
-                  find /backups -name '*.gz' -mtime +14 -delete
-                  echo "done; current backups:"
-                  ls -lh /backups | tail -20
+                  PGPASSWORD="$POSTGRES_PASSWORD" pg_dump \
+                    -h postgres -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+                    | gzip > "$OUT.partial"
+                  gzip -t "$OUT.partial"
+                  if ! zcat "$OUT.partial" | tail -c 2000 | grep -q "PostgreSQL database dump complete"; then
+                    echo "backup INCOMPLETE — keeping the previous backups untouched" >&2
+                    rm -f "$OUT.partial"
+                    exit 1
+                  fi
+                  mv "$OUT.partial" "$OUT"
+                  # ---- off-server copy goes here (rclone / aws s3 cp) ----
+                  ls -t /backups/myassistant-*.sql.gz | tail -n +15 | xargs -r rm --
+                  echo "backup done: $(basename "$OUT") ($(ls /backups/myassistant-*.sql.gz | wc -l) kept)"
+              envFrom:
+                - secretRef:
+                    name: postgres-secret
               volumeMounts:
                 - name: data
-                  mountPath: /data
-                - name: backups
                   mountPath: /backups
+                  subPath: backups
           volumes:
             - name: data
               persistentVolumeClaim:
                 claimName: myassistant-data
-            - name: backups
-              persistentVolumeClaim:
-                claimName: myassistant-backups

@@ -79,25 +79,47 @@ at Slack/Telegram in `kube-prometheus-values.yaml`.
 
 ## 6. Backups & restore
 
+The `postgres-backup` CronJob runs `pg_dump` nightly at 21:00 UTC (02:30
+IST), gzips it to `backups/` on the `myassistant-data` PVC, checks the
+dump is complete, and keeps the newest 14. (k3s is used on the VPS, so
+prefix `kubectl` with `k3s` there.)
+
 ```bash
 kubectl apply -f k8s/50-backup-cronjob.yaml
-# test immediately instead of waiting for tonight:
-kubectl -n myassistant create job --from=cronjob/myassistant-db-backup backup-now
-kubectl -n myassistant logs job/backup-now -f
+# take one now instead of waiting for tonight (do this before any deploy):
+kubectl -n myassistant create job --from=cronjob/postgres-backup backup-now
+kubectl -n myassistant logs job/backup-now -f     # "backup done: …"
 ```
 
-Nightly at 03:00 IST it snapshots every SQLite DB with the safe
-`.backup` API, gzips to a second PVC, keeps 14 days. **Restore:**
+On the VPS the files are under
+`/var/lib/rancher/k3s/storage/<myassistant-data volume>/backups/`.
+
+**Restore** (replaces the database with the dump — take a fresh backup
+first so the current state is recoverable too):
 
 ```bash
 kubectl -n myassistant scale deploy/myassistant-backend --replicas=0
-# run a temp pod mounting both PVCs, then:
-#   gunzip -c /backups/users.db.<stamp>.gz > /data/users.db
+PG=$(kubectl -n myassistant get pod -l app=postgres -o name | head -1)
+gunzip -c myassistant-<stamp>.sql.gz > /tmp/restore.sql
+kubectl -n myassistant cp /tmp/restore.sql ${PG#pod/}:/tmp/restore.sql
+kubectl -n myassistant exec $PG -- sh -c \
+  'dropdb -U "$POSTGRES_USER" --if-exists myassistant_restore &&
+   createdb -U "$POSTGRES_USER" myassistant_restore &&
+   psql -U "$POSTGRES_USER" -d myassistant_restore -v ON_ERROR_STOP=1 -q -f /tmp/restore.sql'
+# check it, then swap names (the app reads POSTGRES_DB):
+kubectl -n myassistant exec $PG -- sh -c \
+  'psql -U "$POSTGRES_USER" -d postgres -c "ALTER DATABASE \"$POSTGRES_DB\" RENAME TO myassistant_old" \
+                                         -c "ALTER DATABASE myassistant_restore RENAME TO \"$POSTGRES_DB\""'
 kubectl -n myassistant scale deploy/myassistant-backend --replicas=1
 ```
 
-For real DR, add S3/GCS upload at the marked line in the CronJob —
-on-cluster backups don't survive cluster loss.
+Restoring into a side database and swapping names means a bad dump never
+overwrites the live data. Verified 2026-09-23: a dump restores cleanly
+into an empty database (all tables and rows match the source).
+
+**Limit:** the backups share the node and disk with the data. They cover
+a bad deploy or a mistaken delete, not the loss of the server. Add an
+off-server copy at the marked line in the CronJob.
 
 ## 7. Rollback (manual)
 
