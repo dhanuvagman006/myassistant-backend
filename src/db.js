@@ -284,11 +284,6 @@ async function init() {
     -- agent can answer ANY question about it, not only the action items.
     ALTER TABLE call_records ADD COLUMN IF NOT EXISTS
       facts TEXT NOT NULL DEFAULT '[]';
-    -- Auto-understood shared documents (2026-09-18): what the document
-    -- ASKS OF the user — a timetable's classes, an invite's meeting —
-    -- as {kind, events:[{title, whenIso}], remindersSet} JSON.
-    ALTER TABLE documents ADD COLUMN IF NOT EXISTS
-      understanding TEXT NOT NULL DEFAULT '';
 
     CREATE TABLE IF NOT EXISTS user_devices (
       user_id    INTEGER PRIMARY KEY,
@@ -329,6 +324,13 @@ async function init() {
     );
     CREATE INDEX IF NOT EXISTS idx_docs_user ON documents(user_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_docs_fts ON documents USING GIN (fts);
+    -- Auto-understood shared documents (2026-09-18): what the document
+    -- ASKS OF the user — a timetable's classes, an invite's meeting —
+    -- as {kind, events:[{title, whenIso}], remindersSet} JSON.
+    -- Must follow CREATE TABLE documents: placed before it, a fresh
+    -- database (new environment, disaster restore) failed to boot.
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS
+      understanding TEXT NOT NULL DEFAULT '';
 
     -- CLIENTS / PATIENTS (professional mode, Aug 2026): a doctor, lawyer,
     -- CA… keeps a per-person case file. Documents link to a client via
