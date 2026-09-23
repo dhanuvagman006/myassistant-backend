@@ -1,6 +1,6 @@
 # MYASSISTANT_BACKEND — place this file in the repo root
 #
-# Base: node:20-slim (Debian/glibc), NOT alpine. Reason: better-sqlite3 is
+# Base: node:22-slim (Debian/glibc, Node 22 LTS — 20 reached end of life in April 2026), NOT alpine. Reason: better-sqlite3 is
 # a native module with PREBUILT binaries for glibc — on slim it installs
 # instantly with zero compilation. On alpine (musl) there is no prebuilt
 # binary, so node-gyp must compile from source AND download Node headers
@@ -9,7 +9,7 @@
 # completely reliable; that is the right trade for a production API.
 
 # ---------- Stage 1: install deps ----------
-FROM node:20-slim AS builder
+FROM node:22-slim AS builder
 
 # Toolchain as a FALLBACK: normally better-sqlite3's prebuilt binary just
 # downloads (fast path). But that download comes from GitHub Releases,
@@ -26,11 +26,11 @@ ENV npm_config_nodedir=/usr/local
 RUN npm ci --omit=dev
 
 # ---------- Stage 2: runtime ----------
-FROM node:20-slim
+FROM node:22-slim
 
 # ca-certificates is REQUIRED, not cosmetic. @livekit/rtc-node's WebRTC
 # layer is native Rust and validates TLS against the SYSTEM trust store,
-# which node:20-slim ships empty. Node's own fetch bundles its CAs, so
+# which node:22-slim ships empty. Node's own fetch bundles its CAs, so
 # HTTPS calls to BeyondPresence succeed while the LiveKit connection dies
 # with "no native root CA certificates found" — the avatar fails and
 # nothing else does. Keep this even if the image is slimmed further.

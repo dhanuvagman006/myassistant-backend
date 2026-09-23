@@ -23,7 +23,7 @@
     "test:phone": "node tests/phone.e2e.test.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
