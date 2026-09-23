@@ -4,6 +4,7 @@
  * Header: X-TZ-Offset (minutes east of UTC; defaults to IST 330).
  */
 const router = require("express").Router();
+const { tzFromReq } = require("../services/tz");
 const { buildBrief } = require("../services/brief");
 
 router.get("/", async (req, res) => {
@@ -20,7 +21,7 @@ router.get("/", async (req, res) => {
     const brief = await buildBrief(uid, {
       lat: parseFloat(req.query.lat),
       lng: parseFloat(req.query.lng),
-      tzOffsetMin: Number(req.get("X-TZ-Offset")) || 330,
+      tzOffsetMin: tzFromReq(req),
     });
     res.json(brief);
   } catch (e) {
@@ -43,7 +44,7 @@ router.get("/calendar", async (req, res) => {
   if (!Number.isInteger(uid) || uid <= 0) {
     return res.json({ year: y, month: m, days: {} });
   }
-  const tz = Number(req.get("X-TZ-Offset")) || 330;
+  const tz = tzFromReq(req);
 
   const days = {}; // "17" -> [{kind, title, id?, del?}]
   // [del] names the REST collection a DELETE /:id goes to, so the app can

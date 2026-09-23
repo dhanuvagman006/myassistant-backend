@@ -18,6 +18,7 @@
  * cannot nudge somebody else's client.
  */
 const { query, one, run } = require("../db");
+const { offsetOr } = require("../services/tz");
 const { generateReply } = require("../services/ai/router");
 
 async function migrate(exec) {
@@ -161,7 +162,7 @@ async function record(userId, { transcript, title, participants, clientId, durat
     let dueAt = null;
     if (a.when) {
       try {
-        const off = Number(tzOffsetMin) || 330;
+        const off = offsetOr(tzOffsetMin);
         const d = chrono.parseDate(a.when, new Date(Date.now() + off * 60_000), { forwardDate: true });
         if (d) dueAt = d.getTime() - off * 60_000;
       } catch (_) {}

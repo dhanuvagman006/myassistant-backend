@@ -29,6 +29,7 @@
  */
 
 const outcomes = require("../outcomes/store");
+const { offsetOr } = require("../services/tz");
 const audit = require("../audit/log");
 const router = require("express").Router();
 const crypto = require("crypto");
@@ -102,8 +103,49 @@ function getSession(req, res) {
     return null;
   }
   s.lastSeen = Date.now();
+  noteDevice(s, req);
   return s;
 }
+
+/**
+ * WHERE AND WHEN THE USER IS, remembered on the session.
+ *
+ * The app sends timezone and location as headers (X-TZ-Offset, X-Geo-*)
+ * on its JSON posts — but the agent path read them from the QUERY STRING,
+ * which the app never sends, and the audio upload (the main voice path)
+ * carries no such headers at all. So every agent turn assumed IST and had
+ * no location: "tomorrow at 8" was scheduled in the wrong zone for anyone
+ * outside India, and "near me" never knew where "me" was.
+ *
+ * Every session request now updates what is known, so an audio turn uses
+ * the last values its session saw. A real offset of 0 (UTC) counts:
+ * `Number(x) || 330` used to turn it into IST.
+ */
+function noteDevice(s, req) {
+  const num = (v) => (v === undefined || v === null || v === "" ? NaN : Number(v));
+  const pick = (header, query) => {
+    const h = num(req.get?.(header));
+    return Number.isFinite(h) ? h : num(req.query?.[query]);
+  };
+  const d = s.device || (s.device = {});
+  const tz = pick("X-TZ-Offset", "tz");
+  if (Number.isFinite(tz) && Math.abs(tz) <= 14 * 60) d.tz = tz;
+  const lat = pick("X-Geo-Lat", "lat");
+  const lng = pick("X-Geo-Lng", "lng");
+  if (Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+    d.lat = lat;
+    d.lng = lng;
+  }
+  const battery = pick("X-Battery", "battery");
+  if (Number.isFinite(battery)) d.battery = battery;
+  const charging = req.get?.("X-Charging");
+  if (charging !== undefined) d.charging = charging === "1";
+  const platform = req.get?.("X-Platform") || req.query?.platform;
+  if (platform) d.platform = String(platform).toLowerCase().slice(0, 20);
+}
+
+/** The session's timezone in minutes east of UTC; IST only when never told. */
+const tzOf = (s) => offsetOr(s.device?.tz);
 
 /* ------------------------------------------------------------------ */
 /* SSE plumbing                                                        */
@@ -132,6 +174,7 @@ const state = (s, name) => emit(s, { type: "assistant_state", state: name });
 // POST /assistant/session  (mounted behind appAuth in server.js)
 router.post("/session", (req, res) => {
   const s = newSession(req.user?.sub, req.user?.name);
+  noteDevice(s, req);
   res.json({ sessionId: s.sid, streamToken: s.streamToken });
 });
 
@@ -289,8 +332,10 @@ async function runViaAgent(s, req, userText) {
   try {
     const ctx = {
       userId: req.user?.sub && req.user.sub !== "anonymous-dev" ? req.user.sub : null,
-      lat: Number(req.query?.lat) || undefined,
-      lng: Number(req.query?.lng) || undefined,
+      lat: s.device?.lat,
+      lng: s.device?.lng,
+      batteryPct: s.device?.battery,
+      batteryCharging: s.device?.charging,
       history: (s.history || []).slice(-8),
       approved: false,
       // The SSE session id, so every writer on this socket agrees on one.
@@ -310,12 +355,12 @@ async function runViaAgent(s, req, userText) {
       // deep link can use an Android intent:// URL, and the timezone turns
       // "tomorrow at 8" into a real timestamp.
       userName: s.userName ? String(s.userName).split(" ")[0] : null,
-      platform: String(req.query?.platform || req.get?.("X-Platform") || "").toLowerCase() || null,
+      platform: s.device?.platform || s.deviceCaps?.platform || null,
       // App versionCode from the X-App-Build header — lets tools gate
       // device capabilities on what THIS install can actually do, so the
       // server never promises an action the app will silently drop.
       appBuild: Number(req.get?.("X-App-Build")) || 0,
-      tzOffsetMin: Number(req.query?.tz) || 330,
+      tzOffsetMin: tzOf(s),
       lang: s.lang || null,
     };
 
@@ -634,11 +679,11 @@ async function runTurn(s, req, userText) {
       const toolCtx = await buildToolContext({
         userId: Number(s.userSub) > 0 ? Number(s.userSub) : null,
         messages: s.history,
-        tzOffsetMin: Number(req.get("X-TZ-Offset")) || 330,
-        batteryPct: Number(req.get("X-Battery")),
-        batteryCharging: req.get("X-Charging") === "1",
-        lat: parseFloat(req.get("X-Geo-Lat")),
-        lng: parseFloat(req.get("X-Geo-Lng")),
+        tzOffsetMin: tzOf(s),
+        batteryPct: s.device?.battery,
+        batteryCharging: s.device?.charging === true,
+        lat: s.device?.lat,
+        lng: s.device?.lng,
       });
       toolBlock = toolCtx.block || "";
       // Matched saved documents (doc recall + client case files): show
@@ -662,11 +707,11 @@ async function runTurn(s, req, userText) {
       text: userText,
       history: s.history,
       userId: Number(s.userSub) > 0 ? Number(s.userSub) : null,
-      tzOffsetMin: Number(req.get("X-TZ-Offset")) || 330,
-      lat: parseFloat(req.get("X-Geo-Lat")),
-      lng: parseFloat(req.get("X-Geo-Lng")),
-      batteryPct: Number(req.get("X-Battery")),
-      batteryCharging: req.get("X-Charging") === "1",
+      tzOffsetMin: tzOf(s),
+      lat: s.device?.lat,
+      lng: s.device?.lng,
+      batteryPct: s.device?.battery,
+      batteryCharging: s.device?.charging === true,
       toolBlock,
     };
 
@@ -1014,7 +1059,7 @@ async function followSchedulingCall(s, action) {
       contactName: who,
       purpose: action.purpose,
       slots: action.slots || [],
-      tzOffsetMin: action.tz || 330,
+      tzOffsetMin: offsetOr(action.tz),
       onStatus: (st) => emit(s, { type: "call_status", status: st, contact_name: who }),
       isCancelled: () => s.cancelled === true,
     });

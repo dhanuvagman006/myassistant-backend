@@ -33,6 +33,7 @@
  * working exactly as before.
  */
 const WebSocket = require("ws");
+const { offsetOr } = require("../services/tz");
 const { verifySession } = require("../middleware/auth");
 const { envModel } = require("../services/ai/router");
 const db = require("../db");
@@ -1439,7 +1440,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
                   contactName: a.person,
                   purpose: a.purpose,
                   slots: a.slots || [],
-                  tzOffsetMin: a.tz || 330,
+                  tzOffsetMin: offsetOr(a.tz),
                   onStatus: (st) =>
                     appWs.readyState === WebSocket.OPEN &&
                     appWs.send(JSON.stringify({ type: "call_status", status: st, contact_name: a.person })),

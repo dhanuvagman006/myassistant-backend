@@ -14,6 +14,7 @@
  * reuse the SAME uploaded file with prior Q&A as text history.
  */
 const router = require("express").Router();
+const { tzFromReq } = require("../services/tz");
 const multer = require("multer");
 
 const upload = multer({
@@ -79,7 +80,7 @@ router.post("/", receiveFile, async (req, res) => {
       ? req.body.mode
       : "ask";
     const question = String(req.body.question || "").slice(0, 2000);
-    const tz = Number(req.get("X-TZ-Offset")) || 330;
+    const tz = tzFromReq(req);
     const nowIso = new Date(Date.now() + tz * 60000)
       .toISOString()
       .replace("Z", "");

@@ -7,6 +7,7 @@
  * tool says so honestly rather than returning a pretend result (§28).
  */
 const registry = require("./registry");
+const { offsetOr } = require("../services/tz");
 const { normalizePhone } = require("../users/phone");
 const { safeFetch } = require("../services/safeFetch");
 
@@ -6587,7 +6588,7 @@ function registerBuiltins() {
       const slots = await freeslots.findSlots(ctx.userId, {
         durationMin: args.duration_minutes || 30,
         withinDays: args.within_days || 7,
-        tzOffsetMin: ctx.tzOffsetMin || 330,
+        tzOffsetMin: offsetOr(ctx.tzOffsetMin),
         count: 3,
       });
 
@@ -6619,7 +6620,7 @@ function registerBuiltins() {
       const slots = await freeslots.findSlots(ctx.userId, {
         durationMin: args.duration_minutes || 30,
         withinDays: args.within_days || 7,
-        tzOffsetMin: ctx.tzOffsetMin || 330,
+        tzOffsetMin: offsetOr(ctx.tzOffsetMin),
         count: 3,
       });
       if (!slots || !slots.length) {
@@ -6657,7 +6658,7 @@ function registerBuiltins() {
           person: args.person,
           purpose: args.purpose || null,
           slots,
-          tz: ctx.tzOffsetMin || 330,
+          tz: offsetOr(ctx.tzOffsetMin),
         },
         speak: `Calling ${args.person} now to fix a time — I'll tell you what they say.`,
       };

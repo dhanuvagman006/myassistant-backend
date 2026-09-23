@@ -17,6 +17,7 @@
  * halfway through an hour-long recording.
  */
 const express = require("express");
+const { tzFromReq } = require("../services/tz");
 const multer = require("multer");
 const meetings = require("./service");
 const { transcribeAudio } = require("../services/ai/router");
@@ -34,7 +35,7 @@ function uid(req) {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 function tz(req) {
-  return Number(req.get("X-TZ-Offset")) || 330;
+  return tzFromReq(req);
 }
 function firstName(req) {
   const n = req.user?.name;
