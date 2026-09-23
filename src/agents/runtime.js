@@ -770,9 +770,13 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
     // start speaking sentence 1 while the rest of the reply — or a tool
     // call — is still generating. This is what turns "wait five seconds,
     // then hear everything" into a conversation.
-    const splitter = sentenceSplitter((sentence) =>
-      emitSentence(sentence)
-    );
+    // What this round has actually said out loud, sentence by sentence.
+    const heard = [];
+    const speakTo = () => sentenceSplitter((sentence) => {
+      heard.push(sentence);
+      emitSentence(sentence);
+    });
+    let splitter = speakTo();
     let out;
     try {
       out = await generateWithToolsStream({
@@ -791,7 +795,23 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
         declarations,
         timeoutMs: ctx.background ? BACKGROUND_TURN_TIMEOUT_MS : 0,
       });
-      if (out.text) splitter.push(out.text);
+      // NOT FROM THE TOP. The fallback regenerates the whole reply, and it
+      // used to go into the same splitter — so whatever the stream had
+      // already spoken was spoken again. The half-sentence the stream left
+      // buffered is dropped (it was never heard); then only what follows
+      // the heard part is spoken. A reworded fallback adds nothing: saying
+      // the same thing twice in different words is still repeating it.
+      splitter = speakTo();
+      const norm = (x) => String(x || "").replace(/\s+/g, " ").trim();
+      const full = norm(out.text);
+      const already = norm(heard.join(" "));
+      if (!already) {
+        if (full) splitter.push(full);
+      } else if (full.startsWith(already)) {
+        splitter.push(full.slice(already.length));
+      } else {
+        out = { ...out, text: already };
+      }
     }
     splitter.finish();
     if (out.text) spoken.push(out.text.trim());

@@ -803,13 +803,15 @@ async function generateWithToolsStream(
         `gemini tools stream: thinkingLevel "${THINKING_LEVEL}" rejected — ` +
           `continuing without it. Set GEMINI_THINKING_LEVEL.`
       );
-      return generateWithToolsStream({ contents, system, declarations, onDelta, _model }, true);
+      return generateWithToolsStream({ contents, system, declarations, onDelta, _model, timeoutMs }, true);
     }
     if (keys.isQuotaError(r.status, errBody)) keys.markSpent(key, model);
     if (r.status === 429 && !_model && fallbackModel() !== model) {
       console.warn(`gemini tools stream: ${model} out of quota — retrying on ${fallbackModel()}`);
+      // timeoutMs rides along: a background turn's longer deadline was
+      // dropped here, so a retried scheduled task fell back to the 30 s one.
       return generateWithToolsStream(
-        { contents, system, declarations, onDelta, _model: fallbackModel() },
+        { contents, system, declarations, onDelta, _model: fallbackModel(), timeoutMs },
         _retry
       );
     }

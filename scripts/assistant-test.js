@@ -230,6 +230,69 @@ async function turns(calls, n, ms = 3000) {
     }
   });
 
+  console.log("\na dropped stream is not a reason to say it twice");
+
+  /** A fresh runtime bound to stubbed model calls (it binds them at load). */
+  function runtimeWith(streamImpl, fullImpl) {
+    const router = require("../src/services/ai/router");
+    const saved = { s: router.generateWithToolsStream, f: router.generateWithTools };
+    router.generateWithToolsStream = streamImpl;
+    router.generateWithTools = fullImpl;
+    delete require.cache[require.resolve("../src/agents/runtime")];
+    const rt = require("../src/agents/runtime");
+    return {
+      rt,
+      restore() {
+        router.generateWithToolsStream = saved.s;
+        router.generateWithTools = saved.f;
+        delete require.cache[require.resolve("../src/agents/runtime")];
+      },
+    };
+  }
+  async function spokenFor(streamImpl, fullImpl) {
+    const { rt, restore } = runtimeWith(streamImpl, fullImpl);
+    const said = [];
+    try {
+      const out = await rt.runAgentTurn("tell me about Paris", { userId: null },
+        (ev, p) => { if (ev === "sentence") said.push(p.text); });
+      return { said, out };
+    } finally {
+      restore();
+    }
+  }
+  const dropsAfterOneSentence = async ({ onDelta }) => {
+    onDelta("Paris is the capital of France. ");
+    onDelta("It has about");
+    throw new Error("stream reset by peer");
+  };
+
+  await atest("the fallback continues from what was heard", async () => {
+    const { said, out } = await spokenFor(dropsAfterOneSentence, async () => ({
+      functionCalls: [],
+      text: "Paris is the capital of France. It has about two million people.",
+    }));
+    assert.deepStrictEqual(said,
+      ["Paris is the capital of France.", "It has about two million people."],
+      `heard: ${JSON.stringify(said)}`);
+    assert.match(out.text, /two million/);
+  });
+
+  await atest("a reworded fallback is not spoken on top of what was heard", async () => {
+    const { said } = await spokenFor(dropsAfterOneSentence, async () => ({
+      functionCalls: [],
+      text: "The capital of France is Paris, home to about two million people.",
+    }));
+    assert.deepStrictEqual(said, ["Paris is the capital of France."],
+      `the same answer was said twice: ${JSON.stringify(said)}`);
+  });
+
+  await atest("a stream that fails before speaking gets the whole fallback", async () => {
+    const { said } = await spokenFor(async () => { throw new Error("429"); }, async () => ({
+      functionCalls: [], text: "Paris is the capital of France.",
+    }));
+    assert.deepStrictEqual(said, ["Paris is the capital of France."]);
+  });
+
   console.log("\nreminders that call keep calling — once");
 
   const db = require("../src/db");
