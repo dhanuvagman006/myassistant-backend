@@ -37,6 +37,38 @@ function noteAppBuild(uid, req) {
   } catch (_) {}
 }
 
+/**
+ * THE ONE PLACE A SESSION TOKEN IS JUDGED. REST, /auth/me and the live
+ * WebSocket each used to call jwt.verify on their own, which is how the
+ * admin panel's "Pause account" came to do nothing: nobody read status.
+ *
+ * A token is good only if it verifies as HS256 (pinned, not inferred from
+ * the token), its account still exists and is not paused, and it was
+ * issued after the account's sessions_valid_after (unix seconds) — which
+ * is how every outstanding token is revoked at once, e.g. when a password
+ * of unproven ownership is removed.
+ *
+ * @returns {{user}|{error:string, status:number}}
+ */
+async function verifySession(token) {
+  let payload;
+  try {
+    payload = jwt.verify(String(token || ""), process.env.JWT_SECRET, { algorithms: ["HS256"] });
+  } catch (_) {
+    return { error: "invalid or expired token", status: 401 };
+  }
+  const user = await db.findById(payload.uid);
+  if (!user) return { error: "account not found", status: 401 };
+  // 401, not 403: the app treats 401 as "signed out" and returns to the
+  // sign-in screen, where the login routes explain the pause.
+  if (user.status === "paused") return { error: "this account is paused", status: 401 };
+  const validAfter = Number(user.sessions_valid_after) || 0;
+  if (validAfter && Number(payload.iat || 0) < validAfter) {
+    return { error: "signed out — please sign in again", status: 401 };
+  }
+  return { user };
+}
+
 async function appAuth(req, res, next) {
   if (process.env.AUTH_DISABLED === "true") {
     req.user = { sub: "anonymous-dev", email: null, name: "Dev User" };
@@ -45,9 +77,9 @@ async function appAuth(req, res, next) {
   try {
     const authz = req.get("Authorization") || "";
     if (authz.startsWith("Bearer ")) {
-      const { uid } = jwt.verify(authz.slice(7), process.env.JWT_SECRET);
-      const user = await db.findById(uid);
-      if (!user) return res.status(401).json({ error: "account not found" });
+      const v = await verifySession(authz.slice(7));
+      if (v.error) return res.status(v.status).json({ error: v.error });
+      const user = v.user;
       req.user = { sub: String(user.id), email: user.email, name: user.name };
       noteAppBuild(user.id, req);
       return next();
@@ -66,4 +98,4 @@ async function appAuth(req, res, next) {
   }
 }
 
-module.exports = { appAuth };
+module.exports = { appAuth, verifySession };

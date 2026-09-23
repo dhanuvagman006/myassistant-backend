@@ -188,5 +188,113 @@ async function mount(router, userId = 1) {
     );
   });
 
+  console.log("\naccounts: nobody can pre-register someone else's email and keep it");
+  // These need the real users table: run against a throwaway DATABASE_URL.
+  const db = require("../src/db");
+  const jwt = require("jsonwebtoken");
+  const bcrypt = require("bcryptjs");
+  const { verifySession } = require("../src/middleware/auth");
+  await db.init();
+  const tag = `${Date.now()}${Math.floor(Math.random() * 1e4)}`;
+  const tokenFor = (uid, iatOffsetS = 0, alg = "HS256") => jwt.sign(
+    { uid, iat: Math.floor(Date.now() / 1000) + iatOffsetS },
+    process.env.JWT_SECRET, { algorithm: alg, expiresIn: "1d" });
+
+  await atest("a verified Google sign-in evicts a squatter's password and sessions", async () => {
+    const email = `victim-${tag}@example.com`;
+    const squatter = await db.createUser({
+      email, name: "Squatter", provider: "email",
+      passwordHash: await bcrypt.hash("squatter-pass", 4),
+    });
+    const squatterToken = tokenFor(squatter.id, -60); // issued before the owner arrives
+    assert.ok(!(await verifySession(squatterToken)).error, "precondition: token works");
+
+    const { user, created } = await db.upsertSocialUser({
+      provider: "google", sub: `g-${tag}`, email, emailVerified: true, name: "Owner",
+    });
+    assert.strictEqual(created, false);
+    assert.strictEqual(user.id, squatter.id, "the verified owner gets the account");
+    assert.strictEqual(user.password_hash, null, "the squatter's password still opens it");
+    assert.ok((await verifySession(squatterToken)).error, "the squatter's session survived");
+    assert.ok(!(await verifySession(tokenFor(user.id))).error, "the owner's new session must work");
+  });
+
+  await atest("an email the provider did not verify links to nothing and reserves nothing", async () => {
+    const email = `owner-${tag}@example.com`;
+    const owner = await db.createUser({
+      email, name: "Owner", provider: "email",
+      passwordHash: await bcrypt.hash("owner-pass", 4),
+    });
+    const { user, created } = await db.upsertSocialUser({
+      provider: "google", sub: `g2-${tag}`, email, emailVerified: false, name: "Someone",
+    });
+    assert.strictEqual(created, true);
+    assert.notStrictEqual(user.id, owner.id, "an unverified email was linked to an account");
+    assert.strictEqual(user.email, null, "an unverified email was stored as theirs");
+    assert.ok((await db.findById(owner.id)).password_hash, "the owner's password was touched");
+  });
+
+  await atest("a paused account is refused — on every route and at sign-in", async () => {
+    const email = `paused-${tag}@example.com`;
+    const u = await db.createUser({
+      email, name: "P", provider: "email", passwordHash: await bcrypt.hash("paused-pass", 4),
+    });
+    const token = tokenFor(u.id);
+    await db.run("UPDATE users SET status='paused' WHERE id=$1", [u.id]);
+    const v = await verifySession(token);
+    assert.match(String(v.error), /paused/);
+    assert.strictEqual(v.status, 401);
+
+    const { appAuth } = require("../src/middleware/auth");
+    const app = express();
+    app.use(express.json());
+    app.get("/private", appAuth, (_req, res) => res.json({ ok: true }));
+    app.use("/auth", require("../src/routes/auth"));
+    const server = await new Promise((r) => { const s = app.listen(0, "127.0.0.1", () => r(s)); });
+    const base = `http://127.0.0.1:${server.address().port}`;
+    try {
+      const priv = await fetch(`${base}/private`, { headers: { authorization: `Bearer ${token}` } });
+      assert.strictEqual(priv.status, 401, "a paused account still reached a private route");
+      const me = await fetch(`${base}/auth/me`, { headers: { authorization: `Bearer ${token}` } });
+      assert.strictEqual(me.status, 401, "/auth/me still served a paused account");
+      const login = await fetch(`${base}/auth/login`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email, password: "paused-pass" }),
+      });
+      assert.strictEqual(login.status, 403, "a paused account could sign in again");
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+
+  await atest("only HS256 session tokens are accepted", async () => {
+    const u = await db.createUser({ email: `alg-${tag}@example.com`, name: "A", provider: "email" });
+    assert.ok(!(await verifySession(tokenFor(u.id))).error);
+    assert.ok((await verifySession(tokenFor(u.id, 0, "HS512"))).error, "HS512 was accepted");
+    const none = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url") +
+      "." + Buffer.from(JSON.stringify({ uid: u.id })).toString("base64url") + ".";
+    assert.ok((await verifySession(none)).error, "an unsigned token was accepted");
+  });
+
+  await atest("social sign-in refuses when its audience is not configured", async () => {
+    const saved = { g: process.env.GOOGLE_WEB_CLIENT_ID, a: process.env.APPLE_BUNDLE_ID };
+    delete process.env.GOOGLE_WEB_CLIENT_ID;
+    delete process.env.APPLE_BUNDLE_ID;
+    const srv = await mount(require("../src/routes/auth"));
+    try {
+      for (const [path, body] of [["/google", { idToken: "x" }], ["/apple", { identityToken: "x" }]]) {
+        const r = await fetch(`${srv.url}${path}`, {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+        });
+        assert.strictEqual(r.status, 503, `${path} ran without an audience`);
+      }
+    } finally {
+      await srv.close();
+      if (saved.g !== undefined) process.env.GOOGLE_WEB_CLIENT_ID = saved.g;
+      if (saved.a !== undefined) process.env.APPLE_BUNDLE_ID = saved.a;
+    }
+  });
+
   console.log(`\n${passed} passed${process.exitCode ? " — with failures above" : ""}\n`);
+  await db.pool?.end?.().catch(() => {});
 })();

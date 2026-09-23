@@ -33,7 +33,7 @@
  * working exactly as before.
  */
 const WebSocket = require("ws");
-const jwt = require("jsonwebtoken");
+const { verifySession } = require("../middleware/auth");
 const { envModel } = require("../services/ai/router");
 const db = require("../db");
 
@@ -50,13 +50,15 @@ const GOOGLE_WS =
   "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 
 /// Same auth tiers as the REST middleware, adapted for a WS query string.
-function authorize(url) {
+/// The token goes through verifySession, so a paused or signed-out account
+/// cannot open a live session either.
+async function authorize(url) {
   if (process.env.AUTH_DISABLED === "true") return { sub: "anonymous-dev" };
   const token = url.searchParams.get("token") || "";
   if (token) {
     try {
-      const { uid } = jwt.verify(token, process.env.JWT_SECRET);
-      return { sub: String(uid) };
+      const v = await verifySession(token);
+      return v.error ? null : { sub: String(v.user.id) };
     } catch (_) {
       return null;
     }
@@ -1718,7 +1720,7 @@ function probeRouter() {
 function attachWs(server) {
   const wss = new WebSocket.Server({ noServer: true });
 
-  server.on("upgrade", (req, socket, head) => {
+  server.on("upgrade", async (req, socket, head) => {
     let url;
     try {
       url = new URL(req.url, "http://localhost");
@@ -1728,7 +1730,11 @@ function attachWs(server) {
     }
     if (url.pathname !== "/live/ws") { socket.destroy(); return; } // not ours — and with an
     // upgrade listener registered, Node no longer closes these for us
-    const user = authorize(url);
+    // The socket can error while the account is looked up; an unhandled
+    // 'error' on it would crash the process.
+    socket.on("error", () => {});
+    const user = await authorize(url);
+    if (socket.destroyed) return;
     if (!user) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();

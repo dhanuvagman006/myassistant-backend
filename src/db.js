@@ -87,6 +87,9 @@ async function init() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS gender TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS birthday TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
+    -- Unix seconds; a session token issued before it is refused
+    -- (middleware/auth.js verifySession). 0 = nothing revoked.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS sessions_valid_after BIGINT NOT NULL DEFAULT 0;
 
     -- ---------------------------------------------------------------
     -- IDENTITY: one verified phone number = one account.
@@ -465,7 +468,7 @@ async function setBirthday(userId, birthday) {
 /** Find-or-create for social sign-in. Links by provider sub first, then email.
  *  Returns { user, created } — `created` marks a brand-new account so the
  *  app can run the sign-up interview exactly once. */
-async function upsertSocialUser({ provider, sub, email, name }) {
+async function upsertSocialUser({ provider, sub, email, emailVerified = false, name }) {
   let user = await findByProvider(provider, sub);
   if (user) {
     if (name && !user.name) {
@@ -474,19 +477,40 @@ async function upsertSocialUser({ provider, sub, email, name }) {
     }
     return { user, created: false };
   }
+  // An address the provider has not verified is not evidence of anything:
+  // it may not link to an account, and it may not reserve one.
+  const verifiedEmail = email && emailVerified ? email : null;
   // Same email already registered (e.g. email signup first, Google later):
   // link the social identity to that account rather than duplicating it.
-  if (email) {
-    const existing = await findByEmail(email);
+  if (verifiedEmail) {
+    const existing = await findByEmail(verifiedEmail);
     if (existing) {
-      await run(
-        "UPDATE users SET provider_sub = COALESCE(provider_sub, $1) WHERE id = $2",
-        [sub, existing.id]
-      );
+      // PRE-ACCOUNT TAKEOVER. Email signup never proves the address, so a
+      // password on this row may belong to someone who registered the
+      // owner's email first and is waiting for them to arrive. The owner
+      // has just proved the address, so that password — and every session
+      // it opened — is revoked. A genuine owner loses only a password they
+      // no longer need: they are signed in with the provider right now.
+      const unproven = Boolean(existing.password_hash);
+      if (unproven) {
+        await run(
+          `UPDATE users SET provider_sub = COALESCE(provider_sub, $1),
+             password_hash = NULL, sessions_valid_after = $3 WHERE id = $2`,
+          [sub, existing.id, Math.floor(Date.now() / 1000)]
+        );
+      } else {
+        await run(
+          "UPDATE users SET provider_sub = COALESCE(provider_sub, $1) WHERE id = $2",
+          [sub, existing.id]
+        );
+      }
       return { user: await findById(existing.id), created: false };
     }
   }
-  return { user: await createUser({ email, name, provider, providerSub: sub }), created: true };
+  return {
+    user: await createUser({ email: verifiedEmail, name, provider, providerSub: sub }),
+    created: true,
+  };
 }
 
 /** Shape sent to clients — never includes password_hash. */
