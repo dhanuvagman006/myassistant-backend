@@ -315,6 +315,7 @@ async function contextBlock(userId) {
     u.timezone && `timezone: ${u.timezone}`,
   ].filter(Boolean);
   if (who.length) lines.push(`ABOUT THE USER — ${who.join("; ")}.`);
+  lines.push(require("../agents/owner").addressRule(u));
 
   const a = p.assistant;
   lines.push(

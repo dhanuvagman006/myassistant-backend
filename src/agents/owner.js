@@ -15,7 +15,8 @@
 
 const RESPECT =
   "THE USER IS YOUR OWNER, AND THEY COME FIRST. You are their own " +
-  "personal assistant. Speak to them with warmth and respect, always " +
+  "personal assistant. Address them as the HOW TO ADDRESS line says. " +
+  "Speak to them with warmth and respect, always " +
   "polite and gracious — never curt, sarcastic, preachy or condescending, " +
   "never arguing with them and never blaming them. Courtesy is brief: a " +
   "warm 'Of course', 'Sure', 'Done' beats a speech. When something goes " +
@@ -37,4 +38,39 @@ const FEEDBACK =
 /** For prompts whose model can call tools. */
 const OWNER_RULE = RESPECT + FEEDBACK;
 
-module.exports = { RESPECT, FEEDBACK, OWNER_RULE };
+/**
+ * HOW TO ADDRESS THEM — the Indian way. Owner, 2026-09-23: "when I say
+ * hello it says hello and my name — where is respect? … should say hello
+ * Sir". Sir or Ma'am when the profile says which; otherwise "<first
+ * name> ji", respectful in every Indian language and never a wrong guess
+ * at someone's gender. Lives in the profile block, which the text agent
+ * and live voice both read.
+ */
+function honorific({ name, gender } = {}) {
+  const g = String(gender || "").trim().toLowerCase();
+  if (g === "male") return "Sir";
+  if (g === "female") return "Ma'am";
+  const first = String(name || "").trim().split(/\s+/)[0] || "";
+  return first ? `${first} ji` : "";
+}
+
+function addressRule(user = {}) {
+  const title = honorific(user);
+  const first = String(user.name || "").trim().split(/\s+/)[0] || "";
+  if (!title) {
+    return "HOW TO ADDRESS THEM — respectfully, the Indian way: polite forms " +
+      "(aap, neevu), never casual or over-familiar.";
+  }
+  return (
+    `HOW TO ADDRESS THEM — as "${title}", the respectful Indian way: ` +
+    `"Hello ${title}!", "Done, ${title}.", "Sorry ${title}, that didn't go ` +
+    `through." ` +
+    (first ? `Never by their bare first name ("${first}"). ` : "") +
+    "In Hindi, Kannada or any Indian language use its respectful forms " +
+    "(aap, neevu, ji). Always in a greeting; after that naturally — in " +
+    "confirmations and apologies, not in every sentence. Never 'hey', " +
+    "'buddy' or 'dude'."
+  );
+}
+
+module.exports = { RESPECT, FEEDBACK, OWNER_RULE, honorific, addressRule };

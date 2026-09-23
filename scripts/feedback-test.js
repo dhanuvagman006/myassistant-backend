@@ -165,6 +165,27 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
     assert.doesNotMatch(RESPECT, /understand your frustration/i);
   });
 
+  await atest("Sir or Ma'am when known, '<name> ji' when not — never a guess", () => {
+    const { honorific } = require("../src/agents/owner");
+    assert.strictEqual(honorific({ name: "Dhanush K", gender: "male" }), "Sir");
+    assert.strictEqual(honorific({ name: "Asha", gender: "female" }), "Ma'am");
+    assert.strictEqual(honorific({ name: "Ravi Kumar", gender: null }), "Ravi ji");
+    assert.strictEqual(honorific({ name: "Ravi", gender: "other" }), "Ravi ji");
+    assert.strictEqual(honorific({}), "");
+  });
+
+  await atest("both voices are told how to address the owner", async () => {
+    const email = `owner-test-${Date.now()}@example.test`;
+    const u = await db.createUser({ email, name: "Dhanush K", gender: "male" });
+    try {
+      const block = await require("../src/users/context").contextBlock(u.id);
+      assert.match(block, /HOW TO ADDRESS THEM — as "Sir"/);
+      assert.match(block, /Never by their bare first name \("Dhanush"\)/);
+    } finally {
+      await db.run(`DELETE FROM users WHERE id=$1`, [u.id]);
+    }
+  });
+
   server.close();
   await db.run(`DELETE FROM developer_feedback WHERE user_id=$1`, [UID]);
   console.log(`\n${passed} passed${process.exitCode ? ", some FAILED" : ""}`);
