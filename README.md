@@ -40,7 +40,7 @@ Auth column: **none** = public · **JWT** = `Authorization: Bearer <token>` from
 | `GET/POST/PATCH/DELETE /reminders` | JWT | Reminders (also created by voice via chat intents) |
 | `GET /profile` · `POST /profile/survey` | JWT | Onboarding survey → name/gender + seeded memories |
 | `GET /actions` | JWT | The user's action audit log |
-| `GET /privacy/export` · `POST /privacy/account` | JWT | Full data export · account erasure |
+| `GET /privacy/export` · `DELETE /privacy/account` | JWT | Full data export · account erasure |
 | `GET/POST /google/*` | JWT | Google link, Gmail (drafts only) + Calendar |
 | `POST /avatar/*` | JWT | Tavus human-avatar video sessions |
 | `GET /places` · `GET /tools/weather` · `GET /tools/news` | JWT | Live data for the Today screen |
