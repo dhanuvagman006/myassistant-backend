@@ -329,6 +329,11 @@ function detectSaveDocument(text) {
  */
 async function runViaAgent(s, req, userText) {
   const { runAgentTurn } = require("../agents/runtime");
+  // Tools that actually RAN this turn. Once one has, handing the turn to
+  // the legacy regex chain is no longer "degrading gracefully": that chain
+  // re-reads the same words, and "call mom and tell her I'll be late"
+  // would place a second call after the first had already gone out.
+  let toolsRan = 0;
   try {
     const ctx = {
       userId: req.user?.sub && req.user.sub !== "anonymous-dev" ? req.user.sub : null,
@@ -405,6 +410,7 @@ async function runViaAgent(s, req, userText) {
       // than waiting for a throttled refresh. The live socket has always
       // sent both; this brings the classic path in line.
       if (ev === "tool_done") {
+        if (payload.ok) toolsRan++;
         emit(s, { type: "tool_completed", name: payload.name, tool: payload.name, ok: payload.ok });
       }
       if (ev === "sentence" && payload.text && !s.cancelled) {
@@ -544,11 +550,24 @@ async function runViaAgent(s, req, userText) {
     // detectCallIntent re-matched "call Dikshit Pujari" and dialled it —
     // defeating the guard in exactly the case it exists for.
     const suppressed = (out.toolResults || []).some((t) => t && t.repeated);
-    if (!text && !out.deviceActions.length && !suppressed) return false; // → legacy
+    const ran = (out.toolResults || []).filter((t) => t && t.ok && !t.repeated);
+    // Legacy only when the agent did NOTHING — see toolsRan above.
+    if (!text && !out.deviceActions.length && !suppressed && !ran.length) return false;
     if (!text && suppressed) {
       state(s, "speaking");
       emit(s, { type: "assistant_message", text: "That's already under way." });
       state(s, "completed");
+      s.busy = false;
+      return true;
+    }
+    // Something was done but the model said nothing about it: say what the
+    // tool itself reported, rather than silence (or a re-run).
+    if (!text && ran.length && !out.deviceActions.length) {
+      const said = ran.map((t) => String(t.speak || "").trim()).find(Boolean) || "Done.";
+      state(s, "speaking");
+      emit(s, { type: "assistant_message", text: said });
+      state(s, "completed");
+      s.busy = false;
       return true;
     }
 
@@ -567,6 +586,19 @@ async function runViaAgent(s, req, userText) {
     s.busy = false;
     return true;
   } catch (e) {
+    if (toolsRan > 0) {
+      // Part of the request already happened. Say so honestly; never
+      // re-run it through the legacy chain.
+      console.error(`agent runtime failed after ${toolsRan} tool(s) ran — not falling back:`, e.message);
+      state(s, "speaking");
+      emit(s, {
+        type: "assistant_message",
+        text: "Something went wrong partway through that — part of it may already have gone through. Please check before asking me again.",
+      });
+      state(s, "completed");
+      s.busy = false;
+      return true;
+    }
     console.error("agent runtime failed, falling back:", e.message);
     return false;
   }
