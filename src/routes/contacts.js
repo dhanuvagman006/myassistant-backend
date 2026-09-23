@@ -108,13 +108,16 @@ router.get("/resolve", async (req, res) => {
   }
   try {
     const out = await require("../users/resolve").resolveContact(uid, name, { limit: 4 });
-    if (!out.match && !out.candidates.length) {
+    // A name, not a pattern: unescaped, "%" or "a_" matched every user and
+    // handed back the number of whichever one it singled out.
+    if (!out.match && !out.candidates.length && /\p{L}{2,}/u.test(name)) {
+      const literal = name.replace(/[\\%_]/g, (c) => `\\${c}`);
       const users = await db.query(
         `SELECT name, phone_number AS phone FROM users
           WHERE phone_verified_at IS NOT NULL AND phone_number IS NOT NULL
             AND id <> $2
-            AND (lower(name) = lower($1) OR lower(name) LIKE lower($1) || ' %')`,
-        [name, uid]
+            AND (lower(name) = lower($1) OR lower(name) LIKE lower($3) || ' %' ESCAPE '\\')`,
+        [name, uid, literal]
       );
       if (users.length === 1) {
         return res.json({ match: { name: users[0].name, phone: users[0].phone, source: "app-user" }, candidates: [] });

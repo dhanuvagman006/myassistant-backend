@@ -360,6 +360,29 @@ async function mount(router, userId = 1) {
     assert.ok((await verifySession(none)).error, "an unsigned token was accepted");
   });
 
+  await atest("a name lookup is a name, not a pattern that enumerates users", async () => {
+    const who = await db.createUser({ email: `seeker-${tag}@example.com`, name: "Seeker", provider: "email" });
+    const target = await db.createUser({ email: `zq-${tag}@example.com`, name: `Zqx${tag} Target`, provider: "email" });
+    await db.run("UPDATE users SET phone_number=$1, phone_verified_at=$2 WHERE id=$3",
+      [`+9190000${String(tag).slice(-5)}`, Date.now(), target.id]);
+    const srv = await mount(require("../src/routes/contacts"), who.id);
+    try {
+      await fetch(`${srv.url}/count`); // creates the contacts table on first use
+      const q = (name) => fetch(`${srv.url}/resolve?name=${encodeURIComponent(name)}`).then((r) => r.json());
+      // The last pattern singles out THIS run's user, so the old query
+      // (which matched it) returned their number.
+      for (const pattern of ["%", "_%", `Zqx${tag.slice(0, -1)}%`]) {
+        const r = await q(pattern);
+        assert.ok(!r.match, `"${pattern}" matched ${JSON.stringify(r.match)}`);
+      }
+      const real = await q(`Zqx${tag}`);
+      assert.strictEqual(real.match && real.match.name, `Zqx${tag} Target`,
+        "a registered user's real first name must still resolve");
+    } finally {
+      await srv.close();
+    }
+  });
+
   await atest("social sign-in refuses when its audience is not configured", async () => {
     const saved = { g: process.env.GOOGLE_WEB_CLIENT_ID, a: process.env.APPLE_BUNDLE_ID };
     delete process.env.GOOGLE_WEB_CLIENT_ID;
