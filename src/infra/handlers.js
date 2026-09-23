@@ -621,6 +621,15 @@ async function reminderCall(payload, job) {
     // Quota, an unverified number, or the provider being down. The
     // notification is the fallback and it has already been scheduled.
     console.warn("reminder call not placed:", e?.message || e?.code || e);
+  } finally {
+    // THE NEXT ONE IS THIS JOB'S JOB. A repeating reminder's next call was
+    // only queued when something listed the reminders — the app opening,
+    // a brief being built — so "call me every morning" stopped calling for
+    // anyone who didn't open the app that day. This occurrence has just
+    // come due, so rolling now advances it and queues the next call.
+    await require("../reminders/store").rollForward(userId).catch((e) =>
+      console.warn("reminder roll after call failed:", e.message)
+    );
   }
 }
 
@@ -639,4 +648,4 @@ function install() {
     require("../agents/agentCall").retryFromJob(payload));
 }
 
-module.exports = { install };
+module.exports = { install, reminderCall };

@@ -230,6 +230,57 @@ async function turns(calls, n, ms = 3000) {
     }
   });
 
+  console.log("\nreminders that call keep calling — once");
+
+  const db = require("../src/db");
+  await db.init();
+  const store = require("../src/reminders/store");
+  const agent = require("../src/agents/agentCall");
+  const realAgent = { enabled: agent.enabled, start: agent.start };
+  const placed = [];
+  agent.enabled = () => true;
+  agent.start = async (a) => { placed.push(a); return { id: "stub" }; };
+  const DAY = 24 * 3600_000;
+  const pendingCalls = (reminderId) => db.query(
+    `SELECT id, run_after FROM jobs WHERE kind='reminder_call' AND status='pending'
+       AND (payload->>'reminderId')::int = $1`, [reminderId]);
+
+  try {
+    const u = await db.createUser({ email: `rem-${Date.now()}@example.com`, name: "Rema Test", provider: "email" });
+
+    await atest("a daily reminder's call queues tomorrow's call itself", async () => {
+      const r = await store.create(u.id, "take the tablets", Date.now() + 60_000, "gentle",
+        { repeat: "daily", deliver: "call" });
+      assert.ok(r.call_job_id, "precondition: the first call was queued");
+      // The time comes: the row is due now, and its job runs.
+      const due = Date.now() - 1000;
+      await db.run("UPDATE reminders SET due_at=$1 WHERE id=$2", [due, r.id]);
+      const before = placed.length;
+      await require("../src/infra/handlers").reminderCall(
+        { reminderId: r.id, text: r.text }, { user_id: u.id });
+      assert.strictEqual(placed.length, before + 1, "the call was not placed");
+      const row = await db.one("SELECT due_at, call_job_id FROM reminders WHERE id=$1", [r.id]);
+      assert.ok(Number(row.due_at) > Date.now() + DAY / 2, "the series did not move to tomorrow");
+      const jobs = await pendingCalls(r.id);
+      assert.strictEqual(jobs.length, 1, "tomorrow's call was not queued (only the app opening did that)");
+      assert.strictEqual(Number(jobs[0].id), Number(row.call_job_id));
+    });
+
+    await atest("two roll-forwards at once queue ONE call, not two", async () => {
+      const r = await store.create(u.id, "stand-up call", Date.now() + 60_000, "gentle",
+        { repeat: "daily", deliver: "call" });
+      await store.cancelCall(r.call_job_id);
+      await db.run("UPDATE reminders SET due_at=$1 WHERE id=$2", [Date.now() - 1000, r.id]);
+      // The app's list refresh and the call job, racing.
+      await Promise.all([store.rollForward(u.id), store.rollForward(u.id), store.rollForward(u.id)]);
+      const jobs = await pendingCalls(r.id);
+      assert.strictEqual(jobs.length, 1, `${jobs.length} calls queued for one occurrence`);
+    });
+  } finally {
+    agent.enabled = realAgent.enabled;
+    agent.start = realAgent.start;
+  }
+
   console.log(`\n${passed} passed${process.exitCode ? " — with failures above" : ""}\n`);
   process.exit(process.exitCode || 0);
 })();

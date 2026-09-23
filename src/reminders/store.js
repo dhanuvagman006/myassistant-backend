@@ -39,21 +39,26 @@ async function rollForward(userId, tzOffsetMin = 330) {
       anchorDay: Number(r.anchor_day) || 0,
     });
     if (!next) continue;
+    // CLAIM THE ROLL. The app's list refresh and the reminder's own call
+    // job both roll the series forward; without a claim, two of them at
+    // once each queued a call for the same next occurrence and the user
+    // was rung twice. Only the caller whose UPDATE moves THIS due_at goes
+    // on to queue the call. done is reset: the next occurrence is ahead.
+    const claimed = await run(
+      "UPDATE reminders SET due_at = $1, done = 0 WHERE id = $2 AND due_at = $3",
+      [next, r.id, r.due_at]
+    );
+    if (!claimed) continue;
     // A SERIES THAT CALLS MUST KEEP CALLING. The occurrence that just
     // passed spent its job. Rolling the time forward without queueing a
     // call for the new one turned "I'll call you every day" into a push
     // after day one — and only setDone() re-queued, which never runs for
     // someone who answers the call instead of ticking the row off.
-    let jobId = null;
     if (r.deliver === "call") {
       await cancelCall(r.call_job_id);
-      jobId = await queueCall(userId, r.id, r.text, next);
+      const jobId = await queueCall(userId, r.id, r.text, next);
+      await run("UPDATE reminders SET call_job_id = $2 WHERE id = $1", [r.id, jobId]);
     }
-    // done is reset too: the next occurrence has not happened yet.
-    await run(
-      "UPDATE reminders SET due_at = $1, done = 0, call_job_id = $3 WHERE id = $2",
-      [next, r.id, jobId]
-    );
   }
   return stale.length;
 }
