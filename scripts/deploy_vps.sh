@@ -120,5 +120,6 @@ for i in \$(seq 1 30); do
 done
 rollback "no healthy /health within 90s"
 EOF
+[ "$DRY_RUN" = 1 ] && exit 0
 say "deployed. Roll back by hand with:"
 echo "  ssh $VPS 'k3s ctr -n k8s.io images tag --force docker.io/library/myassistant-backend:previous docker.io/library/myassistant-backend:local && k3s kubectl -n myassistant rollout restart deploy/myassistant-backend'"
