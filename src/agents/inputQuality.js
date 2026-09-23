@@ -150,7 +150,15 @@ function assess(text, { expectsNumber = false, languages = [] } = {}) {
     const imperative = IMPERATIVE.test(norm[0] || "");
     const repeated = !imperative && new Set(norm).size < norm.length;
     const alnumMix = norm.some((w) => /\d/.test(w) && /\p{L}/u.test(w));
-    if (repeated || alnumMix || contentRatio(raw) < 0.7) {
+    // Nothing but crumbs: "o a", "a e i". contentRatio ignores whitespace
+    // (so "4:30 a.m. alarm" passes), which also let a run of single
+    // letters score as a full sentence — and live mode answered them
+    // confidently. Single characters only: "go on" and "है ना" are real.
+    // Marks are kept here: stripped, "हाँ" shrinks to one letter.
+    const crumbs = words
+      .map((w) => w.toLowerCase().replace(/[^\p{L}\p{M}\p{N}]/gu, ""))
+      .every((w) => [...w].length <= 1);
+    if (repeated || alnumMix || crumbs || contentRatio(raw) < 0.7) {
       return { quality: "weak", reason: "fragmentary", digitsOnly: false };
     }
   }
