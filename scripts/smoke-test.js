@@ -18,6 +18,9 @@ process.env.JWT_SECRET =
 process.env.NODE_ENV = "test";
 // CI has no real keys; boot must not depend on them.
 process.env.GEMINI_API_KEY = process.env.GEMINI_API_KEY || "ci-dummy-key";
+// Set so the metrics guard is exercised; unset Plivo so its webhooks are closed.
+process.env.METRICS_TOKEN = "smoke-metrics-token";
+delete process.env.PLIVO_AUTH_TOKEN;
 
 const BASE = `http://localhost:${process.env.PORT}`;
 
@@ -55,6 +58,28 @@ async function waitForBoot() {
     throw new Error("/brief served without credentials — auth guard broken");
   }
   console.log(`✓ authed route refused without credentials (${guarded.status})`);
+
+  // An exact "/metrics" check once let GET /metrics/ past the token.
+  for (const p of ["/metrics", "/metrics/", "/METRICS", "/metrics/agent"]) {
+    const r = await get(p);
+    if (r.status === 200) throw new Error(`${p} served without the metrics token`);
+  }
+  const withToken = await fetch(BASE + "/metrics", {
+    headers: { authorization: "Bearer smoke-metrics-token" },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (withToken.status !== 200) throw new Error(`/metrics refused its own token (${withToken.status})`);
+  console.log("✓ metrics need the token, on every spelling of the path");
+
+  // With no Plivo account configured, nothing may pose as Plivo.
+  const forged = await fetch(BASE + "/inbound/plivo/answer", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: "To=%2B911234567890&From=%2B919876543210",
+    signal: AbortSignal.timeout(8000),
+  });
+  if (forged.status === 200) throw new Error("an unsigned Plivo webhook was served");
+  console.log(`✓ unsigned Plivo webhooks are refused (${forged.status})`);
 
   console.log("SMOKE TEST PASSED");
   process.exit(0);

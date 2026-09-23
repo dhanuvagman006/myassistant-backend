@@ -272,6 +272,52 @@ async function mount(router, userId = 1) {
     });
   });
 
+  console.log("\nwebhooks and admin keys");
+
+  await atest("Plivo webhooks accept Plivo's signature and nothing else", async () => {
+    const crypto = require("crypto");
+    const saved = { t: process.env.PLIVO_AUTH_TOKEN, b: process.env.PUBLIC_BASE_URL };
+    process.env.PLIVO_AUTH_TOKEN = "plivo-test-token";
+    process.env.PUBLIC_BASE_URL = "https://api.example.test";
+    const app = express();
+    app.use("/inbound/plivo", require("../src/inbound/routes").webhooks);
+    const server = await new Promise((r) => { const s = app.listen(0, "127.0.0.1", () => r(s)); });
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const post = (path, headers = {}) => fetch(base + path, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
+      body: "To=%2B910000000000&From=%2B919999999999",
+    });
+    try {
+      assert.strictEqual((await post("/inbound/plivo/answer")).status, 403, "unsigned was accepted");
+      assert.strictEqual((await post("/inbound/plivo/answer", {
+        "X-Plivo-Signature-V2": "forged", "X-Plivo-Signature-V2-Nonce": "n1",
+      })).status, 403, "a forged signature was accepted");
+      const nonce = "n2";
+      const sig = crypto.createHmac("sha256", "plivo-test-token")
+        .update("https://api.example.test/inbound/plivo/answer" + nonce).digest("base64");
+      const ok = await post("/inbound/plivo/answer", {
+        "X-Plivo-Signature-V2": sig, "X-Plivo-Signature-V2-Nonce": nonce,
+      });
+      assert.strictEqual(ok.status, 200, "Plivo's own signature was refused");
+      assert.match(await ok.text(), /<Response>/);
+    } finally {
+      await new Promise((r) => server.close(r));
+      for (const [k, v] of [["PLIVO_AUTH_TOKEN", saved.t], ["PUBLIC_BASE_URL", saved.b]]) {
+        if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      }
+    }
+  });
+
+  await atest("constant-time compare agrees with === and never throws", () => {
+    const { safeEqual } = require("../src/services/safeCompare");
+    assert.strictEqual(safeEqual("abc", "abc"), true);
+    assert.strictEqual(safeEqual("abc", "abd"), false);
+    assert.strictEqual(safeEqual("abc", "abcd"), false, "unequal lengths");
+    assert.strictEqual(safeEqual("", ""), false, "an empty secret must never match");
+    assert.strictEqual(safeEqual(undefined, "x"), false);
+  });
+
   console.log("\naccounts: nobody can pre-register someone else's email and keep it");
   // These need the real users table: run against a throwaway DATABASE_URL.
   const db = require("../src/db");

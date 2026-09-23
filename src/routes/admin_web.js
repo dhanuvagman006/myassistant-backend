@@ -807,10 +807,19 @@ router.get("/api/documents/:docId/file", async (req, res) => {
   }
   const safe = String(row.title || row.filename || "document")
     .replace(/[^\w .\-]+/g, "_").slice(0, 80);
-  res.setHeader("Content-Type", row.mime || "application/octet-stream");
+  // Only passive types preview inline. These files are user uploads served
+  // on the admin panel's own origin, beside its session cookie: an
+  // uploaded text/html rendered inline would run script as the admin.
+  const PREVIEWABLE = new Set([
+    "image/jpeg", "image/png", "image/webp", "image/gif", "application/pdf", "text/plain",
+  ]);
+  const mime = String(row.mime || "").toLowerCase();
+  const inline = !req.query.download && PREVIEWABLE.has(mime);
+  res.setHeader("Content-Type", inline ? mime : "application/octet-stream");
+  res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader(
     "Content-Disposition",
-    `${req.query.download ? "attachment" : "inline"}; filename="${safe}"`
+    `${inline ? "inline" : "attachment"}; filename="${safe}"`
   );
   res.setHeader("Cache-Control", "private, max-age=3600");
   fs.createReadStream(row.path).pipe(res);

@@ -6,11 +6,10 @@
  *   POST /inbound/plivo/:id/:token/gather         -> Plivo XML, one spoken turn
  *   POST /inbound/plivo/:id/:token/hangup         -> 204, files the call
  *
- * The answer webhook is unauthenticated by necessity — Plivo cannot carry
- * our app key — but it is safe: it reveals nothing, and it only proceeds if
- * the DIALLED number is one we have assigned to a user. The follow-up
- * webhooks carry a per-call random token in the path, so a guessed call id
- * is useless on its own.
+ * Plivo cannot carry our app key, so every webhook is authenticated by
+ * Plivo's own request signature instead (verifyPlivo, below), and closed
+ * entirely when no Plivo auth token is configured. The follow-up webhooks
+ * also carry a per-call random token in the path.
  *
  * App-facing (behind appAuth):
  *   GET   /inbound/settings          -> current screening configuration
@@ -22,11 +21,39 @@
 const express = require("express");
 const receptionist = require("./receptionist");
 const { one, run } = require("../db");
+const { safeEqual } = require("../services/safeCompare");
 
 /* ---------------- PUBLIC WEBHOOKS ---------------- */
 
 const webhooks = express.Router();
 webhooks.use(express.urlencoded({ extended: false }));
+
+/**
+ * ONLY PLIVO MAY CALL THESE. They were open to anyone: /answer hands back
+ * the per-call token in its XML, so the token in the later paths gated
+ * nothing, and a forged call "from" one of the user's contacts was given
+ * the user's private forwarding number. Forged /gather posts filed fake
+ * messages that were pushed to the user.
+ *
+ * Plivo signs every webhook (V2): base64(HMAC-SHA256(auth token, the full
+ * callback URL + nonce)). The URL is rebuilt from PUBLIC_BASE_URL because
+ * TLS ends at the ingress, so Express itself sees http://. With no auth
+ * token configured there is no Plivo account to be called by, and the
+ * webhooks are closed.
+ */
+function verifyPlivo(req, res, next) {
+  const token = process.env.PLIVO_AUTH_TOKEN;
+  if (!token) return res.status(404).end();
+  const base = String(process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`)
+    .replace(/\/+$/, "");
+  const url = base + req.originalUrl;
+  const nonce = req.get("X-Plivo-Signature-V2-Nonce") || "";
+  const got = req.get("X-Plivo-Signature-V2") || "";
+  const want = require("crypto").createHmac("sha256", token).update(url + nonce).digest("base64");
+  if (!nonce || !safeEqual(got, want)) return res.status(403).end();
+  next();
+}
+webhooks.use(verifyPlivo);
 
 function sendXml(res, xml) {
   res.set("Content-Type", "text/xml").send(xml);
@@ -172,7 +199,7 @@ router.post("/calls/seen", async (req, res) => {
 const adminRouter = express.Router();
 
 adminRouter.post("/assign-number", async (req, res) => {
-  if (!process.env.ADMIN_KEY || req.get("X-Admin-Key") !== process.env.ADMIN_KEY) {
+  if (!process.env.ADMIN_KEY || !safeEqual(req.get("X-Admin-Key") || "", process.env.ADMIN_KEY)) {
     return res.status(404).json({ error: "not found" });
   }
   const phone = receptionist.normalize(req.body?.phone);

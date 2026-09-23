@@ -82,9 +82,14 @@ app.use((req, res, next) => {
 // so the endpoint can sit behind the public ingress without leaking
 // traffic patterns to the world.
 const promBundle = require("express-prom-bundle");
+const { safeEqual } = require("./services/safeCompare");
 app.use((req, res, next) => {
   const t = process.env.METRICS_TOKEN;
-  if (req.path === "/metrics" && t && req.get("Authorization") !== `Bearer ${t}`) {
+  // The same shape promBundle serves (/metrics and /metrics/), matched
+  // case-insensitively as Express routes are: an exact "/metrics" test let
+  // GET /metrics/ straight past the token.
+  if (t && /^\/metrics\/?$/i.test(req.path) &&
+      !safeEqual(req.get("Authorization") || "", `Bearer ${t}`)) {
     return res.status(404).json({ error: "not found" }); // don't advertise
   }
   next();
@@ -387,7 +392,7 @@ app.use("/live", live.probeRouter());
 // metrics — two handlers on one path would silently shadow each other.
 app.get("/metrics/agent", (req, res) => {
   const want = process.env.METRICS_TOKEN;
-  if (want && req.headers["x-metrics-token"] !== want) {
+  if (want && !safeEqual(String(req.headers["x-metrics-token"] || ""), want)) {
     return res.status(401).json({ error: "unauthorized" });
   }
   res.json(observability.snapshot());

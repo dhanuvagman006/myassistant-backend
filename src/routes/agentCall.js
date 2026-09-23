@@ -16,6 +16,7 @@
 const express = require("express");
 const crypto = require("crypto");
 const agent = require("../agents/agentCall");
+const { safeEqual } = require("../services/safeCompare");
 
 function uidOf(req) {
   const id = Number(req.user?.sub);
@@ -114,7 +115,11 @@ function providerWebhook(envKey, handle) {
   r.post("/webhook/:secret", (req, res) => {
     const key = process.env[envKey] || "";
     const want = crypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
-    if (!key || req.params.secret !== want) return res.status(404).json({ error: "not found" });
+    // Constant-time: the derivation stays (it is baked into the webhook URL
+    // configured at the provider), only the comparison stops leaking.
+    if (!key || !safeEqual(String(req.params.secret || ""), want)) {
+      return res.status(404).json({ error: "not found" });
+    }
     try {
       handle(req.body || {});
     } catch (e) {
