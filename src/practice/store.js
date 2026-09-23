@@ -121,18 +121,30 @@ async function recallsNeedingCall(now = Date.now()) {
     `SELECT r.*, c.name AS client_name, c.phone AS client_phone
        FROM client_recalls r JOIN clients c ON c.id = r.client_id AND c.user_id = r.user_id
       WHERE r.status = 'pending' AND r.notify_patient = 1 AND r.called_at = 0
-        AND r.due_at <= $1 + 16 * 3600 * 1000
-        AND r.due_at >= $1 - 12 * 3600 * 1000
+        -- ::bigint is load-bearing: in "$1 + <int>" Postgres typed $1 as
+        -- INTEGER, a millisecond timestamp overflowed it, and this query
+        -- failed on every sweep from the day recall calls shipped
+        -- (2026-09-09) — no recall call could ever be placed.
+        AND r.due_at <= $1::bigint + 16 * 3600 * 1000
+        AND r.due_at >= $1::bigint - 12 * 3600 * 1000
         AND c.phone <> ''
       ORDER BY r.due_at ASC LIMIT 20`,
     [now]
   );
 }
 
-/** Stamped BEFORE the call is attempted — one attempt, never a retry loop. */
+/**
+ * Stamped BEFORE the call is attempted — one attempt, never a retry loop.
+ * And a CLAIM: only the caller whose update flips called_at from 0 gets
+ * true. Two overlapping sweeps both selected the same recall and both
+ * stamped it, and the patient was phoned twice.
+ */
 async function markCalled(recallId) {
   await migrate();
-  await run("UPDATE client_recalls SET called_at = $1 WHERE id = $2", [Date.now(), Number(recallId)]);
+  return (await run(
+    "UPDATE client_recalls SET called_at = $1 WHERE id = $2 AND called_at = 0",
+    [Date.now(), Number(recallId)]
+  )) > 0;
 }
 
 async function removeForClient(userId, clientId) {

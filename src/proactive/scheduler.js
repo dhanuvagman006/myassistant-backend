@@ -456,8 +456,11 @@ async function sweepPatientRecalls() {
     console.error("recall sweep query failed:", e.message);
     return;
   }
+  let placed = 0;
   for (const r of due) {
-    await practice.markCalled(r.id); // one attempt, ever
+    // One attempt, ever — and only by whoever claims it first.
+    if (!(await practice.markCalled(r.id))) continue;
+    placed++;
     try {
       const u = await db.one("SELECT name FROM users WHERE id = $1", [r.user_id]);
       const firstName = String(u?.name || "").split(" ")[0] || null;
@@ -492,6 +495,7 @@ async function sweepPatientRecalls() {
       console.error(`recall call to ${r.client_name} failed to start:`, e?.message || e?.code);
     }
   }
+  return placed;
 }
 
 async function sweep() {
@@ -503,23 +507,33 @@ async function sweep() {
     sweepMorningBriefs(),
     sweepPersonDates(),
   ]);
-  const [nudges, briefs, fares, mornings] = results.map((r) =>
-    r.status === "fulfilled" ? r.value : 0
+  // One name per sweep, in order — it used to unpack six results into four
+  // names, so "briefs" logged the recall count and "fares" the meetings.
+  const [nudges, recalls, briefs, fares, mornings, dates] = results.map((r) =>
+    r.status === "fulfilled" ? Number(r.value) || 0 : 0
   );
-  if (nudges || briefs || fares || mornings) {
+  if (nudges || recalls || briefs || fares || mornings || dates) {
     console.log(
-      `proactive: ${nudges} nudge(s), ${briefs} brief(s), ${fares} fare alert(s), ${mornings} morning brief(s)`
+      `proactive: ${nudges} nudge(s), ${recalls} recall call(s), ${briefs} brief(s), ` +
+        `${fares} fare alert(s), ${mornings} morning brief(s), ${dates} date reminder(s)`
     );
   }
-  return { nudges, briefs, fares, mornings };
+  return { nudges, recalls, briefs, fares, mornings, dates };
 }
 
 function start() {
   if (timer) return;
   // A failing sweep must never take the process down — it is background
-  // work, and the assistant keeps answering either way.
+  // work, and the assistant keeps answering either way. Nor may two run
+  // at once: a sweep that outlasts the interval (slow calendar calls for
+  // many users) would otherwise overlap the next and act twice.
+  let running = false;
   timer = setInterval(() => {
-    sweep().catch((e) => console.error("proactive sweep failed:", e.message));
+    if (running) return;
+    running = true;
+    sweep()
+      .catch((e) => console.error("proactive sweep failed:", e.message))
+      .finally(() => { running = false; });
   }, SWEEP_MS);
   timer.unref?.();
   console.log(`  proactive: sweeping every ${Math.round(SWEEP_MS / 60000)} min`);
@@ -532,7 +546,7 @@ function stop() {
 
 module.exports = {
   start, stop, sweep,
-  sweepCommitments, sweepMeetings, sweepFares, sweepMorningBriefs,
+  sweepCommitments, sweepPatientRecalls, sweepMeetings, sweepFares, sweepMorningBriefs,
   sweepPersonDates,
   buildBrief, morningBody,
   inQuietHours, localHour,

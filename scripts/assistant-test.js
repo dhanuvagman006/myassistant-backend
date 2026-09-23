@@ -433,6 +433,44 @@ async function turns(calls, n, ms = 3000) {
     push.sendNotification = realSend;
   }
 
+  console.log("\na patient is phoned once");
+
+  await atest("two overlapping recall sweeps phone the patient once", async () => {
+    const dialled = [];
+    agent.enabled = () => true;
+    agent.start = async (a) => { dialled.push(a); return { id: `stub-${dialled.length}` }; };
+    try {
+      const doc = await db.createUser({ email: `clinic-${Date.now()}@example.com`, name: "Dr Test", provider: "email" });
+      const client = await db.one(
+        `INSERT INTO clients (user_id, name, kind, phone, created_at, updated_at)
+         VALUES ($1,'Ramesh Patient','patient','+919812345678',$2,$2) RETURNING id`,
+        [doc.id, Date.now()]);
+      await require("../src/practice/store").recallsNeedingCall(); // runs its migration
+      await db.run(
+        `INSERT INTO client_recalls (user_id, client_id, note, due_at, notify_patient, created_at)
+         VALUES ($1,$2,'dental cleaning',$3,1,$4)`,
+        [doc.id, client.id, Date.now() + 3 * 3600_000, Date.now()]);
+      // The query must work at all (it overflowed an INTEGER until now).
+      const practice = require("../src/practice/store");
+      const found = (await practice.recallsNeedingCall()).filter((r) => Number(r.user_id) === Number(doc.id));
+      assert.strictEqual(found.length, 1, "the recall sweep query did not find the due recall");
+      // Both sweeps selected it before either stamped it — the race, made
+      // deterministic: only the claim in markCalled can stop the second call.
+      const realNeeding = practice.recallsNeedingCall;
+      practice.recallsNeedingCall = async () => found;
+      try {
+        await Promise.all([scheduler.sweepPatientRecalls(), scheduler.sweepPatientRecalls()]);
+      } finally {
+        practice.recallsNeedingCall = realNeeding;
+      }
+      const toRamesh = dialled.filter((d) => Number(d.userId) === Number(doc.id));
+      assert.strictEqual(toRamesh.length, 1, `the patient was phoned ${toRamesh.length} times`);
+    } finally {
+      agent.enabled = realAgent.enabled;
+      agent.start = realAgent.start;
+    }
+  });
+
   console.log(`\n${passed} passed${process.exitCode ? " — with failures above" : ""}\n`);
   process.exit(process.exitCode || 0);
 })();
