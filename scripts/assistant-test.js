@@ -344,6 +344,95 @@ async function turns(calls, n, ms = 3000) {
     agent.start = realAgent.start;
   }
 
+  console.log("\ncommitment nudges: helpful, bounded, in the user's own night");
+
+  const push = require("../src/services/push");
+  const scheduler = require("../src/proactive/scheduler");
+  const realSend = push.sendNotification;
+  const sentTo = [];
+  let failTokens = new Set();
+  push.sendNotification = async (token, title, body) => {
+    if (failTokens.has(token)) throw new Error("registration-token-not-registered");
+    sentTo.push({ token, title, body });
+  };
+  /** An offset (minutes) at which it is currently `hour` o'clock. */
+  const offsetForLocalHour = (hour) => {
+    let d = (hour - new Date().getUTCHours() + 24) % 24;
+    if (d > 14) d -= 24;
+    return d * 60;
+  };
+  const mkUser = async (tag, tzMin) => {
+    const u = await db.createUser({ email: `${tag}-${Date.now()}${Math.random()}@example.com`, name: tag, provider: "email" });
+    await db.run("UPDATE users SET fcm_token=$1, tz_offset_min=$2 WHERE id=$3", [`tok-${u.id}`, tzMin, u.id]);
+    return u;
+  };
+  const mkPromise = async (userId, dueAt, extra = {}) => (await db.one(
+    `INSERT INTO commitments (user_id, text, owed_to, due_at, status, nudged_at, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,'open',$5,$6,$6) RETURNING id`,
+    [userId, extra.text || "send Ravi the proposal", "Ravi", dueAt, extra.nudgedAt ?? null, Date.now()])).id;
+  const nudgesFor = (u) => sentTo.filter((s) => s.token === `tok-${u.id}`).length;
+
+  try {
+    await atest("an overdue promise is nudged a bounded number of times, not forever", async () => {
+      const u = await mkUser("overdue", offsetForLocalHour(12));
+      const id = await mkPromise(u.id, Date.now() - 3 * 24 * 3600_000);
+      for (let day = 0; day < 6; day++) {
+        await scheduler.sweepCommitments();
+        // a day passes
+        await db.run("UPDATE commitments SET nudged_at = nudged_at - $2 WHERE id=$1 AND nudged_at IS NOT NULL",
+          [id, 25 * 3600_000]);
+      }
+      assert.strictEqual(nudgesFor(u), 3, `nudged ${nudgesFor(u)} times over six days`);
+    });
+
+    await atest("a pile of undeliverable old promises cannot starve one coming due", async () => {
+      const dead = await mkUser("deadtoken", offsetForLocalHour(12));
+      failTokens.add(`tok-${dead.id}`);
+      for (let i = 0; i < 55; i++) {
+        await mkPromise(dead.id, Date.now() - (60 + i) * 24 * 3600_000, { text: `old ${i}` });
+      }
+      const fresh = await mkUser("fresh", offsetForLocalHour(12));
+      await mkPromise(fresh.id, Date.now() + 3600_000, { text: "call the auditor" });
+      await scheduler.sweepCommitments(); // first sweep: tries the 50 oldest, all fail
+      await scheduler.sweepCommitments();
+      assert.strictEqual(nudgesFor(fresh), 1, "the promise coming due was never reached");
+    });
+
+    await atest("quiet hours are the user's night, not India's", async () => {
+      const night = await mkUser("night", offsetForLocalHour(23));
+      const noon = await mkUser("noon", offsetForLocalHour(12));
+      await mkPromise(night.id, Date.now() + 3600_000);
+      await mkPromise(noon.id, Date.now() + 3600_000);
+      await scheduler.sweepCommitments();
+      assert.strictEqual(nudgesFor(night), 0, "a user was woken at 11 pm their time");
+      assert.strictEqual(nudgesFor(noon), 1, "a user at noon was not nudged");
+    });
+
+    await atest("the phone's reported timezone is stored for background work", async () => {
+      const u = await db.createUser({ email: `tzrep-${Date.now()}@example.com`, name: "Tz", provider: "email" });
+      const jwt = require("jsonwebtoken");
+      const token = jwt.sign({ uid: u.id }, process.env.JWT_SECRET || "security-test-secret-security-test-secret-01");
+      process.env.JWT_SECRET = process.env.JWT_SECRET || "security-test-secret-security-test-secret-01";
+      const { appAuth } = require("../src/middleware/auth");
+      const app = express();
+      app.get("/p", appAuth, (_q, r) => r.json({ ok: true }));
+      const server = await new Promise((r) => { const s = app.listen(0, "127.0.0.1", () => r(s)); });
+      try {
+        const res = await fetch(`http://127.0.0.1:${server.address().port}/p`, {
+          headers: { authorization: `Bearer ${token}`, "X-TZ-Offset": "-300" },
+        });
+        assert.strictEqual(res.status, 200);
+        await new Promise((r) => setTimeout(r, 200)); // the write is fire-and-forget
+        const row = await db.one("SELECT tz_offset_min FROM users WHERE id=$1", [u.id]);
+        assert.strictEqual(Number(row.tz_offset_min), -300);
+      } finally {
+        await new Promise((r) => server.close(r));
+      }
+    });
+  } finally {
+    push.sendNotification = realSend;
+  }
+
   console.log(`\n${passed} passed${process.exitCode ? " — with failures above" : ""}\n`);
   process.exit(process.exitCode || 0);
 })();

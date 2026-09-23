@@ -28,6 +28,7 @@
  */
 const { query, one, run } = require("../db");
 const push = require("../services/push");
+const { offsetOr } = require("../services/tz");
 const commitments = require("../commitments/service");
 
 const SWEEP_MS = Number(process.env.PROACTIVE_SWEEP_MS || 10 * 60 * 1000);
@@ -69,7 +70,7 @@ async function sweepCommitments() {
       await commitments.markNudged(c.id).catch(() => {});
       continue;
     }
-    if (inQuietHours(330)) continue; // try again after quiet hours
+    if (inQuietHours(tzOffsetOf(c))) continue; // their night, not IST: try again later
 
     const overdue = Number(c.due_at) < Date.now();
     const who = c.owed_to ? ` to ${c.owed_to}` : "";
@@ -82,7 +83,12 @@ async function sweepCommitments() {
       );
       await commitments.markNudged(c.id);
       sent++;
-    } catch (_) {}
+    } catch (_) {
+      // A failed push is still an attempt. Unmarked, a dead token's rows
+      // were retried every sweep — and the oldest fifty of them filled
+      // dueSoon's LIMIT, so newer commitments were never nudged at all.
+      await commitments.markNudged(c.id).catch(() => {});
+    }
   }
   return sent;
 }
@@ -236,10 +242,15 @@ async function sweepMeetings() {
 const MORNING_HOUR = Number(process.env.MORNING_BRIEF_HOUR || 8);
 const MORNING_WINDOW_H = Number(process.env.MORNING_BRIEF_WINDOW_H || 3);
 
-/** Minutes east of UTC for a user row; tolerates empty/IANA values. */
+/**
+ * Minutes east of UTC for a user row: what the phone last reported
+ * (tz_offset_min), else a numeric timezone field, else IST.
+ */
 function tzOffsetOf(u) {
+  const reported = offsetOr(u?.tz_offset_min, null);
+  if (reported !== null) return reported;
   const n = Number(u?.timezone);
-  return Number.isFinite(n) && Math.abs(n) <= 840 ? n : 330;
+  return Number.isFinite(n) && Math.abs(n) <= 840 && u?.timezone !== "" ? n : 330;
 }
 
 function localDateKey(tzOffsetMin) {
@@ -291,7 +302,7 @@ async function sweepMorningBriefs() {
   if (process.env.MORNING_BRIEF === "off") return 0;
 
   const users = await query(
-    `SELECT id, name, fcm_token, timezone, brief_hour, brief_push FROM users
+    `SELECT id, name, fcm_token, timezone, tz_offset_min, brief_hour, brief_push FROM users
       WHERE fcm_token IS NOT NULL AND fcm_token <> '' LIMIT 500`
   ).catch(() => []);
   if (!users.length) return 0;
@@ -369,7 +380,7 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
 
 async function sweepPersonDates() {
   const users = await query(
-    `SELECT id, fcm_token, timezone FROM users
+    `SELECT id, fcm_token, timezone, tz_offset_min FROM users
       WHERE fcm_token IS NOT NULL AND fcm_token <> '' LIMIT 500`
   ).catch(() => []);
   let sent = 0;

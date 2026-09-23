@@ -12,27 +12,35 @@
  */
 const jwt = require("jsonwebtoken");
 const db = require("../db");
+const { offsetOr } = require("../services/tz");
 
 // WHICH BUILD IS THIS USER ON? The app sends X-App-Build on every
 // request. Writing that on each one would be a pointless write per call,
 // so a process-local cache limits it to a row update when the build
 // changes or once an hour (which doubles as a last-seen stamp).
-const buildSeen = new Map(); // uid -> { build, at }
+// The timezone rides along: background work (quiet hours, the morning
+// brief, commitment nudges) has no request to read it from.
+const buildSeen = new Map(); // uid -> { build, tz, at }
 function noteAppBuild(uid, req) {
   try {
     const build = Number(req.get("X-App-Build")) || 0;
+    const tz = offsetOr(req.get("X-TZ-Offset"), null);
     const now = Date.now();
     const prev = buildSeen.get(uid);
-    if (prev && prev.build === build && now - prev.at < 3600_000) return;
-    buildSeen.set(uid, { build, at: now });
+    if (prev && prev.build === build && prev.tz === tz && now - prev.at < 3600_000) return;
+    buildSeen.set(uid, { build, tz, at: now });
     const db2 = require("../db");
     if (build > 0) {
       db2.run(
-        `UPDATE users SET app_build=$2, app_build_at=$3, last_seen_at=$3 WHERE id=$1`,
-        [uid, build, now]
+        `UPDATE users SET app_build=$2, app_build_at=$3, last_seen_at=$3,
+                tz_offset_min=COALESCE($4, tz_offset_min) WHERE id=$1`,
+        [uid, build, now, tz]
       ).catch(() => {});
     } else {
-      db2.run(`UPDATE users SET last_seen_at=$2 WHERE id=$1`, [uid, now]).catch(() => {});
+      db2.run(
+        `UPDATE users SET last_seen_at=$2, tz_offset_min=COALESCE($3, tz_offset_min) WHERE id=$1`,
+        [uid, now, tz]
+      ).catch(() => {});
     }
   } catch (_) {}
 }

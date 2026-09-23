@@ -53,6 +53,12 @@ async function migrate(exec) {
     );
     CREATE INDEX IF NOT EXISTS idx_commitments_user
       ON commitments(user_id, status, due_at);
+    -- Nudges sent (or attempted) for this commitment; capped in dueSoon.
+    ALTER TABLE commitments ADD COLUMN IF NOT EXISTS nudge_count INTEGER NOT NULL DEFAULT 0;
+    -- The all-users sweep filters on status + due_at; idx_commitments_user
+    -- leads with user_id, so it could not serve that query.
+    CREATE INDEX IF NOT EXISTS idx_commitments_sweep
+      ON commitments(status, due_at) WHERE status = 'open';
   `);
 }
 
@@ -208,25 +214,36 @@ async function cancel(userId, id) {
 }
 
 /**
- * Commitments worth nudging about: due within the window, still open, and
- * not nudged in the last 12 hours. The nag guard matters — a tracker that
- * reminds you hourly gets muted, and then it is worth nothing.
+ * Commitments worth nudging about: due within the window and still open.
+ * The nag guard matters — a tracker that reminds you hourly gets muted,
+ * and then it is worth nothing. So:
+ *   - at most MAX_NUDGES per commitment, ever (it used to be every 12 h
+ *     for as long as it stayed open — an overdue promise nagged forever);
+ *   - before the deadline, 12 h apart; once overdue, a day apart;
+ *   - never-nudged rows first, so a backlog of old ones cannot starve a
+ *     promise that is coming due right now.
  */
+const MAX_NUDGES = 3;
 async function dueSoon({ withinMs = 4 * 60 * 60 * 1000 } = {}) {
   const now = Date.now();
   return query(
-    `SELECT c.*, u.fcm_token
+    `SELECT c.*, u.fcm_token, u.timezone, u.tz_offset_min
        FROM commitments c JOIN users u ON u.id = c.user_id
       WHERE c.status='open' AND c.due_at IS NOT NULL
         AND c.due_at <= $1
-        AND (c.nudged_at IS NULL OR c.nudged_at < $2)
-      ORDER BY c.due_at ASC LIMIT 50`,
-    [now + withinMs, now - 12 * 60 * 60 * 1000]
+        AND c.nudge_count < $5::int
+        AND (c.nudged_at IS NULL
+             OR c.nudged_at < CASE WHEN c.due_at < $4::bigint THEN $3::bigint ELSE $2::bigint END)
+      ORDER BY c.nudged_at ASC NULLS FIRST, c.due_at ASC LIMIT 50`,
+    [now + withinMs, now - 12 * 3600_000, now - 24 * 3600_000, now, MAX_NUDGES]
   );
 }
 
 async function markNudged(id) {
-  return run(`UPDATE commitments SET nudged_at=$2 WHERE id=$1`, [id, Date.now()]);
+  return run(
+    `UPDATE commitments SET nudged_at=$2, nudge_count = nudge_count + 1 WHERE id=$1`,
+    [id, Date.now()]
+  );
 }
 
 module.exports = {

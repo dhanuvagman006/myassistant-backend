@@ -90,6 +90,12 @@ async function init() {
     -- Unix seconds; a session token issued before it is refused
     -- (middleware/auth.js verifySession). 0 = nothing revoked.
     ALTER TABLE users ADD COLUMN IF NOT EXISTS sessions_valid_after BIGINT NOT NULL DEFAULT 0;
+    -- Minutes east of UTC, from the X-TZ-Offset header the app sends on
+    -- every request (middleware/auth.js). users.timezone is a free-text
+    -- profile field the model fills ("Asia/Kolkata"), which the scheduler
+    -- could not read as an offset — so quiet hours and the morning brief
+    -- ran on IST for everyone. NULL = never reported.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS tz_offset_min INTEGER;
 
     -- ---------------------------------------------------------------
     -- IDENTITY: one verified phone number = one account.
