@@ -80,18 +80,24 @@ function displayName(serverName, tool) {
 /* Transport                                                           */
 /* ------------------------------------------------------------------ */
 
+/**
+ * STDIO IS NOT A USER TRANSPORT. A stdio server is a program this process
+ * starts — so a user-supplied `command` was arbitrary code execution on
+ * the backend, and it inherited process.env: the JWT secret, the database
+ * URL and every provider key. Every server row here is user-created (the
+ * catalog is http/sse only and the app never offers stdio), so it is
+ * refused outright rather than allow-listed: an allow-listed `npx` with
+ * user-chosen args is the same hole. Checked here, not only in the routes,
+ * so rows saved before this change cannot start either.
+ */
+const USER_TRANSPORTS = new Set(["http", "sse"]);
+
 async function buildTransport(row, secrets) {
   const cfg = row.config || {};
   const transport = String(row.transport || "http").toLowerCase();
 
-  if (transport === "stdio") {
-    const { StdioClientTransport } = require("@modelcontextprotocol/sdk/client/stdio.js");
-    if (!cfg.command) throw new Error("stdio transport needs config.command");
-    return new StdioClientTransport({
-      command: cfg.command,
-      args: Array.isArray(cfg.args) ? cfg.args : [],
-      env: { ...process.env, ...(secrets.env || {}), ...(cfg.env || {}) },
-    });
+  if (!USER_TRANSPORTS.has(transport)) {
+    throw new Error(`${transport} MCP servers are not supported — use an http or sse server URL`);
   }
 
   const url = cfg.url;
@@ -272,4 +278,5 @@ module.exports = {
   toolName,
   displayName,
   SESSIONS,
+  USER_TRANSPORTS,
 };

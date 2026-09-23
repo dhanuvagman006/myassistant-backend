@@ -172,14 +172,13 @@ router.post("/servers", async (req, res) => {
   if (!name) return res.status(400).json({ error: "name required" });
 
   const transport = String(req.body?.transport || "http").toLowerCase();
-  if (!["http", "sse", "stdio"].includes(transport)) {
-    return res.status(400).json({ error: "transport must be http, sse or stdio" });
+  // stdio would run a user-chosen program on this server — see
+  // manager.USER_TRANSPORTS.
+  if (!manager.USER_TRANSPORTS.has(transport)) {
+    return res.status(400).json({ error: "transport must be http or sse" });
   }
   const { config, secrets } = schema.splitSecrets(req.body);
-  if (transport === "stdio" && !config.command) {
-    return res.status(400).json({ error: "stdio needs config.command" });
-  }
-  if (transport !== "stdio" && !config.url) {
+  if (!config.url) {
     return res.status(400).json({ error: `${transport} needs config.url` });
   }
 
@@ -223,6 +222,10 @@ router.put("/servers/:id", async (req, res) => {
   const row = await owned(user, req.params.id);
   if (!row) return res.status(404).json({ error: "not found" });
 
+  const nextTransport = String(req.body?.transport || "").toLowerCase();
+  if (nextTransport && !manager.USER_TRANSPORTS.has(nextTransport)) {
+    return res.status(400).json({ error: "transport must be http or sse" });
+  }
   const { config, secrets } = schema.splitSecrets(req.body);
   const merged = { ...(row.config || {}), ...config };
   // Only replace stored secrets when new ones were supplied — a plain
