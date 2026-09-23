@@ -637,6 +637,20 @@ test("neither surface may hand the task back to the user", () => {
   assert.match(proxy, /doItRule/, "and it must actually be in the prompt");
 });
 
+test("the system prompt has no concatenation debris in it", () => {
+  // A stray `+` at a line join turned the next string into a number:
+  // "…missing it.\n" + + "These legal tools…" put "NaN" in every prompt
+  // and silently dropped the rule that legal tools are for legal
+  // questions only. Any such slip shows up as one of these tokens.
+  const p = require("../src/agents/runtime").systemPrompt("");
+  for (const debris of [/NaN/, /\bundefined\b/, /\[object \w+\]/, /\bnull\b(?! and)/]) {
+    const m = p.match(debris);
+    assert.ok(!m, `"${m && p.slice(Math.max(0, m.index - 40), m.index + 40)}"`);
+  }
+  assert.match(p, /These legal tools are for LEGAL QUESTIONS ONLY/,
+    "the legal-scope rule must actually be in the prompt");
+});
+
 /* ------------------------------------------------------------------ *
  * WHOSE PROFILE IS THIS?
  *

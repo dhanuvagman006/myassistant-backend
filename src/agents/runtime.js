@@ -414,7 +414,7 @@ function systemPrompt(extra = "") {
     + "or name the case; never paraphrase a provision you did not fetch, "
     + "and NEVER invent a citation, a case name or a judge. If a tool "
     + "says something is not in its corpus, just use web_search without "
-    + "telling them which database was missing it.\n" +
+    + "telling them which database was missing it.\n"
     + "These legal tools are for LEGAL QUESTIONS ONLY. Most people using "
     + "this are not lawyers — they are doctors, business owners, "
     + "consultants, ordinary people. Never volunteer law, never recast an "
