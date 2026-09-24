@@ -8,7 +8,8 @@
  *     the phone to the owner, with a plain report of what was done
  *   • the app comes from the owner's own preference, with the reason
  *   • a web form is filled from saved details, submitted, and reported
- *   • the engine is app-agnostic: an app with no hints runs the same loop
+ *   • the engine is app-agnostic: an app with no hints runs the same loop,
+ *     and a task can use the whole phone — any app, several apps, settings
  *   • "open Swiggy" and the WhatsApp draft still behave exactly as before
  */
 process.env.DATABASE_URL =
@@ -32,6 +33,11 @@ const prefs = require("../src/automation/prefs");
 const planner = require("../src/automation/planner");
 const svc = require("../src/automation/service");
 const ai = require("../src/services/ai/router");
+let _reg = null;
+const registry = () => {
+  if (!_reg) { _reg = require("../src/tools/registry"); require("../src/tools/builtins").registerBuiltins(); }
+  return _reg;
+};
 
 // The model, scripted: each call takes the next decision and keeps the
 // prompt it was shown so the test can read what the planner saw.
@@ -93,7 +99,7 @@ const swiggyCart = { pkg: SW, nodes: [
 
   await atest("paying and placing orders stop the run", () => {
     for (const text of ["Proceed to Pay ₹312", "Place Order", "PAY ₹249", "Pay now", "Buy Now",
-      "Confirm order", "Swipe to pay", "Confirm Uber Go", "Proceed to Buy"]) {
+      "Confirm order", "Swipe to pay", "Confirm Uber Go", "Proceed to Buy", "Buy", "₹99.00", "Buy ₹99"]) {
       const v = guard.checkAction({ type: "tap", id: 1 }, { pkg: SW, nodes: [N(1, { text, click: 1 })] });
       assert.ok(v && v.kind === "payment", `"${text}" must be payment, got ${JSON.stringify(v)}`);
     }
@@ -147,7 +153,8 @@ const swiggyCart = { pkg: SW, nodes: [
       .map((t, i) => N(i + 1, { text: t, click: 1 })) };
     assert.strictEqual(guard.checkScreen(payPage)?.kind, "payment");
     assert.strictEqual(guard.checkScreen({ pkg: "com.phonepe.app", nodes: [] })?.kind, "payment");
-    assert.strictEqual(guard.checkScreen({ pkg: "com.android.settings", nodes: [] })?.kind, "blocked_app");
+    assert.strictEqual(guard.checkScreen({ pkg: "com.android.permissioncontroller", nodes: [] })?.kind, "permission");
+    assert.strictEqual(guard.checkScreen({ pkg: "com.android.settings", nodes: [] }), null, "ordinary settings are fine");
     const login = { pkg: SW, nodes: [N(1, { text: "Login" }),
       N(2, { cls: "EditText", edit: 1, hint: "Enter mobile number" })] };
     assert.strictEqual(guard.checkScreen(login)?.kind, "credential");
@@ -158,6 +165,30 @@ const swiggyCart = { pkg: SW, nodes: [
       N(3, { text: "Extra 10% off with Amazon Pay wallet on your first order" })] };
     assert.strictEqual(guard.checkScreen(offers), null);
     assert.strictEqual(guard.checkScreen(swiggyMenu), null);
+  });
+
+  await atest("the whole phone: ordinary settings yes, security settings and deleting no", () => {
+    const S = "com.android.settings";
+    const tap = (o, pkg = S) => guard.checkAction({ type: "tap", id: 1 }, { pkg, nodes: [N(1, { click: 1, ...o })] });
+    assert.strictEqual(tap({ text: "Wi-Fi" }), null);
+    assert.strictEqual(tap({ label: "Display · Brightness, dark mode, font size" }), null);
+    assert.strictEqual(tap({ label: "Security and privacy · Biometrics, permissions" })?.kind, "security");
+    assert.strictEqual(tap({ text: "Accessibility" })?.kind, "security");
+    assert.strictEqual(tap({ text: "Developer options" })?.kind, "security");
+    assert.strictEqual(tap({ text: "Delete" }, "com.example.gallery")?.kind, "destructive");
+    assert.strictEqual(tap({ text: "Clear storage" }, S)?.kind, "destructive");
+    assert.strictEqual(guard.checkAction({ type: "long_press", id: 1 },
+      { pkg: SW, nodes: [N(1, { text: "Place order", click: 1 })] })?.kind, "payment");
+    assert.strictEqual(guard.checkAction({ type: "open_app", name: "PhonePe" }, { pkg: "x", nodes: [] })?.kind, "money");
+    assert.strictEqual(guard.checkAction({ type: "open_app", name: "Settings" }, { pkg: "x", nodes: [] }), null);
+    assert.strictEqual(guard.checkAction({ type: "home" }, { pkg: "x", nodes: [] }), null);
+  });
+
+  await atest("no company names in the tips — the engine is not written for any one app", () => {
+    const src = require("fs").readFileSync(__dirname + "/../src/automation/hints.js", "utf8");
+    assert.ok(!/swiggy|zomato|blinkit|zepto|amazon|flipkart|uber|\bola\b|bookmyshow/i.test(src));
+    const tips = require("../src/automation/hints").hintsFor("food");
+    assert.ok(tips.some((t) => /cart/.test(t)) && tips.some((t) => /open_app/.test(t)));
   });
 
   console.log("\nthe owner's own preferences and details");
@@ -215,6 +246,13 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.strictEqual(planner.parseDecision('{"status":"continue","action":{"type":"tap"}}'), null);
     const d = planner.parseDecision('```json\n{"status":"continue","action":{"type":"type","id":"3","text":"veg biryani","submit":true},"expect":"results"}\n```');
     assert.deepStrictEqual(d.action, { type: "type", id: 3, text: "veg biryani", submit: true });
+    assert.deepStrictEqual(planner.parseDecision('{"status":"continue","action":{"type":"open_app","name":"Settings"}}').action,
+      { type: "open_app", name: "Settings" });
+    assert.deepStrictEqual(planner.parseDecision('{"status":"continue","action":{"type":"swipe","direction":"left"}}').action,
+      { type: "swipe", direction: "left" });
+    assert.deepStrictEqual(planner.parseDecision('{"status":"continue","action":{"type":"quick_settings"}}').action,
+      { type: "quick_settings" });
+    assert.strictEqual(planner.parseDecision('{"status":"continue","action":{"type":"open_app"}}'), null);
   });
 
   console.log("\nend to end: 'book veg biryani from a 4-star restaurant near me'");
@@ -228,6 +266,7 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.strictEqual(d.type, "automate");
     assert.strictEqual(d.pkg, SW);
     assert.deepStrictEqual(d.allowed, [SW]);
+    assert.strictEqual(d.any, true, "the run may use other apps when the task needs them");
     assert.match(s.run.app_reason, /prefer Swiggy/);
     const id = s.run.id;
 
@@ -264,7 +303,7 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.strictEqual(r.llm_calls, 6);
     // The planner was shown the verification of the previous step.
     assert.match(prompts[1], /type "veg biryani" into \[1\] and submit — expected: search results for veg biryani — done, screen changed/);
-    assert.match(prompts[0], /TIPS FOR THIS APP/);
+    assert.match(prompts[0], /TIPS:/);
     assert.match(prompts[0], /chosen because you told me you prefer Swiggy/);
     const task = await db.one(`SELECT provider, status FROM fulfillment_tasks WHERE user_id=$1 ORDER BY id DESC LIMIT 1`, [UID]);
     assert.deepStrictEqual({ ...task }, { provider: "swiggy", status: "handed_off" }, "next pick can say 'you used Swiggy last time'");
@@ -362,11 +401,29 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.match(out.report, /stuck/);
   });
 
-  await atest("another app taking over stops the run", async () => {
-    const s = await svc.start(UID, { goal: "Order idli", app: "swiggy" });
-    const out = await svc.step(UID, s.run.id, { screen: { pkg: "com.instagram.android", nodes: [] } });
-    assert.strictEqual(out.status, "handoff");
-    assert.strictEqual(out.handoff_kind, "left_app");
+  await atest("moving to another app is fine; the owner coming back to the assistant ends it", async () => {
+    const s = await svc.start(UID, { goal: "Order idli and share the order screen", app: "swiggy" });
+    script = [{ status: "continue", action: { type: "open_app", name: "Gallery" }, expect: "gallery open" }];
+    const out = await svc.step(UID, s.run.id, { screen: { pkg: "com.sec.android.gallery3d", nodes: [N(1, { text: "Pictures" })] } });
+    assert.strictEqual(out.status, "continue");
+    const back = await svc.step(UID, s.run.id, { screen: { pkg: "com.myassistant.myassistant", nodes: [] } });
+    assert.strictEqual(back.status, "stopped");
+    assert.match(back.report, /You came back to me/);
+  });
+
+  await atest("a task with no app starts from the phone itself", async () => {
+    prompts.length = 0;
+    const s = await svc.start(UID, { goal: "Turn on Bluetooth", category: "phone" });
+    assert.strictEqual(s.directive.pkg, "");
+    assert.strictEqual(s.directive.app_name, "");
+    assert.strictEqual(s.directive.any, true);
+    script = [{ status: "continue", action: { type: "quick_settings" }, expect: "the quick settings panel" }];
+    const out = await svc.step(UID, s.run.id, { screen: { pkg: "com.sec.android.app.launcher", nodes: [N(1, { text: "Phone" })] } });
+    assert.deepStrictEqual(out.action, { type: "quick_settings" });
+    assert.match(prompts[0], /START: the phone itself/);
+    const t = await registry().get("do_task_in_app").execute({ goal: "turn on bluetooth", category: "phone" },
+      { userId: UID, platform: "android" });
+    assert.match(t.speak, /on your phone/);
   });
 
   await atest("an app with no hints runs the same loop (app-agnostic)", async () => {
@@ -377,7 +434,7 @@ const swiggyCart = { pkg: SW, nodes: [
     script = [{ status: "handoff", report: "The notebook is in your cart — ready to pay." }];
     const out = await svc.step(UID, s.run.id, { screen: { pkg: "com.notebook.store", nodes: [N(1, { text: "Cart (1)" })] } });
     assert.strictEqual(out.status, "handoff");
-    assert.ok(!/TIPS FOR THIS APP/.test(prompts[0]));
+    assert.match(prompts[0], /START APP: Notebook Store/);
     const r = await svc.get(UID, s.run.id);
     assert.strictEqual(r.app_pkg, "com.notebook.store", "pinned to the app that opened");
   });
@@ -400,11 +457,10 @@ const swiggyCart = { pkg: SW, nodes: [
   });
 
   console.log("\nthe tool, the route, and the gates");
-  const registry = require("../src/tools/registry");
-  require("../src/tools/builtins").registerBuiltins();
+  const reg = registry();
 
   await atest("do_task_in_app starts a run on Android and says it will report back", async () => {
-    const t = registry.get("do_task_in_app");
+    const t = reg.get("do_task_in_app");
     assert.strictEqual(t.minAppBuild, 104);
     const r = await t.execute({ goal: "book veg biryani from a 4 star place", category: "food" },
       { userId: UID, platform: "android" });
@@ -418,34 +474,34 @@ const swiggyCart = { pkg: SW, nodes: [
   });
 
   await atest("'did you order it?' is answered from how the run really ended", async () => {
-    const r = await registry.get("check_recent_actions").execute({ about: "biryani" }, { userId: UID });
+    const r = await reg.get("check_recent_actions").execute({ about: "biryani" }, { userId: UID });
     assert.match(r.speak, /Task "Book veg biryani from a 4-star restaurant near me" in Swiggy ended handoff/);
     assert.match(r.speak, /NOT ordered or paid/);
   });
 
   await atest("hands on the phone: never unattended, confirmed after untrusted content", () => {
-    assert.ok(registry.EFFECTIVE.unattendedBlocked.has("do_task_in_app"));
-    assert.ok(registry.EFFECTIVE.world.has("do_task_in_app"));
-    assert.strictEqual(registry.requiresConfirmation("do_task_in_app", { userId: UID }), false);
-    assert.strictEqual(registry.requiresConfirmation("do_task_in_app",
+    assert.ok(reg.EFFECTIVE.unattendedBlocked.has("do_task_in_app"));
+    assert.ok(reg.EFFECTIVE.world.has("do_task_in_app"));
+    assert.strictEqual(reg.requiresConfirmation("do_task_in_app", { userId: UID }), false);
+    assert.strictEqual(reg.requiresConfirmation("do_task_in_app",
       { userId: UID, __untrustedAt: Date.now() }), true);
     const claim = require("../src/agents/claimCheck");
     assert.ok(claim.FAMILY_TOOLS.has("do_task_in_app"), "'opening Swiggy…' is not called a lie");
   });
 
   await atest("REGRESSION: 'open Swiggy' and the WhatsApp draft are unchanged", async () => {
-    const open = await registry.get("open_named_app").execute({ app: "Swiggy" },
+    const open = await reg.get("open_named_app").execute({ app: "Swiggy" },
       { userId: UID, platform: "android", appBuild: 104 });
     assert.strictEqual(open.deviceAction.type, "open_any_app");
     assert.strictEqual(open.deviceAction.pkg, SW);
     assert.strictEqual(open.deviceAction.store_if_missing, true);
-    const wa = await registry.get("send_whatsapp_message").execute(
+    const wa = await reg.get("send_whatsapp_message").execute(
       { message: "Running 10 minutes late", phone: "+91 98123 45678" }, { userId: UID });
     assert.strictEqual(wa.ok, true);
     assert.strictEqual(wa.deviceAction.type, "open_url");
     assert.match(wa.deviceAction.url, /^whatsapp:\/\/send\?phone=\+919812345678&text=Running%2010%20minutes%20late$/);
     assert.ok(!/\bsent\b/i.test(wa.speak || ""), "still never claims it was sent");
-    const food = await registry.get("order_food").execute({ dish: "biryani" }, { userId: UID, platform: "android" });
+    const food = await reg.get("order_food").execute({ dish: "biryani" }, { userId: UID, platform: "android" });
     assert.strictEqual(food.deviceAction.type, "open_url");
   });
 

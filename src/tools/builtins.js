@@ -6635,21 +6635,23 @@ function registerBuiltins() {
     // drop the action after the assistant said it was on it.
     minAppBuild: 104,
     description:
-      "DO A TASK FOR THE USER INSIDE ANOTHER APP OR WEBSITE, step by step, " +
-      "the way they would with their own fingers — search, filter, choose, " +
-      "add to cart, fill in and submit forms. Use for 'book veg biryani " +
-      "from a 4-star restaurant near me', 'add milk, bread and eggs to my " +
-      "Blinkit cart', 'put a phone cover in my Amazon cart', 'check Uber " +
-      "for a cab to the airport', 'fill this form with my details', " +
-      "'register me on <website>'. Picks the user's preferred app from " +
-      "memory when they don't name one. It STOPS before paying, placing a " +
-      "paid order, moving money, typing passwords or OTPs, or sending a " +
-      "message — the user does that one last step. Call it AT ONCE with " +
-      "the whole request as the goal; do not ask which app or restaurant " +
-      "first. Say you're on it and will report back — never claim it is " +
-      "ordered or done. When the task asked the user a question, call it " +
-      "again with run_id and their answer. Plain 'open Swiggy' is " +
-      "open_named_app; a WhatsApp message is send_whatsapp_message.",
+      "USE THE USER'S PHONE FOR THEM, like their own fingers — any app, " +
+      "several apps in a row, ordinary settings, the home screen and " +
+      "notifications: search, filter, choose, add to cart, fill in and " +
+      "submit forms, change a setting, find something in an app. Use for " +
+      "'book veg biryani from a 4-star restaurant near me', 'add milk, " +
+      "bread and eggs to my grocery cart', 'turn on Bluetooth', 'set " +
+      "brightness to full', 'fill this form with my details', 'find my " +
+      "last order', 'check cab prices to the airport'. Picks the user's " +
+      "preferred app from memory when they don't name one. It STOPS before " +
+      "paying, placing a paid order, moving money, typing passwords or " +
+      "OTPs, sending a message, deleting anything, security settings or " +
+      "permission pop-ups — the user does that one step. Call it AT ONCE " +
+      "with the whole request as the goal; do not ask which app first. Say " +
+      "you're on it and will report back — never claim it is ordered or " +
+      "done. When the task asked the user a question, call it again with " +
+      "run_id and their answer. Plain 'open <app>' is open_named_app; a " +
+      "WhatsApp message is send_whatsapp_message.",
     risk: "medium",
     deviceAction: true,
     inputSchema: {
@@ -6663,10 +6665,12 @@ function registerBuiltins() {
         },
         category: {
           type: "string",
-          enum: ["food", "grocery", "ride", "shopping", "movies", "travel", "web", "other"],
-          description: "What kind of task — decides the default app.",
+          enum: ["food", "grocery", "ride", "shopping", "movies", "travel", "web", "phone", "other"],
+          description:
+            "What kind of task — decides the default app. 'phone' for settings " +
+            "and anything across the phone itself.",
         },
-        app: { type: "string", description: "ONLY if the user named an app (Swiggy, Zomato, Amazon…)." },
+        app: { type: "string", description: "ONLY if the user named an app." },
         url: { type: "string", description: "For a website task: the page to open (https://…)." },
         run_id: { type: "integer", description: "Resuming a task that asked the user a question." },
         answer: { type: "string", description: "The user's answer to that question." },
@@ -6700,7 +6704,9 @@ function registerBuiltins() {
         deviceAction: out.directive,
         speak: r.web
           ? "On it — I'm filling that in now and I'll tell you when it's done."
-          : `On it, doing this in ${r.app_label}${why}. I'll stop before any payment and tell you what I did.`,
+          : !r.app_name
+            ? "On it — doing that on your phone now, and I'll tell you when it's done."
+            : `On it, doing this in ${r.app_label}${why}. I'll stop before any payment and tell you what I did.`,
       };
     },
   });

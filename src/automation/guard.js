@@ -11,7 +11,13 @@
  *   • sending or transferring money
  *   • typing a password, PIN, OTP, card, bank or ID number
  *   • sending a message to another person, or posting publicly
- *   • acting inside payment apps, system settings or the installer
+ *   • deleting or erasing anything
+ *   • security settings (screen lock, accessibility, device admin, unknown
+ *     apps, developer options, accounts, reset)
+ *   • acting inside payment apps, the installer or permission pop-ups
+ *
+ * Everything else a person can do on their phone — any app, several apps
+ * in a row, ordinary settings like Wi-Fi or brightness — is allowed.
  *
  * At any of these the run stops and hands the phone to the owner. The
  * app's accessibility service applies the same rules again on the device
@@ -27,7 +33,10 @@
 // these — restaurant cards carry offer banners ("Pay with HDFC, get 10%
 // off") and those must stay tappable.
 const PAY_ACTION =
-  /^\s*(?:₹|rs\.?|inr)?\s*[\d,.]*\s*(?:pay\b|proceed to pay|proceed to buy|make (?:a |the )?payment|place (?:your |the )?order|confirm (?:and|&) pay|confirm (?:the |your )?(?:order|payment|purchase|booking|ride|pickup|trip)|complete (?:the |your )?(?:payment|purchase|order|booking)|buy now|checkout (?:and|&) pay|slide to pay|swipe to pay|pay (?:now|securely|using|via|with|₹|rs|inr)|continue to pay|book (?:now|ride|cab|tickets? now)|request (?:ride|cab|uber|ola)|confirm (?:uber|ola|rapido)\b)/i;
+  /^\s*(?:₹|rs\.?|inr)?\s*[\d,.]*\s*(?:pay\b|buy\b|proceed to pay|proceed to buy|make (?:a |the )?payment|place (?:your |the )?order|confirm (?:and|&) pay|confirm (?:the |your )?(?:order|payment|purchase|booking|ride|pickup|trip)|complete (?:the |your )?(?:payment|purchase|order|booking)|buy now|checkout (?:and|&) pay|slide to pay|swipe to pay|pay (?:now|securely|using|via|with|₹|rs|inr)|continue to pay|book (?:now|ride|cab|tickets? now)|request (?:ride|cab|uber|ola)|confirm (?:uber|ola|rapido)\b)/i;
+
+// A button that is only a price — a paid app's "₹99.00" in the Play Store.
+const PRICE_ONLY = /^\s*(?:₹|rs\.?|inr|\$|€|£)\s*[\d,.]+\s*$/i;
 
 // Moving money anywhere, in any app.
 const MONEY_ACTION =
@@ -54,12 +63,29 @@ const PAYMENT_PKGS = new Set([
   "com.sbi.upi", "com.sbi.SBIFreedomPlus", "com.csam.icici.bank.imobile",
   "com.snapwork.hdfc", "com.axis.mobile", "com.msf.kbank.mobile",
 ]);
-const SYSTEM_PKGS = new Set([
-  "com.android.settings", "com.samsung.android.settings",
+// Permission pop-ups: granting another app access is the owner's call.
+const PERMISSION_PKGS = new Set([
   "com.android.permissioncontroller", "com.google.android.permissioncontroller",
-  "com.android.packageinstaller", "com.google.android.packageinstaller",
-  "com.samsung.android.biometrics.app.setting", "com.android.systemui",
 ]);
+const INSTALLER_PKGS = new Set([
+  "com.android.packageinstaller", "com.google.android.packageinstaller",
+]);
+// Never acted in at all.
+const SYSTEM_PKGS = new Set([...PERMISSION_PKGS, ...INSTALLER_PKGS]);
+// Settings is fine (Wi-Fi, brightness, sound…) — except what guards the
+// phone itself, judged below.
+const SETTINGS_PKGS = new Set([
+  "com.android.settings", "com.samsung.android.settings",
+  "com.samsung.android.biometrics.app.setting", "com.samsung.android.lool",
+]);
+const SECURITY_SETTING =
+  /(?:accessibility|device admin|admin apps|install unknown|unknown apps|unknown sources|developer options|usb debugging|wireless debugging|screen lock|lock screen|biometric|fingerprint|face recognition|password|passkey|security|privacy|play protect|encryption|credential|\baccounts?\b|backup|\breset\b|factory|special (?:app )?access|app permissions|permission manager|default apps|sim (?:card )?lock|find my (?:mobile|device)|secure folder)/i;
+// Deleting is final.
+const DESTRUCTIVE_ACTION =
+  /^\s*(?:delete|delete all|delete permanently|delete for everyone|erase|erase all|clear (?:data|storage|all data|cache and data)|format|wipe|factory (?:data )?reset|reset (?:phone|device|all|settings)|empty (?:trash|bin)|uninstall|remove account)\b/i;
+// Apps the assistant never opens: anything that holds money.
+const MONEY_APP_NAME =
+  /\b(?:g ?pay|google pay|phone ?pe|paytm|bhim|cred|mobikwik|freecharge|amazon pay|yono|imobile|net ?banking|mobile banking|bank|upi|wallet)\b/i;
 const MESSAGING_PKGS = new Set([
   "com.whatsapp", "com.whatsapp.w4b", "org.telegram.messenger",
   "com.google.android.apps.messaging", "com.samsung.android.messaging",
@@ -115,6 +141,9 @@ const HANDOFF_TEXT = {
   publish: "that would post publicly",
   message_send: "the message is ready — sending it is your tap",
   blocked_app: "that screen is one I never act in",
+  destructive: "that would delete something",
+  security: "that is a security setting",
+  permission: "an app is asking for a permission",
 };
 
 /**
@@ -132,7 +161,14 @@ function checkAction(action, screen) {
   }
   const node = (screen?.nodes || []).find((n) => Number(n.id) === Number(action.id));
 
-  if (action.type === "tap") {
+  if (action.type === "open_app") {
+    if (MONEY_APP_NAME.test(String(action.name || ""))) {
+      return { kind: "money", reason: HANDOFF_TEXT.money };
+    }
+    return null;
+  }
+
+  if (action.type === "tap" || action.type === "long_press") {
     if (!node) return null; // the device refuses unknown ids on its own
     // Judged on what the tap would really press too: "₹312" is harmless
     // text, the "Proceed to Pay" button around it (up) is not.
@@ -145,7 +181,7 @@ function checkAction(action, screen) {
       judged.push(...[own, merged && merged.length <= 40 ? merged : ""].filter(Boolean));
       if (merged && PAY_ACTION.test(merged)) mergedPay = true;
     }
-    if (mergedPay || judged.some((t) => PAY_ACTION.test(t))) {
+    if (mergedPay || judged.some((t) => PAY_ACTION.test(t) || PRICE_ONLY.test(t))) {
       return { kind: "payment", reason: HANDOFF_TEXT.payment };
     }
     if (judged.some((t) => MONEY_ACTION.test(t))) {
@@ -159,6 +195,15 @@ function checkAction(action, screen) {
     }
     if (MESSAGING_PKGS.has(pkg) && judged.some((t) => SEND_ACTION.test(t))) {
       return { kind: "message_send", reason: HANDOFF_TEXT.message_send };
+    }
+    if (judged.some((t) => DESTRUCTIVE_ACTION.test(t))) {
+      return { kind: "destructive", reason: HANDOFF_TEXT.destructive };
+    }
+    if (SETTINGS_PKGS.has(pkg)) {
+      const all = [node, up].filter(Boolean).flatMap((n) => [ownLabel(n), norm(n.label)]);
+      if (all.some((t) => SECURITY_SETTING.test(t))) {
+        return { kind: "security", reason: HANDOFF_TEXT.security };
+      }
     }
     return null;
   }
@@ -209,8 +254,11 @@ function checkScreen(screen) {
   if (PAYMENT_PKGS.has(pkg)) {
     return { kind: "payment", reason: "a payment app is open" };
   }
-  if (SYSTEM_PKGS.has(pkg)) {
-    return { kind: "blocked_app", reason: "a system screen (settings or a permission) is asking for you" };
+  if (PERMISSION_PKGS.has(pkg)) {
+    return { kind: "permission", reason: HANDOFF_TEXT.permission };
+  }
+  if (INSTALLER_PKGS.has(pkg)) {
+    return { kind: "blocked_app", reason: "the installer is asking for you" };
   }
   const nodes = screen?.nodes || [];
 
@@ -244,6 +292,10 @@ function handoffSentence(kind, appLabel) {
     case "publish": return `It's ready to post — I never publish for you, so the last tap is yours.`;
     case "message_send": return `The message is written — tap Send when you're happy with it.`;
     case "blocked_app": return `A system screen needs your decision, so I've stopped there.`;
+    case "destructive": return `The next step deletes something, so I've left that tap to you.`;
+    case "security": return `That's a security setting — I never change those, so it's over to you.`;
+    case "permission": return `An app is asking for a permission — that's your decision, so I've stopped there.`;
+    case "returned": return `You came back to me, so I stopped there.`;
     default: return `I've stopped here for you to take over in ${app}.`;
   }
 }
@@ -251,5 +303,5 @@ function handoffSentence(kind, appLabel) {
 module.exports = {
   checkAction, checkScreen, handoffSentence,
   PAY_ACTION, MONEY_ACTION, CREDENTIAL_FIELD, BROWSERS,
-  PAYMENT_PKGS, SYSTEM_PKGS, MESSAGING_PKGS, HANDOFF_TEXT,
+  PAYMENT_PKGS, SYSTEM_PKGS, SETTINGS_PKGS, MESSAGING_PKGS, HANDOFF_TEXT,
 };

@@ -23,7 +23,9 @@ const { hintsFor } = require("./hints");
 // Looked up at call time so tests can stub the model behind it.
 const planner = require("./planner");
 
-const MAX_STEPS = 25;
+const MAX_STEPS = 30;
+// The assistant's own app: the owner coming back to it ends the run.
+const OWN_PKG = "com.myassistant.myassistant";
 const DAILY_RUNS = 40;
 const TERMINAL = new Set(["done", "handoff", "failed", "stopped"]);
 const DAY = 24 * 3600 * 1000;
@@ -111,6 +113,9 @@ function directive(r, { resume = false } = {}) {
     pkg: r.app_pkg,
     start_url: resume ? "" : r.start_url,
     web: r.web,
+    // The whole phone: any app except money apps, the installer and
+    // permission pop-ups (the phone enforces those itself).
+    any: true,
     allowed: r.web ? guard.BROWSERS : (r.app_pkg ? [r.app_pkg] : []),
     max_steps: MAX_STEPS,
     resume,
@@ -137,7 +142,9 @@ async function start(userId, { goal, category = "", app = "", url = "" } = {}) {
   let pick = null;
   if (!web) {
     pick = await prefs.pickApp(userId, String(category || "").toLowerCase(), app || "");
-    if (!pick) return { ok: false, needsArgs: ["app"], error: "which app should I use?" };
+    // No app to start in (settings, "take a screenshot", a task across
+    // several apps): start from the home screen and open what it needs.
+    if (!pick) pick = { name: "", label: "your phone", pkg: "", reason: "" };
   }
   // A start link only ever opens INSIDE the chosen app (the phone pins the
   // package), so a link the app doesn't understand just opens the app.
@@ -173,7 +180,8 @@ async function resume(userId, runId, answer) {
  * ------------------------------------------------------------------ */
 
 const sameAction = (a, b) => a && b && a.type === b.type && a.id === b.id &&
-  (a.text || "") === (b.text || "") && (a.direction || "") === (b.direction || "");
+  (a.text || "") === (b.text || "") && (a.direction || "") === (b.direction || "") &&
+  (a.name || "") === (b.name || "");
 
 function labelOf(screen, id) {
   const n = (screen?.nodes || []).find((x) => Number(x.id) === Number(id));
@@ -232,16 +240,15 @@ async function step(userId, runId, { screen, last } = {}) {
   }
 
   const pkg = String(screen?.pkg || "");
-  // An app picked by name without a known package is pinned to whatever
-  // opened first; after that, another app in front means we left it.
-  if (!r.web && !r.app_pkg && pkg) await save(userId, r, { app_pkg: pkg });
-  if (!r.web && r.app_pkg && pkg && pkg !== r.app_pkg) {
+  // A run may use any app the task needs. Only the owner coming back to
+  // the assistant ends it here — they have taken the phone back.
+  if (pkg === OWN_PKG) {
     await save(userId, r, { steps: r.steps });
-    return end(userId, r, "handoff", {
-      kind: "left_app",
-      report: composeReport(r) + ` Another screen took over from ${r.app_label}, so I stopped there.`,
+    return end(userId, r, "stopped", {
+      kind: "returned", report: composeReport(r, { kind: "returned" }),
     });
   }
+  if (!r.web && !r.app_pkg && pkg && r.app_name) await save(userId, r, { app_pkg: pkg });
 
   if (r.steps.length >= MAX_STEPS) {
     await save(userId, r, { steps: r.steps });
@@ -271,7 +278,7 @@ async function step(userId, runId, { screen, last } = {}) {
 
   const [owner] = await Promise.all([prefs.ownerInfo(userId).catch(() => ({}))]);
   const d = await planner.decide(r, screen, {
-    hints: hintsFor(r.web ? "" : r.app_pkg, { web: r.web }),
+    hints: hintsFor(r.category, { web: r.web }),
     owner,
     maxSteps: MAX_STEPS,
   });
@@ -315,6 +322,7 @@ async function step(userId, runId, { screen, last } = {}) {
 const DEVICE_REASONS = {
   stopped: ["stopped", "", "Stopped, as you asked."],
   no_permission: ["failed", "", "I need the one-time \"use other apps\" permission to do that — it's in the setup screen I opened."],
+  returned: ["stopped", "returned", ""],
   blocked: ["handoff", "payment", ""],
   left_app: ["handoff", "left_app", ""],
   not_installed: ["failed", "", ""],
@@ -329,7 +337,7 @@ async function finish(userId, runId, { reason = "error", kind = "", detail = "" 
   const k = kind || defKind;
   let report = text;
   if (!report) {
-    if (reason === "blocked") report = composeReport(r, { kind: k || "payment" });
+    if (reason === "blocked" || reason === "returned") report = composeReport(r, { kind: k || "payment" });
     else if (reason === "left_app") report = composeReport(r) + ` Another screen took over from ${r.app_label}, so I stopped there.`;
     else if (reason === "not_installed") report = `${r.app_label || "That app"} isn't installed on your phone.`;
     else report = composeReport(r) + ` Something went wrong in ${r.app_label || "the app"}${detail ? ` (${String(detail).slice(0, 80)})` : ""}, so I stopped.`;

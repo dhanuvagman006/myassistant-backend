@@ -1,49 +1,39 @@
 /**
- * APP HINTS — a few lines of local knowledge per app, nothing more.
- *
- * The engine is app-agnostic: it reads whatever screen is in front of it
- * and decides from that. These hints only save steps ("search is faster
- * than scrolling the menu") and name where each app's payment step is, so
- * the planner stops at the right place. An app with no entry here works
- * the same way, just with a little more looking around — adding support
- * for a new app is at most a few sentences in this file, never code.
+ * TIPS — a few lines of general know-how per KIND of task, never per
+ * company. The engine reads whatever screen is in front of it and works
+ * in any app; these only save steps and name where the payment step
+ * usually sits so the planner stops at the right place. An app or a task
+ * with no tips here works the same way, with a little more looking around.
  */
 
-const HINTS = {
-  "in.swiggy.android": [
-    "Search from the Search tab or the search bar at the top; type the dish and submit.",
-    "Results can be narrowed with filter chips such as 'Ratings 4.0+' or 'Pure Veg'.",
-    "Restaurant cards show the rating (e.g. 4.3) and delivery time; open one to see its menu.",
-    "Inside a restaurant, the menu has its own search; tap ADD on the item, pick the default options if a sheet opens, then 'View Cart'.",
-    "The cart's 'Proceed to Pay' / 'Place Order' button is the payment step: stop at the cart.",
+const BY_CATEGORY = {
+  food: [
+    "Food delivery apps: search the dish, narrow with filter chips (rating 4.0+, pure veg), open a restaurant, tap ADD on the item (pick the default options if a sheet opens), then open the cart.",
+    "The cart's pay / place-order button is the payment step: stop at the cart.",
   ],
-  "com.application.zomato": [
-    "Use the search bar at the top for the dish or restaurant.",
-    "Filter chips such as 'Rating 4.0+' and 'Pure Veg' narrow the list.",
-    "Tap ADD on the item, then 'View cart'. The cart's 'Place Order' / 'Pay' button is the payment step: stop at the cart.",
+  grocery: [
+    "Quick-commerce apps: search each item, tap ADD on the best match, then open the cart. Stop at the cart.",
   ],
-  "com.grofers.customerapp": [
-    "Search for each item, tap ADD on the best match, then open the cart. Stop at the cart.",
+  shopping: [
+    "Shopping apps: search from the top bar, open the product, 'Add to cart'. 'Buy now', 'Proceed to buy' and 'Place order' are the payment step: stop before them.",
   ],
-  "com.zeptoconsumerapp": [
-    "Search for each item, tap ADD on the best match, then open the cart. Stop at the cart.",
+  ride: [
+    "Ride apps: type the destination, pick the matching suggestion, then look at the ride options. Choosing and confirming a ride books and charges it: stop at the options.",
   ],
-  "in.amazon.mShop.android.shopping": [
-    "Search from the top bar; open a product, 'Add to Cart'. 'Buy Now' and 'Proceed to Buy' lead to payment: stop before them.",
+  movies: [
+    "Ticket apps: search the movie or event, pick the showtime closest to what was asked, then seats. Paying for tickets is the owner's step.",
   ],
-  "com.flipkart.android": [
-    "Search from the top bar; open a product, 'Add to cart'. 'Buy now' and 'Place order' are the payment step: stop before them.",
-  ],
-  "com.ubercab": [
-    "Type the destination in 'Where to?', pick the matching suggestion, then look at the ride options. Choosing and confirming a ride books and charges it: stop at the ride options.",
-  ],
-  "com.olacabs.customer": [
-    "Enter the drop location, pick the suggestion, then look at the ride options. Confirming books a paid ride: stop at the ride options.",
-  ],
-  "com.bt.bms": [
-    "Search the movie, pick the showtime closest to what was asked, then seats. Paying for tickets is the owner's step.",
+  travel: [
+    "Travel apps: enter from, to and date, search, and sort or filter as asked. Booking and paying are the owner's step.",
   ],
 };
+
+// Every task: how to get around the phone itself.
+const PHONE = [
+  "open_app opens any installed app by name; home, back and recents work from anywhere.",
+  "Quick settings (swipe-down panel) has Wi-Fi, Bluetooth, torch, mobile data, rotation and do-not-disturb toggles.",
+  "The Settings app has a search bar at the top — search the setting's name instead of browsing.",
+];
 
 // Web forms, in any browser.
 const WEB = [
@@ -53,9 +43,9 @@ const WEB = [
   "After submitting, check the page shows a confirmation before reporting done.",
 ];
 
-function hintsFor(pkg, { web = false } = {}) {
-  const own = HINTS[String(pkg || "")] || [];
-  return web ? [...WEB, ...own] : own;
+function hintsFor(category, { web = false } = {}) {
+  const own = BY_CATEGORY[String(category || "").toLowerCase()] || [];
+  return [...(web ? WEB : []), ...own, ...PHONE];
 }
 
-module.exports = { hintsFor, HINTS };
+module.exports = { hintsFor, BY_CATEGORY };
