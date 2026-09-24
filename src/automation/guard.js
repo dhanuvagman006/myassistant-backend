@@ -134,10 +134,18 @@ function checkAction(action, screen) {
 
   if (action.type === "tap") {
     if (!node) return null; // the device refuses unknown ids on its own
-    const { own, merged } = tapLabels(node);
-    const short = merged && merged.length <= 40 ? merged : "";
-    const judged = [own, short].filter(Boolean);
-    if (judged.some((t) => PAY_ACTION.test(t)) || (merged && PAY_ACTION.test(merged))) {
+    // Judged on what the tap would really press too: "₹312" is harmless
+    // text, the "Proceed to Pay" button around it (up) is not.
+    const up = Number.isInteger(node.up) && node.up >= 0
+      ? (screen?.nodes || []).find((n) => Number(n.id) === node.up) : null;
+    const judged = [];
+    let mergedPay = false;
+    for (const n of [node, up].filter(Boolean)) {
+      const { own, merged } = tapLabels(n);
+      judged.push(...[own, merged && merged.length <= 40 ? merged : ""].filter(Boolean));
+      if (merged && PAY_ACTION.test(merged)) mergedPay = true;
+    }
+    if (mergedPay || judged.some((t) => PAY_ACTION.test(t))) {
       return { kind: "payment", reason: HANDOFF_TEXT.payment };
     }
     if (judged.some((t) => MONEY_ACTION.test(t))) {

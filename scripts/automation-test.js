@@ -108,6 +108,13 @@ const swiggyCart = { pkg: SW, nodes: [
     }
   });
 
+  await atest("a tap on the price inside the Pay button is judged as the button", () => {
+    const screen = { pkg: SW, nodes: [
+      N(21, { cls: "Button", click: 1, label: "Proceed to Pay · ₹312" }),
+      N(22, { text: "₹312", up: 21 })] };
+    assert.strictEqual(guard.checkAction({ type: "tap", id: 22 }, screen)?.kind, "payment");
+  });
+
   await atest("money never moves", () => {
     for (const text of ["Send money", "Transfer now", "Add money"]) {
       const v = guard.checkAction({ type: "tap", id: 1 }, { pkg: "com.example", nodes: [N(1, { text, click: 1 })] });
@@ -408,6 +415,12 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.ok(!/ordered|done/i.test(r.speak), "never claims it is done");
     const ios = await t.execute({ goal: "x" }, { userId: UID, platform: "ios" });
     assert.strictEqual(ios.ok, false);
+  });
+
+  await atest("'did you order it?' is answered from how the run really ended", async () => {
+    const r = await registry.get("check_recent_actions").execute({ about: "biryani" }, { userId: UID });
+    assert.match(r.speak, /Task "Book veg biryani from a 4-star restaurant near me" in Swiggy ended handoff/);
+    assert.match(r.speak, /NOT ordered or paid/);
   });
 
   await atest("hands on the phone: never unattended, confirmed after untrusted content", () => {

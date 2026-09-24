@@ -30,6 +30,7 @@ function cleanScreen(s) {
     keyboard: !!s?.keyboard,
     nodes: nodes.map((n) => ({
       id: Number(n?.id),
+      up: Number.isInteger(Number(n?.up)) ? Number(n.up) : -1,
       cls: str(n?.cls, 30),
       text: n?.pwd ? "" : str(n?.text, 200),
       desc: str(n?.desc, 200),

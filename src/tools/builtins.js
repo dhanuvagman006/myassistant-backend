@@ -8008,6 +8008,31 @@ function registerBuiltins() {
           })
         : rows;
       const use = (matched.length ? matched : rows).slice(0, 8);
+      // Tasks done inside other apps: the record above knows they STARTED,
+      // only the run knows how they ended (in the cart, stopped, failed).
+      const since = Date.now() - minutes * 60_000;
+      const runs = await require("../automation/service").recent(ctx.userId, 20).catch(() => []);
+      const HOW = {
+        running: "is still in progress", waiting: "is waiting for the user's answer",
+        done: "finished", handoff: "ended handoff (waiting for the user's own last step)",
+        failed: "failed", stopped: "was stopped by the user",
+      };
+      const runLines = runs
+        .filter((r) => Number(r.updated_at) >= since && (!words.length ||
+          words.some((w) => `${r.goal} ${r.app_label}`.toLowerCase().includes(w))))
+        .slice(0, 5)
+        .map((r) => `Task "${r.goal}" in ${r.app_label || "an app"} ${HOW[r.status] || r.status}` +
+          (r.report ? `: ${r.report}` : ""));
+      if (runLines.length) {
+        return {
+          ok: true,
+          data: [...runLines.map((line) => ({ tool: "do_task_in_app", line })),
+            ...use.map((r) => ({ tool: r.tool, target: r.target, line: store.describe(r) }))],
+          speak: [...runLines, ...use.map((r) => store.describe(r))].join(". ") +
+            ". Answer ONLY from these; they are the record of what really ran. " +
+            "A task that ended handoff is waiting for the user's own last step (usually payment) — it is NOT ordered or paid.",
+        };
+      }
       if (!use.length) {
         return {
           ok: true,
