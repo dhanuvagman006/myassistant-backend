@@ -18,8 +18,9 @@
  * failed, changed nothing or was refused, and reads the picture at LOW
  * resolution when the element list already names 20 things (MEDIUM when
  * the list is thin). The prompt carries what the step needs and no more:
- * the owner's details only when a text field is on screen (or the task is
- * a form), screen positions only when there is a screenshot to point at.
+ * the owner's details only when a form or place field is on screen (or
+ * the task is a form), screen positions only when there is a screenshot
+ * to point at.
  */
 // Looked up at call time (not destructured) so tests can stub the model.
 const ai = require("../services/ai/router");
@@ -212,15 +213,27 @@ function wordDiff(before, screen) {
 }
 
 /**
+ * The phone did NOT act: the element moved or its row was reused for
+ * another item between the look and the tap, and two matches left no way
+ * to tell which one the planner meant (fl-hands' stale_element). Not a
+ * failed try — the right element, picked again from the current screen,
+ * is exactly what to do next. Counted as a failure, it went under
+ * ALREADY TRIED as "do not repeat", and two reflows of a loading list
+ * failed the run (review, 2026-09-24).
+ */
+const STALE = "stale_element";
+const isStale = (r) => !!r && r.ok === false && r.error === STALE && !r.blocked;
+
+/**
  * Every action in the run that did not work — from the whole run, not
  * only the last 12 lines — once each, with how often. A 20-step order
- * used to lose steps 1-8 and search again.
+ * used to lose steps 1-8 and search again. A stale tap is not one of them.
  */
 function alreadyTried(steps) {
   const out = new Map();
   for (const s of steps || []) {
     const r = s.result;
-    if (!s.action || !r || s.action.type === "wait") continue;
+    if (!s.action || !r || s.action.type === "wait" || (isStale(r) && !s.vetoed)) continue;
     const why = s.vetoed || r.blocked ? "refused by the safety rules"
       : r.ok === false ? `failed${r.error ? ` (${clip(r.error, 60)})` : ""}`
         : r.changed === false ? "the screen did not change" : "";
@@ -238,12 +251,12 @@ const SYSTEM = `You are the hands of a personal phone assistant, using the OWNER
 
 HOW TO WORK
 1. Look before you act. Every action must be based on the CURRENT SCREEN — the SCREENSHOT attached (what the owner actually sees) and the element list (what you can tap by id). Never act on what you expect a screen to look like. The screenshot is the truth when the list is thin or empty; apps change their design, so read the screen every time and never assume a layout. Element ids belong to the CURRENT SCREEN only — they change on every look.
-2. Verify. First check whether the LAST ACTION achieved its "expect" (NEW / GONE: what appeared and went away). If it did not, try another way (a different element, scroll, back). Never repeat anything under ALREADY TRIED the same way. After two failed tries at the same thing, stop with status "fail" and say what blocked you.
+2. Verify. First check whether the LAST ACTION achieved its "expect" (NEW / GONE: what appeared and went away). If it did not, try another way (a different element, scroll, back). Never repeat anything under ALREADY TRIED the same way. After two failed tries at the same thing, stop with status "fail" and say what blocked you. A step marked "not done — the screen moved" is not a try: the phone held the tap back because the list changed, so find that element again on the CURRENT screen and act on it.
 3. Be quick. If the app was opened with a search link (see CHOICES MADE SO FAR) and the screen shows those results, work from them — do not search again; if it shows the app's home page instead, search once. Prefer search boxes and filter chips over scrolling long lists. To search, use "type" with "submit": true. To get to an app, use "open_app" with its name as shown on the phone — never hunt for icons. Toggles like Wi-Fi, Bluetooth, torch, mobile data and rotation are fastest in quick settings; everything else is in the Settings app (it has a search bar).
 3b. SEARCH BOXES: after typing into a search box, look for the results or suggestions. If they did not appear, submit the search (type again with "submit": true) or tap the matching suggestion — never tap_xy at a guess on an unrelated item.
 4. When you choose for the owner (which restaurant, which item, which option), choose sensibly for what they asked — the rating they asked for, then the best rated, then the fastest — and say what you chose and why in "note". for="…" names the item a repeated button (ADD) belongs to.
 4b. PEOPLE AND PAGES (follow, subscribe, message, like a person's post): the owner means the REAL account, and never knows its username. If CHOICES MADE SO FAR give a username, use exactly that one. Otherwise search the person's NAME only — drop words like actor, singer, official — and pick the account the person runs: the verified tick, then their exact name, then by far the most followers. Never fan, update, edits or parody pages, and never an account just because its username contains the words the owner said. Open the profile and check it before Follow. If two accounts look alike and neither is verified, stop with "ask_user" naming both (username and followers). Your report names the exact username.
-5. Use only the owner details listed below. Never invent details. Details said to be on file appear once a text field is on screen — never ask for them. If the task needs something you do not have and cannot see on screen, stop with status "ask_user" and ask ONE short question.
+5. Use only the owner details listed below. Never invent details. Details said to be on file appear once a form or address field is on screen — never ask for them. If the task needs something you do not have and cannot see on screen, stop with status "ask_user" and ask ONE short question.
 6. Status "done" only when the task is complete AND the screen shows it (a confirmation, the item in the cart, the form's thank-you page).
 6b. REPORT ONLY WHAT YOU CAN SEE. Your report may claim only what the CURRENT screenshot and list show — the cart bar with the item, "Following" on the profile, the confirmation page. If your last taps did not visibly change the screen, say plainly that you could not confirm it worked. Never say an item was added, a request went through or a setting changed without seeing it.
 6c. With "done" or "handoff", put in "evidence" the exact words copied from the CURRENT screen that prove where things stand (e.g. "View Cart · 1 item", "Following", "Thank you for registering"). Without evidence on the screen, the owner is told it could not be confirmed.
@@ -293,14 +306,28 @@ Reply with STRICT JSON only, no markdown:
  * task that is a form (web) or of no known kind (other). In a food app
  * the ~600 tokens of profile, addresses and facts were sent on every tap
  * and read by nobody (audit, 2026-09-24). A search box is not a form
- * field — it never needs the owner's address — so it does not count; a
- * ride's "Where to?" does (the owner's home is in the details).
+ * field for a dish or a product never needs the owner's address, so it
+ * does not count. But a search box for a PLACE does: the delivery
+ * address's "Search for area, street name…", a pickup or a destination
+ * box — hidden there, the addresses were missing exactly where they are
+ * typed, and rule 5 told the model never to ask (review, 2026-09-24). So
+ * rides and travel count every field, and so does a task whose own words
+ * are about a place.
  */
 const SEARCH_BOX = /search|find|query|\bq\b/i;
+const PLACE =
+  /\b(?:address(?:es)?|location|area|street|locality|landmark|pin ?code|city|destination|pick ?-?up|drop|where to|deliver(?:y|ed)?|flat|house|building|home|office)\b/i;
 function ownerWanted(run, screen) {
   const cat = String(run?.category || "").toLowerCase();
   if (run?.web || cat === "web" || cat === "other" || !cat) return true;
-  return (screen?.nodes || []).some((n) => n.edit && !SEARCH_BOX.test([n.hint, n.rid, n.desc, n.label].join(" ")));
+  const fields = (screen?.nodes || []).filter((n) => n.edit);
+  if (!fields.length) return false;
+  if (cat === "ride" || cat === "travel" || PLACE.test(String(run?.goal || ""))) return true;
+  return fields.some((n) => {
+    // View ids join words with _ ("pickup_location_input").
+    const words = [n.hint, n.rid, n.desc, n.label, n.text].join(" ").replace(/[_\-/.:]+/g, " ");
+    return !SEARCH_BOX.test(words) || PLACE.test(words);
+  });
 }
 
 function buildPrompt(run, screen, { hints = [], owner = {}, maxSteps = 25 } = {}) {
@@ -317,7 +344,7 @@ function buildPrompt(run, screen, { hints = [], owner = {}, maxSteps = 25 } = {}
     ? "OWNER DETAILS YOU MAY USE: none on file."
     : ownerWanted(run, screen)
       ? `OWNER DETAILS YOU MAY USE:\n${info.join("\n")}`
-      : "OWNER DETAILS: on file — listed as soon as a text field is on screen.");
+      : "OWNER DETAILS: on file — listed as soon as a form or address field is on screen.");
 
   const answers = Array.isArray(run.answers) ? run.answers : [];
   if (answers.length) {
@@ -335,6 +362,8 @@ function buildPrompt(run, screen, { hints = [], owner = {}, maxSteps = 25 } = {}
       // A refusal is not a failure to retry: the safety rules said no.
       let outcome = s.vetoed || r.blocked
         ? `REFUSED by the safety rules — ${s.vetoed ? String(r.error || "").replace(/^refused:\s*/i, "") : `the phone said no (${r.blocked})`}`
+        : isStale(r)
+          ? "not done — the screen moved before the tap; pick the element again from the CURRENT screen (not a failed try)"
         : r.ok === false
           ? `FAILED${r.error ? ` (${r.error})` : ""}`
           // How the phone pressed it, when not a plain click (a gesture at
@@ -497,6 +526,9 @@ function recovering(run) {
   if (s.vetoed || s.replan) return true;
   const r = s.result;
   if (!r) return false;
+  // A tap the phone held back because the list moved is no mistake of
+  // the planner's: the next look is routine, not a recovery.
+  if (isStale(r)) return false;
   if (r.blocked || r.ok === false) return true;
   return r.changed === false && s.action?.type !== "wait";
 }

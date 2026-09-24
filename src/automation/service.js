@@ -312,7 +312,7 @@ async function start(userId, { goal, category = "", app = "", url = "", query = 
   return { ok: true, run: r, directive: directive(r) };
 }
 
-async function resume(userId, runId, answer) {
+async function resume(userId, runId, answer, { remember = true } = {}) {
   const r = await get(userId, runId);
   if (!r) return { ok: false, error: "no such task" };
   if (r.status !== "waiting") {
@@ -321,8 +321,11 @@ async function resume(userId, runId, answer) {
   const a = String(answer || "").trim().slice(0, 400);
   if (!a) return { ok: false, needsArgs: ["answer"] };
   const answers = [...r.answers, { q: r.question, a }];
-  // Asked once, never again: the next form finds it in memory.
-  await prefs.rememberAnswer(userId, r.question, a).catch(() => false);
+  // Asked once, never again: the next form finds it in memory. Only an
+  // answer the model picked out of the owner's words is kept for good —
+  // words the server passed on whole ("order from Meghana on Swiggy")
+  // are this run's answer, not a fact to fill forms with (remember:false).
+  if (remember) await prefs.rememberAnswer(userId, r.question, a).catch(() => false);
   await save(userId, r, { answers, status: "running", question: "" });
   return { ok: true, run: r, directive: directive(r, { resume: true }) };
 }

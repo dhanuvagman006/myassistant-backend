@@ -64,8 +64,18 @@ const LIBRARY =
   /\b(?:my|liked|likes|playlists?|library|downloads?|downloaded|saved|favou?rites?|episodes?|watch later|subscriptions?|recently played|watch history)\b/i;
 // The tools a SPOKEN request may be steered between (contract §3).
 const ROUTABLE = new Set(["do_task_in_app", "open_named_app", "uninstall_app", "order_food", "open_app"]);
-// Not an answer to the task's question: the owner calling it off.
-const STOP = /^\s*(?:(?:no|ok|okay)[,\s]+)?(?:stop|cancel|never ?mind|forget (?:it|about it)|leave it|don'?t bother)\b/i;
+// Not an answer to the task's question: the owner calling it off. The
+// WHOLE message must be the stop — "cancel my 5 pm meeting" and "stop the
+// music", typed while a task waited, used to end the task and never reach
+// the model (review, 2026-09-24).
+const STOP =
+  /^\s*(?:(?:no|ok|okay|please)[,\s]+)*(?:stop|cancel|never ?mind|forget (?:it|about it)|leave it|don'?t bother)(?:\s+(?:it|that|this|(?:the|that|this)\s+(?:task|order)))?(?:[,\s]+please)?\s*[.!]*\s*$/i;
+// The phone's own notes to the live model that carry no [SYSTEM] tag: the
+// greeting it asks for at every session start, and the camera's reading
+// handed back ("I pointed the camera and the image shows: …"). They are
+// the app talking, never the owner — not a request, and never the answer
+// to a waiting task (a greeting was once stored as the owner's address).
+const APP_NOTE = /^\s*(?:\[SYSTEM\]|say this(?: greeting)? to me now\b|i pointed the camera\b|i looked at it and saw\b)/i;
 
 function categoryOf(app) {
   for (const [cat, apps] of Object.entries(prefs.CATEGORIES)) {
@@ -83,8 +93,9 @@ function match(text) {
   const t = String(text || "").replace(/\s+/g, " ").trim();
   if (!t || t.length > 300) return null;
   // The app's own notes to the assistant ("[SYSTEM] The task … needs one
-  // answer") quote the task's words — they are never a new request.
-  if (/\[SYSTEM\]/i.test(t)) return null;
+  // answer", the camera's reading of a sign) quote other words — they are
+  // never a new request.
+  if (/\[SYSTEM\]/i.test(t) || APP_NOTE.test(t)) return null;
   const rm = t.match(UNINSTALL);
   if (rm) {
     const said = rm[2].trim();
@@ -210,19 +221,56 @@ function spokenRoute(call, userText, build) {
   return same ? { tool: call.name, args: a, override: false } : { ...want, override: true };
 }
 
+/** The phone's own note to the model (never the owner's words). */
+function isAppNote(text) {
+  return APP_NOTE.test(String(text || ""));
+}
+
+const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The owner calling off the WAITING task: a bare "stop" / "cancel it" /
+ * "never mind", or one that names the task's own app ("cancel the Swiggy
+ * order", "stop it on Swiggy"). "Cancel my 5 pm meeting", "stop the
+ * music" or "cancel the Zomato order" (while a Swiggy task waits) are
+ * requests for the model, not a stop.
+ */
+function stopsTask(text, waiting = null) {
+  let t = String(text || "").replace(/\s+/g, " ").trim();
+  if (!t || isAppNote(t)) return false;
+  for (const name of [waiting?.app_label, waiting?.app_name]) {
+    const w = String(name || "").trim();
+    if (!w) continue;
+    t = t.replace(new RegExp(`\\s*\\b(?:(?:in|on|from)\\s+)?${escapeRe(w)}\\b`, "ig"), "").replace(/\s+/g, " ").trim();
+  }
+  return STOP.test(t);
+}
+
 /**
  * THE OWNER'S ANSWER TO A WAITING TASK. `waiting` is the run that asked
  * (service.waitingRun). Returns { tool: "do_task_in_app", args: { run_id,
- * answer } } to resume it, or null when the words are something else:
- * the owner calling it off, a note from the app itself, another fixed job
- * (install, uninstall, play), or a task for a DIFFERENT app. With `call`
- * (the live model's tool call) only a call that would START a new run is
- * turned into the answer — "open YouTube" is not an answer to "which
- * restaurant?".
+ * answer } } to resume it, or null when the words are something else.
+ *
+ * Typed words (no `call`) resume the task on their own only when they are
+ * a clear task for the waiting run's OWN app ("order from Meghana on
+ * Swiggy" while the Swiggy task asked "Paradise or Meghana?"). Anything
+ * else typed — "the veg one", "what is the weather", "open Swiggy", "call
+ * mom" — goes to the model with the task's question beside it
+ * (waitingNote), and the model decides whether it is the answer: taken
+ * word for word, every typed request for ten minutes after a question was
+ * swallowed as its answer (review, 2026-09-24).
+ *
+ * With `call` (the live model's tool call for what the owner SAID) only a
+ * call that would START a new run for this task's app or kind is turned
+ * into the answer — "open YouTube" is not an answer to "which
+ * restaurant?", and neither is a cab when the task is food.
+ *
+ * Never an answer: the owner calling it off, a note from the app itself,
+ * another fixed job (install, uninstall, play), or a DIFFERENT app.
  */
 function resumeFor({ call = null, text = "", build = 0, waiting = null } = {}) {
   const t = String(text || "").replace(/\s+/g, " ").trim();
-  if (!waiting || !t || /\[SYSTEM\]/i.test(t) || STOP.test(t)) return null;
+  if (!waiting || !t || isAppNote(t) || /\[SYSTEM\]/i.test(t) || stopsTask(t, waiting)) return null;
   const m = matchFor(t, build);
   const sameApp = (app) => !!app && !!waiting.app_name &&
     (flat(app) === flat(waiting.app_name) || flat(app) === flat(waiting.app_label));
@@ -230,13 +278,37 @@ function resumeFor({ call = null, text = "", build = 0, waiting = null } = {}) {
     if (m.tool && m.tool !== "do_task_in_app") return null;
     if (!sameApp(m.app)) return null;
   }
+  if (!call && !m) return null;
   if (call) {
     const a = call.args || {};
     const starts = (call.name === "do_task_in_app" && !a.run_id) || (!!m && ROUTABLE.has(call.name));
     if (!starts) return null;
     if (!m && a.app && !sameApp(a.app)) return null;
+    // A new job of another kind ("book a cab to the airport" while a food
+    // task waits) is its own run, not this one's answer.
+    const kind = String(a.category || "").toLowerCase();
+    const was = String(waiting.category || "").toLowerCase();
+    if (!m && kind && was && kind !== was && kind !== "other" && was !== "other") return null;
   }
   return { tool: "do_task_in_app", args: { run_id: waiting.id, answer: t.slice(0, 400) } };
 }
 
-module.exports = { match, matchFor, installTarget, spokenRoute, resumeFor, ROUTABLE, STOP };
+/**
+ * The [SYSTEM] line sent to the live model in front of typed words while
+ * a task waits: the task, its question and its run_id, so the MODEL
+ * decides whether the words answer it (do_task_in_app with run_id) or ask
+ * for something else. Never a guess made here from the words alone.
+ */
+function waitingNote(waiting) {
+  const q = String(waiting?.question || "").replace(/\s+/g, " ").trim().slice(0, 200);
+  const goal = String(waiting?.goal || "").replace(/\s+/g, " ").trim().slice(0, 160);
+  const id = Number(waiting?.id);
+  return `[SYSTEM] The phone task "${goal}" (run_id ${id}) is waiting for the owner's answer` +
+    `${q ? ` to: "${q}"` : ""}. If the owner's message below answers that, call do_task_in_app ` +
+    `with run_id ${id} and their answer. If it asks for anything else, do that as usual and leave ` +
+    "the task waiting — never treat it as the answer.";
+}
+
+module.exports = {
+  match, matchFor, installTarget, spokenRoute, resumeFor, stopsTask, isAppNote, waitingNote, ROUTABLE, STOP,
+};
