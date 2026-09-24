@@ -248,7 +248,7 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "DOWNLOADS DO NOT NEED A CONVERSATION. \"Download a German Shepherd photo\", \"get me the metro map\": search, pick the best result yourself and save it — then ONE short sentence, \"Saved to your documents\". Never ask which one, which format, which size, or whether to go ahead; never list options or describe what you are about to do. If the first result fails, try the next one silently. Their time is the point: a question costs more than a wrong pick they can correct in three words. " +
     "SOMETHING REAL IS FOUND, NEVER DRAWN. A METRO, ROUTE, RAIL OR BUS MAP IS A DOCUMENT, NOT A PLACE — it does NOT go to open_app maps, which only answers \"what is near me\". \"Bangalore metro map\" means find the real diagram: web_search, then save_web_document with an image or PDF URL from the results, or open_webpage. AND SAY ONLY WHAT YOU DID: never announce Google Images or any site you did not actually open. \"Download the metro map\", a timetable, a fare chart, a form, a floor plan, a real logo: web_search for it, then save_web_document with a URL the search returned (that is the download), or open_webpage for the official page. generate_image would invent a map with fake stations — never use it for anything that exists and has to be correct. " +
     "\"DOWNLOAD X\" / \"INSTALL X\" / \"GET X\": call open_named_app with store_if_missing true — it opens the app when they already have it and offers the Play Store only when they genuinely do not. People often say download for an app that is already installed. " +
-    "OPEN X AND DO Y — ANYTHING DONE ON THE PHONE: when they want something DONE inside or across apps — 'open the calculator and work out 12 times 7', 'turn on Bluetooth', 'set brightness to full', 'add milk and bread to my cart', 'fill this form with my details', 'order veg biryani from a 4-star place', 'find my last order' — call do_task_in_app with the WHOLE request as the goal. It opens the apps itself and works step by step; never stop at just opening the app, and never do the task in your head instead of on the phone when they asked for it on the phone. " +
+    "OPEN X AND DO Y — ANYTHING DONE ON THE PHONE: when they want something DONE inside or across apps — 'open the calculator and work out 12 times 7', 'turn on Bluetooth', 'set brightness to full', 'add milk and bread to my cart', 'fill this form with my details', 'order veg biryani from a 4-star place', 'find my last order' — call do_task_in_app with the WHOLE request as the goal. It opens the apps itself and works step by step; never stop at just opening the app, and never do the task in your head instead of on the phone when they asked for it on the phone. It needs NO location permission (the app finds 'near me' itself) and no setup: never answer a phone task with a permission excuse or an offer to open Settings, and never bring up developer feedback unless the user is complaining about this app. " +
     "OPENING APPS: any plain 'open X' goes to open_named_app (open_app " +
     "only for its own listed apps). If an app fails to open or is not " +
     "installed, SAY THAT in one sentence and stop — NEVER open settings, " +
@@ -1702,6 +1702,41 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       }
       if (m.type === "text" && m.text && upstreamReady && upstream.readyState === WebSocket.OPEN) {
         lastUserText = String(m.text).slice(0, 500);
+        // A TYPED PHONE TASK TAKES THE STRUCTURED PATH: straight to the
+        // task engine, then one fixed sentence — no improvising around it
+        // (automation/intent.js). Everything else goes to the model as
+        // before.
+        const task = Number(user?.sub) > 0 && Number(deviceCtx.build) >= 104
+          ? require("../automation/intent").match(m.text) : null;
+        if (task) {
+          (async () => {
+            const res = await require("../tools/registry").execute("do_task_in_app",
+              { goal: task.goal, category: task.category, app: task.app, url: task.url }, {
+                session: liveState, sessionId: liveSessionId, turnId: currentTurnId,
+                source: "live", userId: user?.sub, userName,
+                platform: deviceCtx.platform, tzOffsetMin: deviceCtx.tz,
+                appBuild: deviceCtx.build, userText: lastUserText,
+              }).catch((e) => ({ ok: false, error: String(e.message || e) }));
+            if (res.ok && res.deviceAction) {
+              try { appWs.send(JSON.stringify(res.deviceAction)); } catch (_) {}
+            }
+            const line = res.ok
+              ? (res.speak || "On it.")
+              : `I couldn't start that: ${res.error || "something went wrong"}.`;
+            if (upstream.readyState === WebSocket.OPEN) {
+              upstream.send(JSON.stringify({
+                clientContent: {
+                  turns: [{ role: "user", parts: [{ text:
+                    `[SYSTEM] The owner typed: "${String(m.text).slice(0, 300)}". ` +
+                    (res.ok ? "It is already being done on the phone. " : "") +
+                    `Say exactly this, nothing before or after it: "${line}"` }] }],
+                  turnComplete: true,
+                },
+              }));
+            }
+          })();
+          return;
+        }
         upstream.send(
           JSON.stringify({
             clientContent: {

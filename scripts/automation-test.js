@@ -629,6 +629,30 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.strictEqual(noText.deviceAction.pkg, "com.application.zomato", "without the user's words, the model's app stands");
   });
 
+  await atest("a typed task naming an app takes the fixed path; everything else is left alone", () => {
+    const intent = require("../src/automation/intent");
+    const m = intent.match("Order veg biryani from a 4 star restaurant near me on Swiggy");
+    assert.deepStrictEqual({ app: m.app, category: m.category }, { app: "swiggy", category: "food" });
+    assert.strictEqual(intent.match("Open Amazon and search phone covers").app, "amazon");
+    assert.strictEqual(intent.match("fill the form at https://example.gov.in/apply with my details").url,
+      "https://example.gov.in/apply");
+    // Unchanged flows: plain open/install, reminders, WhatsApp, bare orders.
+    for (const t of ["open swiggy", "Install Zomato", "remind me at 5 to call Ravi",
+      "send hello to Ravi on WhatsApp", "order biryani", "what is the time", ""]) {
+      assert.strictEqual(intent.match(t), null, t);
+    }
+  });
+
+  await atest("a missing permission never becomes an excuse for a task inside an app", () => {
+    const block = reg.limitsBlock({ platform: "android", build: 104, granted: [], denied: ["location"] });
+    if (block) {
+      assert.match(block, /do_task_in_app \(doing things inside the phone's apps\) needs none of these permissions/);
+    }
+    const live = require("fs").readFileSync(__dirname + "/../src/live/proxy.js", "utf8");
+    assert.match(live, /needs NO location permission/);
+    assert.match(live, /A TYPED PHONE TASK TAKES THE STRUCTURED PATH/);
+  });
+
   await atest("hands on the phone: never unattended, confirmed after untrusted content", () => {
     assert.ok(reg.EFFECTIVE.unattendedBlocked.has("do_task_in_app"));
     assert.ok(reg.EFFECTIVE.world.has("do_task_in_app"));

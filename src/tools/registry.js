@@ -188,6 +188,16 @@ function limitsBlock(deviceCaps) {
       `NOT attempt it and do NOT say it is done.`
     );
   }
+  // A missing permission limits the tools named above and nothing else.
+  // Without this line the model stretched "no location" into refusing a
+  // food order done inside the food app (2026-09-24).
+  if (byPermission.size && !limits.some((l) => l.tool === "do_task_in_app")) {
+    lines.push(
+      "- These limits cover ONLY the tools named. do_task_in_app (doing things " +
+      "inside the phone's apps) needs none of these permissions — never refuse, " +
+      "delay or add a condition to a task done inside an app because of them."
+    );
+  }
   if (old.length) {
     lines.push(
       `- This phone's app version is too old for: ${old.join(", ")}. Say an ` +
