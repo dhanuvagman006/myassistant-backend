@@ -4991,7 +4991,19 @@ function registerBuiltins() {
       const search = require("./webSearch");
       // ctx carries the user's coordinates, so "what's the weather" with no
       // place named answers for where they actually are.
-      return search.run(args.query, { lat: ctx.lat, lng: ctx.lng });
+      // A LOCAL question with no place named gets the owner's city: "Lalit
+      // Ashok address" is the one in THEIR city, not whichever the web
+      // ranks first (a Goa resort, 2026-09-24).
+      let q = String(args.query || "");
+      const LOCAL = /\b(?:address|near(?:by| me)?|directions?|located|location|hotel|restaurant|hospital|clinic|pharmacy|chemist|shop|store|mall|showroom|branch|office|timings?|opening hours|open now|phone number|contact number|pin ?code)\b/i;
+      if (LOCAL.test(q) && Number.isFinite(Number(ctx.lat))) {
+        const geo = require("../users/whereNow");
+        if (!geo.namesAPlace(q)) {
+          const where = await geo.whereNow(ctx.lat, ctx.lng).catch(() => null);
+          if (where && (where.city || where.label)) q = `${q} ${where.city || where.label}`;
+        }
+      }
+      return search.run(q, { lat: ctx.lat, lng: ctx.lng });
     },
   });
 
@@ -7962,7 +7974,10 @@ function registerBuiltins() {
       "actual places and opens Google Maps at them, so you may say you are " +
       "showing them on the map — but only because THIS tool did it. " +
       "Set open_map to false only when they said they just want to hear " +
-      "the names. For directions to one named place use start_navigation.",
+      "the names. For directions to one named place use start_navigation. " +
+      "For the ADDRESS, phone or timings of ONE named place ('Lalit Ashok " +
+      "address') use web_search with the place's FULL name as they said it " +
+      "and their city — never shorten or reword the name.",
     risk: "low",
     deviceAction: true,
     inputSchema: {
@@ -8001,16 +8016,25 @@ function registerBuiltins() {
         };
       }
 
-      const where = await reverseGeocode(lat, lng);
-      const area = where ? (where.area || where.city || "") : "";
+      // AREA AND CITY. "Lalit Hotel near golf club in Koramangala" — or
+      // with no place at all — found a golf resort in Goa for a client in
+      // Bengaluru (2026-09-24). The city goes in every query, and a result
+      // that names a different city is not "near" them unless they asked
+      // for that city.
+      const geo = require("../users/whereNow");
+      const where = await geo.whereNow(lat, lng);
+      const area = where ? where.label : "";
+      const askedElsewhere = geo.namesAPlace(q);
       const search = require("./webSearch");
       let found = [];
       try {
-        const out = await search.run(area ? `${q} in ${area}` : `${q} near me`, { lat, lng });
+        const out = await search.run(area && !askedElsewhere ? `${q} in ${area}` : (askedElsewhere ? q : `${q} near me`), { lat, lng });
         if (out && out.ok && Array.isArray(out.data)) {
           const seen = new Set();
           for (const r of out.data) {
             if (!r || !r.title) continue;
+            if (where && where.city && !askedElsewhere &&
+                geo.namesOtherCity(`${r.title} ${r.snippet || ""} ${r.url || ""}`, where.city)) continue;
             const name = placeName(r.title, r.url);
             if (!name) continue;
             const key = name.toLowerCase();
@@ -8301,4 +8325,4 @@ function decodeEntities(t) {
     .replace(/&#x?[0-9a-f]+;/gi, " ");
 }
 
-module.exports = { registerBuiltins };
+module.exports = { registerBuiltins, reverseGeocode };

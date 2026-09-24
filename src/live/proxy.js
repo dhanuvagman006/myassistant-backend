@@ -717,7 +717,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       // logging in on a new phone brings the same memory with it.
       try {
         const [ctxBlock, recentBlock, memBlock] = await Promise.all([
-          require("../users/context").contextBlock(uid),
+          require("../users/context").contextBlock(uid, { lat: deviceCtx.lat, lng: deviceCtx.lng }),
           require("../memory/recent").recentBlock(uid, {
             excludeSessionId: liveSessionId,
           }),

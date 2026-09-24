@@ -694,7 +694,7 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   if (ctx.userId && ctx.extraSystem === undefined) {
     try {
       const [block, mem, recent] = await Promise.all([
-        require("../users/context").contextBlock(ctx.userId),
+        require("../users/context").contextBlock(ctx.userId, { lat: ctx.lat, lng: ctx.lng }),
         require("../agents/memory").memoryBlock(ctx.userId),
         // Continuity across sessions: what was said minutes ago, so a
         // fresh session never re-asks what it just answered. THIS

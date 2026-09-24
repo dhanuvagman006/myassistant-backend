@@ -299,9 +299,13 @@ async function removeInstruction(userId, match) {
  * The system-prompt fragment carrying who the user is, who the assistant
  * is, and the standing rules. Returns "" for anonymous sessions.
  */
-async function contextBlock(userId) {
+async function contextBlock(userId, { lat, lng } = {}) {
   if (!uidOk(userId)) return "";
-  const p = await getProfile(userId).catch(() => null);
+  const [p, here] = await Promise.all([
+    getProfile(userId).catch(() => null),
+    // Where the phone is right now — every request knows the city.
+    require("./whereNow").whereLine(lat, lng).catch(() => ""),
+  ]);
   if (!p) return "";
   const u = p.user;
   const lines = [];
@@ -315,6 +319,7 @@ async function contextBlock(userId) {
     u.timezone && `timezone: ${u.timezone}`,
   ].filter(Boolean);
   if (who.length) lines.push(`ABOUT THE USER — ${who.join("; ")}.`);
+  if (here) lines.push(here);
   lines.push(require("../agents/owner").addressRule(u));
 
   const a = p.assistant;
