@@ -78,12 +78,12 @@ const BACKGROUND_TURN_TIMEOUT_MS =
 /**
  * CALLS ON THIS PHONE. Owner, 2026-09-24: "the calls should be connected —
  * it should report when we have any missed calls, or any info if user
- * asks about calls". App build 106 reads the phone's own call log
+ * asks about calls". App build 107 reads the phone's own call log
  * (phone_calls); an older app cannot, so it keeps the rule that stopped
  * "you haven't missed any calls" being invented out of thin air.
  */
 function callsRule(appBuild) {
-  if (Number(appBuild) >= 106) {
+  if (Number(appBuild) >= 107) {
     return "- CALLS ON THIS PHONE: 'any missed calls?', 'who called me today?', "
       + "'did Ravi call?', 'when did mom last call', 'call history' → phone_calls "
       + "(filter missed / incoming / outgoing / all; person when they name someone; "

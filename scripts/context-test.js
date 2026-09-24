@@ -84,11 +84,11 @@ async function waitFor(fn, ms = 2000) {
   await t("phone_calls asks the phone and never states a result itself", async () => {
     const tool = registry.get("phone_calls");
     assert.ok(tool, "phone_calls is registered");
-    assert.strictEqual(tool.minAppBuild, 106);
+    assert.strictEqual(tool.minAppBuild, 107);
     assert.strictEqual(tool.deviceAction, true);
     assert.strictEqual(tool.risk, "low");
     const r = await registry.execute("phone_calls", { filter: "missed" },
-      { platform: "android", deviceCaps: CAPS(106) });
+      { platform: "android", deviceCaps: CAPS(107) });
     assert.strictEqual(r.ok, true, JSON.stringify(r));
     assert.deepStrictEqual(r.deviceAction,
       { type: "call_log", filter: "missed", person: "", since_hours: 24, limit: 10 });
@@ -114,25 +114,25 @@ async function waitFor(fn, ms = 2000) {
     assert.strictEqual((await run({ limit: 3.7 })).limit, 3);
   });
 
-  await t("build 104/105 phones are neither offered nor handed phone_calls", async () => {
+  await t("build 105/106 phones are neither offered nor handed phone_calls", async () => {
     const r = await registry.execute("phone_calls", { filter: "missed" },
-      { platform: "android", deviceCaps: CAPS(105) });
+      { platform: "android", deviceCaps: CAPS(106) });
     assert.strictEqual(r.ok, false);
     assert.ok(!r.deviceAction, "an old app would drop it after 'checking'");
     const has = (caps) => registry.declarations({ deviceCaps: caps }).some((d) => d.name === "phone_calls");
+    assert.strictEqual(has(CAPS(106)), false);
     assert.strictEqual(has(CAPS(105)), false);
-    assert.strictEqual(has(CAPS(104)), false);
-    assert.strictEqual(has(CAPS(106)), true);
-    assert.match(registry.limitsBlock(CAPS(105)), /too old for: [^\n]*phone_calls/);
+    assert.strictEqual(has(CAPS(107)), true);
+    assert.match(registry.limitsBlock(CAPS(106)), /too old for: [^\n]*phone_calls/);
   });
 
   await t("android only, and never from a scheduled task", async () => {
-    const has = registry.declarations({ deviceCaps: CAPS(106, "ios") }).some((d) => d.name === "phone_calls");
+    const has = registry.declarations({ deviceCaps: CAPS(107, "ios") }).some((d) => d.name === "phone_calls");
     assert.strictEqual(has, false, "an iPhone cannot read its call log");
-    const ios = await registry.execute("phone_calls", {}, { platform: "ios", deviceCaps: CAPS(106, "ios") });
+    const ios = await registry.execute("phone_calls", {}, { platform: "ios", deviceCaps: CAPS(107, "ios") });
     assert.strictEqual(ios.ok, false);
     const bg = await registry.execute("phone_calls", {}, {
-      platform: "android", deviceCaps: CAPS(106), background: true,
+      platform: "android", deviceCaps: CAPS(107), background: true,
     });
     assert.strictEqual(bg.ok, false, "nobody is holding the phone");
     assert.strictEqual(registry.describe("phone_calls").unattendedEffective, false);
@@ -204,12 +204,12 @@ async function waitFor(fn, ms = 2000) {
     }
   });
 
-  await t("chat prompt: build 106 routes calls questions to phone_calls, older builds keep the old rule", async () => {
-    const p106 = runtime.systemPrompt("", { appBuild: 106 });
-    assert.match(p106, /CALLS ON THIS PHONE: 'any missed calls\?'[^\n]*→ phone_calls/);
-    assert.match(p106, /Never guess call history/);
-    assert.ok(!/you cannot see the phone's missed or recent calls/.test(p106), "the temporary line is replaced");
-    for (const p of [runtime.systemPrompt("", { appBuild: 105 }), runtime.systemPrompt("")]) {
+  await t("chat prompt: build 107 routes calls questions to phone_calls, older builds keep the old rule", async () => {
+    const p107 = runtime.systemPrompt("", { appBuild: 107 });
+    assert.match(p107, /CALLS ON THIS PHONE: 'any missed calls\?'[^\n]*→ phone_calls/);
+    assert.match(p107, /Never guess call history/);
+    assert.ok(!/you cannot see the phone's missed or recent calls/.test(p107), "the temporary line is replaced");
+    for (const p of [runtime.systemPrompt("", { appBuild: 106 }), runtime.systemPrompt("")]) {
       assert.match(p, /CALL HISTORY: you cannot see the phone's missed or recent calls/);
       assert.ok(!/CALLS ON THIS PHONE/.test(p));
     }
@@ -313,21 +313,21 @@ async function waitFor(fn, ms = 2000) {
       .toolResponse.functionResponses.find((r) => r.id === id).response;
   }
 
-  await t("live prompt: build 106 gets phone_calls and its rule, build 105 keeps today's", async () => {
+  await t("live prompt: build 107 gets phone_calls and its rule, build 106 keeps today's", async () => {
+    const s107 = await openLive("build=107&platform=android&tz=330");
+    const p107 = s107.setup.systemInstruction.parts[0].text;
+    assert.match(p107, /CALLS ON THIS PHONE: 'any missed calls\?'[^.]*→ phone_calls/);
+    assert.ok(!/you cannot see the phone's missed or recent calls/.test(p107));
+    assert.ok(s107.setup.tools[0].functionDeclarations.some((d) => d.name === "phone_calls"));
     const s106 = await openLive("build=106&platform=android&tz=330");
     const p106 = s106.setup.systemInstruction.parts[0].text;
-    assert.match(p106, /CALLS ON THIS PHONE: 'any missed calls\?'[^.]*→ phone_calls/);
-    assert.ok(!/you cannot see the phone's missed or recent calls/.test(p106));
-    assert.ok(s106.setup.tools[0].functionDeclarations.some((d) => d.name === "phone_calls"));
-    const s105 = await openLive("build=105&platform=android&tz=330");
-    const p105 = s105.setup.systemInstruction.parts[0].text;
-    assert.match(p105, /CALL HISTORY: you cannot see the phone's missed or recent calls/);
-    assert.ok(!/CALLS ON THIS PHONE/.test(p105));
-    assert.ok(!s105.setup.tools[0].functionDeclarations.some((d) => d.name === "phone_calls"));
+    assert.match(p106, /CALL HISTORY: you cannot see the phone's missed or recent calls/);
+    assert.ok(!/CALLS ON THIS PHONE/.test(p106));
+    assert.ok(!s106.setup.tools[0].functionDeclarations.some((d) => d.name === "phone_calls"));
   });
 
   await t("live: the call-log request reaches the phone with its fixed sentence", async () => {
-    const s = await openLive("build=106&platform=android&tz=330");
+    const s = await openLive("build=107&platform=android&tz=330");
     await s.ready();
     const res = await toolCall(s, "phone_calls", { filter: "missed", person: "Ravi" });
     assert.strictEqual(res.result, "Checking your calls.");
@@ -337,7 +337,7 @@ async function waitFor(fn, ms = 2000) {
   });
 
   await t("audio_pause ends the audio stream once; the next frame resumes it", async () => {
-    const s = await openLive("build=106&platform=android");
+    const s = await openLive("build=107&platform=android");
     s.say({ type: "audio_pause" }); // before setup: nothing to end yet
     await tick();
     assert.ok(!s.up.sent.some((m) => m.realtimeInput && m.realtimeInput.audioStreamEnd));
@@ -356,7 +356,7 @@ async function waitFor(fn, ms = 2000) {
   });
 
   await t("a missing fix or timezone on the socket URL is absent, not 0", async () => {
-    const s = await openLive("build=106&platform=android");
+    const s = await openLive("build=107&platform=android");
     // Number(null) is 0: no tz used to mean UTC, five and a half hours out.
     assert.match(s.setup.systemInstruction.parts[0].text, /\(UTC\+05:30\)/);
     await s.ready();
@@ -369,7 +369,7 @@ async function waitFor(fn, ms = 2000) {
   });
 
   await t("live location: tools use the new fix at once; one quiet note when the area changes", async () => {
-    const s = await openLive("build=106&platform=android&tz=330&lat=12.8700&lng=74.8600");
+    const s = await openLive("build=107&platform=android&tz=330&lat=12.8700&lng=74.8600");
     await s.ready();
     // A few hundred metres inside Kadri: tools move, the model is not told.
     s.say({ type: "location", lat: 12.8712, lng: 74.8611, acc: 20 });
@@ -395,7 +395,7 @@ async function waitFor(fn, ms = 2000) {
   });
 
   await t("live location: a note never lands over her voice — it waits for her turn to end", async () => {
-    const s = await openLive("build=106&platform=android&tz=330&lat=12.8700&lng=74.8600");
+    const s = await openLive("build=107&platform=android&tz=330&lat=12.8700&lng=74.8600");
     await s.ready();
     s.model({ serverContent: { outputTranscription: { text: "Sure, the nearest one is " } } });
     s.say({ type: "location", lat: 13.3525, lng: 74.7928, acc: 15 });
@@ -407,7 +407,7 @@ async function waitFor(fn, ms = 2000) {
   });
 
   await t("live location: a coarse fix moves the tools but tells the model nothing", async () => {
-    const s = await openLive("build=106&platform=android&tz=330&lat=12.8700&lng=74.8600");
+    const s = await openLive("build=107&platform=android&tz=330&lat=12.8700&lng=74.8600");
     await s.ready();
     s.say({ type: "location", lat: 13.3525, lng: 74.7928, acc: 5000 });
     await tick(); await tick(); await tick();
@@ -418,7 +418,7 @@ async function waitFor(fn, ms = 2000) {
   });
 
   await t("live location: a session that started without a fix is told the first place", async () => {
-    const s = await openLive("build=106&platform=android&tz=330");
+    const s = await openLive("build=107&platform=android&tz=330");
     await s.ready();
     s.say({ type: "location", lat: 12.8700, lng: 74.8600, acc: 30 });
     await waitFor(() => s.notes().length === 1);

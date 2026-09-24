@@ -21,9 +21,9 @@
  *   app → server   binary frame        = one PCM16/16k mic chunk
  *   app → server   {"type":"end"}      = user closed the session
  *   app → server   {"type":"audio_pause"}              mic stopped sending
- *                  while nobody speaks (build 106) → Gemini audioStreamEnd
+ *                  while nobody speaks (build 107) → Gemini audioStreamEnd
  *   app → server   {"type":"location","lat","lng","acc"} the phone moved
- *                  (>300 m or every 5 min, build 106) → deviceCtx + one note
+ *                  (>300 m or every 5 min, build 107) → deviceCtx + one note
  *   server → app   binary frame        = one PCM16/24k audio chunk to play
  *   server → app   {"type":"ready"}                    setup complete
  *   server → app   {"type":"interrupted"}              stop playback NOW
@@ -345,10 +345,10 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     + "chatter in any language that is not a request to you, call "
     + "stay_silent and say nothing. "
     // CALLS, CONNECTED (owner, 2026-09-24: "it should report when we have
-    // any missed calls, or any info if user asks about calls"). Build 106
+    // any missed calls, or any info if user asks about calls"). Build 107
     // reads the phone's own call log; an older app keeps the rule that
     // stopped call history being invented.
-    + (Number(appBuild) >= 106
+    + (Number(appBuild) >= 107
       ? "CALLS ON THIS PHONE: 'any missed calls?', 'who called me today?', "
         + "'did Ravi call?', 'when did mom last call', 'call history' → "
         + "phone_calls (filter missed / incoming / outgoing / all; person when "

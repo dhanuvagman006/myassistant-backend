@@ -7404,9 +7404,10 @@ function registerBuiltins() {
   const CALL_FILTERS = new Set(["missed", "all", "incoming", "outgoing"]);
   registry.register({
     name: "phone_calls",
-    // Build 106 reads the call log; an older app would drop the action
+    // Build 107 reads the call log (106 shipped before it could); an older
+    // app would drop the action
     // after the assistant said it was checking.
-    minAppBuild: 106,
+    minAppBuild: 107,
     // iPhones do not let any app read the call log.
     requires: [{ kind: "platform", id: "android" }],
     description:
