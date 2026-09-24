@@ -43,8 +43,10 @@ const registry = () => {
 // prompt it was shown so the test can read what the planner saw.
 let script = [];
 const prompts = [];
+const pictures = [];
 ai.generateReply = async (messages) => {
   prompts.push(messages[0].content);
+  pictures.push(messages[0].images || null);
   const next = script.shift();
   if (next === undefined) throw new Error("planner called more times than scripted");
   return { reply: typeof next === "string" ? next : JSON.stringify(next) };
@@ -197,6 +199,20 @@ const swiggyCart = { pkg: SW, nodes: [
     // Settings search is Settings.
     assert.strictEqual(guard.checkAction({ type: "tap", id: 1 }, { pkg: "com.android.settings.intelligence",
       nodes: [N(1, { click: 1, label: "Screen lock type · Lock screen" })] })?.kind, "security");
+  });
+
+  await atest("a tap on the screenshot is judged by what is under it and what the planner calls it", () => {
+    const screen = { pkg: SW, nodes: [N(21, { cls: "Button", text: "Place order", click: 1, b: [600, 900, 980, 960] })] };
+    assert.strictEqual(guard.checkAction({ type: "tap_xy", x: 800, y: 930, label: "the orange button" }, screen)?.kind,
+      "payment", "the element under the point is the pay button");
+    assert.strictEqual(guard.checkAction({ type: "tap_xy", x: 100, y: 100, label: "Proceed to Pay" }, screen)?.kind,
+      "payment", "the planner's own words are judged too");
+    assert.strictEqual(guard.checkAction({ type: "tap_xy", x: 100, y: 100, label: "Food tab" }, screen), null);
+    assert.strictEqual(guard.checkAction({ type: "tap", id: 1 },
+      { pkg: "com.sec.android.app.launcher", nodes: [N(1, { text: "Close all", click: 1 })] })?.kind, "destructive",
+      "closing every app is never the assistant's call");
+    assert.strictEqual(planner.parseDecision('{"status":"continue","action":{"type":"tap_xy","x":500,"y":300}}'), null,
+      "a point tap must say what it taps");
   });
 
   await atest("no company names in the tips — the engine is not written for any one app", () => {
@@ -530,6 +546,52 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.strictEqual(await prefs.rememberAnswer(UID, "For how many people?", "four"), false);
     assert.strictEqual(await prefs.rememberAnswer(UID, "What is your bank account number?", "50100123456789"), false);
     assert.strictEqual(await prefs.rememberAnswer(UID, "Your annual family income?", "3 lakh"), true);
+  });
+
+  await atest("the planner sees the screenshot; an app with no element list is worked from the picture", async () => {
+    const s = await svc.start(UID, { goal: "Order idli", app: "swiggy" });
+    pictures.length = 0; prompts.length = 0;
+    script = [{ status: "continue", action: { type: "tap_xy", x: 180, y: 160, label: "Food tab" }, expect: "food home" }];
+    const out = await svc.step(UID, s.run.id, { screen: { pkg: SW, nodes: [], shot: "QUJDRA==" } });
+    assert.strictEqual(out.status, "continue");
+    assert.deepStrictEqual(out.action, { type: "tap_xy", x: 180, y: 160, label: "Food tab" });
+    assert.deepStrictEqual(pictures[0], [{ mime: "image/jpeg", data: "QUJDRA==" }]);
+    assert.match(prompts[0], /screenshot attached/);
+    assert.match(prompts[0], /work from the screenshot with tap_xy/);
+  });
+
+  await atest("a screen with nothing to read waits without a model call, then fails honestly", async () => {
+    const s = await svc.start(UID, { goal: "Order idli", app: "swiggy" });
+    const before = prompts.length;
+    const blank = { pkg: SW, nodes: [] };
+    const a = await svc.step(UID, s.run.id, { screen: blank });
+    const b = await svc.step(UID, s.run.id, { screen: blank, last: { ok: true, changed: false } });
+    const c = await svc.step(UID, s.run.id, { screen: blank, last: { ok: true, changed: false } });
+    assert.deepStrictEqual([a.status, b.status, c.status], ["continue", "continue", "failed"]);
+    assert.deepStrictEqual(a.action, { type: "wait" });
+    assert.strictEqual(prompts.length, before, "no model call spent on a blank screen");
+    assert.match(c.report, /couldn't read Swiggy's screen/);
+  });
+
+  await atest("re-opening the same app over and over stops instead of looping", async () => {
+    const s = await svc.start(UID, { goal: "Order idli", app: "swiggy" });
+    script = Array(3).fill({ status: "continue", action: { type: "open_app", name: "Swiggy" }, expect: "swiggy" });
+    let out;
+    for (let i = 0; i < 4; i++) {
+      out = await svc.step(UID, s.run.id, { screen: swiggyHome, last: i ? { ok: true, changed: true } : null });
+      if (out.status !== "continue") break;
+    }
+    assert.strictEqual(out.status, "failed");
+    assert.match(out.report, /going round in circles/);
+  });
+
+  await atest("the route keeps a screenshot and element positions, drops junk", () => {
+    const routes = require("../src/automation/routes");
+    const c = routes.cleanScreen({ pkg: SW, shot: "QUJD", nodes: [{ id: 1, b: [10, 20, 3000, -5] }, { id: 2, b: "x" }] });
+    assert.strictEqual(c.shot, "QUJD");
+    assert.deepStrictEqual(c.nodes[0].b, [10, 20, 1000, 0]);
+    assert.strictEqual(c.nodes[1].b, null);
+    assert.strictEqual(routes.cleanScreen({ pkg: SW, shot: "<script>", nodes: [] }).shot, "");
   });
 
   console.log("\nthe tool, the route, and the gates");

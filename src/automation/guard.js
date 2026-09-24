@@ -84,7 +84,7 @@ const SECURITY_SETTING =
   /(?:accessibility|device admin|admin apps|install unknown|unknown apps|unknown sources|developer options|usb debugging|wireless debugging|screen lock|lock screen|biometric|fingerprint|face recognition|password|passkey|security|privacy|play protect|encryption|credential|\baccounts?\b|backup|\breset\b|factory|special (?:app )?access|app permissions|permission manager|default apps|sim (?:card )?lock|find my (?:mobile|device)|secure folder)/i;
 // Deleting is final.
 const DESTRUCTIVE_ACTION =
-  /^\s*(?:delete|delete all|delete permanently|delete for everyone|erase|erase all|clear (?:data|storage|all data|cache and data)|format|wipe|factory (?:data )?reset|reset (?:phone|device|all|settings)|empty (?:trash|bin)|uninstall|remove account)\b/i;
+  /^\s*(?:delete|delete all|delete permanently|delete for everyone|erase|erase all|clear (?:data|storage|all data|cache and data)|format|wipe|factory (?:data )?reset|reset (?:phone|device|all|settings)|empty (?:trash|bin)|uninstall|remove account|close all|clear all|end all|force stop)\b/i;
 // Consent is the owner's: declarations, "I agree", terms, and accepting
 // cookies. (Rejecting cookies stays allowed — it is the private choice.)
 const CONSENT_ACTION =
@@ -176,6 +176,21 @@ function checkAction(action, screen) {
   if (action.type === "open_app") {
     if (MONEY_APP_NAME.test(String(action.name || ""))) {
       return { kind: "money", reason: HANDOFF_TEXT.money };
+    }
+    return null;
+  }
+
+  // A tap on a point of the screenshot: judged as the element under the
+  // point (when the screen has one) AND as what the planner says it is.
+  if (action.type === "tap_xy") {
+    const x = Number(action.x), y = Number(action.y);
+    const under = (screen?.nodes || [])
+      .filter((n) => Array.isArray(n.b) && x >= n.b[0] && x <= n.b[2] && y >= n.b[1] && y <= n.b[3])
+      .sort((a, b) => (a.b[2] - a.b[0]) * (a.b[3] - a.b[1]) - (b.b[2] - b.b[0]) * (b.b[3] - b.b[1]))[0];
+    const said = { id: -1, text: String(action.label || ""), click: 1 };
+    for (const n of [said, under].filter(Boolean)) {
+      const v = checkAction({ type: "tap", id: n.id }, { pkg, nodes: [...(screen?.nodes || []), said] });
+      if (v) return v;
     }
     return null;
   }

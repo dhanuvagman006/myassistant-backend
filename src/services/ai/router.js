@@ -182,7 +182,14 @@ async function callGemini(messages, system = SYSTEM_PROMPT, _retry = false, _mod
     system_instruction: { parts: [{ text: system }] },
     contents: messages.map((m) => ({
       role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.content }],
+      // A message may carry pictures (the phone's screen, for the hands
+      // in other apps). Text-only callers are unchanged.
+      parts: [
+        { text: m.content },
+        ...(Array.isArray(m.images) ? m.images.map((i) => ({
+          inline_data: { mime_type: i.mime || "image/jpeg", data: i.data },
+        })) : []),
+      ],
     })),
     ...(Object.keys(generationConfig).length ? { generationConfig } : {}),
   });

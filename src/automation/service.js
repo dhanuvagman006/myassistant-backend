@@ -269,6 +269,32 @@ async function step(userId, runId, { screen, last } = {}) {
     });
   }
 
+  // NOTHING TO SEE: no elements and no screenshot. Waiting costs no
+  // model call; three blank looks in a row is an honest failure, not a
+  // reason to start re-opening the app.
+  const blank = !(screen?.nodes || []).length && !screen?.shot;
+  if (blank) {
+    const tailBlank = r.steps.slice(-2).every((st) => st.action?.type === "wait" && st.blank);
+    if (r.steps.length >= 2 && tailBlank) {
+      await save(userId, r, { steps: r.steps });
+      return end(userId, r, "failed", {
+        report: composeReport(r) + ` I couldn't read ${r.app_label}'s screen, so I stopped rather than guess.`,
+      });
+    }
+    const steps = [...r.steps, { action: { type: "wait" }, expect: "the screen to load", blank: true }];
+    await save(userId, r, { steps });
+    return { status: "continue", action: { type: "wait" }, expect: "the screen to load", step: steps.length };
+  }
+
+  // Opening the same app again and again is a loop, not progress.
+  const reopens = r.steps.filter((st) => st.action?.type === "open_app").map((st) => String(st.action.name || "").toLowerCase());
+  if (reopens.length >= 3 && new Set(reopens.slice(-3)).size === 1) {
+    await save(userId, r, { steps: r.steps });
+    return end(userId, r, "failed", {
+      report: composeReport(r) + ` ${reopens[reopens.length - 1]} kept not responding, so I stopped instead of going round in circles.`,
+    });
+  }
+
   // The screen itself can be a line we never cross.
   const onScreen = guard.checkScreen(screen);
   if (onScreen) {

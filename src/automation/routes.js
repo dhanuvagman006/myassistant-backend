@@ -25,9 +25,15 @@ function uid(req) {
 function cleanScreen(s) {
   const nodes = Array.isArray(s?.nodes) ? s.nodes.slice(0, 400) : [];
   const str = (v, n) => (v == null ? "" : String(v).slice(0, n));
+  // The screenshot: a small JPEG, base64. Anything else is dropped.
+  const shot = typeof s?.shot === "string" && s.shot.length < 900_000 &&
+    /^[A-Za-z0-9+/=]+$/.test(s.shot.slice(0, 200)) ? s.shot : "";
+  const box = (b) => Array.isArray(b) && b.length === 4 && b.every((v) => Number.isFinite(Number(v)))
+    ? b.map((v) => Math.max(0, Math.min(1000, Math.round(Number(v))))) : null;
   return {
     pkg: str(s?.pkg, 120),
     keyboard: !!s?.keyboard,
+    shot,
     nodes: nodes.map((n) => ({
       id: Number(n?.id),
       up: Number.isInteger(Number(n?.up)) ? Number(n.up) : -1,
@@ -45,6 +51,7 @@ function cleanScreen(s) {
       sel: n?.sel ? 1 : 0,
       pwd: n?.pwd ? 1 : 0,
       en: n?.en === 0 ? 0 : 1,
+      b: box(n?.b),
     })).filter((n) => Number.isInteger(n.id)),
   };
 }
