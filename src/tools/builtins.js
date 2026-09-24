@@ -4872,7 +4872,7 @@ function registerBuiltins() {
       "UNINSTALL (DELETE / REMOVE) AN APP from the user's phone — 'uninstall " +
       "Candy Crush', 'delete Instagram', 'remove the Facebook app', 'get rid " +
       "of TikTok'. Opens Android's own uninstall confirmation for the app " +
-      "they named; it is removed only when they tap OK there, so call it at " +
+      "they named; it is removed only when they confirm there, so call it at " +
       "once — do not ask 'are you sure' first. The phone reports whether the " +
       "app really went. Apps that came with the phone cannot be uninstalled; " +
       "their App info page opens instead so they can disable them. To " +
@@ -4899,7 +4899,7 @@ function registerBuiltins() {
         ok: true,
         data: { app: label, needs_owner_tap: true },
         deviceAction: { type: "uninstall_app", name: asked, pkg: known?.pkg || "" },
-        speak: `Opening the uninstall screen for ${label} — tap OK there to remove it.`,
+        speak: `Opening the uninstall screen for ${label} — tap Uninstall there to remove it.`,
       };
     },
   });

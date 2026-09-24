@@ -826,7 +826,7 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.strictEqual(t.minAppBuild, 105);
     const r = await t.execute({ app: "Instagram" }, { userId: UID, platform: "android" });
     assert.deepStrictEqual(r.deviceAction, { type: "uninstall_app", name: "Instagram", pkg: "com.instagram.android" });
-    assert.match(r.speak, /tap OK there to remove it/);
+    assert.match(r.speak, /tap Uninstall there to remove it/);
     assert.ok(!/uninstalled|removed it/i.test(r.speak), "never claims it is gone before the phone says so");
     const unknown = await t.execute({ app: "Candy Crush" }, { userId: UID, platform: "android" });
     assert.strictEqual(unknown.deviceAction.pkg, "", "an unknown app is found by name on the phone");
