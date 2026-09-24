@@ -11,9 +11,11 @@
  *   4. the most common app for it in India
  * Every pick carries its reason, so the report can say why.
  *
- * ownerInfo: name, phone, email and address for filling forms. Nothing
- * that unlocks anything — no passwords, card, bank or ID numbers — ever
- * leaves this file, even if a memory happens to contain one.
+ * ownerInfo: everything we know about the owner that a form may ask —
+ * name, phone, email, address, date of birth, gender, education, family
+ * names, and answers they gave to earlier forms. Nothing that unlocks
+ * anything — no passwords, card, bank or ID numbers — ever leaves this
+ * file, even if a memory happens to contain one.
  */
 const { query, one } = require("../db");
 const deeplinks = require("../fulfillment/deeplinks");
@@ -134,20 +136,24 @@ async function pickApp(userId, category, explicit) {
 // Never passed on, whatever a memory contains.
 const SECRET =
   /(password|passcode|\bpin\b(?!\s*code)|mpin|\botp\b|cvv|card (?:number|no)|account (?:number|no)|ifsc|aadhaa?r|\bpan\b|passport (?:number|no)|licen[cs]e (?:number|no)|\b\d{12,19}\b)/i;
+// Questions whose answers describe the owner and fit the next form too.
+const PERSONAL =
+  /\b(?:name|date of birth|dob|birth|age|gender|father|mother|guardian|parent|spouse|address|pin ?code|postal|city|district|state|nationality|religion|caste|category|community|college|school|university|institute|course|class|branch|semester|year of study|roll|registration|marks|percentage|cgpa|gpa|qualification|education|occupation|profession|employer|income|email|phone|mobile|whatsapp|blood group|disability)\b/i;
 const ADDRESSY =
   "(address|pincode|pin code|flat|apartment|street|road|nagar|layout|colony|sector|i live|lives at|home is|office is|house)";
 
 async function ownerInfo(userId) {
   if (!userId) return {};
   const u = await one(
-    `SELECT name, email, phone_number, location, birthday, profession, organisation
+    `SELECT name, email, phone_number, location, birthday, gender, profession, organisation
        FROM users WHERE id=$1`, [userId]).catch(() => null);
   const out = {};
   if (u?.name) out.name = u.name;
   if (u?.phone_number) out.phone = u.phone_number;
   if (u?.email && !/@(?:phone|privaterelay|local)\b/i.test(u.email)) out.email = u.email;
   if (u?.location) out.city = u.location;
-  if (u?.birthday) out.birthday = u.birthday;
+  if (u?.birthday) out.date_of_birth = u.birthday;
+  if (u?.gender) out.gender = u.gender;
   if (u?.profession) out.profession = u.profession;
   if (u?.organisation) out.organisation = u.organisation;
 
@@ -163,7 +169,51 @@ async function ownerInfo(userId) {
   // above are the owner's own contact details, meant for exactly this.
   const addr = facts.map((f) => String(f.fact)).filter((f) => !SECRET.test(f));
   if (addr.length) out.address_notes = addr;
+
+  // Everything else remembered about the owner themselves (education,
+  // family, work, earlier form answers) — answers first, then the most
+  // important facts.
+  const about = await query(
+    `SELECT fact FROM agent_memories
+      WHERE user_id=$1 AND COALESCE(valid,1)=1
+        AND COALESCE(subject_type,'') IN ('', 'self', 'user')
+      ORDER BY (source = 'form_answer') DESC, importance DESC, id DESC LIMIT 40`,
+    [userId]).catch(() => []);
+  const known = about.map((f) => String(f.fact))
+    .filter((f) => !SECRET.test(f) && !addr.includes(f)).slice(0, 20);
+  if (known.length) out.also_known = known;
   return out;
 }
 
-module.exports = { pickApp, ownerInfo, scorePreferences, appInfo, CATEGORIES };
+/** "What is your father's name, Sir?" → "father's name". */
+function fieldName(question) {
+  let q = String(question).trim()
+    .replace(/[?.!]+$/, "")
+    .replace(/,?\s*(?:sir|ma'?am|madam|ji)$/i, "");
+  let prev;
+  do {
+    prev = q;
+    q = q.replace(/^(?:what(?:'s| is| are)|which|please|kindly|enter|tell me|give me|your|is)\s+/i, "");
+  } while (q !== prev);
+  return q.trim() || String(question).trim();
+}
+
+/**
+ * An answer the owner gave to a form question is remembered, so the next
+ * form never asks again. Secrets are never kept.
+ */
+async function rememberAnswer(userId, question, answer) {
+  const q = String(question || "").trim();
+  const a = String(answer || "").trim();
+  if (!userId || !q || !a || SECRET.test(q) || SECRET.test(a)) return false;
+  // Only answers about the owner themselves — "for how many people?" is
+  // about one booking, not something to remember.
+  if (!PERSONAL.test(q)) return false;
+  await require("../memory/service").remember(userId, {
+    fact: `For forms — ${fieldName(q)}: ${a}`,
+    kind: "semantic", importance: 3, source: "form_answer", confidence: 0.9,
+  }).catch(() => null);
+  return true;
+}
+
+module.exports = { pickApp, ownerInfo, rememberAnswer, scorePreferences, appInfo, CATEGORIES };

@@ -184,6 +184,21 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.strictEqual(guard.checkAction({ type: "home" }, { pkg: "x", nodes: [] }), null);
   });
 
+  await atest("declarations, 'I agree', cookies and CAPTCHAs are the owner's", () => {
+    const CH = "com.android.chrome";
+    const tap = (o) => guard.checkAction({ type: "tap", id: 1 }, { pkg: CH, nodes: [N(1, { click: 1, ...o })] });
+    assert.strictEqual(tap({ check: 1, label: "I hereby declare that the information given above is true" })?.kind, "consent");
+    assert.strictEqual(tap({ text: "I agree to the Terms and Conditions", check: 1 })?.kind, "consent");
+    assert.strictEqual(tap({ text: "Accept all cookies" })?.kind, "consent");
+    assert.strictEqual(tap({ text: "Reject all" }), null, "the private choice stays allowed");
+    assert.strictEqual(tap({ text: "Next" }), null);
+    assert.strictEqual(guard.checkScreen({ pkg: CH, nodes: [N(1, { text: "I'm not a robot", check: 1, click: 1 })] })?.kind, "captcha");
+    assert.strictEqual(guard.checkScreen({ pkg: CH, nodes: [N(1, { cls: "EditText", edit: 1, hint: "Enter captcha" })] })?.kind, "captcha");
+    // Settings search is Settings.
+    assert.strictEqual(guard.checkAction({ type: "tap", id: 1 }, { pkg: "com.android.settings.intelligence",
+      nodes: [N(1, { click: 1, label: "Screen lock type · Lock screen" })] })?.kind, "security");
+  });
+
   await atest("no company names in the tips — the engine is not written for any one app", () => {
     const src = require("fs").readFileSync(__dirname + "/../src/automation/hints.js", "utf8");
     assert.ok(!/swiggy|zomato|blinkit|zepto|amazon|flipkart|uber|\bola\b|bookmyshow/i.test(src));
@@ -454,6 +469,67 @@ const swiggyCart = { pkg: SW, nodes: [
     script = ["garbage", "still garbage"];
     const out = await svc.step(UID, s.run.id, { screen: swiggyHome });
     assert.strictEqual(out.status, "failed");
+  });
+
+  await atest("a scholarship form: filled from memory, one question asked and remembered, stops at the declaration", async () => {
+    await db.run(`UPDATE users SET gender='male', birthday='2004-06-15' WHERE id=$1`, [UID]);
+    await remember("Studies B.Tech Computer Science at RV College of Engineering, 3rd year, CGPA 8.7");
+    prompts.length = 0;
+    const s = await svc.start(UID, { goal: "Apply for the state merit scholarship with my details",
+      url: "https://scholarships.example.gov.in/apply", category: "web" });
+    const CH = "com.android.chrome";
+    const form = { pkg: CH, nodes: [
+      N(1, { cls: "EditText", edit: 1, hint: "Full name" }),
+      N(2, { cls: "EditText", edit: 1, hint: "Date of birth" }),
+      N(3, { cls: "EditText", edit: 1, hint: "College / Institute" }),
+      N(4, { cls: "EditText", edit: 1, hint: "Father's name" }),
+      N(5, { cls: "EditText", edit: 1, hint: "Aadhaar number" }),
+      N(6, { cls: "CheckBox", check: 1, click: 1, label: "I hereby declare that the information given is true" }),
+      N(7, { cls: "Button", text: "Submit", click: 1 })] };
+    script = [
+      { status: "continue", action: { type: "type", id: 1, text: "Ravi Kumar" }, expect: "name filled" },
+      { status: "continue", action: { type: "type", id: 2, text: "15/06/2004" }, expect: "dob filled" },
+      { status: "continue", action: { type: "type", id: 3, text: "RV College of Engineering" }, expect: "college filled" },
+      { status: "ask_user", question: "What is your father's name, Sir?" },
+    ];
+    let out; let last = null;
+    for (let i = 0; i < 4; i++) {
+      out = await svc.step(UID, s.run.id, { screen: form, last });
+      if (out.status !== "continue") break;
+      last = { ok: true, changed: true };
+    }
+    assert.strictEqual(out.status, "waiting");
+    assert.match(prompts[0], /gender: male/);
+    assert.match(prompts[0], /date of birth: 2004-06-15/);
+    assert.match(prompts[0], /RV College of Engineering/);
+    assert.match(planner.SYSTEM, /FORMS \(applications, registrations, scholarships\)/);
+
+    const r = await svc.resume(UID, s.run.id, "Suresh Kumar");
+    assert.strictEqual(r.ok, true);
+    const kept = await db.one(`SELECT fact, source FROM agent_memories WHERE user_id=$1 AND source='form_answer'`, [UID]);
+    assert.match(kept.fact, /father's name: Suresh Kumar/i, "asked once, remembered for the next form");
+    // Typing the Aadhaar number is refused; ticking the declaration is refused.
+    script = [
+      { status: "continue", action: { type: "type", id: 4, text: "Suresh Kumar" }, expect: "father's name filled" },
+      { status: "continue", action: { type: "tap", id: 6 }, expect: "declaration ticked" },
+    ];
+    out = await svc.step(UID, s.run.id, { screen: form, last: null });
+    assert.strictEqual(out.status, "continue");
+    out = await svc.step(UID, s.run.id, { screen: form, last: { ok: true, changed: true } });
+    assert.strictEqual(out.status, "handoff");
+    assert.strictEqual(out.handoff_kind, "consent");
+    assert.match(out.report, /declaration or "I agree" is yours to tick/);
+    assert.strictEqual(guard.checkAction({ type: "type", id: 5, text: "1234 5678 9012" }, form)?.kind, "credential");
+
+    // The next form knows the father's name without asking.
+    const again = await prefs.ownerInfo(UID);
+    assert.ok(again.also_known.some((f) => /Suresh Kumar/.test(f)));
+  });
+
+  await atest("only answers about the owner are remembered — never secrets or one-off details", async () => {
+    assert.strictEqual(await prefs.rememberAnswer(UID, "For how many people?", "four"), false);
+    assert.strictEqual(await prefs.rememberAnswer(UID, "What is your bank account number?", "50100123456789"), false);
+    assert.strictEqual(await prefs.rememberAnswer(UID, "Your annual family income?", "3 lakh"), true);
   });
 
   console.log("\nthe tool, the route, and the gates");

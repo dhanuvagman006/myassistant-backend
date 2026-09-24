@@ -76,6 +76,8 @@ const SYSTEM_PKGS = new Set([...PERMISSION_PKGS, ...INSTALLER_PKGS]);
 // phone itself, judged below.
 const SETTINGS_PKGS = new Set([
   "com.android.settings", "com.samsung.android.settings",
+  // Settings search runs in its own package — same rules.
+  "com.android.settings.intelligence", "com.google.android.settings.intelligence",
   "com.samsung.android.biometrics.app.setting", "com.samsung.android.lool",
 ]);
 const SECURITY_SETTING =
@@ -83,6 +85,14 @@ const SECURITY_SETTING =
 // Deleting is final.
 const DESTRUCTIVE_ACTION =
   /^\s*(?:delete|delete all|delete permanently|delete for everyone|erase|erase all|clear (?:data|storage|all data|cache and data)|format|wipe|factory (?:data )?reset|reset (?:phone|device|all|settings)|empty (?:trash|bin)|uninstall|remove account)\b/i;
+// Consent is the owner's: declarations, "I agree", terms, and accepting
+// cookies. (Rejecting cookies stays allowed — it is the private choice.)
+const CONSENT_ACTION =
+  /\b(?:i (?:hereby )?(?:agree|declare|accept|certify|confirm|consent|undertake)|agree (?:and|&) continue|agree to (?:the |all )?terms|accept (?:all|cookies|all cookies|the terms|terms)|terms (?:and|&) conditions|self[- ]declaration|declaration)\b/i;
+// Proving you are human is, by definition, the human's job.
+const CAPTCHA_TEXT =
+  /captcha|i'?m not a robot|verify (?:that )?you are (?:a )?human|select all (?:images|squares)|security check/i;
+
 // Apps the assistant never opens: anything that holds money.
 const MONEY_APP_NAME =
   /\b(?:g ?pay|google pay|phone ?pe|paytm|bhim|cred|mobikwik|freecharge|amazon pay|yono|imobile|net ?banking|mobile banking|bank|upi|wallet)\b/i;
@@ -142,6 +152,8 @@ const HANDOFF_TEXT = {
   message_send: "the message is ready — sending it is your tap",
   blocked_app: "that screen is one I never act in",
   destructive: "that would delete something",
+  consent: "that is your consent to give",
+  captcha: "a human check (CAPTCHA) is waiting for you",
   security: "that is a security setting",
   permission: "an app is asking for a permission",
 };
@@ -195,6 +207,12 @@ function checkAction(action, screen) {
     }
     if (MESSAGING_PKGS.has(pkg) && judged.some((t) => SEND_ACTION.test(t))) {
       return { kind: "message_send", reason: HANDOFF_TEXT.message_send };
+    }
+    // Declarations and terms: a tick or a button, judged on the whole
+    // label — "I hereby declare that the information…" is long.
+    if ([node, up].filter(Boolean).some((n) => CONSENT_ACTION.test(ownLabel(n)) ||
+        (n.check && CONSENT_ACTION.test(norm(n.label))))) {
+      return { kind: "consent", reason: HANDOFF_TEXT.consent };
     }
     if (judged.some((t) => DESTRUCTIVE_ACTION.test(t))) {
       return { kind: "destructive", reason: HANDOFF_TEXT.destructive };
@@ -272,6 +290,10 @@ function checkScreen(screen) {
   const methods = PAY_METHODS.filter((re) => short.some((t) => re.test(t))).length;
   if (methods >= 3) return { kind: "payment", reason: HANDOFF_TEXT.payment };
 
+  if (texts.some((t) => CAPTCHA_TEXT.test(t)) || nodes.some((n) => CAPTCHA_TEXT.test(fieldLabel(n)))) {
+    return { kind: "captcha", reason: HANDOFF_TEXT.captcha };
+  }
+
   const hasField = nodes.some((n) => n.edit);
   if (nodes.some((n) => n.pwd) ||
       (hasField && short.some((t) => LOGIN_TEXT.test(t)) &&
@@ -296,6 +318,8 @@ function handoffSentence(kind, appLabel) {
     case "security": return `That's a security setting — I never change those, so it's over to you.`;
     case "permission": return `An app is asking for a permission — that's your decision, so I've stopped there.`;
     case "returned": return `You came back to me, so I stopped there.`;
+    case "consent": return `Everything I could fill is filled — the declaration or "I agree" is yours to tick, then submit.`;
+    case "captcha": return `There's a human check (CAPTCHA) on ${app} — please solve it and submit.`;
     default: return `I've stopped here for you to take over in ${app}.`;
   }
 }

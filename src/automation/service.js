@@ -171,6 +171,8 @@ async function resume(userId, runId, answer) {
   const a = String(answer || "").trim().slice(0, 400);
   if (!a) return { ok: false, needsArgs: ["answer"] };
   const answers = [...r.answers, { q: r.question, a }];
+  // Asked once, never again: the next form finds it in memory.
+  await prefs.rememberAnswer(userId, r.question, a).catch(() => false);
   await save(userId, r, { answers, status: "running", question: "" });
   return { ok: true, run: r, directive: directive(r, { resume: true }) };
 }

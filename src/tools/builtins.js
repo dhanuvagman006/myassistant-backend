@@ -6642,12 +6642,18 @@ function registerBuiltins() {
       "submit forms, change a setting, find something in an app. Use for " +
       "'book veg biryani from a 4-star restaurant near me', 'add milk, " +
       "bread and eggs to my grocery cart', 'turn on Bluetooth', 'set " +
-      "brightness to full', 'fill this form with my details', 'find my " +
-      "last order', 'check cab prices to the airport'. Picks the user's " +
+      "brightness to full', 'fill this form with my details', 'apply for " +
+      "the <name> scholarship with my details', 'register me for <event>', " +
+      "'find my last order', 'check cab prices to the airport'. Forms are " +
+      "filled from everything remembered about the user; a missing answer " +
+      "is asked once and remembered. For a website task without a link, " +
+      "find the OFFICIAL page with web_search first and pass it as url " +
+      "(government portals end in .gov.in / .nic.in). Picks the user's " +
       "preferred app from memory when they don't name one. It STOPS before " +
-      "paying, placing a paid order, moving money, typing passwords or " +
-      "OTPs, sending a message, deleting anything, security settings or " +
-      "permission pop-ups — the user does that one step. Call it AT ONCE " +
+      "paying, placing a paid order, moving money, typing passwords, OTPs, " +
+      "Aadhaar or bank numbers, ticking declarations / 'I agree', " +
+      "CAPTCHAs, uploads, sending a message, deleting anything, security " +
+      "settings or permission pop-ups — the user does that one step. Call it AT ONCE " +
       "with the whole request as the goal; do not ask which app first. Say " +
       "you're on it and will report back — never claim it is ordered or " +
       "done. When the task asked the user a question, call it again with " +
