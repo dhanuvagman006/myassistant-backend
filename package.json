@@ -25,7 +25,7 @@
     "test:calls": "node scripts/calls-test.js",
     "test:feedback": "node scripts/feedback-test.js",
     "test:features": "node scripts/features-test.js",
-    "test:automation": "node scripts/automation-test.js && node scripts/people-test.js && node scripts/where-test.js"
+    "test:automation": "node scripts/automation-test.js && node scripts/people-test.js && node scripts/where-test.js && node scripts/context-test.js"
   },
   "engines": {
     "node": ">=22"

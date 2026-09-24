@@ -75,7 +75,29 @@ const BACKGROUND_DEVICE_TOOLS = new Set([
 const BACKGROUND_TURN_TIMEOUT_MS =
   Number(process.env.BACKGROUND_TURN_TIMEOUT_MS) || 90_000;
 
-function systemPrompt(extra = "") {
+/**
+ * CALLS ON THIS PHONE. Owner, 2026-09-24: "the calls should be connected —
+ * it should report when we have any missed calls, or any info if user
+ * asks about calls". App build 106 reads the phone's own call log
+ * (phone_calls); an older app cannot, so it keeps the rule that stopped
+ * "you haven't missed any calls" being invented out of thin air.
+ */
+function callsRule(appBuild) {
+  if (Number(appBuild) >= 106) {
+    return "- CALLS ON THIS PHONE: 'any missed calls?', 'who called me today?', "
+      + "'did Ravi call?', 'when did mom last call', 'call history' → phone_calls "
+      + "(filter missed / incoming / outgoing / all; person when they name someone; "
+      + "since_hours 720 for 'when did X last call'). Say only 'Checking your calls.' "
+      + "— the phone answers with a [SYSTEM] line; say what it found in one or two "
+      + "short sentences and offer to call back. Never guess call history: until "
+      + "that line arrives you do not know whether they missed any calls. 'Did YOU "
+      + "call X' is check_recent_actions; what was SAID on a call is call_recall.\n";
+  }
+  return "- CALL HISTORY: you cannot see the phone's missed or recent calls unless "
+    + "a tool returns them — never say they have or have not missed calls.\n";
+}
+
+function systemPrompt(extra = "", { appBuild } = {}) {
   return (
     "You are the user's personal assistant — warm, quick-witted, from India. " +
     "(Your name and identity are provided below when configured.) " +
@@ -267,8 +289,7 @@ function systemPrompt(extra = "") {
     + "That tool is the record of what really ran; recall_memory is NOT. "
     + "Never claim you did something it does not show, and never deny "
     + "something it does show.\n" +
-    "- CALL HISTORY: you cannot see the phone's missed or recent calls unless "
-    + "a tool returns them — never say they have or have not missed calls.\n" +
+    callsRule(appBuild) +
     "- ONE REQUEST AT A TIME: act ONLY on what the user just said. If a "
     + "line is unclear, short or garbled, ask them to repeat it — do NOT "
     + "borrow the subject of an earlier request. A tool that returns "
@@ -696,7 +717,7 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   if (ctx.userId && ctx.extraSystem === undefined) {
     try {
       const [block, mem, recent] = await Promise.all([
-        require("../users/context").contextBlock(ctx.userId, { lat: ctx.lat, lng: ctx.lng }),
+        require("../users/context").contextBlock(ctx.userId, { lat: ctx.lat, lng: ctx.lng, tz: ctx.tzOffsetMin }),
         require("../agents/memory").memoryBlock(ctx.userId),
         // Continuity across sessions: what was said minutes ago, so a
         // fresh session never re-asks what it just answered. THIS
@@ -824,7 +845,7 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
     try {
       out = await generateWithToolsStream({
         contents,
-        system: systemPrompt(ctx.extraSystem || ""),
+        system: systemPrompt(ctx.extraSystem || "", { appBuild: ctx.appBuild }),
         declarations,
         timeoutMs: ctx.background ? BACKGROUND_TURN_TIMEOUT_MS : 0,
         onDelta: (d) => splitter.push(d),
@@ -834,7 +855,7 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
       // non-streaming call and deliver its text as sentences the same way.
       out = await generateWithTools({
         contents,
-        system: systemPrompt(ctx.extraSystem || ""),
+        system: systemPrompt(ctx.extraSystem || "", { appBuild: ctx.appBuild }),
         declarations,
         timeoutMs: ctx.background ? BACKGROUND_TURN_TIMEOUT_MS : 0,
       });

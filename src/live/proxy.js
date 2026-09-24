@@ -20,6 +20,10 @@
  * Wire protocol with the app (deliberately tiny):
  *   app → server   binary frame        = one PCM16/16k mic chunk
  *   app → server   {"type":"end"}      = user closed the session
+ *   app → server   {"type":"audio_pause"}              mic stopped sending
+ *                  while nobody speaks (build 106) → Gemini audioStreamEnd
+ *   app → server   {"type":"location","lat","lng","acc"} the phone moved
+ *                  (>300 m or every 5 min, build 106) → deviceCtx + one note
  *   server → app   binary frame        = one PCM16/24k audio chunk to play
  *   server → app   {"type":"ready"}                    setup complete
  *   server → app   {"type":"interrupted"}              stop playback NOW
@@ -93,7 +97,7 @@ function nowLine(tzOffsetMin = 330) {
   );
 }
 
-function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], personalContext = "", tzOffsetMin = 330, preferredLanguage = "", languageAsk = "") {
+function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], personalContext = "", tzOffsetMin = 330, preferredLanguage = "", languageAsk = "", appBuild = 0) {
   // SPEAK THE LANGUAGE THEY SPOKE.
   //
   // This was a pin: whatever was chosen once on the onboarding screen was
@@ -340,9 +344,24 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     + "other, the user talking to someone else or on a phone call, a TV, or "
     + "chatter in any language that is not a request to you, call "
     + "stay_silent and say nothing. "
-    + "CALL HISTORY: you cannot see the phone's missed or recent calls unless "
-    + "a tool returns them — never say they have or have not missed calls; "
-    + "call_recall only covers calls this app recorded and analysed. "
+    // CALLS, CONNECTED (owner, 2026-09-24: "it should report when we have
+    // any missed calls, or any info if user asks about calls"). Build 106
+    // reads the phone's own call log; an older app keeps the rule that
+    // stopped call history being invented.
+    + (Number(appBuild) >= 106
+      ? "CALLS ON THIS PHONE: 'any missed calls?', 'who called me today?', "
+        + "'did Ravi call?', 'when did mom last call', 'call history' → "
+        + "phone_calls (filter missed / incoming / outgoing / all; person when "
+        + "they name someone; since_hours 720 for 'when did X last call'). Say "
+        + "only 'Checking your calls.' — the phone answers with a [SYSTEM] "
+        + "line; say what it found in one or two short sentences and offer to "
+        + "call back. Never guess call history: unless that line, or the "
+        + "greeting the app hands you, says so, you do not know whether they "
+        + "missed any calls. 'Did YOU call X' is check_recent_actions; what was "
+        + "SAID on a call is call_recall. "
+      : "CALL HISTORY: you cannot see the phone's missed or recent calls unless "
+        + "a tool returns them — never say they have or have not missed calls; "
+        + "call_recall only covers calls this app recorded and analysed. ")
     + "ONE REQUEST AT A TIME: act only on what was just said; if it is "
     + "unclear or garbled, ask for a repeat instead of reusing the earlier "
     + "subject. CORRECTIONS REPLACE: a corrected name fully replaces the old "
@@ -724,7 +743,9 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       // logging in on a new phone brings the same memory with it.
       try {
         const [ctxBlock, recentBlock, memBlock] = await Promise.all([
-          require("../users/context").contextBlock(uid, { lat: deviceCtx.lat, lng: deviceCtx.lng }),
+          require("../users/context").contextBlock(uid, {
+            lat: deviceCtx.lat, lng: deviceCtx.lng, tz: deviceCtx.tz, at: deviceCtx.locAt,
+          }),
           require("../memory/recent").recentBlock(uid, {
             excludeSessionId: liveSessionId,
           }),
@@ -1094,6 +1115,10 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   // Mic audio that arrives before Google's setupComplete would be lost —
   // buffer a little so the first word is never clipped.
   const pending = [];
+  // How often the phone stopped sending silence this session (build 106,
+  // audio_pause). Logged once at close — counts only, never content.
+  let audioPauses = 0;
+  let pausesLogged = false;
 
   try {
     // Google's documented WS auth is the key as a query parameter (the
@@ -1117,6 +1142,10 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       upstream.close();
     } catch (_) {}
     if (why) console.log(`live: session closed (${why})`);
+    if (audioPauses && !pausesLogged) {
+      pausesLogged = true;
+      console.log(`live: mic paused ${audioPauses}x in silence this session`);
+    }
     // Ends BEY billing. Fired on every close path, including errors.
     if (room) require("../avatar/session").detach(room);
     // Pads both tracks to the same length, merges them and drops the raw
@@ -1236,7 +1265,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
             parts: [{
               text: liveSystemPrompt(
                 assistantName, unreadMessages, personalContext,
-                deviceCtx.tz, preferredLanguage, languageAsk
+                deviceCtx.tz, preferredLanguage, languageAsk, deviceCtx.build
               ) +
               // The honest limits of THIS phone, so a denied permission is
               // explained rather than attempted and apologised for.
@@ -1659,6 +1688,8 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           } catch (_) {}
         }
       }
+      // A location note held back while she was talking goes in now.
+      sendPlaceNote();
     }
   });
 
@@ -1692,6 +1723,63 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     );
   }
 
+  // ── WHERE THE OWNER IS, WHILE THEY TALK ─────────────────────────────
+  // Owner, 2026-09-24: "my assistant should be aware of user location when
+  // he makes any requests". The socket URL carries the fix the session
+  // started with; a phone on the move (build 106) also sends
+  // {type:"location", lat, lng, acc} when it has moved >300 m, or every
+  // 5 min. deviceCtx is what every tool call reads, so updating it is all
+  // "near me" needs. The system prompt is fixed at setup, so when the
+  // AREA changes the model gets one short [SYSTEM] note, appended with
+  // turnComplete false: it knows, and says nothing about it.
+  //
+  // NEVER OVER HER VOICE. Gemini drops whatever it is generating when new
+  // client content arrives, so a note that would land mid-reply (or while
+  // the owner is still talking) waits for the end of her turn instead.
+  const geo = require("../users/whereNow");
+  const startFix = { lat: deviceCtx.lat, lng: deviceCtx.lng };
+  let placeKnown = null; // the area the model was last told; "" = none yet
+  let placeNote = ""; // a note waiting for a quiet moment
+  let placeChain = Promise.resolve();
+  let userTalkingAt = 0; // activity_start seen, no activity_end yet
+  const quietNow = () =>
+    upstreamReady && upstream.readyState === WebSocket.OPEN &&
+    !turnBuf && !modelBuf && !turnTools.length && !silentTurn &&
+    !(activityEndAt && !repliedAt && Date.now() - activityEndAt < 15_000) &&
+    !(userTalkingAt && Date.now() - userTalkingAt < 30_000);
+  const sendPlaceNote = () => {
+    if (!placeNote || !upstreamReady || upstream.readyState !== WebSocket.OPEN) return;
+    const text = placeNote;
+    placeNote = "";
+    try {
+      upstream.send(JSON.stringify({
+        clientContent: { turns: [{ role: "user", parts: [{ text }] }], turnComplete: false },
+      }));
+    } catch (_) {}
+  };
+  const notePlace = async (fix) => {
+    // What the model was told at setup: the place of the fix the session
+    // started with — the same cached lookup its WHERE line came from.
+    if (placeKnown === null) {
+      const start = await geo.whereNow(startFix.lat, startFix.lng).catch(() => null);
+      placeKnown = start ? start.label : "";
+    }
+    // A coarse fix (a cell tower, over a kilometre out) moves the tools,
+    // not the model's picture of which area they are in.
+    if (Number.isFinite(fix.acc) && fix.acc > 1000) return;
+    // Interpreting: a note would be translated, not heeded. The next fix
+    // after it ends brings the model up to date.
+    if (interpreting) return;
+    const now = await geo.whereNow(fix.lat, fix.lng).catch(() => null);
+    if (!now || !geo.areaChanged(placeKnown, now.label)) return;
+    placeKnown = now.label;
+    placeNote = `[SYSTEM] The owner is now in ${now.label}. (A location update — ` +
+      `do not reply to it; use it for anything local from now on.)`;
+    // The place stays out of the log; that it changed is enough.
+    console.log("live: location update (area changed)");
+    if (quietNow()) sendPlaceNote();
+  };
+
   appWs.on("message", (data, isBinary) => {
     if (isBinary) {
       // Recorded before the readiness check: the user spoke these words
@@ -1717,11 +1805,42 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       // automatic detector, which is now the one in charge.
       if (m.type === "activity_start") {
         speechStartedAt = Date.now();
+        userTalkingAt = speechStartedAt;
       }
       if (m.type === "activity_end") {
         activityEndAt = Date.now();
+        userTalkingAt = 0;
         const spoke = speechStartedAt ? activityEndAt - speechStartedAt : 0;
         console.log(`live: user stopped (utterance ${spoke}ms)`);
+      }
+      // SILENCE IS NOT SENT. Owner, 2026-09-24: "don't send silent packets
+      // to my agent, trim it." A build-106 phone streams a short quiet tail
+      // after each utterance (so Google's detector still hears the pause
+      // that ends the turn), then stops sending and says so once. Gemini is
+      // told the stream has paused — audioStreamEnd flushes whatever audio
+      // it was holding — and the next binary frame simply resumes it.
+      if (m.type === "audio_pause") {
+        audioPauses++;
+        userTalkingAt = 0;
+        if (upstreamReady && upstream.readyState === WebSocket.OPEN) {
+          try {
+            upstream.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
+          } catch (_) {}
+        }
+      }
+      // The phone moved (see notePlace): tools use the new fix at once,
+      // the model hears about a new area once.
+      if (m.type === "location") {
+        const lat = Number(m.lat), lng = Number(m.lng);
+        if (m.lat != null && m.lng != null && Number.isFinite(lat) && Number.isFinite(lng) &&
+            Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && !(lat === 0 && lng === 0)) {
+          const acc = m.acc == null || m.acc === "" ? NaN : Number(m.acc);
+          deviceCtx.lat = lat;
+          deviceCtx.lng = lng;
+          deviceCtx.acc = Number.isFinite(acc) ? acc : undefined;
+          deviceCtx.locAt = Date.now();
+          placeChain = placeChain.then(() => notePlace({ lat, lng, acc })).catch(() => {});
+        }
       }
       if (m.type === "text" && m.text && upstreamReady && upstream.readyState === WebSocket.OPEN) {
         lastUserText = String(m.text).slice(0, 500);
@@ -1818,8 +1937,14 @@ function attachWs(server) {
       return;
     }
     const room = url.searchParams.get("room") || null;
+    // AN ABSENT VALUE IS ABSENT, NOT ZERO. Number(null) is 0, so a phone
+    // without a fix was placed at 0,0 (the Gulf of Guinea), one without a
+    // battery reading at 0 %, and one without a timezone on UTC
+    // (2026-09-24).
     const num = (k) => {
-      const v = Number(url.searchParams.get(k));
+      const raw = url.searchParams.get(k);
+      if (raw == null || String(raw).trim() === "") return undefined;
+      const v = Number(raw);
       return Number.isFinite(v) ? v : undefined;
     };
     // Granted permissions ride on the socket URL, since live mode has no
@@ -1832,6 +1957,9 @@ function attachWs(server) {
     const deviceCtx = {
       lat: num("lat"),
       lng: num("lng"),
+      // When that fix was known. A build-106 phone moves it mid-session
+      // with {type:"location"} (see notePlace in bridge).
+      locAt: num("lat") !== undefined ? Date.now() : undefined,
       // The phone's charge, for going_out_check. Absent on older builds,
       // and an absent number is left out of the answer rather than
       // guessed at.

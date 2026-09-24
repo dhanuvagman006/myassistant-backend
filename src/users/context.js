@@ -299,12 +299,13 @@ async function removeInstruction(userId, match) {
  * The system-prompt fragment carrying who the user is, who the assistant
  * is, and the standing rules. Returns "" for anonymous sessions.
  */
-async function contextBlock(userId, { lat, lng } = {}) {
+async function contextBlock(userId, { lat, lng, tz, at } = {}) {
   if (!uidOk(userId)) return "";
   const [p, here] = await Promise.all([
     getProfile(userId).catch(() => null),
-    // Where the phone is right now — every request knows the city.
-    require("./whereNow").whereLine(lat, lng).catch(() => ""),
+    // Where the phone is right now — every request knows the city, and
+    // when the fix was taken in the owner's own clock.
+    require("./whereNow").whereLine(lat, lng, { tzOffsetMin: tz, at }).catch(() => ""),
   ]);
   if (!p) return "";
   const u = p.user;

@@ -7348,6 +7348,85 @@ function registerBuiltins() {
     },
   });
 
+  // ---------------- THE PHONE'S OWN CALL LOG ----------------
+
+  // CALLS, CONNECTED. Owner, 2026-09-24: "the calls should be connected —
+  // it should report when we have any missed calls, or any info if user
+  // asks about calls". Until now the assistant could not see the call log
+  // at all, and a client once heard "No … you haven't missed any calls"
+  // made up on the spot. The phone reads its own log (it asks for the
+  // call-log permission the first time this is needed) and answers the
+  // model with ONE [SYSTEM] line — counts, names and times in the owner's
+  // clock, five entries at most — so this tool only asks, and its own
+  // sentence never states a result.
+  const CALL_FILTERS = new Set(["missed", "all", "incoming", "outgoing"]);
+  registry.register({
+    name: "phone_calls",
+    // Build 106 reads the call log; an older app would drop the action
+    // after the assistant said it was checking.
+    minAppBuild: 106,
+    // iPhones do not let any app read the call log.
+    requires: [{ kind: "platform", id: "android" }],
+    description:
+      "THE PHONE'S OWN CALL LOG — missed, received and dialled calls on " +
+      "this phone: 'any missed calls?', 'who called me today?', 'did Ravi " +
+      "call?', 'when did mom last call', 'show my call history', 'did I call " +
+      "the bank this morning?'. Call it AT ONCE: never guess call history, " +
+      "and never say they have or have not missed calls before it answers. " +
+      "The phone reads the log and answers with a [SYSTEM] line — until then " +
+      "say only 'Checking your calls.'; then say what it found in one or two " +
+      "short sentences and offer to call back. 'Did YOU call X' is " +
+      "check_recent_actions; what was SAID on a call is call_recall.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        filter: {
+          type: "string",
+          enum: ["missed", "all", "incoming", "outgoing"],
+          description:
+            "'missed' for missed calls, 'incoming' for who called them, " +
+            "'outgoing' for calls they made, 'all' for everything (the default).",
+        },
+        person: {
+          type: "string",
+          description:
+            "Only when they name someone: the name or number exactly as they said it.",
+        },
+        since_hours: {
+          type: "number",
+          description:
+            "How far back, in hours. Default 24 (today); 'this week' 168; " +
+            "'when did X last call' 720 (the most).",
+        },
+        limit: { type: "integer", description: "At most this many calls. Default 10." },
+      },
+    },
+    async execute(args) {
+      const f = String(args.filter || "").toLowerCase().trim();
+      const filter = CALL_FILTERS.has(f) ? f : "all";
+      // "my mom" is saved as "Mom"; "anyone" is no filter at all.
+      let person = String(args.person || "").replace(/\s+/g, " ").trim()
+        .replace(/^(?:my|the)\s+/i, "").slice(0, 60);
+      if (/^(?:any ?one|any ?body|some ?one|some ?body|all|everyone|every ?body)$/i.test(person)) person = "";
+      const h = Number(args.since_hours);
+      const since_hours = Number.isFinite(h) && h > 0 ? Math.min(720, Math.max(1, Math.round(h))) : 24;
+      const n = Number(args.limit);
+      const limit = Number.isFinite(n) && n >= 1 ? Math.min(50, Math.floor(n)) : 10;
+      return {
+        ok: true,
+        // person is "" when nobody was named: the phone reads "" as no filter.
+        deviceAction: { type: "call_log", filter, person, since_hours, limit },
+        speak: "Checking your calls.",
+        note:
+          "The phone is reading its call log now and answers with a [SYSTEM] " +
+          "line. Until it does, say only \"Checking your calls.\" — never guess " +
+          "who called or whether any calls were missed.",
+      };
+    },
+  });
+
   // ---------------- INBOUND CALLS (Hari answered the phone) ----------------
 
   registry.register({
@@ -7356,7 +7435,9 @@ function registerBuiltins() {
       "Read back the calls answered on the user's behalf while they " +
       "were unavailable — who rang, what they wanted, and any message left. " +
       "Use for 'did anyone call', 'any messages', 'who called me', 'what did " +
-      "I miss'.",
+      "I miss'. ONLY the calls the assistant itself answered: the phone's own " +
+      "missed, received and dialled calls are phone_calls whenever that tool " +
+      "is offered.",
     risk: "low",
     inputSchema: {
       type: "object",

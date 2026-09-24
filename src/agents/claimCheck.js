@@ -36,7 +36,12 @@ const FAMILIES = [
     id: "call",
     tools: ["place_phone_call", "book_by_calling_business", "arrange_meeting_with"],
     // "calling X", "I'll call", "connecting your call", "dialling"
-    claim: /\b(calling|dialling|dialing|connecting your call|placing the call|ringing)\b/i,
+    // SOMEONE ELSE CALLING IS CALL HISTORY, NOT A CLAIM. Once the phone
+    // reads its call log (phone_calls, 2026-09-24) the true answer is
+    // "Ravi was calling you at 3:10" — and "calling" alone would rewrite it
+    // into "I couldn't start that call". Only the assistant's own dialling
+    // is a claim: "was / were / been / kept / tried calling" is not.
+    claim: /(?<!\b(?:was|were|been|kept|keeps|tried|missed)\s+)\b(calling|dialling|dialing|ringing)\b|\b(connecting your call|placing the call)\b/i,
     // कॉल/फ़ोन कर…, ಕರೆ/ಫೋನ್/ಕಾಲ್ ಮಾಡ…, அழைக்/கால் செய்…, కాల్/ఫోన్ చేస్…, വിളിക്ക…
     claimIntl: /(कॉल\s*कर|फ़?ोन\s*कर|डायल|मिला\s*रहा|ಕರೆ\s*ಮಾಡ|ಕಾಲ್\s*ಮಾಡ|ಫೋನ್\s*ಮಾಡ|அழைக்க|கால்\s*செய்|கூப்பிட|కాల్\s*చేస|ఫోన్\s*చేస|విళిక్|വിളിക്ക|കോൾ\s*ചെയ്)/,
     honest: (t) => "I couldn't start that call — nothing was dialled.",
