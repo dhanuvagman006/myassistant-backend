@@ -229,6 +229,11 @@ app.use("/payments", appAuth, paymentRoutes.router);
 // tracker so they are nudged before they slip.
 app.use("/meetings", appAuth, require("./meetings/routes"));
 
+// "DO IT FOR ME" INSIDE OTHER APPS — the phone reads the screen, the
+// planner picks one checked step at a time, and payment, money, passwords
+// and sending stay the owner's (automation/guard.js).
+app.use("/automation", appAuth, require("./automation/routes"));
+
 // Reminders (voice-created via /chat intents + Today screen CRUD).
 app.use("/reminders", appAuth, require("./reminders/routes"));
 app.use("/commitments", appAuth, require("./routes/commitments"));

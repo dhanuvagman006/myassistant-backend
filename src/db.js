@@ -444,6 +444,9 @@ async function init() {
   // Fare watches: re-priced by the proactive sweep, alert on a real drop.
   await require("./travel/fares").migrate((sql) => pool.query(sql));
 
+  // Hands-on tasks inside other apps, one checked step at a time.
+  await require("./automation/service").migrate((sql) => pool.query(sql));
+
   // Live avatar persistence: per-user personas (the brain hookup),
   // session records, and the rolling recent-conversation window.
 

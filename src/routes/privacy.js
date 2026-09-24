@@ -65,6 +65,7 @@ const USER_TABLES = [
   ["assistant_profiles", "user_id"], // assistant name/voice/face choices
   ["user_instructions", "user_id"], // standing rules
   ["developer_feedback", "user_id"], // what the assistant reported for them
+  ["automation_runs", "user_id"], // tasks done for them inside other apps
   ["inbound_calls", "user_id"],
   ["inbound_numbers", "user_id"],
   ["inbound_settings", "user_id"],

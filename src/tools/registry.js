@@ -281,6 +281,8 @@ const SEED_WORLD = new Set([
   "file_document_under_client", "associate_document", "save_web_document",
   "forget_memory", "start_interpreter_mode", "generate_image", "generate_video",
   "try_a_look",
+  // Taps and types inside the owner's other apps.
+  "do_task_in_app",
   // ADDED after a drift audit found these absent. Each of them changes
   // something outside the conversation, and being missing here meant three
   // separate protections silently did not apply: the claim checker had no
@@ -346,6 +348,8 @@ const SEED_REPEAT = new Set([
   "try_a_look",
   // A stutter must not send two replies or open two payments.
   "email_reply", "pay_by_upi",
+  // Two runs in one breath would drive the same app twice at once.
+  "do_task_in_app",
 ]);
 
 /**
@@ -375,6 +379,8 @@ const SEED_UNATTENDED = new Set([
     "arrange_meeting_with",
     // Never money, never unattended.
     "pay_by_upi",
+    // Hands on the phone need the owner holding it.
+    "do_task_in_app",
   ]);
 
 /**
@@ -402,6 +408,8 @@ const TAINT_SENSITIVE = new Set([
   // An email saying "Ravi's new UPI ID is x@y" must not quietly redirect
   // the next "pay Ravi" — nor a web page start a reply or a payment.
   "email_reply", "pay_by_upi", "save_upi_id",
+  // A web page must not start driving the owner's apps.
+  "do_task_in_app",
 ]);
 
 const isUntrustedSource = (tool) =>

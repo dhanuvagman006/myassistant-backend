@@ -7,7 +7,7 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test:manifest": "node scripts/check-test-manifest.js",
-    "test:all": "npm run test:manifest && npm run test && npm run test:fulfillment && npm run test:legal && npm run test:knowledge && npm run test:professional && npm run test:integrations && npm run test:state && npm run test:studio && npm run test:contract && npm run test:tasks && npm run test:planner && npm run test:phone && npm run test:security && npm run test:assistant && npm run test:calls && npm run test:feedback && npm run test:features",
+    "test:all": "npm run test:manifest && npm run test && npm run test:fulfillment && npm run test:legal && npm run test:knowledge && npm run test:professional && npm run test:integrations && npm run test:state && npm run test:studio && npm run test:contract && npm run test:tasks && npm run test:planner && npm run test:phone && npm run test:security && npm run test:assistant && npm run test:calls && npm run test:feedback && npm run test:features && npm run test:automation",
     "test": "node scripts/smoke-test.js",
     "test:security": "node scripts/security-test.js",
     "test:assistant": "node scripts/assistant-test.js",
@@ -24,7 +24,8 @@
     "test:phone": "node tests/phone.e2e.test.js",
     "test:calls": "node scripts/calls-test.js",
     "test:feedback": "node scripts/feedback-test.js",
-    "test:features": "node scripts/features-test.js"
+    "test:features": "node scripts/features-test.js",
+    "test:automation": "node scripts/automation-test.js"
   },
   "engines": {
     "node": ">=22"

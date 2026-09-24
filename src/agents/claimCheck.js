@@ -65,6 +65,8 @@ const FAMILIES = [
       "pay_by_upi",
       // The camera for a card; the recorder for a meeting.
       "scan_business_card", "record_meeting",
+      // "Opening Swiggy and finding you a 4-star biryani…"
+      "do_task_in_app",
       // Opens Google Maps at what it just found — "showing them on the
       // map" is the same claim by the same words.
       "find_places_nearby",

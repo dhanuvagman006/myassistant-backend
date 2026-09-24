@@ -45,6 +45,9 @@ const CORE = new Set([
   // Disappointment rarely names the tool: "this is useless", "why can't
   // you…" must still reach the developer.
   "send_developer_feedback",
+  // "Do it for me" is phrased a hundred ways ("get me", "sort out",
+  // "book", "fill") — a miss here is a flat "I can't" for a flagship.
+  "do_task_in_app",
 ]);
 
 /**

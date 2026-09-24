@@ -6458,7 +6458,9 @@ function registerBuiltins() {
       "exactly as they said it. Do NOT ask which restaurant, which app, " +
       "veg or non-veg, or for confirmation — default to swiggy and let " +
       "them choose specifics inside the app. For a table reservation or a " +
-      "collection order use book_by_calling_business.",
+      "collection order use book_by_calling_business. When they want YOU " +
+      "to choose and fill the cart ('from a 4-star place', 'add it to my " +
+      "cart', 'book it for me'), use do_task_in_app instead.",
     risk: "low",
     deviceAction: true,
     inputSchema: {
@@ -6621,6 +6623,87 @@ function registerBuiltins() {
   });
 
   // ---------------- INTERPRETER ----------------
+
+  // "DO IT FOR ME" INSIDE OTHER APPS (automation/). Owner's spec,
+  // 2026-09-24: open the app, look at the screen, act, check it worked,
+  // report — and stop before payment, money, passwords and sending. The
+  // phone's accessibility service is the hands; the planner picks one
+  // checked step at a time; guard.js holds the lines on both ends.
+  registry.register({
+    name: "do_task_in_app",
+    // The accessibility engine ships in app build 104; an older app would
+    // drop the action after the assistant said it was on it.
+    minAppBuild: 104,
+    description:
+      "DO A TASK FOR THE USER INSIDE ANOTHER APP OR WEBSITE, step by step, " +
+      "the way they would with their own fingers — search, filter, choose, " +
+      "add to cart, fill in and submit forms. Use for 'book veg biryani " +
+      "from a 4-star restaurant near me', 'add milk, bread and eggs to my " +
+      "Blinkit cart', 'put a phone cover in my Amazon cart', 'check Uber " +
+      "for a cab to the airport', 'fill this form with my details', " +
+      "'register me on <website>'. Picks the user's preferred app from " +
+      "memory when they don't name one. It STOPS before paying, placing a " +
+      "paid order, moving money, typing passwords or OTPs, or sending a " +
+      "message — the user does that one last step. Call it AT ONCE with " +
+      "the whole request as the goal; do not ask which app or restaurant " +
+      "first. Say you're on it and will report back — never claim it is " +
+      "ordered or done. When the task asked the user a question, call it " +
+      "again with run_id and their answer. Plain 'open Swiggy' is " +
+      "open_named_app; a WhatsApp message is send_whatsapp_message.",
+    risk: "medium",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        goal: {
+          type: "string",
+          description:
+            "The whole task in the user's words with every detail they gave " +
+            "(dish, rating, veg, quantity, size, address, time).",
+        },
+        category: {
+          type: "string",
+          enum: ["food", "grocery", "ride", "shopping", "movies", "travel", "web", "other"],
+          description: "What kind of task — decides the default app.",
+        },
+        app: { type: "string", description: "ONLY if the user named an app (Swiggy, Zomato, Amazon…)." },
+        url: { type: "string", description: "For a website task: the page to open (https://…)." },
+        run_id: { type: "integer", description: "Resuming a task that asked the user a question." },
+        answer: { type: "string", description: "The user's answer to that question." },
+      },
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      if (ctx.platform === "ios") {
+        return { ok: false, error: "working inside other apps is only possible on Android phones" };
+      }
+      const svc = require("../automation/service");
+      if (args.run_id) {
+        const out = await svc.resume(ctx.userId, args.run_id, args.answer);
+        if (!out.ok) return out;
+        return {
+          ok: true,
+          data: { run_id: out.run.id, resumed: true },
+          deviceAction: out.directive,
+          speak: `Got it — carrying on in ${out.run.app_label}.`,
+        };
+      }
+      const out = await svc.start(ctx.userId, {
+        goal: args.goal, category: args.category, app: args.app, url: args.url,
+      });
+      if (!out.ok) return out;
+      const r = out.run;
+      const why = r.app_reason && !/you asked/.test(r.app_reason) ? ` — ${r.app_reason}` : "";
+      return {
+        ok: true,
+        data: { run_id: r.id, app: r.app_label, why: r.app_reason, working: true },
+        deviceAction: out.directive,
+        speak: r.web
+          ? "On it — I'm filling that in now and I'll tell you when it's done."
+          : `On it, doing this in ${r.app_label}${why}. I'll stop before any payment and tell you what I did.`,
+      };
+    },
+  });
 
   registry.register({
     name: "start_interpreter_mode",
