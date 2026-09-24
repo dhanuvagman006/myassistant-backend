@@ -63,6 +63,8 @@ const FAMILIES = [
       "open_video_mode", "phone_control", "start_navigation",
       // "Opening GPay with ₹500 for Ravi" — the UPI app on screen.
       "pay_by_upi",
+      // The camera for a card; the recorder for a meeting.
+      "scan_business_card", "record_meeting",
       // Opens Google Maps at what it just found — "showing them on the
       // map" is the same claim by the same words.
       "find_places_nearby",

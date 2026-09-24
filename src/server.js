@@ -427,7 +427,11 @@ require("./db")
             `${r.duplicates} duplicate(s) flagged`);
         }
       })
-      .catch((e) => console.error("  calls recovery failed:", e.message)))
+      .catch((e) => console.error("  calls recovery failed:", e.message))
+      // Same for recorded meetings: their audio went with the old pod.
+      .then(() => require("./meetings/service").recoverInterrupted())
+      .then((n) => n && console.log(`  meetings: ${n} interrupted recording(s) marked`))
+      .catch((e) => console.error("  meetings recovery failed:", e.message)))
   .then(() => {
     // KNOWLEDGE PACKS — seed the reference corpus, embed anything new,
     // and load it into memory.

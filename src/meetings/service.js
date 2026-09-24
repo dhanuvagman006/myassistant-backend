@@ -19,7 +19,8 @@
  */
 const { query, one, run } = require("../db");
 const { offsetOr } = require("../services/tz");
-const { generateReply } = require("../services/ai/router");
+// Looked up at call time (not destructured) so tests can stub the model.
+const ai = require("../services/ai/router");
 
 async function migrate(exec) {
   await exec(`
@@ -41,6 +42,9 @@ async function migrate(exec) {
     );
     CREATE INDEX IF NOT EXISTS idx_meetings_user
       ON meetings(user_id, id DESC);
+    -- Recorded meetings are analysed in the background: processing, then
+    -- done or failed. Rows written from a transcript are done at once.
+    ALTER TABLE meetings ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'done';
   `);
 }
 
@@ -90,7 +94,7 @@ async function analyze(transcript, { userName = "the user", participants = "" } 
     `\n\nTRANSCRIPT:\n${text.slice(0, 24000)}`;
 
   try {
-    const { reply } = await generateReply(
+    const { reply } = await ai.generateReply(
       [{ role: "user", content: context }],
       { system: ANALYSIS_PROMPT }
     );
@@ -152,10 +156,70 @@ async function record(userId, { transcript, title, participants, clientId, durat
     ]
   );
 
-  // The user's own commitments enter the tracker. Someone else's action
-  // item stays in the meeting record — we cannot chase their client for
-  // them, and pretending otherwise would fill the tracker with things the
-  // user cannot close.
+  const tracked = await fileCommitments(userId, analysis, { title, participants, tzOffsetMin, now });
+  return { id: Number(row.id), ...analysis, tracked };
+}
+
+/**
+ * RECORDED MEETINGS. The app uploads the whole recording; the row exists
+ * at once as 'processing' so the list can show it, and complete() fills
+ * it in when transcription and analysis finish in the background.
+ */
+async function createPending(userId, { title, participants, clientId, durationS, tzOffsetMin }) {
+  const now = Date.now();
+  const row = await one(
+    `INSERT INTO meetings
+       (user_id, title, participants, client_id, duration_s, status, created_at)
+     VALUES ($1,$2,$3,$4,$5,'processing',$6) RETURNING id`,
+    [userId,
+     String(title || "").slice(0, 200) || defaultTitle(now, tzOffsetMin),
+     String(participants || "").slice(0, 400),
+     clientId || null, Number(durationS) || 0, now]
+  );
+  return Number(row.id);
+}
+
+async function complete(userId, id, { transcript, userName, tzOffsetMin }) {
+  const m = await one(`SELECT title, participants FROM meetings WHERE user_id=$1 AND id=$2`,
+    [userId, Number(id)]);
+  if (!m) return null;
+  const analysis = await analyze(transcript, { userName, participants: m.participants });
+  await run(
+    `UPDATE meetings SET transcript=$3, summary=$4, decisions=$5, actions=$6,
+            follow_up=$7, status='done'
+      WHERE user_id=$1 AND id=$2`,
+    [userId, Number(id), String(transcript || "").slice(0, 200000), analysis.summary,
+     JSON.stringify(analysis.decisions), JSON.stringify(analysis.actions),
+     analysis.follow_up]
+  );
+  const tracked = await fileCommitments(userId, analysis, {
+    title: m.title, participants: m.participants, tzOffsetMin, now: Date.now(),
+  });
+  return { id: Number(id), title: m.title, ...analysis, tracked };
+}
+
+async function fail(userId, id, why) {
+  await run(
+    `UPDATE meetings SET status='failed', summary=$3 WHERE user_id=$1 AND id=$2`,
+    [userId, Number(id), String(why || "Couldn't process this recording.").slice(0, 300)]
+  );
+}
+
+/** At boot: recordings a restart cut short can never finish. */
+async function recoverInterrupted() {
+  return run(
+    `UPDATE meetings SET status='failed',
+            summary='The recording was interrupted before it was processed.'
+      WHERE status='processing'`);
+}
+
+/**
+ * The user's own commitments enter the tracker. Someone else's action
+ * item stays in the meeting record — we cannot chase their client for
+ * them, and pretending otherwise would fill the tracker with things the
+ * user cannot close.
+ */
+async function fileCommitments(userId, analysis, { title, participants, tzOffsetMin, now }) {
   const chrono = require("chrono-node");
   const mine = analysis.actions.filter((a) => a.mine);
   for (const a of mine) {
@@ -176,7 +240,7 @@ async function record(userId, { transcript, title, participants, clientId, durat
     ).catch(() => {});
   }
 
-  return { id: Number(row.id), ...analysis, tracked: mine.length };
+  return mine.length;
 }
 
 function defaultTitle(ms, tzOffsetMin = 330) {
@@ -188,7 +252,7 @@ function defaultTitle(ms, tzOffsetMin = 330) {
 async function list(userId, { limit = 10 } = {}) {
   const rows = await query(
     `SELECT id, title, participants, summary, decisions, actions, follow_up,
-            duration_s, created_at
+            duration_s, created_at, status
        FROM meetings WHERE user_id=$1 ORDER BY id DESC LIMIT $2`,
     [userId, Math.min(Number(limit) || 10, 30)]
   );
@@ -220,4 +284,7 @@ function hydrate(r) {
   };
 }
 
-module.exports = { migrate, analyze, record, list, get };
+module.exports = {
+  migrate, analyze, record, list, get,
+  createPending, complete, fail, recoverInterrupted,
+};

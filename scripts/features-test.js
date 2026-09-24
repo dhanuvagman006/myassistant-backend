@@ -232,6 +232,147 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
       server.close();
     }
 
+    console.log("\nbusiness card scanner");
+    const card = require("../src/people/card");
+
+    await atest("a card is read into clean fields", () => {
+      const c = card.normalise({
+        name: " Priya  Sharma ", title: "Head of Sales", company: "Acme Pvt Ltd",
+        phones: ["+91 98450 12345", "080-2345"], emails: ["Priya@Acme.in", "not-an-email"],
+      });
+      assert.strictEqual(c.name, "Priya Sharma");
+      assert.deepStrictEqual(c.phones, ["+919845012345", "0802345"]);
+      assert.deepStrictEqual(c.emails, ["priya@acme.in"]);
+    });
+
+    const realRead = card.readCard;
+    card.readCard = async () => card.normalise({
+      name: "Priya Sharma", title: "Head of Sales", company: "Acme Pvt Ltd",
+      phones: ["+91 98450 12345"], emails: ["priya@acme.in"], website: "acme.in",
+    });
+    const capp = express();
+    capp.use((req, _res, next) => { req.user = { sub: String(UID) }; next(); });
+    capp.use("/clients", require("../src/routes/clients"));
+    const cserver = await new Promise((r) => { const s = capp.listen(0, "127.0.0.1", () => r(s)); });
+    try {
+      await atest("scanning saves the person with phone, email and the card photo", async () => {
+        const fd = new FormData();
+        fd.append("file", new Blob([Buffer.alloc(2048, 1)], { type: "image/jpeg" }), "card.jpg");
+        const r = await fetch(`http://127.0.0.1:${cserver.address().port}/clients/scan-card`,
+          { method: "POST", body: fd });
+        assert.strictEqual(r.status, 200);
+        const { person } = await r.json();
+        assert.strictEqual(person.name, "Priya Sharma");
+        const row = await db.one(`SELECT phone, email, organisation, relationship FROM clients WHERE id=$1`, [person.id]);
+        assert.deepStrictEqual(row, {
+          phone: "+919845012345", email: "priya@acme.in",
+          organisation: "Acme Pvt Ltd", relationship: "business contact",
+        });
+        const doc = await db.one(`SELECT title FROM documents WHERE id=$1`, [person.documentId]);
+        assert.strictEqual(doc.title, "Business card — Priya Sharma");
+      });
+
+      await atest("a photo with no name on it is refused, not saved as nobody", async () => {
+        card.readCard = async () => card.normalise({});
+        const fd = new FormData();
+        fd.append("file", new Blob([Buffer.alloc(2048, 1)], { type: "image/jpeg" }), "x.jpg");
+        const r = await fetch(`http://127.0.0.1:${cserver.address().port}/clients/scan-card`,
+          { method: "POST", body: fd });
+        assert.strictEqual(r.status, 422);
+      });
+    } finally {
+      card.readCard = realRead;
+      cserver.close();
+    }
+
+    await atest("the camera and the recorder are only offered to apps that have them", () => {
+      const names = (build) => registry.declarations({
+        userId: UID, deviceCaps: { build, granted: [], denied: [] },
+      }).map((d) => d.name);
+      assert.ok(!names(102).includes("scan_business_card"));
+      assert.ok(!names(102).includes("record_meeting"));
+      assert.ok(names(103).includes("scan_business_card"));
+      assert.ok(names(103).includes("record_meeting"));
+    });
+
+    console.log("\nmeeting recorder → minutes");
+    const ai2 = require("../src/services/ai/router");
+    const realT = ai2.transcribeAudio, realG = ai2.generateReply;
+    ai2.transcribeAudio = async () => ({ text: "Dhanush: let's ship the app on Friday. Ravi: I'll send the invoice by Monday. Dhanush: I'll call the client tomorrow." });
+    ai2.generateReply = async () => ({ reply: JSON.stringify({
+      summary: "Agreed to ship on Friday.",
+      decisions: ["Ship the app on Friday"],
+      actions: [
+        { text: "Call the client", owner: "Dhanush", when: "tomorrow", mine: true },
+        { text: "Send the invoice", owner: "Ravi", when: "Monday", mine: false },
+      ],
+      follow_up: "Thanks all — shipping Friday.",
+    }) });
+    const mapp = express();
+    mapp.use((req, _res, next) => { req.user = { sub: String(UID), name: "Dhanush K" }; next(); });
+    mapp.use("/meetings", require("../src/meetings/routes"));
+    const mserver = await new Promise((r) => { const s = mapp.listen(0, "127.0.0.1", () => r(s)); });
+    const mbase = `http://127.0.0.1:${mserver.address().port}/meetings`;
+    try {
+      let id;
+      await atest("a recording is accepted at once and shows as processing", async () => {
+        const fd = new FormData();
+        fd.append("title", "Launch sync");
+        fd.append("duration_s", "1800");
+        fd.append("audio", new Blob([Buffer.alloc(64 * 1024, 3)]), "meeting.m4a");
+        const r = await fetch(`${mbase}/record`, { method: "POST", body: fd });
+        assert.strictEqual(r.status, 202);
+        id = (await r.json()).id;
+        assert.ok(id > 0);
+      });
+
+      await atest("the minutes arrive: summary, decisions, and my tasks become promises", async () => {
+        let m;
+        for (let i = 0; i < 40; i++) {
+          m = await (await fetch(`${mbase}/${id}`)).json();
+          if (m.status !== "processing") break;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        assert.strictEqual(m.status, "done");
+        assert.strictEqual(m.title, "Launch sync");
+        assert.deepStrictEqual(m.decisions, ["Ship the app on Friday"]);
+        const promises = await db.query(
+          `SELECT text FROM commitments WHERE user_id=$1 AND source='meeting'`, [UID]);
+        assert.deepStrictEqual(promises.map((p) => p.text), ["Call the client"],
+          "only the user's own actions are tracked");
+      });
+
+      await atest("the minutes download as a real PDF", async () => {
+        const r = await fetch(`${mbase}/${id}/pdf`);
+        assert.strictEqual(r.status, 200);
+        assert.strictEqual(r.headers.get("content-type"), "application/pdf");
+        const b = Buffer.from(await r.arrayBuffer());
+        assert.strictEqual(b.subarray(0, 4).toString(), "%PDF");
+      });
+
+      await atest("a recording a restart cut short says so instead of spinning forever", async () => {
+        const meetings = require("../src/meetings/service");
+        const pid = await meetings.createPending(UID, { title: "Cut short" });
+        await meetings.recoverInterrupted();
+        const m = await meetings.get(UID, pid);
+        assert.strictEqual(m.status, "failed");
+        assert.match(m.summary, /interrupted/);
+      });
+
+      await atest("the old /audio endpoint no longer throws on the transcript", async () => {
+        const fd = new FormData();
+        fd.append("audio", new Blob([Buffer.alloc(4096, 2)]), "a.m4a");
+        const r = await fetch(`${mbase}/audio`, { method: "POST", body: fd });
+        assert.strictEqual(r.status, 201);
+      });
+    } finally {
+      ai2.transcribeAudio = realT;
+      ai2.generateReply = realG;
+      mserver.close();
+      await db.run(`DELETE FROM meetings WHERE user_id=$1`, [UID]);
+      await db.run(`DELETE FROM commitments WHERE user_id=$1`, [UID]);
+    }
+
     console.log("\nhousekeeping");
 
     await atest("MCP integrations come back after a restart, once per user", async () => {

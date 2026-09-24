@@ -294,6 +294,7 @@ const SEED_WORLD = new Set([
   "remove_finance_item", "remove_standing_instruction", "set_morning_brief",
   // 2026-09-23: a reply leaves the mailbox, a payment screen moves money.
   "email_reply", "pay_by_upi", "save_upi_id",
+  "scan_business_card", "record_meeting",
 ]);
 
 function isWorldAction(name) {

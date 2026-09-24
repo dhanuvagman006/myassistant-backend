@@ -4561,6 +4561,67 @@ function registerBuiltins() {
     },
   });
 
+  // MEETING RECORDER. Owner's pick, 2026-09-23. The phone records the
+  // whole meeting; the server writes minutes — summary, decisions, action
+  // items, a follow-up — and files the user's own tasks as promises.
+  registry.register({
+    name: "record_meeting",
+    // The recorder screen ships in app build 103; older apps would drop
+    // the action after the assistant had said it was recording.
+    minAppBuild: 103,
+    description:
+      "Start recording a MEETING to get minutes afterwards — 'record this " +
+      "meeting', 'take notes of this meeting', 'start meeting minutes'. " +
+      "Opens the meeting recorder and starts at once; when they stop it, " +
+      "the minutes (summary, decisions, action items, follow-up message, " +
+      "shareable PDF) are ready a few minutes later with a notification. " +
+      "Say it is recording and to tap Stop when the meeting ends.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "What the meeting is, if they said. Optional." },
+        participants: { type: "string", description: "Who is in it, if they said. Optional." },
+      },
+    },
+    async execute(args) {
+      return {
+        ok: true,
+        deviceAction: {
+          type: "open_app_screen",
+          screen: "meeting_recorder",
+          title: String(args.title || "").slice(0, 120),
+          participants: String(args.participants || "").slice(0, 200),
+        },
+        speak: "Recording the meeting — tap Stop when it ends and I'll write up the minutes.",
+      };
+    },
+  });
+
+  // BUSINESS CARD SCANNER. Owner's pick, 2026-09-23 (people/card.js).
+  registry.register({
+    name: "scan_business_card",
+    minAppBuild: 103,
+    description:
+      "Scan a BUSINESS / VISITING CARD — 'scan this visiting card', 'save " +
+      "this card', 'add this card to my contacts'. Opens the camera; the " +
+      "card's name, designation, company, phone, email and website are " +
+      "saved as a person, the photo is kept in their documents, and the " +
+      "app offers to add them to the phone's contacts and send a 'nice " +
+      "meeting you' on WhatsApp.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: { type: "object", properties: {} },
+    async execute() {
+      return {
+        ok: true,
+        deviceAction: { type: "scan_business_card" },
+        speak: "Opening the camera — hold the card flat and fill the frame.",
+      };
+    },
+  });
+
   registry.register({
     name: "open_app_screen",
     description:
@@ -4579,7 +4640,7 @@ function registerBuiltins() {
           enum: [
             "settings", "home", "hub", "chat",
             "documents", "clients", "finance", "stocks",
-            "diagnostics", "mcp",
+            "diagnostics", "mcp", "meetings", "reminders", "call_notes",
           ],
           description:
             "settings = the assistant's own settings (voice, name, theme). " +
@@ -4592,7 +4653,8 @@ function registerBuiltins() {
       const screen = String(args.screen || "").toLowerCase().trim();
       const ALLOWED = [
         "settings", "home", "hub", "chat", "documents", "clients",
-        "finance", "stocks", "diagnostics", "mcp",
+        "finance", "stocks", "diagnostics", "mcp", "meetings", "reminders",
+        "call_notes",
       ];
       if (!ALLOWED.includes(screen)) {
         return { ok: false, error: `I don't have a screen called "${args.screen}"` };
@@ -4602,6 +4664,8 @@ function registerBuiltins() {
         documents: "your documents", clients: "your clients",
         finance: "your finances", stocks: "your stocks",
         diagnostics: "diagnostics", mcp: "your connected servers",
+        meetings: "your meetings", reminders: "your reminders",
+        call_notes: "your call notes",
       };
       return {
         ok: true,

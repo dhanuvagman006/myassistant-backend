@@ -418,7 +418,11 @@ async function transcribeAudio(buffer, mimeType, opts = {}) {
   // timeout still finishes fast, and absorbs the "high demand" blips that
   // were reaching the user as "I couldn't hear that". Per-attempt timeout is
   // 12s so worst case (3 attempts + backoff) stays inside the app's patience.
-  const STT_ATTEMPT_TIMEOUT = 10_000;
+  // 10 s suits a spoken turn. A 3-minute call chunk or a meeting segment
+  // cannot be transcribed that fast: each attempt was aborted mid-flight
+  // and retried twice — three paid requests, no transcript. Long audio
+  // passes its own budget.
+  const STT_ATTEMPT_TIMEOUT = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 10_000;
   let r;
   for (let attempt = 0; ; attempt++) {
     try {

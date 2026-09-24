@@ -32,6 +32,35 @@ function uid(req, res) {
   return id;
 }
 
+// BUSINESS CARD SCANNER — one photo in, one saved person out
+// (people/card.js). The app then offers "add to contacts" and a hello.
+const cardUpload = require("multer")({
+  storage: require("multer").memoryStorage(),
+  limits: { fileSize: 12 * 1024 * 1024 },
+});
+router.post("/scan-card", cardUpload.single("file"), async (req, res) => {
+  const id = uid(req, res);
+  if (id === null) return;
+  if (!id) return res.status(401).json({ error: "sign in to save contacts" });
+  const f = req.file;
+  if (!f?.buffer?.length) return res.status(400).json({ error: "a photo of the card is required" });
+  const mime = /^image\/(jpeg|png|webp|heic|heif)$/.test(f.mimetype) ? f.mimetype : "image/jpeg";
+  const cards = require("../people/card");
+  const card = await cards.readCard(f.buffer, mime);
+  if (!card) return res.status(502).json({ error: "couldn't read the card right now — try again" });
+  if (!card.name && !card.company) {
+    return res.status(422).json({ error: "no name found — hold the card flat and fill the frame" });
+  }
+  try {
+    const person = await cards.saveCard(id, card, { buffer: f.buffer, mime });
+    audit.record(id, "card.scanned", `business card of "${person.name}"`);
+    res.json({ person });
+  } catch (e) {
+    console.error("scan-card save failed:", e.message);
+    res.status(500).json({ error: "couldn't save this contact" });
+  }
+});
+
 router.get("/", async (req, res) => {
   const id = uid(req, res);
   if (id === null) return;

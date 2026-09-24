@@ -185,6 +185,10 @@ router.post("/:id(\\d+)/follow-up", async (req, res) => {
 const MAX_AGE_MS = 24 * 3600 * 1000;
 const _inflight = new Set();
 
+// A 3-minute chunk needs longer than a spoken turn's 10 s to transcribe;
+// at 10 s every attempt timed out and was retried — paid three times.
+const LONG_STT_MS = 90_000;
+
 /**
  * At boot. The queue lives in memory and the audio in the pod's /tmp, so a
  * restart loses both: a row still 'processing' can never finish. Say so,
@@ -383,13 +387,13 @@ async function processCall(id, uid, filePath, meta) {
   const LIMIT = 14 * 1024 * 1024; // inline request budget, base64 included
   if (mime === "audio/wav") {
     for (const chunk of wavChunks(filePath)) {
-      const r = await ai.transcribeAudio(chunk, mime).catch(() => null);
+      const r = await ai.transcribeAudio(chunk, mime, { timeoutMs: LONG_STT_MS }).catch(() => null);
       if (r?.text) parts.push(r.text.trim());
     }
   } else {
     let buf = fs.readFileSync(filePath);
     if (buf.length > LIMIT) { buf = buf.subarray(0, LIMIT); partial = true; }
-    const r = await ai.transcribeAudio(buf, mime).catch(() => null);
+    const r = await ai.transcribeAudio(buf, mime, { timeoutMs: LONG_STT_MS }).catch(() => null);
     if (r?.text) parts.push(r.text.trim());
   }
   let transcript = parts.join("\n").trim();
