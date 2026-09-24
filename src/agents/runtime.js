@@ -658,6 +658,36 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
     } catch (_) {}
     return { text: ask, deviceActions: [], toolResults: [], clarified: true };
   }
+
+  // ── A CLEAR PHONE TASK TAKES THE STRUCTURED PATH ──────────────────
+  // "Order veg biryani … on Swiggy" is a job, not a question: straight to
+  // the task engine, one fixed sentence back, the same way every time
+  // (automation/intent.js; the live socket does the same for typed text).
+  if (!ctx.background && ctx.userId && Number(ctx.appBuild) >= 104) {
+    const task = require("../automation/intent").match(userText);
+    if (task) {
+      const res = await registry.execute("do_task_in_app",
+        { goal: task.goal, category: task.category, app: task.app, url: task.url }, ctx)
+        .catch((e) => ({ ok: false, error: String(e.message || e) }));
+      const line = res.ok
+        ? (res.speak || "On it.")
+        : `I couldn't start that: ${res.error || "something went wrong"}.`;
+      onEvent("sentence", { text: line });
+      if (state) sessionState.recordReply(state, line);
+      try {
+        const recentMem = require("../memory/recent");
+        const meta = { source: ctx.source || "voice", appBuild: ctx.appBuild, turnId, sessionId: sid };
+        recentMem.append(ctx.userId, "user", userText, { ...meta, latencyMs: 0 });
+        recentMem.append(ctx.userId, "assistant", line, { ...meta, latencyMs: Date.now() - turnStartedAt });
+      } catch (_) {}
+      return {
+        text: line,
+        deviceActions: res.ok && res.deviceAction ? [res.deviceAction] : [],
+        toolResults: [{ name: "do_task_in_app", ...res }],
+        routed: true,
+      };
+    }
+  }
   // WHO the user is, WHO the assistant is, and the user's STANDING RULES
   // sit in front of every decision — this is the judgment layer (§13/§14).
   if (ctx.userId && ctx.extraSystem === undefined) {

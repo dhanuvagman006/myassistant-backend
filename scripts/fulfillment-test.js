@@ -606,7 +606,9 @@ test("barge-in is GONE: nothing goes upstream while she is speaking", () => {
   // decide an interruption happened about audio it RECEIVES, so the fix
   // is to send none. This test used to assert the opposite; it is kept,
   // inverted, so the old behaviour cannot creep back in unnoticed.
-  assert.match(live, /if \(playing \|\| remoteSpeaking\) \{/,
+  // (Typing gates it too since 2026-09-24 — a typed request must not pick
+  // up the room.)
+  assert.match(live, /if \(playing \|\| remoteSpeaking(?: \|\| typingMute)?\) \{/,
     "playback must still gate the microphone");
   assert.doesNotMatch(live, /bargeFloor/,
     "the barge-in threshold must be gone, not merely raised");

@@ -643,6 +643,25 @@ const swiggyCart = { pkg: SW, nodes: [
     }
   });
 
+  await atest("chat mode takes the same fixed path: no model call, the task starts, one sentence", async () => {
+    const tools = ai.generateWithTools;
+    ai.generateWithTools = async () => { throw new Error("the model must not be asked"); };
+    try {
+      const said = [];
+      const out = await require("../src/agents/runtime").runAgentTurn(
+        "Order veg biryani from a 4 star restaurant near me on Swiggy",
+        { userId: UID, appBuild: 104, platform: "android", source: "text" },
+        (type, e) => { if (type === "sentence") said.push(e.text); });
+      assert.strictEqual(out.routed, true);
+      assert.strictEqual(out.deviceActions[0].type, "automate");
+      assert.strictEqual(out.deviceActions[0].pkg, SW);
+      assert.deepStrictEqual(said, [out.text]);
+      assert.match(out.text, /^On it, doing this in Swiggy/);
+    } finally {
+      ai.generateWithTools = tools;
+    }
+  });
+
   await atest("a missing permission never becomes an excuse for a task inside an app", () => {
     const block = reg.limitsBlock({ platform: "android", build: 104, granted: [], denied: ["location"] });
     if (block) {
