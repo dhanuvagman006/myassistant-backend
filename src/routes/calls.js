@@ -113,12 +113,65 @@ router.get("/:id(\\d+)", async (req, res) => {
   const uid = Number(req.user.sub);
   const row = await db.one(
     `SELECT id, direction, peer_number, peer_name, started_at, duration_s,
-            summary, facts, actions, status, transcript
+            summary, facts, actions, status, transcript, follow_up
        FROM call_records WHERE id = $1 AND user_id = $2`,
     [Number(req.params.id), uid]
   );
   if (!row) return res.status(404).json({ error: "unknown call" });
   res.json({ call: row });
+});
+
+// FOLLOW-UP AFTER A CALL. Owner's pick, 2026-09-23: what was agreed on a
+// call, as a message ready to send the other person. New analyses write
+// it in the same pass (follow_up); calls analysed before that get one on
+// first request — text only, from the stored summary and facts, never
+// the audio again — and it is kept, so it is paid for once.
+const FOLLOW_UP_SPEC =
+  "<a short, warm message the phone owner could send the other person " +
+  "right after this call, confirming what was agreed (times, amounts, " +
+  "next steps) — 1-3 sentences, first person as the owner, in the " +
+  "language and script the call was mostly in. Empty string if nothing " +
+  "was agreed that is worth confirming.>";
+
+router.post("/:id(\\d+)/follow-up", async (req, res) => {
+  const uid = Number(req.user.sub);
+  const row = await db.one(
+    `SELECT id, peer_name, peer_number, summary, facts, status, follow_up
+       FROM call_records WHERE id = $1 AND user_id = $2`,
+    [Number(req.params.id), uid]
+  );
+  if (!row) return res.status(404).json({ error: "unknown call" });
+  if (row.follow_up) return res.json({ followUp: row.follow_up });
+  if (row.status !== "done" || !row.summary) {
+    return res.status(409).json({ error: "this call has not been analysed" });
+  }
+  try {
+    const user = await db.findById(uid).catch(() => null);
+    const { reply } = await ai.generateReply(
+      [{
+        role: "user",
+        content:
+          `Phone owner: ${user?.name || "the user"}. Other party: ` +
+          `${row.peer_name || row.peer_number || "unknown"}.\n` +
+          `What the call covered: ${row.summary}\nFacts: ${row.facts}\n\n` +
+          `Reply with STRICT JSON only: {"follow_up":"${FOLLOW_UP_SPEC}"}`,
+      }],
+      { system: "You draft short follow-up messages after phone calls. JSON only." }
+    );
+    let text = "";
+    try {
+      text = String(JSON.parse(String(reply).replace(/^```json?\s*|```\s*$/g, ""))
+        .follow_up || "").trim().slice(0, 600);
+    } catch (_) {}
+    if (text) {
+      await db.run(`UPDATE call_records SET follow_up=$1 WHERE id=$2 AND user_id=$3`,
+        [text, row.id, uid]);
+    }
+    res.json({ followUp: text });
+  } catch (e) {
+    console.error(`calls: follow-up for #${row.id} failed —`, e.message);
+    res.status(502).json({ error: "could not draft a follow-up right now" });
+  }
 });
 
 // ---------------- upload + analysis pipeline ----------------
@@ -370,7 +423,8 @@ async function processCall(id, uid, filePath, meta) {
     `September', 'The exam is on Friday at 10 am', 'The phone repair ` +
     `costs 3000 rupees'>"],` +
     `"items":[{"kind":"reminder|meeting|task|promise","text":"<what>",` +
-    `"whenIso":"<ISO 8601 with timezone offset, or empty if no time was agreed>"}]}\n` +
+    `"whenIso":"<ISO 8601 with timezone offset, or empty if no time was agreed>"}],` +
+    `"follow_up":"${FOLLOW_UP_SPEC}"}\n` +
     `facts is the heart of this: capture EVERYTHING checkable someone ` +
     `might ask about later — dates, times, amounts, places, plans, ` +
     `names, states of things. Ten small facts beat three big ones. ` +
@@ -388,9 +442,11 @@ async function processCall(id, uid, filePath, meta) {
   let summary = "";
   let items = [];
   let facts = [];
+  let followUp = "";
   try {
     const j = JSON.parse(String(reply).replace(/^```json?\s*|```\s*$/g, ""));
     summary = String(j.summary || "").slice(0, 2000);
+    followUp = String(j.follow_up || "").trim().slice(0, 600);
     if (Array.isArray(j.items)) items = j.items.slice(0, 10);
     if (Array.isArray(j.facts)) {
       facts = j.facts.map((f) => String(f).slice(0, 300)).slice(0, 40);
@@ -442,10 +498,11 @@ async function processCall(id, uid, filePath, meta) {
 
   await db.run(
     `UPDATE call_records
-        SET transcript=$1, summary=$2, actions=$3, facts=$4, status='done'
-      WHERE id=$5`,
+        SET transcript=$1, summary=$2, actions=$3, facts=$4, follow_up=$5,
+            status='done'
+      WHERE id=$6`,
     [transcript.slice(0, 100000), summary, JSON.stringify(filed),
-     JSON.stringify(facts), id]
+     JSON.stringify(facts), followUp, id]
   );
 
   // 4. Tell the user their call was understood — EVERY time. Silence

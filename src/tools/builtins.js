@@ -2108,6 +2108,230 @@ function registerBuiltins() {
     },
   });
 
+  // SMART EMAIL REPLIES. Owner's pick, 2026-09-23. email_send wrote a NEW
+  // mail; a reply belongs in the same conversation, to the sender's
+  // reply-to address, with "Re:" — which is what people mean by "reply".
+  registry.register({
+    name: "email_reply",
+    description:
+      "REPLY to an email in the user's inbox — 'reply to Ramesh's last " +
+      "email and say Friday works', 'answer the HDFC mail saying I'll " +
+      "visit on Monday'. Finds the newest email from that sender (or " +
+      "matching `about`, or the exact `uid` email_read gave you) and sends " +
+      "the reply IN THE SAME THREAD, to the right address, with a 'Re:' " +
+      "subject. Write the body yourself: short, polite, professional, in " +
+      "the language of the original, plain prose, signed with the user's " +
+      "name when you know it. Read the gist back and send only after they " +
+      "agree. Not sure which email they mean? Call email_read first and " +
+      "pass its uid. No mailbox connected → point them to Hub → Email.",
+    risk: "high",
+    inputSchema: {
+      type: "object",
+      properties: {
+        from: { type: "string", description: "Sender's name or address, as the user said it" },
+        about: { type: "string", description: "Words from the subject, to pick the right email. Optional." },
+        uid: { type: "string", description: "The exact message id from email_read, when you have it. Optional." },
+        body: { type: "string", description: "The reply, plain text" },
+      },
+      required: ["body"],
+    },
+    confirmSummary: (a) =>
+      `Reply to ${a.from || a.about || "that email"}: ${String(a.body || "").slice(0, 80)}`,
+    async execute(args, ctx) {
+      const email = require("../services/email");
+      const uid = Number(ctx?.userId || ctx?.uid || 0);
+      const body = String(args.body || "").trim();
+      if (!body) return { ok: false, error: "empty reply — write the reply body first" };
+      try {
+        const orig = await email.findForReply(uid, {
+          from: args.from, about: args.about, uid: args.uid,
+        });
+        if (!orig || !orig.to) {
+          return {
+            ok: false,
+            error: "no matching email found — call email_read to find it, then pass its uid",
+          };
+        }
+        const out = await email.send(uid, {
+          to: orig.to, subject: orig.subject, body,
+          inReplyTo: orig.inReplyTo, threadId: orig.threadId,
+        });
+        await email.recordSent(uid, {
+          to: orig.to, label: orig.toName || "", subject: orig.subject,
+          body, gmailId: out.messageId || "",
+        }).catch(() => {});
+        return {
+          ok: true,
+          data: { to: orig.to, subject: orig.subject, draft: Boolean(out.draft) },
+          speak: out.draft
+            ? "Your reply is ready as a draft in Gmail — open it and tap send."
+            : `Replied to ${orig.toName || orig.to}.`,
+        };
+      } catch (e) {
+        if (e?.code === "no_account") {
+          return {
+            ok: false,
+            error: "no mailbox connected",
+            speak: "Your email isn't connected yet — open the Hub, tap Email, and link it once.",
+          };
+        }
+        if (e?.code === "bad_address") {
+          return { ok: false, error: "the original sender's address is not usable — ask the user where to send it" };
+        }
+        return { ok: false, error: `reply failed: ${String(e.message || e).slice(0, 120)}` };
+      }
+    },
+  });
+
+  // PAY BY VOICE (UPI). Owner's pick, 2026-09-23. The assistant NEVER
+  // moves money: it opens the user's own UPI app (GPay, PhonePe, Paytm,
+  // BHIM…) with the payee, amount and note filled in, and the user
+  // approves there with their UPI PIN — that PIN is the confirmation. A
+  // person's UPI ID is kept on their people card (clients.upi_id).
+  const VPA = /^[a-z0-9][a-z0-9._-]{1,255}@[a-z][a-z0-9]{1,63}$/i;
+  const rupees = (n) => Number(n).toLocaleString("en-IN", { maximumFractionDigits: 2 });
+  async function savedUpi(uid, name) {
+    const p = await require("../memory/service").findPerson(uid, name).catch(() => null);
+    return p ? { id: p.id, name: p.name, upi: String(p.upi_id || "") } : null;
+  }
+  async function saveUpi(uid, name, vpa) {
+    const mem = require("../memory/service");
+    const p = await mem.upsertPerson(uid, { name });
+    await require("../db").run(
+      `UPDATE clients SET upi_id=$1 WHERE id=$2 AND user_id=$3`, [vpa, p.id, uid]);
+    return p;
+  }
+
+  registry.register({
+    name: "pay_by_upi",
+    description:
+      "PAY SOMEONE BY UPI — 'pay Ravi 500', 'send 200 rupees to amma for " +
+      "groceries', 'GPay 1500 to the electrician'. Opens the user's UPI app " +
+      "(GPay / PhonePe / Paytm / BHIM) with payee, amount and note filled " +
+      "in; the user approves it there with their UPI PIN. YOU NEVER MOVE " +
+      "MONEY: say it is ready to approve with their PIN — never that it is " +
+      "paid. Needs the person's UPI ID (name@okaxis, 98xxxxxxxx@ybl…): a " +
+      "saved one is used automatically; if none is saved the tool says so " +
+      "— ask for it ONCE and call again with upi_id (it is saved for next " +
+      "time). Amount in rupees, at most 1,00,000.",
+    risk: "medium",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        payee: { type: "string", description: "Who to pay, as the user named them" },
+        amount: { type: "number", description: "Amount in rupees" },
+        note: { type: "string", description: "What it is for — optional, shown in the UPI app" },
+        upi_id: { type: "string", description: "The payee's UPI ID, only if the user just said it" },
+      },
+      required: ["payee", "amount"],
+    },
+    confirmSummary: (a) => `Pay ₹${rupees(a.amount)} to ${a.payee} by UPI`,
+    async execute(args, ctx) {
+      const uid = Number(ctx?.userId || 0);
+      if (!uid) return { ok: false, error: "not signed in" };
+      const payee = String(args.payee || "").trim().slice(0, 80);
+      const amount = Math.round(Number(args.amount) * 100) / 100;
+      if (!payee) return { ok: false, error: "who should be paid? ask the user" };
+      if (!(amount > 0) || amount > 100000) {
+        return { ok: false, error: "amount must be between ₹1 and ₹1,00,000 — ask the user for the amount" };
+      }
+      let vpa = String(args.upi_id || "").trim().toLowerCase().replace(/\s+/g, "");
+      if (vpa) {
+        if (!VPA.test(vpa)) {
+          return { ok: false, error: `"${vpa}" is not a valid UPI ID — ask the user to repeat it (like name@okaxis)` };
+        }
+        await saveUpi(uid, payee, vpa).catch(() => {});
+      } else {
+        const p = await savedUpi(uid, payee);
+        vpa = p?.upi || "";
+        if (!vpa) {
+          return {
+            ok: false,
+            error: "need_upi_id",
+            data: {
+              hint: `No UPI ID is saved for ${payee}. Ask the user for ${payee}'s ` +
+                `UPI ID (like name@okaxis or their phone number @ybl) in ONE short ` +
+                `question, then call pay_by_upi again with upi_id.`,
+            },
+          };
+        }
+      }
+      const note = String(args.note || "").trim().slice(0, 50);
+      const url =
+        `upi://pay?pa=${vpa}&pn=${encodeURIComponent(payee)}` +
+        `&am=${amount.toFixed(2)}&cu=INR` +
+        (note ? `&tn=${encodeURIComponent(note)}` : "");
+      return {
+        ok: true,
+        data: { payee, upi_id: vpa, amount, note },
+        deviceAction: { type: "open_url", url },
+        speak: `Opening your UPI app — ₹${rupees(amount)} to ${payee}. Check it and approve with your PIN.`,
+      };
+    },
+  });
+
+  registry.register({
+    name: "save_upi_id",
+    description:
+      "Save a person's UPI ID for paying them later — 'Ravi's UPI is " +
+      "ravi@okaxis', 'save amma's GPay as 98xxxxxxxx@okicici'.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        person: { type: "string", description: "Whose UPI ID it is" },
+        upi_id: { type: "string", description: "The UPI ID, e.g. name@okaxis" },
+      },
+      required: ["person", "upi_id"],
+    },
+    async execute(args, ctx) {
+      const uid = Number(ctx?.userId || 0);
+      if (!uid) return { ok: false, error: "not signed in" };
+      const vpa = String(args.upi_id || "").trim().toLowerCase().replace(/\s+/g, "");
+      if (!VPA.test(vpa)) {
+        return { ok: false, error: `"${vpa}" is not a valid UPI ID — ask the user to repeat it` };
+      }
+      const p = await saveUpi(uid, String(args.person || "").trim(), vpa);
+      return { ok: true, data: { person: p.name, upi_id: vpa }, speak: `Saved ${p.name}'s UPI ID.` };
+    },
+  });
+
+  // DOCUMENT EXPIRY. Renewal reminders are filed automatically when a
+  // policy, licence or passport is scanned (docs/expiry.js); this answers
+  // "when does my insurance expire?" and "is anything expiring soon?".
+  registry.register({
+    name: "list_expiring_documents",
+    description:
+      "Which of the user's saved documents expire or need renewing, " +
+      "soonest first — 'when does my car insurance expire', 'is anything " +
+      "expiring soon', 'my licence validity'. Dates are read from scanned " +
+      "policies, licences, passports, PUC and warranty cards; renewal " +
+      "reminders are already set 30 and 7 days before and on the day.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        within_days: { type: "integer", description: "Only those expiring within this many days. Optional." },
+      },
+    },
+    async execute(args, ctx) {
+      const uid = Number(ctx?.userId || 0);
+      if (!uid) return { ok: false, error: "not signed in" };
+      const within = Number.isFinite(Number(args.within_days)) && args.within_days !== undefined
+        ? Number(args.within_days) : null;
+      const documents = await require("../docs/expiry").listExpiring(uid, { withinDays: within });
+      return {
+        ok: true,
+        data: {
+          documents,
+          note: documents.length ? undefined
+            : "No saved document has an expiry date. Scanning a policy, licence or passport adds it, with renewal reminders.",
+        },
+      };
+    },
+  });
+
   // ---------------- DEVICE ACTIONS ----------------
   // These CANNOT be performed by the server. Android/iOS require the app to
   // initiate them, so the tool returns an authorized action for the app and

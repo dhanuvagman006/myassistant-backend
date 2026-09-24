@@ -292,6 +292,8 @@ const SEED_WORLD = new Set([
   "create_calendar_event", "update_calendar_event", "delete_calendar_event",
   "set_timer", "complete_commitment", "configure_assistant",
   "remove_finance_item", "remove_standing_instruction", "set_morning_brief",
+  // 2026-09-23: a reply leaves the mailbox, a payment screen moves money.
+  "email_reply", "pay_by_upi", "save_upi_id",
 ]);
 
 function isWorldAction(name) {
@@ -341,6 +343,8 @@ const SEED_REPEAT = new Set([
   // Every look costs money at a paid image model, so a stutter must not
   // buy two of them. An intentional "try that again" lands after 20 s.
   "try_a_look",
+  // A stutter must not send two replies or open two payments.
+  "email_reply", "pay_by_upi",
 ]);
 
 /**
@@ -362,12 +366,14 @@ const SEED_REPEAT = new Set([
 const SEED_DURABLE = new Set([
   "send_agent_message", "send_whatsapp_message", "send_document",
   "send_patient_document", "order_food", "book_ride", "book_movie_tickets",
-  "collect_payment",
+  "collect_payment", "email_reply", "pay_by_upi",
 ]);
 
 const SEED_UNATTENDED = new Set([
     "collect_payment", "book_by_calling_business", "forget_memory",
     "arrange_meeting_with",
+    // Never money, never unattended.
+    "pay_by_upi",
   ]);
 
 /**
@@ -392,6 +398,9 @@ const TAINT_SENSITIVE = new Set([
   "send_patient_document", "place_phone_call", "delete_calendar_event",
   "update_calendar_event", "add_standing_instruction", "remove_standing_instruction",
   "forget_memory", "collect_payment", "configure_assistant",
+  // An email saying "Ravi's new UPI ID is x@y" must not quietly redirect
+  // the next "pay Ravi" — nor a web page start a reply or a payment.
+  "email_reply", "pay_by_upi", "save_upi_id",
 ]);
 
 const isUntrustedSource = (tool) =>

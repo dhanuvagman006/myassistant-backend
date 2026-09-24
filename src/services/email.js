@@ -408,6 +408,9 @@ function toSummary(msg) {
     subject: env.subject || "(no subject)",
     date: env.date ? new Date(env.date).toISOString() : null,
     unread: !(msg.flags && msg.flags.has("\\Seen")),
+    // For replies: which conversation this is, and where answers go.
+    messageId: env.messageId || null,
+    replyTo: ((env.replyTo && env.replyTo[0]) || {}).address || null,
   };
 }
 
@@ -450,7 +453,76 @@ async function readBody(userId, uid) {
   }
 }
 
-async function send(userId, { to, subject, body }) {
+/**
+ * THE EMAIL BEING REPLIED TO. "Reply to Ramesh's last email" — the newest
+ * message from that sender (or matching `about`, or the exact uid an
+ * email_read returned), with what a threaded reply needs: who to send
+ * to, a "Re:" subject, the Message-ID being answered, and Gmail's thread.
+ */
+async function findForReply(userId, { from, about, uid } = {}) {
+  const reSubject = (s) =>
+    /^\s*re:/i.test(String(s || "")) ? String(s) : `Re: ${s || "(no subject)"}`;
+  const acc = await getAccount(userId);
+  if (!acc) {
+    if (!(await googleLinked(userId))) throw { code: "no_account" };
+    let id = uid ? String(uid) : null;
+    if (!id) {
+      const rows = await listRecent(userId, {
+        from, text: about, limit: 5, important: false,
+      });
+      if (!rows.length) return null;
+      id = String(rows[0].uid);
+    }
+    const m = await require("../google/api").messageMeta(userId, id);
+    if (!m) return null;
+    const replyTo = m.replyTo
+      ? (m.replyTo.match(/<([^>]+)>/)?.[1] || m.replyTo.trim())
+      : null;
+    return {
+      uid: m.id,
+      to: replyTo || m.fromEmail,
+      toName: m.from,
+      subject: reSubject(m.subject),
+      inReplyTo: m.messageId,
+      threadId: m.threadId,
+      snippet: m.snippet || "",
+    };
+  }
+  let m = null;
+  if (uid) {
+    const client = imapClient(acc);
+    await withTimeout(client.connect(), 20000, "IMAP connect");
+    try {
+      const lock = await client.getMailboxLock("INBOX");
+      try {
+        const msg = await withTimeout(
+          client.fetchOne(String(uid), { envelope: true, flags: true, uid: true }, { uid: true }),
+          20000,
+          "fetch envelope"
+        );
+        if (msg) m = toSummary(msg);
+      } finally {
+        lock.release();
+      }
+    } finally {
+      client.logout().catch(() => {});
+    }
+  } else {
+    m = (await listRecent(userId, { from, text: about, limit: 5 }))[0] || null;
+  }
+  if (!m) return null;
+  return {
+    uid: m.uid,
+    to: m.replyTo || m.fromAddr,
+    toName: m.from,
+    subject: reSubject(m.subject),
+    inReplyTo: m.messageId,
+    threadId: null,
+    snippet: m.snippet || "",
+  };
+}
+
+async function send(userId, { to, subject, body, inReplyTo, threadId }) {
   const acc = await getAccount(userId);
   const addr = String(to || "").trim();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr)) throw { code: "bad_address" };
@@ -462,6 +534,8 @@ async function send(userId, { to, subject, body }) {
           to: addr,
           subject: String(subject || "").slice(0, 200) || "(no subject)",
           body: String(body || "").slice(0, 20000),
+          threadId: threadId || undefined,
+          inReplyTo: inReplyTo || undefined,
         });
         if (out === null) throw { code: "no_account" };
         return { messageId: out.id, from: "your Gmail" };
@@ -472,6 +546,8 @@ async function send(userId, { to, subject, body }) {
             to: addr,
             subject: String(subject || "").slice(0, 200) || "(no subject)",
             body: String(body || "").slice(0, 20000),
+            threadId: threadId || undefined,
+            inReplyTo: inReplyTo || undefined,
           });
           if (d === null) throw { code: "no_account" };
           return { draft: true, from: "your Gmail" };
@@ -487,6 +563,7 @@ async function send(userId, { to, subject, body }) {
       to: addr,
       subject: String(subject || "").slice(0, 200) || "(no subject)",
       text: String(body || "").slice(0, 20000),
+      ...(inReplyTo ? { inReplyTo, references: inReplyTo } : {}),
     }),
     30000,
     "send"
@@ -572,5 +649,6 @@ module.exports = {
   disconnectAccount,
   listRecent,
   readBody,
+  findForReply,
   send,
 };

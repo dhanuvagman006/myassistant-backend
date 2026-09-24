@@ -24,6 +24,7 @@ Look at the attached file and reply with STRICT JSON only (no markdown fences):
 {"title": "<short human title, e.g. 'Blood test report — City Hospital'>",
  "category": "medical" | "prescription" | "receipt" | "bill" | "id" | "ticket" | "other",
  "doc_date": "<yyyy-mm-dd printed on the document, or empty string>",
+ "expires_on": "<yyyy-mm-dd the document EXPIRES or must be RENEWED — insurance policy end, driving licence / passport / visa / ID validity, vehicle registration or PUC, warranty, subscription, lease or contract end. Empty string if it has no expiry.>",
  "summary": "<3-6 plain sentences: what this is, key values/amounts, and anything the person must act on (medicines + dosage, follow-up dates, totals, deadlines). Keep the document's language for names.>",
  "tags": ["<5-10 lowercase search keywords: place names, doctor names, test names, illnesses, shops>"],
  "full_text": "<complete transcription of ALL text in the document, in reading order, original language and script, line breaks as \\n. For very long documents (many pages) transcribe the substantive content and totals; skip only boilerplate.>"}`;
@@ -85,6 +86,7 @@ async function analyzeDocument(buffer, mime, filename = "") {
       title: j.title,
       category: j.category,
       docDate: j.doc_date,
+      expiresOn: j.expires_on,
       summary: j.summary,
       tags: j.tags,
       fullText: j.full_text,

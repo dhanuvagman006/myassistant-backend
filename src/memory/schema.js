@@ -32,6 +32,8 @@ async function migrate(exec) {
     ALTER TABLE clients ADD COLUMN IF NOT EXISTS organisation TEXT NOT NULL DEFAULT '';
     ALTER TABLE clients ADD COLUMN IF NOT EXISTS location     TEXT NOT NULL DEFAULT '';
     ALTER TABLE clients ADD COLUMN IF NOT EXISTS archived     INTEGER NOT NULL DEFAULT 0;
+    -- Pay by voice: the person's UPI ID (pay_by_upi / save_upi_id).
+    ALTER TABLE clients ADD COLUMN IF NOT EXISTS upi_id       TEXT NOT NULL DEFAULT '';
     CREATE INDEX IF NOT EXISTS idx_clients_name
       ON clients(user_id, lower(name));
 

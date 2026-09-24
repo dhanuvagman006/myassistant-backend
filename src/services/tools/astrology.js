@@ -6,11 +6,13 @@
  * and confidence-boosting motivational quotes based on the user's birthday.
  *
  * API: https://json.freeastrologyapi.com/
- * Key: NJUkEQkd3y4erR5HET6302cwDmUWes2u6srjGPBU
+ * Key: ASTROLOGY_API_KEY (environment only — never in source).
  */
 
-const API_KEY =
-  process.env.ASTROLOGY_API_KEY || "NJUkEQkd3y4erR5HET6302cwDmUWes2u6srjGPBU";
+// A key committed here was public in the repo; it lives in the
+// environment now. Without one the reading still works from the local
+// zodiac tables — only the live planetary positions are skipped.
+const API_KEY = process.env.ASTROLOGY_API_KEY || "";
 const BASE_URL = "https://json.freeastrologyapi.com";
 const TIMEOUT = 8000;
 const cache = new Map(); // key -> { ts, data }
@@ -131,6 +133,7 @@ async function fetchPlanetaryData({ date = new Date(), lat = 12.9716, lng = 77.5
     },
   };
 
+  if (!API_KEY) return null;
   try {
     const res = await fetch(url, {
       method: "POST",

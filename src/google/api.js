@@ -136,12 +136,16 @@ async function messageBody(userId, id) {
 
 /** ACTUALLY send (gmail.send scope). Throws with "scope" in the message
  *  on a 403 so callers can fall back to a draft for older grants. */
-async function sendEmail(userId, { to, subject, body }) {
+async function sendEmail(userId, { to, subject, body, threadId, inReplyTo }) {
+  // threadId + In-Reply-To make a reply land in the SAME conversation,
+  // in their inbox and in ours, instead of as a fresh email.
+  const payload = { raw: rawEmail({ to, subject, body, inReplyTo }) };
+  if (threadId) payload.threadId = threadId;
   const j = await gsend(
     userId,
     "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
     "POST",
-    { raw: rawEmail({ to, subject, body }) }
+    payload
   );
   return j === null ? null : { id: j.id || null };
 }

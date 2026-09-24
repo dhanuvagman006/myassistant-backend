@@ -374,5 +374,36 @@ async function connectAllForUser(userId) {
   return out;
 }
 
+/**
+ * ONCE PER PROCESS, ON FIRST USE. MCP sessions live in memory, so every
+ * restart (every deploy) silently dropped each user's integrations until
+ * they reconnected by hand — connectAllForUser existed for exactly this
+ * and nothing called it. The first session a user opens after a restart
+ * brings them back; a server that fails stays failed until the user
+ * reconnects it, rather than delaying every session to retry.
+ */
+const _reconnected = new Map(); // userId -> Promise
+function ensureConnected(userId) {
+  const uid = Number(userId);
+  if (!Number.isFinite(uid) || uid <= 0) return Promise.resolve([]);
+  if (!_reconnected.has(uid)) {
+    _reconnected.set(uid, connectAllForUser(uid).catch((e) => {
+      console.error(`mcp: reconnect for user ${uid} failed —`, e.message);
+      return [];
+    }));
+  }
+  return _reconnected.get(uid);
+}
+
+/** Waits for the reconnect, but never longer than `ms`. */
+function ensureConnectedWithin(userId, ms = 3000) {
+  return Promise.race([
+    ensureConnected(userId),
+    new Promise((r) => setTimeout(() => r([]), ms).unref?.()),
+  ]);
+}
+
 module.exports = router;
 module.exports.connectAllForUser = connectAllForUser;
+module.exports.ensureConnected = ensureConnected;
+module.exports.ensureConnectedWithin = ensureConnectedWithin;

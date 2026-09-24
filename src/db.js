@@ -293,6 +293,9 @@ async function init() {
     -- agent can answer ANY question about it, not only the action items.
     ALTER TABLE call_records ADD COLUMN IF NOT EXISTS
       facts TEXT NOT NULL DEFAULT '[]';
+    -- A ready-to-send message confirming what the call agreed.
+    ALTER TABLE call_records ADD COLUMN IF NOT EXISTS
+      follow_up TEXT NOT NULL DEFAULT '';
 
     -- What the assistant tells the developer about the app — bugs,
     -- missing features, complaints, ideas (send_developer_feedback).
@@ -395,6 +398,11 @@ async function init() {
 
     -- Migration: link documents to a client (NULL = personal document).
     ALTER TABLE documents ADD COLUMN IF NOT EXISTS client_id BIGINT;
+    -- When an insurance, licence, passport or certificate runs out
+    -- (yyyy-mm-dd, '' = none), and whether its renewal reminders were
+    -- filed (docs/expiry.js).
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS expires_on TEXT NOT NULL DEFAULT '';
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS expiry_alerts INTEGER NOT NULL DEFAULT 0;
     CREATE INDEX IF NOT EXISTS idx_docs_client ON documents(user_id, client_id, created_at DESC);
   `);
 

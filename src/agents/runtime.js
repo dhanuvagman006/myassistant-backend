@@ -731,6 +731,12 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   //   • foreground — offer what THIS turn plausibly needs, and the whole
   //     catalogue whenever that cannot be judged confidently
   // tools/relevance.js carries the reasoning and the fallbacks.
+  //
+  // After a restart this user's MCP tools are gone from the registry until
+  // reconnected — once per process, and never more than 3 s of this turn.
+  if (ctx.userId) {
+    await require("../mcp/routes").ensureConnectedWithin(ctx.userId).catch(() => {});
+  }
   const only = ctx.background
     ? registry
         .list()

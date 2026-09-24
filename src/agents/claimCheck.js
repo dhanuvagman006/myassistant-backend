@@ -61,6 +61,8 @@ const FAMILIES = [
     tools: [
       "open_app", "open_named_app", "open_webpage", "open_service_app",
       "open_video_mode", "phone_control", "start_navigation",
+      // "Opening GPay with ₹500 for Ravi" — the UPI app on screen.
+      "pay_by_upi",
       // Opens Google Maps at what it just found — "showing them on the
       // map" is the same claim by the same words.
       "find_places_nearby",
@@ -92,7 +94,10 @@ const FAMILIES = [
   {
     id: "message",
     tools: ["send_agent_message", "send_whatsapp_message", "send_document", "send_patient_document",
-            "send_developer_feedback"], // "I've passed that on to the developer"
+            "send_developer_feedback", // "I've passed that on to the developer"
+            // Mail was missing, so "Sent, your mail is on its way" after a
+            // SUCCESSFUL email_send was rewritten to "I haven't sent anything".
+            "email_send", "email_reply"],
     claim: /\b(sent|sending|i'?ve sent|message is on its way|passed (it|that) on|delivered)\b/i,
     // भेज दिया/रहा…, ಕಳುಹಿಸ…, அனுப்ப…, పంప…, അയച്ചു…
     claimIntl: /(भेज\s*(दिया|रहा|रही)|मैसेज\s*कर|ಕಳುಹಿಸ|ಮೆಸೇಜ್\s*ಮಾಡ|ಸೆಂಡ್\s*ಮಾಡ|அனுப்ப|பதிவிட|పంపా|పంపుతు|അയച്ചു|അയക്കുന്നു)/,
@@ -165,7 +170,8 @@ const FAMILIES = [
     id: "record",
     tools: ["record_entry", "amend_last_entry", "record_patient_payment", "remember_fact",
             "remember_person", "add_person_note", "file_document_under_client",
-            "associate_document", "save_web_document", "send_developer_feedback"],
+            "associate_document", "save_web_document", "send_developer_feedback",
+            "save_upi_id"],
     claim: /\b(logged|recorded|noted it down|saved (it |that )?(to|in) your|filed under|i'?ve (written|saved)|written that down)\b/i,
     // सहेज/सेव/नोट कर…, ಉಳಿಸ/ಸೇವ್ ಮಾಡ…, சேமிக்க…, సేవ్ చేస…, സേവ് ചെയ്…
     claimIntl: /(सहेज|सेव\s*कर|नोट\s*कर|लिख\s*दिया|ಉಳಿಸ|ಸೇವ್\s*ಮಾಡ|ಬರೆದಿ|சேமிக்க|குறித்து|సేవ్\s*చేస|రాశా|സേവ്\s*ചെയ്|എഴുതി)/,

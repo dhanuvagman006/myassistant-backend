@@ -261,6 +261,7 @@ function toClient(d) {
     title: d.title || fallbackTitle(d),
     category: d.category,
     docDate: d.doc_date,
+    expiresOn: d.expires_on || null, // renewal alerts: docs/expiry.js
     summary: d.summary,
     note: d.note,
     tags: d.tags,

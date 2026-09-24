@@ -60,6 +60,12 @@ async function analyzeInBackground(userId, row, buffer, mime, filename = "") {
     if (!meta) return;
     const updated = (await docs.setMetadata(userId, row.id, meta)) || row;
 
+    // An insurance, licence or passport: file its renewal reminders now.
+    if (meta.expiresOn) {
+      await require("../docs/expiry").onExpiry(userId, row.id, meta.expiresOn)
+        .catch((e) => console.error("docs expiry alerts failed:", e.message));
+    }
+
     // CHUNK + EMBED the extracted text so "find Ravi's court notice" can
     // search inside the document, not just its title. Failure here must not
     // lose the document itself, so it is caught separately.

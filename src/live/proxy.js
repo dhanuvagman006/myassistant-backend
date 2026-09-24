@@ -658,7 +658,12 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   try {
     const uid = Number(user?.sub);
     if (Number.isFinite(uid) && uid > 0) {
+      // This user's MCP tools, back after a restart before the tool
+      // declarations are built (once per process, at most 3 s).
+      const mcpReady = require("../mcp/routes").ensureConnectedWithin(uid)
+        .catch(() => {});
       const p = await require("../users/context").getProfile(uid);
+      await mcpReady;
       if (p?.assistant?.name) assistantName = p.assistant.name;
       if (p?.user?.name) userName = String(p.user.name).split(" ")[0];
       if (p?.user?.preferred_language) {
