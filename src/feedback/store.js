@@ -49,6 +49,43 @@ async function add(userId, fb = {}) {
   return { ok: true, id: row.id, duplicate: false };
 }
 
+/**
+ * OPS ALERTS — something the SERVER noticed, filed in the same list.
+ *
+ * On 2026-09-24 every call the assistant placed failed all day with the
+ * calling service answering "from_number … doesn't exist for <provider>",
+ * and nothing anywhere said so: the owner found out by trying. A broken
+ * dashboard setting is the developer's to fix, so it belongs in front of
+ * the developer — in the Feedback list they already read, not in a new
+ * screen nobody opens.
+ *
+ * No user filed it, so user_id is 0 (the panel shows "—") and source is
+ * "ops". The same summary is ONE row per hour, checked in the table so it
+ * holds across pods and restarts: an outage that fails every call must
+ * show up, and must not bury the real reports under hundreds of copies.
+ * It is not counted against anyone's daily cap.
+ */
+const ALERT_WINDOW = 3600 * 1000;
+
+async function alert(summary, { details = "", windowMs = ALERT_WINDOW } = {}) {
+  const s = clip(summary, 300);
+  if (!s) return { ok: false, error: "summary required" };
+  const dup = await db.one(
+    `SELECT id FROM developer_feedback
+      WHERE user_id=0 AND source='ops' AND created_at > $1 AND lower(summary) = lower($2)
+      LIMIT 1`,
+    [Date.now() - windowMs, s]
+  );
+  if (dup) return { ok: true, id: dup.id, duplicate: true };
+  const row = await db.one(
+    `INSERT INTO developer_feedback
+       (user_id, kind, summary, details, user_words, source, app_build, created_at)
+     VALUES (0, 'alert', $1, $2, '', 'ops', 0, $3) RETURNING id`,
+    [s, clip(details, 2000), Date.now()]
+  );
+  return { ok: true, id: row.id, duplicate: false };
+}
+
 async function list({ status = "", q = "", limit = 50, offset = 0 } = {}) {
   const where = [];
   const params = [];
@@ -87,4 +124,4 @@ async function setStatus(id, status) {
     `UPDATE developer_feedback SET status=$1 WHERE id=$2`, [status, Number(id)])) > 0;
 }
 
-module.exports = { add, list, counts, setStatus, KINDS, DAILY_CAP };
+module.exports = { add, alert, list, counts, setStatus, KINDS, DAILY_CAP, ALERT_WINDOW };

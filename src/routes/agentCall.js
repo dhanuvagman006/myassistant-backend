@@ -4,8 +4,11 @@
  * App-facing (behind appAuth):
  *   POST /agent-call/preview  { contactName, task, lang? } -> { opening, allowed, reason? }
  *   POST /agent-call          { toNumber, contactName, task, lang? } -> 202 { id }
- *                              503 when telephony not configured (app falls
- *                              back to a direct dial); 402 over the daily limit.
+ *                              503 when telephony not configured, 502 when
+ *                              the calling service refused the call — both
+ *                              carry { fallback:"direct_dial", say } and the
+ *                              app dials the contact directly;
+ *                              402 over the daily limit.
  *   GET  /agent-call/:id      -> { state, result?, answer? }
  *
  * Provider webhooks (public — mounted WITHOUT appAuth in server.js, gated
@@ -25,6 +28,15 @@ function uidOf(req) {
 function firstName(req) {
   const n = req.user?.name;
   return n ? String(n).split(" ")[0] : null;
+}
+
+/** 503 body: the same fallback as a failed call, and why. */
+function notConfigured(name) {
+  return {
+    error: "agent calling not configured",
+    fallback: "direct_dial",
+    say: `I can't place calls myself on this setup, so I'm dialling ${name} from your phone.`,
+  };
 }
 
 const router = express.Router();
@@ -63,7 +75,7 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ error: "toNumber, contactName and task required" });
   }
   if (!agent.enabled()) {
-    return res.status(503).json({ error: "agent calling not configured" });
+    return res.status(503).json(notConfigured(contactName));
   }
   try {
     const { id } = await agent.start({
@@ -82,7 +94,7 @@ router.post("/", async (req, res) => {
     res.status(202).json({ id });
   } catch (e) {
     if (e?.code === "unavailable") {
-      return res.status(503).json({ error: "agent calling not configured" });
+      return res.status(503).json(notConfigured(contactName));
     }
     if (e?.code === "quota") {
       return res.status(402).json({
@@ -93,10 +105,36 @@ router.post("/", async (req, res) => {
     if (e?.code === "bad_number") {
       return res.status(400).json({ error: "invalid number" });
     }
-    console.error("agent-call start error:", e.message || e);
-    res.status(502).json({ error: "could not start call" });
+    // THE CALLING SERVICE SAID NO — and the owner still needs the call.
+    //
+    // 2026-09-24: every relay died on the service rejecting our caller
+    // number. The phone already dials the contact itself on any failure
+    // here; what it lacked was the words. So the answer carries the same
+    // fallback as "not configured" — dial directly — and the sentence to
+    // say, so no build is left with a dialler opening and nothing said.
+    // The service's own reply is logged (numbers blanked) and filed for
+    // the developer inside agent.start; it never reaches the owner.
+    if (!e?.reason) {
+      // Not the service's refusal (that is logged where it happens) —
+      // something of ours. Logged with any number blanked.
+      console.error("agent-call start error:", agent.redactNumbers(e?.message || e));
+    }
+    res.status(502).json({
+      error: "could not start call",
+      reason: e?.reason === "caller_rejected" ? "call_service_rejected" : "call_service_failed",
+      fallback: "direct_dial",
+      say: callServiceFailedLine(contactName),
+    });
   }
 });
+
+/** What the owner hears when the relay could not be placed. */
+function callServiceFailedLine(name) {
+  return (
+    `I couldn't place the call through my calling service just now, so ` +
+    `I'm dialling ${name} from your phone — you can tell them yourself.`
+  );
+}
 
 router.get("/:id", (req, res) => {
   const rec = agent.get(String(req.params.id));

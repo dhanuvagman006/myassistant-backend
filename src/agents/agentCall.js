@@ -535,7 +535,8 @@ async function redial(rec) {
     rec.providerRef = await placeByProvider(rec);
     if (rec.userId) bumpDaily(rec.userId);
   } catch (e) {
-    console.error("agent-call redial failed:", e.message || e);
+    // Logged (numbers blanked) and alerted inside — see noteProviderFailure.
+    noteProviderFailure(e);
     rec.state = "failed";
     rec.result = rec.selfCall
       ? "I couldn't place the repeat call to your phone."
@@ -544,8 +545,115 @@ async function redial(rec) {
   }
 }
 
-function placeByProvider(rec) {
-  return bolnaPlaceCall({ to: rec.to, rec });
+async function placeByProvider(rec) {
+  const ref = await bolnaPlaceCall({ to: rec.to, rec });
+  // A call went out, so whatever was wrong has been fixed.
+  trouble.callerRejectedAt = 0;
+  return ref;
+}
+
+// ---------------- WHEN THE CALLING SERVICE SAYS NO ----------------
+
+/**
+ * THE CALLING SERVICE REJECTING OUR OWN NUMBER.
+ *
+ * 2026-09-24, all day: every call died on Bolna's 400 "Calling
+ * from_number +91… doesn't exist for plivo. Please check your agent
+ * telephony provider." — the agent's telephony had been switched away
+ * from the carrier that owns our number. Nothing the phone or the owner
+ * does fixes that; only the dashboard does. Three things follow from it:
+ *
+ *  1. The DEVELOPER sees it: one item in the admin panel's Feedback list
+ *     per hour (feedback/store.alert), with the service's own words.
+ *  2. The LOGS say how often, never who: counts only. The service's reply
+ *     can carry a phone number, and a contact's number has no business in
+ *     a log line.
+ *  3. For a short while afterwards the assistant stops pretending it can
+ *     relay a message (relayDown): place_phone_call tells the phone to
+ *     dial the contact directly and SAYS that the calling service failed,
+ *     instead of promising a call that will fail the same way. It clears
+ *     on the first call that goes out, or after RELAY_DOWN_MS.
+ */
+const CALLER_REJECTED = /doesn'?t\s+exist\s+for\s+([a-z0-9_.-]+)/i;
+const RELAY_DOWN_MS = Number(process.env.AGENT_CALL_DOWN_MS || 10 * 60 * 1000);
+const HOUR = 3600 * 1000;
+const trouble = {
+  callerRejectedAt: 0, // last time the service rejected our caller number
+  alertedAt: 0,        // last ops alert raised from this process
+  windowStart: 0,      // start of the current hour of counting
+  count: 0,            // rejections in that hour — the only thing logged
+};
+
+/** Every phone-number-shaped run of digits, except OUR caller number
+ *  when `keep` names it (it is not a contact's, and it is the point). */
+function redactNumbers(text, keep = "") {
+  const own = String(keep || "").replace(/[^\d]/g, "");
+  return String(text || "").replace(/\+?\d[\d\s().-]{6,}\d/g, (m) => {
+    const digits = m.replace(/[^\d]/g, "");
+    return own && digits === own ? m : "[number]";
+  });
+}
+
+/** The service's own sentence out of "bolna call 400: {json}". */
+function providerMessage(err) {
+  const raw = String(err?.message || err || "");
+  const body = raw.replace(/^bolna call \d+:\s*/i, "");
+  try {
+    const j = JSON.parse(body);
+    const m = j?.message || j?.detail || j?.error;
+    if (m) return String(typeof m === "string" ? m : JSON.stringify(m)).trim();
+  } catch (_) {}
+  return body.trim();
+}
+
+/**
+ * Called wherever placing a call threw. Returns what kind of failure it
+ * was ("caller_rejected" | "provider"). Never throws: a broken alert must
+ * not turn a failed call into a crashed request.
+ */
+function noteProviderFailure(err) {
+  const msg = providerMessage(err);
+  const m = msg.match(CALLER_REJECTED);
+  if (!m) {
+    console.warn("agent-call: the calling service refused a call:",
+      redactNumbers(msg).slice(0, 200));
+    return "provider";
+  }
+  const now = Date.now();
+  trouble.callerRejectedAt = now;
+  if (now - trouble.windowStart > HOUR) {
+    trouble.windowStart = now;
+    trouble.count = 0;
+  }
+  trouble.count += 1;
+  console.error(
+    `agent-call: calling service rejected the caller number ` +
+    `(${trouble.count} in the last hour)`
+  );
+  if (now - trouble.alertedAt >= HOUR) {
+    trouble.alertedAt = now;
+    const said = redactNumbers(msg, cfg().bolnaFrom).replace(/\s+/g, " ").slice(0, 220);
+    try {
+      require("../feedback/store")
+        .alert(`Calling service rejected the caller number: ${said}`, {
+          details:
+            "Every call the assistant places fails until the agent's telephony " +
+            "provider in the calling dashboard is set back to the carrier that " +
+            "owns the caller number. The phone falls back to a direct dial.",
+        })
+        .catch((e) => console.warn("agent-call: ops alert not filed:", e.message));
+    } catch (e) {
+      console.warn("agent-call: ops alert not filed:", e.message);
+    }
+  }
+  return "caller_rejected";
+}
+
+/** Did the service reject our caller number recently? Then a relayed
+ *  message would fail the same way — dial directly and say so. */
+function relayDown() {
+  return trouble.callerRejectedAt > 0 &&
+    Date.now() - trouble.callerRejectedAt < RELAY_DOWN_MS;
 }
 
 /** Terminal states only: mirror into task_outcomes, and push the outcome
@@ -596,7 +704,10 @@ async function preview({ userName, contactName, task, lang }) {
 
 /**
  * Place an agent call. Returns { id } (202). Throws { code:"unavailable" }
- * when telephony isn't configured, or { code:"quota" } over the daily limit.
+ * when telephony isn't configured, { code:"quota" } over the daily limit,
+ * or { code:"failed", reason:"caller_rejected"|"provider", message } when
+ * the calling service refused — `message` is a plain sentence, never the
+ * service's reply (see noteProviderFailure).
  */
 async function start({ userId, userName, toNumber, contactName, task, lang, selfCall, retryTimes, retryGapMinutes, tone }) {
   if (!enabled()) throw { code: "unavailable" };
@@ -665,10 +776,20 @@ async function start({ userId, userName, toNumber, contactName, task, lang, self
     rec.providerRef = await placeByProvider(rec);
     if (userId) bumpDaily(userId);
   } catch (e) {
+    const reason = noteProviderFailure(e);
     rec.state = "failed";
     rec.result = `I couldn't start the call to ${contactName} just now.`;
     settle(rec);
-    throw { code: "failed", message: String(e.message || e) };
+    // THE SERVICE'S OWN WORDS STAY ON THE SERVER. Callers put `message`
+    // into things the owner reads — a task's outcome, a tool result the
+    // model speaks — and the raw reply named the provider and carried a
+    // phone number ("from_number +91… doesn't exist for plivo"). The log
+    // and the admin alert have the detail; the owner gets the plain fact.
+    throw {
+      code: "failed",
+      reason,
+      message: "the calling service could not place the call",
+    };
   }
   return { id: rec.id };
 }
@@ -702,4 +823,11 @@ module.exports = {
   start,
   status,
   get,
+  relayDown,
+  // For tests: the failure bookkeeping, and a way to clear it.
+  _trouble: trouble,
+  redactNumbers,
+  _resetTrouble() {
+    Object.assign(trouble, { callerRejectedAt: 0, alertedAt: 0, windowStart: 0, count: 0 });
+  },
 };

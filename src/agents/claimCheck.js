@@ -36,12 +36,14 @@ const FAMILIES = [
     id: "call",
     tools: ["place_phone_call", "book_by_calling_business", "arrange_meeting_with"],
     // "calling X", "I'll call", "connecting your call", "dialling"
-    // SOMEONE ELSE CALLING IS CALL HISTORY, NOT A CLAIM. Once the phone
-    // reads its call log (phone_calls, 2026-09-24) the true answer is
-    // "Ravi was calling you at 3:10" — and "calling" alone would rewrite it
-    // into "I couldn't start that call". Only the assistant's own dialling
-    // is a claim: "was / were / been / kept / tried calling" is not.
-    claim: /(?<!\b(?:was|were|been|kept|keeps|tried|missed)\s+)\b(calling|dialling|dialing|ringing)\b|\b(connecting your call|placing the call)\b/i,
+    // "My calling service couldn't place it" names the SERVICE — it is
+    // the honest line said when a call fails, and must not itself be
+    // rewritten as a claim to have dialled.
+    claim: /\b(calling(?!\s+(?:service|feature|balance|limit)\b)|dialling|dialing|ringing|connecting your call|placing the call)\b/i,
+    // SOMEONE ELSE CALLING IS CALL HISTORY, NOT A CLAIM ("Ravi was calling
+    // you at 3:10") — but "I tried calling Ravi" still is. See
+    // isOnlyCallHistory below.
+    onlyHistory: (s) => isOnlyCallHistory(s),
     // कॉल/फ़ोन कर…, ಕರೆ/ಫೋನ್/ಕಾಲ್ ಮಾಡ…, அழைக்/கால் செய்…, కాల్/ఫోన్ చేస్…, വിളിക്ക…
     claimIntl: /(कॉल\s*कर|फ़?ोन\s*कर|डायल|मिला\s*रहा|ಕರೆ\s*ಮಾಡ|ಕಾಲ್\s*ಮಾಡ|ಫೋನ್\s*ಮಾಡ|அழைக்க|கால்\s*செய்|கூப்பிட|కాల్\s*చేస|ఫోన్\s*చేస|విళిక్|വിളിക്ക|കോൾ\s*ചെയ്)/,
     honest: (t) => "I couldn't start that call — nothing was dialled.",
@@ -195,9 +197,99 @@ const FAMILIES = [
  *  something still happened. */
 const FILLER = /^(there you go|take a look|all set|done|enjoy|have a look|check it out|that's it)[!.…]*$/i;
 
+/**
+ * CALL HISTORY IS NOT A CALL CLAIM — AND THE ASSISTANT'S OWN DIALLING
+ * ALWAYS IS.
+ *
+ * Once the phone reads its call log (phone_calls, 2026-09-24) the true
+ * answer is "Ravi was calling you at 3:10", and the bare word "calling"
+ * would rewrite it into "I couldn't start that call". The first fix
+ * exempted any "was / been / kept / tried calling" — which also let the
+ * assistant's own false claims through: "I tried calling Ravi but he
+ * didn't pick up", "I was calling him just now", "I kept ringing him",
+ * with place_phone_call never having run.
+ *
+ * So the exemption is read per occurrence, from the clause in front of
+ * the call word, and anything it is unsure of stays a CLAIM:
+ *   - "I" / "we" anywhere in that clause → CLAIM ("I only kept calling
+ *     him", "we just tried ringing him"). A leading "I see / I think /
+ *     looks like" is only a preamble and is set aside first.
+ *   - no subject at all → CLAIM: a dropped subject is the speaker's
+ *     ("Calling Ravi now", "Tried calling him", "Ringing you through",
+ *     "Okay Sir calling you back" — "Okay Sir" is nobody).
+ *   - a named subject calling THE OWNER → history ("Ravi was calling you",
+ *     "Amma's ringing you").
+ *   - a named person who WAS / HAS BEEN / KEPT / TRIED "calling" → history
+ *     ("Amma has been calling since nine"). Only "calling": "it was
+ *     ringing", "his phone kept ringing" describe the assistant's own
+ *     call, and a phone or line is never the person in the call log.
+ * A sentence with one history reading and one claim ("Ravi was calling
+ * you, so I'm calling him back") is a claim.
+ *
+ * Not keyed to "phone_calls ran this turn": the phone answers that tool
+ * with a [SYSTEM] line, so the reading is spoken in the NEXT turn, and in
+ * the tool's own turn the exemption would only open a hole ("Checking your
+ * calls. Calling Ravi now.").
+ */
+const CALL_WORD = /\b(calling(?!\s+(?:service|feature|balance|limit)\b)|dialling|dialing|ringing)\b/gi;
+const CALL_PHRASE = /\b(connecting your call|placing the call)\b/i;
+const FIRST_PERSON = /\b(?:i|we)\b/i;
+const PREAMBLE =
+  /^\s*(?:(?:i|we)\s+(?:can\s+)?(?:see|think|notice|noticed|found|checked)(?:\s+that)?|(?:it\s+)?(?:looks|seems)\s+like)\s+/i;
+const OWNER_OBJECT = /^\s+you\b/i;
+// Auxiliaries and adverbs between a subject and its verb. What is left
+// once they are peeled off the end of the clause is the subject.
+const HELPERS = new Set([
+  "am", "is", "are", "was", "were", "be", "been", "being", "has", "have", "had",
+  "will", "would", "shall", "should", "can", "could", "may", "might", "must",
+  "do", "does", "did", "keep", "keeps", "kept", "try", "tries", "tried",
+  "just", "also", "still", "already", "really", "actually", "even", "again",
+  "now", "then", "repeatedly", "only", "honestly", "literally", "twice",
+]);
+const PAST_OR_REPEATED = new Set(["was", "were", "been", "kept", "keeps", "tried", "tries"]);
+const NOT_A_PERSON = /\b(it|phone|line|number|mobile|call)\b/i;
+// Words that stand where a subject would but are nobody: how the
+// assistant opens a sentence to the owner. "Okay Sir calling you back"
+// has no subject at all, so it is the speaker's own call — without this
+// "Okay Sir" read as the name of whoever was calling.
+const NOT_A_SUBJECT = new Set([
+  "sir", "ma'am", "maam", "madam", "okay", "ok", "sure", "alright", "right",
+  "yes", "yeah", "fine", "great", "done", "well", "so", "hi", "hello", "now",
+]);
+
+function isOnlyCallHistory(sentence) {
+  const s = String(sentence || "");
+  if (CALL_PHRASE.test(s)) return false;
+  let seen = false;
+  for (const m of s.matchAll(CALL_WORD)) {
+    seen = true;
+    const clause = s.slice(0, m.index)
+      .split(/[,;:—–]|\s-\s|\b(?:and|but|so)\b/i).pop()
+      .replace(PREAMBLE, "");
+    if (FIRST_PERSON.test(clause)) return false;
+    const words = clause.trim().split(/\s+/).filter(Boolean);
+    const helpers = [];
+    while (words.length && HELPERS.has(words[words.length - 1].toLowerCase())) {
+      helpers.push(words.pop().toLowerCase());
+    }
+    const subject = words
+      .filter((w) => !NOT_A_SUBJECT.has(w.toLowerCase().replace(/[’]/g, "'").replace(/[^a-z']/g, "")))
+      .join(" ");
+    if (!subject) return false;
+    const after = s.slice(m.index + m[0].length);
+    if (OWNER_OBJECT.test(after)) continue;
+    if (m[1].toLowerCase() === "calling" && !NOT_A_PERSON.test(subject) &&
+        helpers.some((h) => PAST_OR_REPEATED.has(h))) continue;
+    return false;
+  }
+  return seen;
+}
+
 /** Does this sentence claim this family's action, in any script? */
 function claims(family, sentence) {
-  return family.claim.test(sentence) ||
+  const english = family.claim.test(sentence) &&
+    !(family.onlyHistory && family.onlyHistory(sentence));
+  return english ||
     (family.claimIntl ? family.claimIntl.test(sentence) : false);
 }
 

@@ -159,6 +159,51 @@ async function waitFor(fn, ms = 2000) {
     }
   });
 
+  await t("'I tried calling Ravi' is still the assistant's own claim when nothing was dialled", async () => {
+    // The first exemption keyed on the auxiliary alone, so these passed
+    // with place_phone_call never having run.
+    for (const said of [
+      "I tried calling Ravi but he didn't pick up.",
+      "I was calling Ravi just now.",
+      "I have been calling him.",
+      "I've been calling him all morning.",
+      "I kept ringing him.",
+      "We just tried ringing him twice.",
+      "Tried calling him, no answer.",
+      "Ravi was calling you, so I'm calling him back now.",
+      // An adverb the list does not know must not turn "I" into a third party.
+      "I only kept calling him.",
+      "I have honestly been calling him.",
+      // The assistant's own call described through the phone or the line.
+      "It was ringing but he didn't answer.",
+      "His phone kept ringing.",
+      // No subject at all is the speaker's, even with "you" after it.
+      "Ringing you through to Ravi now.",
+      // "Okay Sir" is how she opens a sentence, not who is calling.
+      "Okay Sir calling you back in a minute.",
+      "Sure ma'am ringing you now.",
+    ]) {
+      const v = claimCheck.check(said, []);
+      assert.strictEqual(v.ok, false, `"${said}" must be caught`);
+      assert.match(v.text, /nothing was dialled/);
+      assert.strictEqual(claimCheck.classify(said), "call", `stream gate must hold "${said}"`);
+    }
+    // The same words stand once the call really ran.
+    assert.strictEqual(claimCheck.check("I tried calling Ravi but he didn't pick up.",
+      [{ tool: "place_phone_call", ok: true }]).ok, true);
+    // Third-party readings stay call history.
+    for (const said of [
+      "I see Amma has been calling since nine.",
+      "Looks like Ravi kept ringing you.",
+      "You were calling Ravi at 5:02 pm.",
+      "Sir, Ravi’s been calling you all morning.",
+      "I checked: Ravi was calling you at 3.",
+    ]) {
+      assert.strictEqual(claimCheck.check(said, []).ok, true, `"${said}" was rewritten`);
+      assert.strictEqual(claimCheck.classify(said), null);
+    }
+  });
+
   await t("chat prompt: build 106 routes calls questions to phone_calls, older builds keep the old rule", async () => {
     const p106 = runtime.systemPrompt("", { appBuild: 106 });
     assert.match(p106, /CALLS ON THIS PHONE: 'any missed calls\?'[^\n]*→ phone_calls/);

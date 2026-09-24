@@ -4,6 +4,13 @@
  *
  *   BOLNA_API_KEY=bn-… BOLNA_AGENT_ID=… node scripts/update_bolna_agent.js
  *   …                                   node scripts/update_bolna_agent.js --dry
+ *   …                                   … --overwrite-dashboard
+ *
+ * It REFUSES to send when the live agent's telephony, voice or hearing
+ * differ from the file (callAgentConfig.dashboardDrift) — those are the
+ * settings the owner changes by hand in the dashboard, and a PUT of the
+ * whole config would silently put them back. Make the file match, or
+ * pass --overwrite-dashboard when the file is the one that is right.
  *
  * src/agents/callAgentConfig.js is the source of truth for the prompt,
  * the voice, the hearing and the call settings; this sends it. Run it
@@ -20,12 +27,19 @@
  */
 
 const crypto = require("crypto");
-const { agentConfig, VOICE, TRANSCRIBER } = require("../src/agents/callAgentConfig");
+const {
+  agentConfig, dashboardChoices, dashboardDrift, VOICE, TRANSCRIBER,
+} = require("../src/agents/callAgentConfig");
 
 const KEY = process.env.BOLNA_API_KEY || "";
 const AGENT = process.env.BOLNA_AGENT_ID || "";
 const BASE = (process.env.PUBLIC_BASE_URL || "https://api.hariassistant.tech").replace(/\/$/, "");
 const DRY = process.argv.includes("--dry");
+// NEVER UNDO THE OWNER'S DASHBOARD BY ACCIDENT. On 2026-09-24 he fixed
+// the telephony, the voice and the hearing by hand; a plain run of this
+// script would have put every one of them back to what this file said.
+// So a disagreement stops the run, and overwriting takes this flag.
+const OVERWRITE = process.argv.includes("--overwrite-dashboard");
 
 if (!KEY || !AGENT) {
   console.error("Set BOLNA_API_KEY and BOLNA_AGENT_ID.");
@@ -67,9 +81,34 @@ function summarise(agent) {
     console.error(`Could not read agent ${AGENT} (${before.status})`);
     process.exit(1);
   }
-  console.log("BEFORE:", JSON.stringify(summarise(await before.json()), null, 1));
+  const live = await before.json();
+  console.log("BEFORE:", JSON.stringify(summarise(live), null, 1));
 
-  const body = agentConfig({ webhookUrl });
+  const drift = dashboardDrift(live);
+  if (drift.length && !OVERWRITE) {
+    console.error(
+      `\n${DRY ? "WOULD REFUSE" : "REFUSED"}: the live agent differs from ` +
+      "src/agents/callAgentConfig.js — sending would undo these dashboard settings:"
+    );
+    for (const d of drift) {
+      console.error(`  ${d.field}: dashboard "${d.dashboard}" → file "${d.file}"`);
+    }
+    console.error(
+      "Update callAgentConfig.js to match the dashboard, or re-run with " +
+      "--overwrite-dashboard if the file is the one that is right."
+    );
+    if (!DRY) process.exit(1);
+  }
+
+  // Same voice id as the dashboard: keep the label the dashboard shows
+  // for it — the file only knows the id.
+  const liveSynth = (live?.agent_config?.tasks ? live.agent_config : live)
+    ?.tasks?.[0]?.tools_config?.synthesizer;
+  const voiceName =
+    dashboardChoices(live).voice_id === VOICE.id
+      ? liveSynth?.provider_config?.voice || undefined
+      : undefined;
+  const body = agentConfig({ webhookUrl, voiceName });
 
   // REFUSE TO PUBLISH A CONFIG THAT CANNOT DIAL. Cheap, and it is the
   // one mistake in this file that is invisible until a real call fails.
