@@ -1036,6 +1036,9 @@ async function viewActivity() {
 /* ------------------------------------------------------------------ */
 
 const FEEDBACK_KIND = {
+  // Filed by the server itself (feedback/store.alert), e.g. the calling
+  // service rejecting our caller number.
+  alert: ["Alert", "danger"],
   bug: ["Bug", "danger"],
   complaint: ["Complaint", "warn"],
   feature: ["Feature request", "accent"],

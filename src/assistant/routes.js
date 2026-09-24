@@ -1198,7 +1198,7 @@ async function startAgentCall(s, contact, task, req) {
         outcomes.create(uidNum, {
           kind: "agent_call", target: name, detail: task, status: "failed", path: "relay",
           sessionId: s.sid || "",
-        }).then((r) => r && outcomes.update(uidNum, r.id, { status: "failed", reason: e?.code === "quota" ? "daily relay-call limit reached" : String(e?.message || e?.code || "could not start") })).catch(() => {});
+        }).then((r) => r && outcomes.update(uidNum, r.id, { status: "failed", reason: e?.code === "quota" ? "daily relay-call limit reached" : "the calling service could not place the call" })).catch(() => {});
         audit.record(uidNum, "call.failed", `${name}: relay call could not start (${e?.code || "error"})`);
       }
       if (e?.code === "quota") {
@@ -1209,13 +1209,19 @@ async function startAgentCall(s, contact, task, req) {
         });
         return askCallConfirm(s, contact);
       }
+      // THE CALLING SERVICE REFUSED — say so and offer the owner's own
+      // phone. This used to end on "Sorry, I couldn't start the call" and
+      // stop, leaving the message undelivered with nothing offered; the
+      // direct dial is the same one the quota and not-configured paths
+      // already offer, and it waits for the owner's tap.
       state(s, "speaking");
       emit(s, {
         type: "assistant_message",
-        text: `Sorry, I couldn't start the call to ${name} just now.`,
+        text:
+          `I couldn't place the call through my calling service just now. ` +
+          `I can dial ${name} from your phone so you can tell them yourself.`,
       });
-      state(s, "completed");
-      return;
+      return askCallConfirm(s, contact);
     }
 
     emit(s, { type: "call_status", status: "dialing", contact_name: name });
@@ -1685,3 +1691,5 @@ router.post("/:sid/cancel", (req, res) => {
 
 module.exports = router;
 module.exports.streamHandler = streamHandler;
+// For tests: drive one agent call on a session without the SSE plumbing.
+module.exports._test = { newSession, startAgentCall };

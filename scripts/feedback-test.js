@@ -139,6 +139,43 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
     assert.strictEqual(bad.status, 400);
   });
 
+  await atest("a server alert is listed from nobody, once an hour, never capped", async () => {
+    const store = require("../src/feedback/store");
+    const summary = `Test ops alert ${Date.now()}`;
+    try {
+      const a = await store.alert(summary, { details: "why it matters" });
+      assert.strictEqual(a.ok, true);
+      assert.strictEqual(a.duplicate, false);
+      // The same thing noticed again within the hour is the same row.
+      const b = await store.alert(summary);
+      assert.strictEqual(b.duplicate, true);
+      assert.strictEqual(b.id, a.id);
+      // An hour on, it is a new row — an outage that lasts all day shows.
+      await db.run(`UPDATE developer_feedback SET created_at = created_at - $1 WHERE id=$2`,
+        [store.ALERT_WINDOW + 1000, a.id]);
+      const c = await store.alert(summary);
+      assert.strictEqual(c.duplicate, false);
+
+      const login = await fetch(`${base}/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key: process.env.ADMIN_KEY }),
+      });
+      const cookie = login.headers.get("set-cookie").split(";")[0];
+      const d = await fetch(`${base}/feedback?status=new&q=${encodeURIComponent(summary)}`,
+        { headers: { cookie } }).then((r) => r.json());
+      assert.strictEqual(d.feedback.length, 2);
+      for (const f of d.feedback) {
+        assert.strictEqual(f.kind, "alert");
+        assert.strictEqual(f.source, "ops");
+        assert.strictEqual(Number(f.user_id), 0);
+      }
+      assert.match(src("routes/admin_panel/app.js"), /alert: \["Alert", "danger"\]/);
+    } finally {
+      await db.run(`DELETE FROM developer_feedback WHERE user_id=0 AND summary=$1`, [summary]);
+    }
+  });
+
   await atest("the panel has a Feedback page", () => {
     const js = src("routes/admin_panel/app.js");
     assert.match(js, /\["#\/feedback", "Feedback"\]/);

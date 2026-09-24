@@ -2484,14 +2484,13 @@ function registerBuiltins() {
       // An in-app call is placed by that app on the handset, so the relay
       // — which dials real telephony from our own number — never applies
       // to one, whichever app it is.
-      const agentAvailable =
-        via === "phone" && require("../agents/agentCall").enabled();
-      const relaying = Boolean(args.message) && agentAvailable;
+      const agentCall = require("../agents/agentCall");
+      const agentConfigured = via === "phone" && agentCall.enabled();
 
       // "Call ME" — wake-up call to the user's own verified number, placed
       // right here (no contact lookup, no device). Redials if unanswered.
       if (/^(me|myself|my\s*(own\s*)?(phone|number|mobile))$/i.test(String(args.name || "").trim())) {
-        if (!agentAvailable) {
+        if (!agentConfigured) {
           return {
             ok: false,
             error:
@@ -2537,16 +2536,55 @@ function registerBuiltins() {
           if (e?.code === "quota") {
             return { ok: false, error: "today's limit for placed calls is reached" };
           }
-          return { ok: false, error: "the call could not be started: " + String(e?.message || e?.code || e) };
+          if (e?.code === "bad_number") {
+            return {
+              ok: false,
+              error:
+                "the user's own number in their profile is not a valid phone " +
+                "number, so nothing was dialled — ask them to correct it in " +
+                "Profile, and offer a reminder alarm instead",
+            };
+          }
+          // The calling service's own reply named the provider and carried
+          // a phone number, and this text is what the model reads out. The
+          // plain fact and the fallback are all the owner needs; the detail
+          // is in the server log and the admin panel.
+          return {
+            ok: false,
+            error:
+              "the calling service failed, so the user's phone was NOT rung — " +
+              "tell them plainly that the call could not be placed, and offer " +
+              "a loud reminder alarm instead",
+          };
         }
       }
+
+      // THE CALLING SERVICE REJECTED US A MOMENT AGO. A relayed message
+      // would fail the same way, and the phone would then dial the contact
+      // itself with nothing said about why (2026-09-24, all day). So skip
+      // the relay while that lasts: the phone dials directly — the same
+      // path as "not configured" — and the assistant SAYS the service
+      // failed instead of promising a call it cannot make.
+      const serviceDown =
+        agentConfigured && Boolean(args.message) && agentCall.relayDown();
+      const agentAvailable = agentConfigured && !serviceDown;
+      const relaying = Boolean(args.message) && agentAvailable;
       return {
         ok: true,
         note:
+          (serviceDown
+            ? "The assistant's calling service failed on the last attempt, " +
+              "so it will NOT speak on this call: the phone dials the " +
+              "contact directly and the user gives the message themself. " +
+              "Tell the user that plainly. "
+            : "") +
           "Nothing has dialled yet — the phone is now trying to resolve " +
           "the contact. Wait for the [SYSTEM] status message before " +
           "reporting the outcome; never claim the call was placed on " +
           "your own.",
+        ...(serviceDown
+          ? { data: { call_service: "failed", fallback: "direct_dial" } }
+          : {}),
         deviceAction: {
           type: "resolve_and_call",
           name: args.name,
@@ -2565,6 +2603,8 @@ function registerBuiltins() {
           ? `Looking up ${args.name} for a WhatsApp call…`
           : relaying
           ? `Let me find ${args.name} and call them — I'll tell you how it goes.`
+          : serviceDown
+          ? `My calling service couldn't place calls just now, so I'll dial ${args.name} from your phone — you can tell them yourself.`
           : args.message
             ? `I can't speak on calls myself on this setup, so I'll connect you to ${args.name} directly.`
             : `Looking up ${args.name}…`,
@@ -7350,6 +7390,85 @@ function registerBuiltins() {
     },
   });
 
+  // ---------------- THE PHONE'S OWN CALL LOG ----------------
+
+  // CALLS, CONNECTED. Owner, 2026-09-24: "the calls should be connected —
+  // it should report when we have any missed calls, or any info if user
+  // asks about calls". Until now the assistant could not see the call log
+  // at all, and a client once heard "No … you haven't missed any calls"
+  // made up on the spot. The phone reads its own log (it asks for the
+  // call-log permission the first time this is needed) and answers the
+  // model with ONE [SYSTEM] line — counts, names and times in the owner's
+  // clock, five entries at most — so this tool only asks, and its own
+  // sentence never states a result.
+  const CALL_FILTERS = new Set(["missed", "all", "incoming", "outgoing"]);
+  registry.register({
+    name: "phone_calls",
+    // Build 106 reads the call log; an older app would drop the action
+    // after the assistant said it was checking.
+    minAppBuild: 106,
+    // iPhones do not let any app read the call log.
+    requires: [{ kind: "platform", id: "android" }],
+    description:
+      "THE PHONE'S OWN CALL LOG — missed, received and dialled calls on " +
+      "this phone: 'any missed calls?', 'who called me today?', 'did Ravi " +
+      "call?', 'when did mom last call', 'show my call history', 'did I call " +
+      "the bank this morning?'. Call it AT ONCE: never guess call history, " +
+      "and never say they have or have not missed calls before it answers. " +
+      "The phone reads the log and answers with a [SYSTEM] line — until then " +
+      "say only 'Checking your calls.'; then say what it found in one or two " +
+      "short sentences and offer to call back. 'Did YOU call X' is " +
+      "check_recent_actions; what was SAID on a call is call_recall.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        filter: {
+          type: "string",
+          enum: ["missed", "all", "incoming", "outgoing"],
+          description:
+            "'missed' for missed calls, 'incoming' for who called them, " +
+            "'outgoing' for calls they made, 'all' for everything (the default).",
+        },
+        person: {
+          type: "string",
+          description:
+            "Only when they name someone: the name or number exactly as they said it.",
+        },
+        since_hours: {
+          type: "number",
+          description:
+            "How far back, in hours. Default 24 (today); 'this week' 168; " +
+            "'when did X last call' 720 (the most).",
+        },
+        limit: { type: "integer", description: "At most this many calls. Default 10." },
+      },
+    },
+    async execute(args) {
+      const f = String(args.filter || "").toLowerCase().trim();
+      const filter = CALL_FILTERS.has(f) ? f : "all";
+      // "my mom" is saved as "Mom"; "anyone" is no filter at all.
+      let person = String(args.person || "").replace(/\s+/g, " ").trim()
+        .replace(/^(?:my|the)\s+/i, "").slice(0, 60);
+      if (/^(?:any ?one|any ?body|some ?one|some ?body|all|everyone|every ?body)$/i.test(person)) person = "";
+      const h = Number(args.since_hours);
+      const since_hours = Number.isFinite(h) && h > 0 ? Math.min(720, Math.max(1, Math.round(h))) : 24;
+      const n = Number(args.limit);
+      const limit = Number.isFinite(n) && n >= 1 ? Math.min(50, Math.floor(n)) : 10;
+      return {
+        ok: true,
+        // person is "" when nobody was named: the phone reads "" as no filter.
+        deviceAction: { type: "call_log", filter, person, since_hours, limit },
+        speak: "Checking your calls.",
+        note:
+          "The phone is reading its call log now and answers with a [SYSTEM] " +
+          "line. Until it does, say only \"Checking your calls.\" — never guess " +
+          "who called or whether any calls were missed.",
+      };
+    },
+  });
+
   // ---------------- INBOUND CALLS (Hari answered the phone) ----------------
 
   registry.register({
@@ -7358,7 +7477,9 @@ function registerBuiltins() {
       "Read back the calls answered on the user's behalf while they " +
       "were unavailable — who rang, what they wanted, and any message left. " +
       "Use for 'did anyone call', 'any messages', 'who called me', 'what did " +
-      "I miss'.",
+      "I miss'. ONLY the calls the assistant itself answered: the phone's own " +
+      "missed, received and dialled calls are phone_calls whenever that tool " +
+      "is offered.",
     risk: "low",
     inputSchema: {
       type: "object",

@@ -396,6 +396,9 @@ const SEED_UNATTENDED = new Set([
     "do_task_in_app",
     // Removing an app is the owner's decision, made holding the phone.
     "uninstall_app",
+    // The phone's call log is read only with the owner there to hear it —
+    // never by a scheduled task with nobody holding the phone (2026-09-24).
+    "phone_calls",
   ]);
 
 /**

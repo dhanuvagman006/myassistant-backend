@@ -85,12 +85,21 @@ const DEFAULT_TONE =
  */
 const VOICE = {
   provider: "elevenlabs",
-  // Turbo v2.5 is the conversational model: ~300 ms to first audio.
-  // multilingual_v2 sounds marginally richer and costs close to a second
-  // of dead air on every turn, which is its own way of sounding fake.
-  model: "eleven_turbo_v2_5",
-  name: "Monika Sogam - Natural Conversations",
-  id: "EaBs7G1VibMrNAuz2Na7",
+  // THE OWNER'S OWN CHOICE, MADE IN THE DASHBOARD ON 2026-09-24 while
+  // fixing the day's failed calls: ElevenLabs v3 Conversational with
+  // voice NyZqLdjqUb8SpOUKIlWT. It replaces Turbo v2.5 / "Monika Sogam"
+  // (EaBs7G1VibMrNAuz2Na7) chosen above on 2026-09-21. This file is what
+  // scripts/update_bolna_agent.js sends, so it has to say what the
+  // dashboard says — otherwise the next run of that script would quietly
+  // put the old voice back. (The script also refuses to overwrite a
+  // dashboard that disagrees with this file; see dashboardDrift.)
+  model: "eleven_v3_conversational",
+  // The label the dashboard shows is not recorded anywhere we can read
+  // without calling the service, and the voice is chosen by its id — the
+  // label is only a name. The update script keeps whatever label the
+  // dashboard already has for this id.
+  name: "Owner's choice (2026-09-24)",
+  id: "NyZqLdjqUb8SpOUKIlWT",
 };
 
 /**
@@ -101,13 +110,22 @@ const VOICE = {
  * accepts single languages including "kn". nova-3 + hi is what every
  * successful call so far has used and it covers Hindi and English
  * including the way people mix them, which is what these calls are.
+ *
+ * 2026-09-24: the owner set the hearing to ENGLISH ("en") in the
+ * dashboard. His choice, so the file follows it — a script run must not
+ * switch it back to "hi". If Hindi-speaking contacts start being
+ * misheard, "hi" above is the one-word way back.
  */
-const TRANSCRIBER = { provider: "deepgram", model: "nova-3", language: "hi" };
+const TRANSCRIBER = { provider: "deepgram", model: "nova-3", language: "en" };
 
 /**
  * Who actually carries the call. +918064261411 is a hosted Indian DID
  * bought through Bolna, and its carrier is "vobiz" — override only if
  * the number is ever re-bought somewhere else.
+ *
+ * 2026-09-24: the agent's telephony had been switched to "plivo" and every
+ * call that day died on "from_number … doesn't exist for plivo". The owner
+ * set it back to vobiz in the dashboard; this stays vobiz.
  */
 const TELEPHONY = process.env.BOLNA_TELEPHONY_PROVIDER || "vobiz";
 
@@ -165,7 +183,7 @@ WHAT IS STILL NOT AVAILABLE, AT ANY TONE: insults, swearing, shouting, threats, 
  * Sending the cascaded pipeline without clearing that would leave both
  * halves configured and the wrong one in charge.
  */
-function agentConfig({ webhookUrl }) {
+function agentConfig({ webhookUrl, voiceName } = {}) {
   return {
     agent_config: {
       agent_name: "Hari agent calls",
@@ -224,7 +242,7 @@ function agentConfig({ webhookUrl }) {
               provider: VOICE.provider,
               provider_config: {
                 model: VOICE.model,
-                voice: VOICE.name,
+                voice: voiceName || VOICE.name,
                 voice_id: VOICE.id,
               },
               stream: true,
@@ -262,4 +280,47 @@ function agentConfig({ webhookUrl }) {
   };
 }
 
-module.exports = { SYSTEM_PROMPT, DEFAULT_TONE, VOICE, TRANSCRIBER, TELEPHONY, agentConfig };
+/**
+ * THE CHOICES THE OWNER CAN SEE AND CHANGE IN THE DASHBOARD, read off an
+ * agent (the service's GET shape, or agentConfig().agent_config): who
+ * carries the call, the voice, and the hearing. Missing parts are "".
+ */
+function dashboardChoices(agent) {
+  const a = agent?.agent_config?.tasks ? agent.agent_config : agent;
+  const tc = a?.tasks?.[0]?.tools_config || {};
+  const s = tc.synthesizer || {};
+  const t = tc.transcriber || {};
+  const str = (v) => (v == null ? "" : String(v));
+  return {
+    telephony_in: str(tc.input?.provider),
+    telephony_out: str(tc.output?.provider),
+    voice_provider: str(s.provider),
+    voice_model: str(s.provider_config?.model),
+    voice_id: str(s.provider_config?.voice_id),
+    hearing_provider: str(t.provider),
+    hearing_model: str(t.model),
+    hearing_language: str(t.language),
+  };
+}
+
+/**
+ * WHERE THE LIVE AGENT AND THIS FILE DISAGREE.
+ *
+ * The update script PUTs the whole configuration, so anything changed in
+ * the dashboard and not here is silently undone — which is how a voice or
+ * a telephony provider the owner picked would disappear. The script calls
+ * this first and refuses to send while it returns anything, unless told
+ * explicitly to overwrite the dashboard. Returns [{ field, dashboard, file }].
+ */
+function dashboardDrift(liveAgent) {
+  const live = dashboardChoices(liveAgent);
+  const mine = dashboardChoices(agentConfig({ webhookUrl: "" }).agent_config);
+  return Object.keys(mine)
+    .filter((k) => live[k] !== mine[k])
+    .map((k) => ({ field: k, dashboard: live[k], file: mine[k] }));
+}
+
+module.exports = {
+  SYSTEM_PROMPT, DEFAULT_TONE, VOICE, TRANSCRIBER, TELEPHONY,
+  agentConfig, dashboardChoices, dashboardDrift,
+};

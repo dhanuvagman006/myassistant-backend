@@ -50,6 +50,9 @@ const CORE = new Set([
   "do_task_in_app",
   // "delete Instagram", "get rid of this game", "remove the app".
   "uninstall_app",
+  // "Any missed calls?", "did Ravi call?" — asked out of nowhere, and a
+  // miss here is the assistant guessing call history (2026-09-24).
+  "phone_calls",
 ]);
 
 /**

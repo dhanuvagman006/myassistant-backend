@@ -491,6 +491,10 @@ test("every device action belongs to some claim family, or is listed as exempt",
     "translator_mode", "start_interpreter_mode", "stop_interpreter_mode",
     // Reads the screen rather than opening anything.
     "look_at_screenshot",
+    // Reads the call log rather than opening anything; its only sentence
+    // is "Checking your calls." and the answer arrives later as a
+    // [SYSTEM] line from the phone, so no family could vouch for it.
+    "phone_calls",
   ]);
   const orphans = registry.list()
     .filter((t) => t.deviceAction && !covered.has(t.name) && !EXEMPT.has(t.name))
