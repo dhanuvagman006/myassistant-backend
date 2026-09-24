@@ -216,4 +216,23 @@ async function rememberAnswer(userId, question, answer) {
   return true;
 }
 
-module.exports = { pickApp, ownerInfo, rememberAnswer, scorePreferences, appInfo, CATEGORIES };
+/**
+ * The app the owner named in their own words, if any ("… on Swiggy",
+ * "open Zomato and …"). Known names only — an unknown word is not guessed
+ * into an app.
+ */
+function appNamedIn(text) {
+  const t = ` ${String(text || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ")} `;
+  const names = new Set([
+    ...Object.keys(deeplinks.PROVIDERS || {}), ...Object.keys(EXTRA),
+    ...Object.values(CATEGORIES).flat(),
+  ]);
+  let best = null;
+  for (const n of names) {
+    const i = t.indexOf(` ${n} `);
+    if (i >= 0 && (best === null || i < best.i)) best = { n, i };
+  }
+  return best ? best.n : null;
+}
+
+module.exports = { pickApp, ownerInfo, rememberAnswer, appNamedIn, scorePreferences, appInfo, CATEGORIES };

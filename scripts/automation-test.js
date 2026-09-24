@@ -617,6 +617,18 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.match(r.speak, /NOT ordered or paid/);
   });
 
+  await atest("the app the owner named wins over the model's choice", async () => {
+    const t = reg.get("do_task_in_app");
+    const r = await t.execute({ goal: "Order veg biryani from a 4-star restaurant", category: "food", app: "Zomato" },
+      { userId: UID, platform: "android", userText: "Order veg biryani from a 4 star restaurant near me on Swiggy" });
+    assert.strictEqual(r.deviceAction.pkg, SW);
+    assert.match(r.deviceAction.goal, /swiggy/i);
+    assert.strictEqual(prefs.appNamedIn("book a cab on uber please"), "uber");
+    assert.strictEqual(prefs.appNamedIn("turn on bluetooth"), null);
+    const noText = await t.execute({ goal: "Order biryani", category: "food", app: "Zomato" }, { userId: UID, platform: "android" });
+    assert.strictEqual(noText.deviceAction.pkg, "com.application.zomato", "without the user's words, the model's app stands");
+  });
+
   await atest("hands on the phone: never unattended, confirmed after untrusted content", () => {
     assert.ok(reg.EFFECTIVE.unattendedBlocked.has("do_task_in_app"));
     assert.ok(reg.EFFECTIVE.world.has("do_task_in_app"));

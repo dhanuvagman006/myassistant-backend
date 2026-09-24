@@ -787,6 +787,9 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   // model responds (reply, tool call, or turn end) — i.e. when the
   // user's utterance is definitively over.
   let turnBuf = "";
+  // The user's latest words (spoken or typed), for tools that must honour
+  // exactly what was asked — e.g. the app they named.
+  let lastUserText = "";
   // ── TURN STATE for this socket. A new connection is a NEW session: no
   // pending action, no active entity, nothing inherited from the last
   // conversation. (src/agents/sessionState.js)
@@ -813,6 +816,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     const t = turnBuf.trim();
     if (!t) return;
     turnBuf = "";
+    lastUserText = t;
     userTurns++;
     if (recording) recording.turn();
     // A new request is a fresh attempt, not a continuation of the last
@@ -1380,6 +1384,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           platform: deviceCtx.platform,
           tzOffsetMin: deviceCtx.tz,
           appBuild: deviceCtx.build,
+          userText: lastUserText,
         });
         try {
           appWs.send(JSON.stringify({ type: "tool_completed", tool: fc.name }));
@@ -1696,6 +1701,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         console.log(`live: user stopped (utterance ${spoke}ms)`);
       }
       if (m.type === "text" && m.text && upstreamReady && upstream.readyState === WebSocket.OPEN) {
+        lastUserText = String(m.text).slice(0, 500);
         upstream.send(
           JSON.stringify({
             clientContent: {

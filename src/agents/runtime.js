@@ -537,6 +537,8 @@ function systemPrompt(extra = "") {
  * @returns {{ text, deviceActions[], toolResults[], needsConfirmation? }}
  */
 async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
+  // What they actually said, for tools that must honour it word for word.
+  ctx.userText = String(userText || "").slice(0, 500);
   // Response-time measurement for the admin panel: wall clock from the
   // moment the turn enters the runtime to the moment its answer is ready.
   const turnStartedAt = Date.now();

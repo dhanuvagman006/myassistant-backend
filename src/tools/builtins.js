@@ -6699,8 +6699,15 @@ function registerBuiltins() {
           speak: `Got it — carrying on in ${out.run.app_label}.`,
         };
       }
+      // THE APP THEY NAMED WINS. Asked "order biryani on Swiggy" after two
+      // failed tries, the model once quietly switched to another app
+      // (2026-09-24). Their own words decide, not the model's workaround.
+      const named = require("../automation/prefs").appNamedIn(ctx.userText);
+      const app = named || args.app;
+      const goal = named && !new RegExp(`\\b${named}\\b`, "i").test(String(args.goal || ""))
+        ? `${args.goal} (in ${named})` : args.goal;
       const out = await svc.start(ctx.userId, {
-        goal: args.goal, category: args.category, app: args.app, url: args.url,
+        goal, category: args.category, app, url: args.url,
       });
       if (!out.ok) return out;
       const r = out.run;
