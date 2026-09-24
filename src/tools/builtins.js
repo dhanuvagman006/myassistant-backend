@@ -6795,7 +6795,9 @@ function registerBuiltins() {
       }
       const svc = require("../automation/service");
       if (args.run_id) {
-        const out = await svc.resume(ctx.userId, args.run_id, args.answer);
+        // ctx.autoAnswer: the live socket, not the model, took the owner's
+        // whole words as the answer — the run gets them, memory does not.
+        const out = await svc.resume(ctx.userId, args.run_id, args.answer, { remember: !ctx.autoAnswer });
         if (!out.ok) return out;
         return {
           ok: true,

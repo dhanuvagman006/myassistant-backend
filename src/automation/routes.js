@@ -35,7 +35,16 @@ function cleanAccess(a) {
   };
 }
 
-/** Only what the planner reads — never trust the shape the phone sends. */
+/**
+ * Only what the planner reads — never trust the shape the phone sends.
+ *
+ * A LEANER UPLOAD (phase B, 2026-09-24): the phone may leave out keys
+ * that hold nothing (0, "", -1) and gzip the body (Content-Encoding:
+ * gzip; express.json inflates it, and the size limit counts the inflated
+ * bytes). Every missing key reads as its default here — a missing `en`
+ * is ENABLED, a missing `up` is no parent — so the phone must keep
+ * `en: 0` for a disabled element.
+ */
 function cleanScreen(s) {
   const nodes = Array.isArray(s?.nodes) ? s.nodes.slice(0, 400) : [];
   const str = (v, n) => (v == null ? "" : String(v).slice(0, n));
@@ -92,12 +101,20 @@ router.post("/:id(\\d+)/step", async (req, res) => {
     // COUNTS AND TIMES ONLY — never the screen's content. One line per
     // step, so a slow run can be read phase by phase: the model's share
     // (llm_ms, in_tok; ≈ when the model did not report its count) beside
-    // the whole step (ms).
+    // the whole step (ms). Phase B (2026-09-24) adds how the call was made
+    // — thinking level, picture resolution, model — and what the phone
+    // uploaded (KB on the wire; gz when it came compressed), so every
+    // speed change is measured on this same line.
+    const len = Number(req.headers["content-length"]);
+    const gz = /gzip|deflate|br/i.test(String(req.headers["content-encoding"] || ""));
     console.log(`automation step run=${runId} seq=${seq ?? "-"} llm_ms=${meta.llm_ms || 0} ` +
       `in_tok≈${meta.in_tok || 0} nodes=${screen.nodes.length} ` +
       `shot=${screen.shot ? Math.round(screen.shot.length * 0.75 / 1024) + "KB" : "none"}` +
       `${req.body?.screen?.shot && !screen.shot ? " (dropped)" : ""} ` +
-      `calls=${meta.calls || 0} ms=${Date.now() - started} status=${out?.status || "?"}`);
+      `calls=${meta.calls || 0} ms=${Date.now() - started} status=${out?.status || "?"} ` +
+      `think=${String(meta.think || "-").toLowerCase()} ` +
+      `res=${String(meta.res || "-").replace(/^MEDIA_RESOLUTION_/, "").toLowerCase()} ` +
+      `model=${meta.model || "-"} up=${Number.isFinite(len) ? Math.round(len / 1024) + "KB" : "-"}${gz ? " gz" : ""}`);
     res.json(out);
   } catch (e) {
     console.error(`automation step run=${runId}:`, e.message);

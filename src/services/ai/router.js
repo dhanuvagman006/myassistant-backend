@@ -112,6 +112,52 @@ function envModel(name, fallback) {
 
 const chatModel = () => envModel("GEMINI_MODEL", DEFAULT_MODEL);
 
+// THE PHONE PLANNER'S OWN MODEL. A task on the phone used to share the
+// chat model — and its free daily allowance (gemini-3.5-flash: 20/day) —
+// with every conversation, so one long run could spend it and switch
+// family halfway through (audit, 2026-09-24). AUTOMATION_MODEL lets the
+// hands run on a model of their own; unset, nothing changes.
+const automationModel = () => envModel("AUTOMATION_MODEL", chatModel());
+
+// Per-call thinking (the phone planner: MINIMAL on a routine step, one
+// level higher right after a step failed, changed nothing or was
+// refused). Gemini 3 takes the level itself; 2.5 Flash takes a budget.
+const LEVELS = ["MINIMAL", "LOW", "MEDIUM", "HIGH"];
+const BUDGET_25 = { MINIMAL: 0, LOW: 1024, MEDIUM: 4096, HIGH: 8192 };
+// "model:LEVEL" pairs the API refused. Only that pair is dropped — the
+// chat's own thinking level must never be switched off because the
+// planner asked one model for a level it does not have.
+const UNSUPPORTED_LEVELS = new Set();
+
+function thinkingFor(model, wanted) {
+  const lv = String(wanted || "").trim().toUpperCase();
+  if (!LEVELS.includes(lv) || UNSUPPORTED_FIELDS.has("thinkingConfig")) return null;
+  if (UNSUPPORTED_LEVELS.has(`${model}:${lv}`)) return null;
+  if (isGemini3(model)) return { thinkingLevel: lv };
+  if (isGemini25Flash(model)) return { thinkingBudget: BUDGET_25[lv] };
+  return null;
+}
+
+/**
+ * Which optional request field a 400 refused, most specific first, or
+ * null. A schema or picture setting the API does not know is dropped on
+ * its own; only a refusal that names thinking (or names nothing, with no
+ * per-call extras in play) switches thinking off, as before.
+ */
+function refusedOption(status, body, cfg, model, opts) {
+  if (status !== 400) return null;
+  const b = String(body || "");
+  if (cfg.responseSchema && /schema/i.test(b)) return "responseSchema";
+  if (cfg.mediaResolution && /media.?resolution/i.test(b)) return "mediaResolution";
+  if (cfg.responseMimeType && /mime/i.test(b)) return "responseMimeType";
+  const own = opts._noExtras ? null : thinkingFor(model, opts.thinking);
+  if (own && cfg.thinkingConfig && /thinking/i.test(b)) return "thinkingLevel";
+  const extras = !!(cfg.responseSchema || cfg.mediaResolution || own);
+  if (extras && !/thinking/i.test(b) && rejectsField(status, b, "thinking")) return "extras";
+  if (cfg.thinkingConfig && rejectsField(status, b, "thinking")) return "thinkingConfig";
+  return null;
+}
+
 // QUOTA FALLBACK. Free-tier Gemini keys have PER-MODEL daily caps that vary
 // wildly by model (gemini-3.5-flash: 20/day, measured 2026-08-29 — one
 // conversation exhausts it). When the primary chat model 429s, each entry
@@ -188,13 +234,29 @@ async function callGemini(messages, system = SYSTEM_PROMPT, _retry = false, _mod
  *   planner, which must answer inside the phone's patience) would rather
  *   fail fast and say so than wait for a second model. opts.json — ask for
  *   a JSON reply (responseMimeType); dropped for good if the API rejects it.
+ *
+ * Per-call options for the phone planner (2026-09-24; each one dropped on
+ * its own if the API refuses it, never taking chat down):
+ *   opts.model — this model instead of GEMINI_MODEL (AUTOMATION_MODEL)
+ *   opts.thinking — MINIMAL | LOW | MEDIUM | HIGH for this call only
+ *   opts.schema — responseSchema with json: every reply parses first time
+ *   opts.mediaResolution — MEDIA_RESOLUTION_LOW | _MEDIUM for the picture
  */
 async function callGeminiMeta(messages, system = SYSTEM_PROMPT, opts = {}) {
   const { _retry = false, _model = null } = opts;
-  const model = _model || chatModel();
+  const model = _model || opts.model || chatModel();
   const generationConfig = tuning(model);
+  const own = thinkingFor(model, opts.thinking);
+  if (own && !opts._noExtras) generationConfig.thinkingConfig = own;
   if (opts.json && !UNSUPPORTED_FIELDS.has("responseMimeType")) {
     generationConfig.responseMimeType = "application/json";
+    if (opts.schema && !opts._noExtras && !UNSUPPORTED_FIELDS.has("responseSchema")) {
+      generationConfig.responseSchema = opts.schema;
+    }
+  }
+  const pictures = messages.some((m) => Array.isArray(m.images) && m.images.length);
+  if (opts.mediaResolution && pictures && !opts._noExtras && !UNSUPPORTED_FIELDS.has("mediaResolution")) {
+    generationConfig.mediaResolution = opts.mediaResolution;
   }
   const started = Date.now();
   const deadline = Number(opts.timeoutMs) > 0 ? started + Number(opts.timeoutMs) : 0;
@@ -204,12 +266,14 @@ async function callGeminiMeta(messages, system = SYSTEM_PROMPT, opts = {}) {
     contents: messages.map((m) => ({
       role: m.role === "assistant" ? "model" : "user",
       // A message may carry pictures (the phone's screen, for the hands
-      // in other apps). Text-only callers are unchanged.
+      // in other apps). Text-only callers are unchanged. The PICTURE COMES
+      // FIRST: Google's guidance for one image plus a prompt is image,
+      // then text — the question is read with the screen already in view.
       parts: [
-        { text: m.content },
         ...(Array.isArray(m.images) ? m.images.map((i) => ({
           inline_data: { mime_type: i.mime || "image/jpeg", data: i.data },
         })) : []),
+        { text: m.content },
       ],
     })),
     ...(Object.keys(generationConfig).length ? { generationConfig } : {}),
@@ -233,21 +297,28 @@ async function callGeminiMeta(messages, system = SYSTEM_PROMPT, opts = {}) {
       );
       if (!r.ok) {
         const body = await r.text().catch(() => "");
-        // A rejected tuning field must never take chat down.
-        if (!_retry && generationConfig.thinkingConfig &&
-            rejectsField(r.status, body, "thinking")) {
+        // A rejected tuning field must never take chat down: the field the
+        // API named is dropped and the call asked again (at most three
+        // times — each retry drops a different one).
+        const refused = !_retry && (opts._drops || 0) < 3
+          ? refusedOption(r.status, body, generationConfig, model, opts) : null;
+        if (refused === "thinkingConfig") {
           UNSUPPORTED_FIELDS.add("thinkingConfig");
           console.error(
             `gemini: thinkingLevel "${THINKING_LEVEL}" rejected — continuing ` +
               `without it (responses will be slower). Set GEMINI_THINKING_LEVEL.`
           );
-          throw Object.assign(new Error("retry without thinking"), { retryNoThinking: true });
+        } else if (refused === "thinkingLevel") {
+          UNSUPPORTED_LEVELS.add(`${model}:${String(opts.thinking).toUpperCase()}`);
+          console.error(`gemini: thinking level "${opts.thinking}" rejected by ${model} — using the default level.`);
+        } else if (refused === "extras") {
+          console.error(`gemini: a per-call option was rejected by ${model} — asking again without them.`);
+        } else if (refused) {
+          UNSUPPORTED_FIELDS.add(refused);
+          console.error(`gemini: ${refused} rejected — continuing without it.`);
         }
-        if (!_retry && generationConfig.responseMimeType &&
-            r.status === 400 && /mime/i.test(body)) {
-          UNSUPPORTED_FIELDS.add("responseMimeType");
-          console.error(`gemini: responseMimeType rejected — continuing without JSON mode.`);
-          throw Object.assign(new Error("retry without json mode"), { retryNoThinking: true });
+        if (refused) {
+          throw Object.assign(new Error(`retry without ${refused}`), { retryWithout: refused });
         }
         throw Object.assign(
           new Error(`gemini ${r.status} [model=${model}] ${body.slice(0, 300) || "(empty body)"}`),
@@ -265,8 +336,15 @@ async function callGeminiMeta(messages, system = SYSTEM_PROMPT, opts = {}) {
     });
   } catch (e) {
     const left = deadline ? deadline - Date.now() : 0;
-    if (e?.retryNoThinking && (!deadline || left > 0)) {
-      return callGeminiMeta(messages, system, { ...opts, _retry: true, timeoutMs: deadline ? left : 0 });
+    if (e?.retryWithout && (!deadline || left > 0)) {
+      return callGeminiMeta(messages, system, {
+        ...opts,
+        _drops: (opts._drops || 0) + 1,
+        // Refused but unnamed with per-call options in play: this call goes
+        // again without them; nothing is switched off for anyone else.
+        _noExtras: opts._noExtras || e.retryWithout === "extras",
+        timeoutMs: deadline ? left : 0,
+      });
     }
     if (e?.status === 429 && !_model && !opts.noRetry && fallbackModel() !== model) {
       console.warn(`gemini: every key is spent on ${model} — retrying on ${fallbackModel()}`);
@@ -291,13 +369,21 @@ function requireKey(model = null) {
  * @param {number} [opts.timeoutMs] hard deadline for the whole call.
  * @param {boolean} [opts.noRetry] no transient retry, no fallback model.
  * @param {boolean} [opts.json] ask for a JSON reply.
+ * @param {string} [opts.model] this model instead of GEMINI_MODEL.
+ * @param {string} [opts.thinking] MINIMAL | LOW | MEDIUM | HIGH, this call.
+ * @param {Object} [opts.schema] responseSchema (with json).
+ * @param {string} [opts.mediaResolution] for the attached pictures.
  * @returns {{reply, provider, usage, model, ms}} — usage is Gemini's
  *          usageMetadata (token counts), null when not reported.
  */
 async function generateReply(messages, opts = {}) {
   const system = opts.system || SYSTEM_PROMPT + (opts.extraSystem || "");
-  requireKey();
-  const call = { timeoutMs: opts.timeoutMs, noRetry: !!opts.noRetry, json: !!opts.json };
+  requireKey(opts.model || null);
+  const call = {
+    timeoutMs: opts.timeoutMs, noRetry: !!opts.noRetry, json: !!opts.json,
+    model: opts.model || null, thinking: opts.thinking || null,
+    schema: opts.schema || null, mediaResolution: opts.mediaResolution || null,
+  };
   const answer = (m) => ({ reply: m.text, provider: "gemini", usage: m.usage, model: m.model, ms: m.ms });
   const run = () => callGeminiMeta(messages, system, call);
   // A hard deadline holds even if a request ignores its abort signal.
@@ -942,6 +1028,7 @@ module.exports = {
   generateWithTools,
   generateWithToolsStream,
   envModel,
+  automationModel,
   generateReply,
   generateReplyStream,
   transcribeAudio,

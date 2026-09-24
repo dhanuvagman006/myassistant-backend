@@ -797,6 +797,26 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   // The user's latest words (spoken or typed), for tools that must honour
   // exactly what was asked — e.g. the app they named.
   let lastUserText = "";
+  // When those words arrived, and the arrival time of the words that
+  // already chose a phone route. The spoken route below acts once per
+  // request and only on fresh words: a tool the model calls later, on its
+  // own, must never re-run an old request.
+  let lastUserAt = 0;
+  let routedAt = -1;
+  // WHICH REQUEST THOSE WORDS ARE. heardSeq counts every new thing the
+  // owner starts (the phone's activity_start for speech, typed text) and
+  // every note from the app; wordsSeq is its value when lastUserText was
+  // set. Gemini does not promise the transcript before the tool call, and
+  // a short answer is sometimes never transcribed: a call for NEW words
+  // then met the OLD ones — answered "already being done" and not run, or
+  // swapped for the old words' route (review, 2026-09-24). Words that are
+  // not the newest request steer nothing; the model's call runs as made.
+  let heardSeq = 0;
+  let wordsSeq = 0;
+  // A route already ran in the model's current turn: a second routable
+  // call before turnComplete is that same request (the model reaching for
+  // order_food as well), whatever arrived in between.
+  let routedTurn = false;
   // ── TURN STATE for this socket. A new connection is a NEW session: no
   // pending action, no active entity, nothing inherited from the last
   // conversation. (src/agents/sessionState.js)
@@ -824,6 +844,8 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     if (!t) return;
     turnBuf = "";
     lastUserText = t;
+    lastUserAt = Date.now();
+    wordsSeq = heardSeq;
     userTurns++;
     if (recording) recording.turn();
     // A new request is a fresh attempt, not a continuation of the last
@@ -1308,6 +1330,14 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     if (msg.toolCall) {
       flushUserTurn(); // the user's utterance caused this call — turn over
       const responses = [];
+      const intent = require("../automation/intent");
+      // The typed route's own words, word for word (see the typed path).
+      const fixedReply = (res) => {
+        const ok = res.ok !== false;
+        const line = ok ? (res.speak || "On it.") : `I couldn't start that: ${res.error || "something went wrong"}.`;
+        return { ok, result: (ok ? "It is already being done on the phone. " : "") +
+          `Say exactly this, nothing before or after it: "${line}"` };
+      };
       for (const fc of msg.toolCall.functionCalls || []) {
         if (fc.name === "stay_silent") {
           silentTurn = true;
@@ -1315,6 +1345,59 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           responses.push({ id: fc.id, name: fc.name,
             response: { ok: true, result: "Stay silent: say nothing at all and wait for the user to speak to you." } });
           continue;
+        }
+        // THE OWNER'S WORDS PICK THE ROUTE, SPOKEN OR TYPED (contract §3,
+        // 2026-09-24). Typed, "order biryani from Swiggy" always took the
+        // fixed route; spoken, the live model chose — order_food (a
+        // hand-off that fills no cart), open_named_app or the task engine,
+        // from one day to the next. Now, when the words match a fixed
+        // route and the model called one of the routable tools with a
+        // different tool or app, the route runs instead, and the model is
+        // handed the route's fixed sentence either way. An owner's answer
+        // while a task waits on a question resumes THAT task (run_id)
+        // instead of starting a second one. Once per request, and only on
+        // fresh words; a second routable call for the same words (the model
+        // reaching for order_food as well) would start it twice — an
+        // order_food link landing in the app mid-run — so it is answered,
+        // not run. Fresh means the NEWEST request's words (wordsSeq): when
+        // its transcript has not arrived yet, the call runs as the model
+        // made it, never steered or blocked by the words before.
+        const calledAs = fc.name;
+        let fixedLine = false;
+        // The owner's whole words were made the answer here, not picked
+        // out by the model: the run gets them, memory does not.
+        let autoAnswer = false;
+        const freshWords = !!lastUserText && wordsSeq === heardSeq && Date.now() - lastUserAt < 30_000;
+        const routable = Number(user?.sub) > 0 && Number(deviceCtx.build) >= 104 && intent.ROUTABLE.has(fc.name);
+        if (routable && (routedTurn || (freshWords && routedAt === lastUserAt))) {
+          console.log(`live: spoken route — ${calledAs} not run, this request already started`);
+          responses.push({ id: fc.id, name: calledAs, response: { ok: true,
+            result: "Already being done on the phone for this request — do not call it again, and say nothing more about it." } });
+          continue;
+        }
+        if (routable && freshWords) {
+          const waiting = await require("../automation/service").waitingRun(Number(user.sub)).catch(() => null);
+          const pick = intent.resumeFor({ call: fc, text: lastUserText, build: deviceCtx.build, waiting }) ||
+            intent.spokenRoute(fc, lastUserText, deviceCtx.build);
+          if (pick) {
+            routedAt = lastUserAt;
+            routedTurn = true;
+            fixedLine = true;
+            if (pick.override !== false) {
+              console.log(`live: spoken route ${calledAs} -> ${pick.tool}` +
+                `${pick.args?.run_id ? ` (the owner's answer to run ${pick.args.run_id})` : ""}`);
+              fc.name = pick.tool;
+              fc.args = pick.args;
+              autoAnswer = !!pick.args?.run_id;
+            }
+          }
+        }
+        // A resume the model called without the answer: the answer is
+        // what the owner just said.
+        if (fc.name === "do_task_in_app" && fc.args?.run_id && !fc.args.answer && freshWords &&
+            !/\[SYSTEM\]/i.test(lastUserText)) {
+          fc.args = { ...fc.args, answer: lastUserText.slice(0, 400) };
+          autoAnswer = true;
         }
         // HIGH-RISK CONFIRMATION IN LIVE MODE (§17).
         //
@@ -1356,7 +1439,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
               : fc.name;
             responses.push({
               id: fc.id,
-              name: fc.name,
+              name: calledAs,
               response: {
                 ok: false,
                 needs_confirmation: true,
@@ -1407,6 +1490,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           // ran for a build-104 phone that silently dropped it.
           deviceCaps: deviceCtx.caps || null,
           userText: lastUserText,
+          autoAnswer,
         });
         try {
           appWs.send(JSON.stringify({ type: "tool_completed", tool: fc.name }));
@@ -1551,10 +1635,12 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           // The tool's own speak/note already distinguish "this is done"
           // from "the phone has been asked to do this", so forward those
           // rather than inventing a word that flattens the difference.
+          // The response keeps the name the model called (its id is what
+          // pairs them); a routed call carries the route's fixed sentence.
           responses.push({
             id: fc.id,
-            name: fc.name,
-            response: res.data
+            name: calledAs,
+            response: fixedLine ? fixedReply(res) : res.data
               ? res
               : {
                   ok: res.ok !== false,
@@ -1565,7 +1651,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
                 },
           });
         } else {
-          responses.push({ id: fc.id, name: fc.name, response: res });
+          responses.push({ id: fc.id, name: calledAs, response: fixedLine ? fixedReply(res) : res });
         }
       }
       upstream.send(JSON.stringify({ toolResponse: { functionResponses: responses } }));
@@ -1582,6 +1668,9 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       turnLatency = repliedAt - activityEndAt;
       console.log(`live: FIRST REPLY ${repliedAt - activityEndAt}ms after activity_end`);
     }
+    // The model's turn is over (finished, or talked over): the next
+    // routable call belongs to whatever comes next, judged afresh.
+    if (sc.turnComplete || sc.interrupted) routedTurn = false;
     if (sc.turnComplete) {
       activityEndAt = 0;
       repliedAt = 0;
@@ -1717,6 +1806,9 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       // automatic detector, which is now the one in charge.
       if (m.type === "activity_start") {
         speechStartedAt = Date.now();
+        // The owner has started saying something new: the words heard
+        // before it no longer speak for the next tool call (wordsSeq).
+        heardSeq++;
       }
       if (m.type === "activity_end") {
         activityEndAt = Date.now();
@@ -1724,51 +1816,111 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         console.log(`live: user stopped (utterance ${spoke}ms)`);
       }
       if (m.type === "text" && m.text && upstreamReady && upstream.readyState === WebSocket.OPEN) {
-        lastUserText = String(m.text).slice(0, 500);
-        // A TYPED PHONE TASK TAKES THE STRUCTURED PATH: straight to the
-        // task engine, then one fixed sentence — no improvising around it
-        // (automation/intent.js). Everything else goes to the model as
-        // before.
-        const task = Number(user?.sub) > 0 && Number(deviceCtx.build) >= 104
-          ? require("../automation/intent").matchFor(m.text, deviceCtx.build) : null;
-        if (task) {
-          (async () => {
-            const res = await require("../tools/registry").execute(task.tool || "do_task_in_app",
-              task.args || { goal: task.goal, category: task.category, app: task.app, url: task.url }, {
-                session: liveState, sessionId: liveSessionId, turnId: currentTurnId,
-                source: "live", userId: user?.sub, userName,
-                platform: deviceCtx.platform, tzOffsetMin: deviceCtx.tz,
-                appBuild: deviceCtx.build, deviceCaps: deviceCtx.caps || null,
-                userText: lastUserText,
-              }).catch((e) => ({ ok: false, error: String(e.message || e) }));
-            if (res.ok && res.deviceAction) {
-              try { appWs.send(JSON.stringify(res.deviceAction)); } catch (_) {}
-            }
-            const line = res.ok
-              ? (res.speak || "On it.")
-              : `I couldn't start that: ${res.error || "something went wrong"}.`;
-            if (upstream.readyState === WebSocket.OPEN) {
-              upstream.send(JSON.stringify({
-                clientContent: {
-                  turns: [{ role: "user", parts: [{ text:
-                    `[SYSTEM] The owner typed: "${String(m.text).slice(0, 300)}". ` +
-                    (res.ok ? "It is already being done on the phone. " : "") +
-                    `Say exactly this, nothing before or after it: "${line}"` }] }],
-                  turnComplete: true,
-                },
-              }));
-            }
-          })();
+        const typed = String(m.text);
+        const intent = require("../automation/intent");
+        // THE APP'S OWN NOTES ARE NOT THE OWNER'S WORDS (review,
+        // 2026-09-24). The same socket carries what the owner typed and
+        // what the phone writes to the model: [SYSTEM] results, the
+        // greeting it asks for at every session start, the camera's
+        // reading of a sign. A greeting once resumed a waiting task as its
+        // "answer" and was stored as the owner's address. A note goes to
+        // the model exactly as before — no route, no stop, no answer — and
+        // is not the owner's latest words (lastUserText). A phone that
+        // marks the owner's own typing (typed: true / false) is taken at
+        // its word.
+        const fromOwner = m.typed === true || (m.typed !== false && !intent.isAppNote(typed));
+        heardSeq++;
+        if (!fromOwner) {
+          upstream.send(JSON.stringify({
+            clientContent: { turns: [{ role: "user", parts: [{ text: m.text }] }], turnComplete: true },
+          }));
           return;
         }
-        upstream.send(
-          JSON.stringify({
+        lastUserText = typed.slice(0, 500);
+        lastUserAt = Date.now();
+        wordsSeq = heardSeq;
+        // Words handled here are never run again by a tool the model
+        // calls on its way to saying the fixed sentence (routedAt).
+        const at = lastUserAt;
+        const uid = Number(user?.sub);
+        const eligible = uid > 0 && Number(deviceCtx.build) >= 104;
+        const sayExactly = (line, done) => {
+          if (upstream.readyState !== WebSocket.OPEN) return;
+          upstream.send(JSON.stringify({
             clientContent: {
-              turns: [{ role: "user", parts: [{ text: m.text }] }],
+              turns: [{ role: "user", parts: [{ text:
+                `[SYSTEM] The owner typed: "${typed.slice(0, 300)}". ` +
+                (done ? "It is already being done on the phone. " : "") +
+                `Say exactly this, nothing before or after it: "${line}"` }] }],
               turnComplete: true,
             },
-          })
-        );
+          }));
+        };
+        (async () => {
+          // A TASK WAITING ON A QUESTION (contract §3, 2026-09-24).
+          // "order from Meghana on Swiggy", typed after the Swiggy task
+          // asked "Paradise or Meghana?", used to start a second run while
+          // the first waited for ever: a clear task for the waiting run's
+          // own app resumes it. A bare "cancel" / "stop it" ends it. Any
+          // other words go to the model with the task's question beside
+          // them, and the model decides whether they are the answer — taken
+          // whole, "open Swiggy", "call mom" or "what is the weather" typed
+          // in those ten minutes were swallowed as the answer (review).
+          const svc = require("../automation/service");
+          const waiting = eligible ? await svc.waitingRun(uid).catch(() => null) : null;
+          if (waiting && intent.stopsTask(typed, waiting)) {
+            routedAt = at;
+            await svc.finish(uid, waiting.id, { reason: "stopped" }).catch(() => null);
+            sayExactly("Okay, I've stopped that task.", false);
+            return;
+          }
+          // A TYPED PHONE TASK TAKES THE STRUCTURED PATH: straight to the
+          // task engine, then one fixed sentence — no improvising around it
+          // (automation/intent.js). Everything else goes to the model as
+          // before.
+          const task = eligible
+            ? intent.resumeFor({ text: typed, build: deviceCtx.build, waiting }) ||
+              intent.matchFor(typed, deviceCtx.build)
+            : null;
+          if (!task) {
+            if (upstream.readyState !== WebSocket.OPEN) return;
+            const parts = waiting ? [{ text: intent.waitingNote(waiting) }, { text: m.text }] : [{ text: m.text }];
+            upstream.send(
+              JSON.stringify({
+                clientContent: {
+                  turns: [{ role: "user", parts }],
+                  turnComplete: true,
+                },
+              })
+            );
+            return;
+          }
+          routedAt = at;
+          routedTurn = true;
+          const res = await require("../tools/registry").execute(task.tool || "do_task_in_app",
+            task.args || { goal: task.goal, category: task.category, app: task.app, url: task.url }, {
+              session: liveState, sessionId: liveSessionId, turnId: currentTurnId,
+              source: "live", userId: user?.sub, userName,
+              platform: deviceCtx.platform, tzOffsetMin: deviceCtx.tz,
+              appBuild: deviceCtx.build, deviceCaps: deviceCtx.caps || null,
+              userText: lastUserText,
+              // A resume from the owner's whole typed words: the run's
+              // answer, never a remembered form fact.
+              autoAnswer: !!task.args?.run_id,
+            }).catch((e) => ({ ok: false, error: String(e.message || e) }));
+          if (res.ok && res.deviceAction) {
+            // A link that leaves the app (play_music's) waits until the
+            // sentence has been said, as it does for the model's own calls.
+            if (EXIT_ACTIONS.has(res.deviceAction.type)) pendingExitActions.push(res.deviceAction);
+            else {
+              try { appWs.send(JSON.stringify(res.deviceAction)); } catch (_) {}
+            }
+          }
+          const line = res.ok
+            ? (res.speak || "On it.")
+            : `I couldn't start that: ${res.error || "something went wrong"}.`;
+          sayExactly(line, !!res.ok);
+        })().catch((e) => console.error("live: typed text failed:", e.message || e));
       }
     } catch (_) {}
   });
@@ -1856,4 +2008,6 @@ function attachWs(server) {
   });
 }
 
-module.exports = { probeRouter, attachWs };
+// bridge is exported for the tests only (scripts/automation-test.js drives
+// it with both sockets faked in memory); the server uses attachWs.
+module.exports = { probeRouter, attachWs, bridge };
