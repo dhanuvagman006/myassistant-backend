@@ -126,7 +126,7 @@ function directive(r, { resume = false } = {}) {
  * START / RESUME
  * ------------------------------------------------------------------ */
 
-async function start(userId, { goal, category = "", app = "", url = "" } = {}) {
+async function start(userId, { goal, category = "", app = "", url = "", query = "" } = {}) {
   const g = String(goal || "").replace(/\s+/g, " ").trim().slice(0, 500);
   if (!g) return { ok: false, error: "what should I do? (goal required)" };
 
@@ -148,16 +148,26 @@ async function start(userId, { goal, category = "", app = "", url = "" } = {}) {
   }
   // A start link only ever opens INSIDE the chosen app (the phone pins the
   // package), so a link the app doesn't understand just opens the app.
-  const startUrl = web ? link : (/^https?:\/\//i.test(link) ? link : "");
+  let startUrl = web ? link : (/^https?:\/\//i.test(link) ? link : "");
+  // INTENT FIRST: the app's own search link lands on the results in one
+  // jump; the hands take over from there (automation/intents.js).
+  const notes = [];
+  if (!web && !startUrl && pick?.name) {
+    const jump = require("./intents").startLink(pick.name, String(category || "").toLowerCase(), g, query);
+    if (jump) {
+      startUrl = jump.url;
+      notes.push(`Opened ${pick.label} straight on its search results for "${jump.query}" — no need to search again.`);
+    }
+  }
 
   const now = Date.now();
   const row = await one(
     `INSERT INTO automation_runs
        (user_id, goal, category, app_name, app_label, app_pkg, app_reason,
-        start_url, web, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10) RETURNING *`,
+        start_url, web, notes, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11) RETURNING *`,
     [userId, g, String(category || ""), pick?.name || "", pick?.label || (web ? "the browser" : ""),
-     pick?.pkg || "", pick?.reason || "", startUrl, web ? 1 : 0, now]);
+     pick?.pkg || "", pick?.reason || "", startUrl, web ? 1 : 0, JSON.stringify(notes), now]);
   const r = hydrate(row);
   return { ok: true, run: r, directive: directive(r) };
 }

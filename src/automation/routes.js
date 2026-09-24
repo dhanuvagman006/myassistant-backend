@@ -60,8 +60,13 @@ router.post("/:id(\\d+)/step", async (req, res) => {
   const id = uid(req);
   if (!id) return res.status(401).json({ error: "sign in required" });
   try {
+    const screen = cleanScreen(req.body?.screen);
+    // Counts only — never the screen's content.
+    console.log(`automation step run=${req.params.id} pkg=${screen.pkg} nodes=${screen.nodes.length} ` +
+      `shot=${screen.shot ? Math.round(screen.shot.length * 0.75 / 1024) + "KB" : "none"}` +
+      `${req.body?.screen?.shot && !screen.shot ? " (dropped)" : ""}`);
     const out = await svc.step(id, Number(req.params.id), {
-      screen: cleanScreen(req.body?.screen),
+      screen,
       last: req.body?.last || null,
     });
     res.json(out);

@@ -548,6 +548,22 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.strictEqual(await prefs.rememberAnswer(UID, "Your annual family income?", "3 lakh"), true);
   });
 
+  await atest("intent first: the run opens the app straight on its search results", async () => {
+    const intents = require("../src/automation/intents");
+    assert.strictEqual(intents.extractQuery("Order veg biryani from a 4 star restaurant near me on Swiggy", "swiggy"), "veg biryani");
+    assert.strictEqual(intents.extractQuery("please get me a phone cover on Amazon", "amazon"), "phone cover");
+    assert.strictEqual(intents.extractQuery("add milk to my blinkit cart", "blinkit"), "milk");
+    assert.strictEqual(intents.extractQuery("Book a table for dinner", ""), "table for dinner");
+    const s = await svc.start(UID, { goal: "Order veg biryani from a 4 star restaurant near me on Swiggy", app: "swiggy", category: "food" });
+    assert.strictEqual(s.directive.start_url, "https://www.swiggy.com/search?query=veg%20biryani");
+    assert.match(s.run.notes[0], /straight on its search results for "veg biryani"/);
+    // Without a clear item there is no jump — the app just opens.
+    const t = await svc.start(UID, { goal: "Order something nice from a 4 star place near me and surprise me with it", app: "swiggy", category: "food" });
+    assert.strictEqual(t.directive.start_url, "");
+    // Resuming never re-jumps: the app keeps where it was.
+    assert.strictEqual(svc.directive(s.run, { resume: true }).start_url, "");
+  });
+
   await atest("the planner sees the screenshot; an app with no element list is worked from the picture", async () => {
     const s = await svc.start(UID, { goal: "Order idli", app: "swiggy" });
     pictures.length = 0; prompts.length = 0;

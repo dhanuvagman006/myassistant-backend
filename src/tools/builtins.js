@@ -6678,6 +6678,10 @@ function registerBuiltins() {
             "and anything across the phone itself.",
         },
         app: { type: "string", description: "ONLY if the user named an app." },
+        query: {
+          type: "string",
+          description: "The thing to search for in the app, in their words: 'veg biryani', 'phone cover'. Lets the app open straight on the results.",
+        },
         url: { type: "string", description: "For a website task: the page to open (https://…)." },
         run_id: { type: "integer", description: "Resuming a task that asked the user a question." },
         answer: { type: "string", description: "The user's answer to that question." },
@@ -6707,7 +6711,7 @@ function registerBuiltins() {
       const goal = named && !new RegExp(`\\b${named}\\b`, "i").test(String(args.goal || ""))
         ? `${args.goal} (in ${named})` : args.goal;
       const out = await svc.start(ctx.userId, {
-        goal, category: args.category, app, url: args.url,
+        goal, category: args.category, app, url: args.url, query: args.query,
       });
       if (!out.ok) return out;
       const r = out.run;
