@@ -4687,9 +4687,10 @@ function registerBuiltins() {
       "back saying the app is not installed do you tell the user that.\n" +
       "Do NOT substitute a different app. Opening YouTube when the user " +
       "asked for Swiggy is worse than admitting you could not.\n" +
-      "When they want something DONE rather than opened — order a dish, " +
-      "book a cab, get tickets — use order_food, book_ride or " +
-      "book_movie_tickets instead; those prepare the real target.\n" +
+      "ONLY TO OPEN. When they want something DONE in or across apps " +
+      "('open the calculator and work out 12 x 7', 'open settings and " +
+      "turn on dark mode', 'add it to my cart') use do_task_in_app — it " +
+      "opens the app itself and does the steps.\n" +
       "IF IT IS NOT INSTALLED the phone opens its Play Store page so they " +
       "can install it, and offers to open it once it is in — so 'open X', " +
       "'download X', 'install X' and 'get X' all go through this tool. " +
