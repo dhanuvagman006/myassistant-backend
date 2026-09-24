@@ -342,6 +342,17 @@ async function step(userId, runId, { screen, last } = {}) {
     await save(userId, r, { status: "waiting", question: q, report: q });
     return { status: "waiting", question: q, report: q, step: r.steps.length };
   }
+  // A claim of success after taps that changed nothing is not believed:
+  // the owner hears that it could not be confirmed (a run once reported
+  // "added to the cart" while nothing had been added, 2026-09-24).
+  const recent = r.steps.slice(-3).filter((st) => st.result);
+  const unconfirmed = recent.length >= 2 &&
+    recent.every((st) => st.result.ok === false || st.result.changed === false);
+  if ((d.status === "done" || d.status === "handoff") && unconfirmed) {
+    return end(userId, r, "failed", {
+      report: `I couldn't confirm that worked in ${r.app_label} — my last taps didn't change anything on the screen, so please check it yourself.`,
+    });
+  }
   if (d.status === "done") return end(userId, r, "done", { report: composeReport(r, { model: d.report }) });
   if (d.status === "handoff") {
     return end(userId, r, "handoff", { kind: "ready", report: composeReport(r, { model: d.report, kind: "other" }) });

@@ -681,6 +681,34 @@ const swiggyCart = { pkg: SW, nodes: [
     }
   });
 
+  await atest("'open <any app> and …' and 'follow … on Instagram' take the fixed path", () => {
+    const intent = require("../src/automation/intent");
+    const a = intent.match("Open Instagram and follow Neha Shetty actor");
+    assert.deepStrictEqual({ app: a.app, category: a.category }, { app: "instagram", category: "other" });
+    assert.strictEqual(intent.match("open the Notebook app and add a note called groceries").app, "notebook");
+    assert.strictEqual(intent.match("follow Neha Shetty on Instagram").app, "instagram");
+    assert.strictEqual(intent.match("play arijit songs on spotify").app, "spotify");
+    // WhatsApp and money keep their own flows.
+    assert.strictEqual(intent.match("open WhatsApp and send hi to Ravi"), null);
+    assert.strictEqual(intent.match("open PhonePe and pay Ravi 500"), null);
+    assert.strictEqual(intent.match("open instagram"), null, "plain open stays with open_named_app");
+  });
+
+  await atest("a success claim after taps that changed nothing is not believed", async () => {
+    const s = await svc.start(UID, { goal: "Order idli", app: "swiggy" });
+    script = [
+      { status: "continue", action: { type: "tap", id: 11 }, expect: "added" },
+      { status: "continue", action: { type: "tap", id: 11 }, expect: "added" },
+      { status: "handoff", report: "I added idli to your cart — please pay." },
+    ];
+    await svc.step(UID, s.run.id, { screen: swiggyMenu });
+    await svc.step(UID, s.run.id, { screen: swiggyMenu, last: { ok: true, changed: false } });
+    const out = await svc.step(UID, s.run.id, { screen: swiggyMenu, last: { ok: false, error: "tap_failed" } });
+    assert.strictEqual(out.status, "failed");
+    assert.match(out.report, /couldn't confirm that worked/);
+    assert.match(planner.SYSTEM, /REPORT ONLY WHAT YOU CAN SEE/);
+  });
+
   await atest("a missing permission never becomes an excuse for a task inside an app", () => {
     const block = reg.limitsBlock({ platform: "android", build: 104, granted: [], denied: ["location"] });
     if (block) {

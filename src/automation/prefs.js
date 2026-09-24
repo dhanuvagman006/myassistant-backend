@@ -39,6 +39,18 @@ const EXTRA = {
   goibibo: { label: "Goibibo", pkg: "com.goibibo" },
   irctc: { label: "IRCTC", pkg: "cris.org.in.prs.ima" },
   redbus: { label: "redBus", pkg: "in.redbus.android" },
+  // Everyday apps a task can name ("follow X on Instagram").
+  instagram: { label: "Instagram", pkg: "com.instagram.android" },
+  youtube: { label: "YouTube", pkg: "com.google.android.youtube" },
+  facebook: { label: "Facebook", pkg: "com.facebook.katana" },
+  linkedin: { label: "LinkedIn", pkg: "com.linkedin.android" },
+  spotify: { label: "Spotify", pkg: "com.spotify.music" },
+  telegram: { label: "Telegram", pkg: "org.telegram.messenger" },
+  snapchat: { label: "Snapchat", pkg: "com.snapchat.android" },
+  netflix: { label: "Netflix", pkg: "com.netflix.mediaclient" },
+  gmail: { label: "Gmail", pkg: "com.google.android.gm" },
+  chrome: { label: "Chrome", pkg: "com.android.chrome" },
+  twitter: { label: "X (Twitter)", pkg: "com.twitter.android" },
 };
 // fulfillment_tasks.kind for each category, for "what did they use last".
 const TASK_KIND = { food: "food", ride: "ride", movies: "movie", shopping: "shop", grocery: "shop" };

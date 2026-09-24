@@ -16,7 +16,13 @@
 const prefs = require("./prefs");
 
 const DOING =
-  /\b(?:order|book|buy|add|put|search|find|look for|look up|apply|register|fill|check|compare|reorder|track|get me|get)\b/i;
+  /\b(?:order|book|buy|add|put|search|find|look for|look up|apply|register|fill|check|compare|reorder|track|get me|get|follow|unfollow|like|subscribe|play|watch|save|open)\b/i;
+// "open <any app> and <do something>" — the app need not be one we know;
+// the phone finds it by name.
+const OPEN_AND =
+  /^\s*(?:(?:please|kindly|hey)\s+|(?:can|could|would) you\s+)*open\s+(?:the\s+|my\s+)?([a-z0-9][a-z0-9 .&'-]{1,30}?)(?:\s+app)?\s*,?\s+(?:and|then|&)\s+(\S.{2,})$/i;
+// Kept on their own flows: WhatsApp messages (the draft flow), and money.
+const NOT_HERE = /\b(?:whats ?app|g ?pay|google pay|phone ?pe|paytm|bhim|cred|bank|upi|wallet)\b/i;
 const ONLY_OPEN =
   /^\s*(?:please\s+)?(?:install|download|open|launch|start)\s+(?:the\s+)?[a-z0-9]+(?:\s+app)?\s*[.!]?\s*$/i;
 const FORM = /\b(?:fill|apply|register|submit|sign me up)\b/i;
@@ -37,6 +43,13 @@ function match(text) {
   if (/\[SYSTEM\]/i.test(t)) return null;
   const url = t.match(/https?:\/\/\S+/i);
   if (url && FORM.test(t)) return { goal: t, url: url[0].replace(/[).,]+$/, ""), category: "web" };
+  if (NOT_HERE.test(t)) return null;
+  const open = t.match(OPEN_AND);
+  if (open) {
+    const said = open[1].trim().toLowerCase();
+    const known = prefs.appNamedIn(said);
+    return { goal: t, app: known || said, category: known ? categoryOf(known) : "other" };
+  }
   const app = prefs.appNamedIn(t);
   if (!app || ONLY_OPEN.test(t)) return null;
   const openAnd = /\bopen\s+(?:the\s+)?\w+(?:\s+app)?\s+(?:and|then)\b/i.test(t);

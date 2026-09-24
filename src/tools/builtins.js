@@ -6644,6 +6644,7 @@ function registerBuiltins() {
       "bread and eggs to my grocery cart', 'turn on Bluetooth', 'set " +
       "brightness to full', 'fill this form with my details', 'apply for " +
       "the <name> scholarship with my details', 'register me for <event>', " +
+      "'follow <person> on Instagram', 'play <song> on Spotify', " +
       "'find my last order', 'check cab prices to the airport'. Forms are " +
       "filled from everything remembered about the user; a missing answer " +
       "is asked once and remembered. For a website task without a link, " +
