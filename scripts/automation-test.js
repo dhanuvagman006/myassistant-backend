@@ -351,8 +351,14 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.strictEqual(r.llm_calls, 7);
     assert.match(prompts[6], /REFUSED by the safety rules — "Proceed to Pay ₹312" — the next step is payment/,
       "the re-plan sees what was refused");
-    // The planner was shown the verification of the previous step.
-    assert.match(prompts[1], /type "veg biryani" into \[1\] and submit — expected: search results for veg biryani — done, screen changed/);
+    // The planner was shown the verification of the previous step — and
+    // what it did to the screen, in the screen's own words, with the
+    // field named by what it is for (ids change on every look).
+    assert.match(prompts[1], /type "veg biryani" into "Search for 'Biryani'" and submit — expected: search results for veg biryani — done, screen changed — NEW: "veg biryani", "Ratings 4\.0\+" — GONE: "Deliver to Home"/);
+    for (const p of prompts) assert.ok(!/^\d+\. [^\n]*\[\d+\]/m.test(p), "history names elements by their words, never an old id");
+    // A food step with only a search box needs none of the owner's details.
+    assert.match(prompts[0], /OWNER DETAILS: on file — listed as soon as a text field is on screen\./);
+    assert.ok(!/Indiranagar|ravi\.k@example\.com/.test(prompts[0]), "no profile on a food search");
     assert.match(prompts[0], /TIPS:/);
     assert.match(prompts[0], /chosen because you told me you prefer Swiggy/);
     const task = await db.one(`SELECT provider, status FROM fulfillment_tasks WHERE user_id=$1 ORDER BY id DESC LIMIT 1`, [UID]);
@@ -719,6 +725,8 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.strictEqual(intent.match("open the Notebook app and add a note called groceries").app, "notebook");
     assert.strictEqual(intent.match("follow Neha Shetty on Instagram").app, "instagram");
     assert.strictEqual(intent.match("play arijit songs on spotify").app, "spotify");
+    // One jump now, not the engine (phase B · 3).
+    assert.strictEqual(intent.match("play arijit songs on spotify").tool, "play_music");
     // WhatsApp and money keep their own flows.
     assert.strictEqual(intent.match("open WhatsApp and send hi to Ravi"), null);
     assert.strictEqual(intent.match("open PhonePe and pay Ravi 500"), null);
@@ -1779,6 +1787,408 @@ const swiggyCart = { pkg: SW, nodes: [
   await atest("'did you do it?' knows the new endings", async () => {
     const r = await reg.get("check_recent_actions").execute({ about: "idli" }, { userId: UID });
     assert.match(r.speak, /Task "Order idli" in Swiggy ended, but the result could not be confirmed on screen/);
+  });
+
+  console.log("\nphase B · 3: the planner, faster and surer");
+  await resetDaily();
+
+  // `count` labelled rows, each with its place on the screen.
+  const rows = (count, o = {}) => Array.from({ length: count }, (_, i) =>
+    N(i + 1, { text: `Dish ${i + 1}`, click: 1, b: [40, 40 + i * 30, 960, 60 + i * 30], ...o }));
+
+  await atest("a food step carries no owner details; a form field, a web task or an unknown one does", () => {
+    const owner = { name: "Ravi Kumar", address_notes: ["My home address is 12, 4th Cross, Indiranagar"] };
+    const food = { goal: "Order idli", category: "food", steps: [], notes: [] };
+    const search = { pkg: SW, nodes: [N(1, { cls: "EditText", edit: 1, hint: "Search for dishes" }), N(2, { text: "Idli", click: 1 })] };
+    const p = planner.buildPrompt(food, search, { owner });
+    assert.match(p, /OWNER DETAILS: on file — listed as soon as a text field is on screen\./);
+    assert.ok(!/Indiranagar|Ravi Kumar/.test(p), "a search box is not a form");
+    const address = { pkg: SW, nodes: [N(1, { cls: "EditText", edit: 1, hint: "Flat / house no." })] };
+    assert.match(planner.buildPrompt(food, address, { owner }), /OWNER DETAILS YOU MAY USE:\n- name: Ravi Kumar/);
+    const ride = { goal: "Book a cab home", category: "ride", steps: [], notes: [] };
+    assert.match(planner.buildPrompt(ride, { pkg: "com.ubercab", nodes: [N(1, { cls: "EditText", edit: 1, hint: "Where to?" })] },
+      { owner }), /Indiranagar/, "a ride's destination field gets the home address");
+    for (const run of [{ ...food, category: "web" }, { ...food, category: "other" }, { ...food, category: "" }, { ...food, web: true }]) {
+      assert.match(planner.buildPrompt(run, search, { owner }), /Indiranagar/, JSON.stringify(run));
+    }
+    assert.match(planner.buildPrompt(food, search, { owner: {} }), /OWNER DETAILS YOU MAY USE: none on file\./);
+    assert.match(planner.SYSTEM, /on file appear once a text field is on screen — never ask for them/);
+  });
+
+  await atest("screen positions only when there is a screenshot to point at", () => {
+    const nodes = [N(1, { text: "Idli", click: 1, b: [100, 200, 300, 260] })];
+    assert.ok(!/@\d/.test(planner.describeScreen({ pkg: SW, nodes })));
+    assert.match(planner.describeScreen({ pkg: SW, nodes, shot: "QUJD" }), /^\[1\] @200,230 "Idli" \(tap\)$/);
+  });
+
+  await atest("a 300-element screen keeps the cart bar drawn last, and never says to scroll for the rest", () => {
+    const nodes = Array.from({ length: 300 }, (_, i) => N(i + 1, { text: `line ${i + 1}` }));
+    nodes[40] = N(41, { cls: "Button", text: "ADD", click: 1 });
+    nodes[289] = N(290, { cls: "Button", click: 1, label: "1 item | ₹249 View Cart" });
+    const s = planner.describeScreen({ pkg: SW, nodes, shot: "QUJD" });
+    assert.match(s, /\[290\] Button label="1 item \| ₹249 View Cart" \(tap\)/);
+    assert.match(s, /\[41\] Button "ADD" \(tap\)/);
+    assert.match(s, /\[300\] "line 300"/, "the last 30 drawn are kept");
+    assert.strictEqual(s.split("\n").filter((l) => /^\[\d+\]/.test(l)).length, planner.MAX_NODES);
+    assert.match(s, /\(140 more on-screen elements not listed — read them from the screenshot; do NOT scroll to find them\)/);
+    assert.ok(!/scroll to see them/.test(s));
+    const ids = s.match(/^\[\d+\]/gm).map((x) => Number(x.slice(1, -1)));
+    assert.deepStrictEqual(ids, [...ids].sort((a, b) => a - b), "in the screen's own order");
+    // More interactive elements than fit: the tail still survives.
+    const busy = Array.from({ length: 300 }, (_, i) => N(i + 1, { text: `ADD ${i + 1}`, click: 1 }));
+    assert.match(planner.describeScreen({ pkg: SW, nodes: busy }), /\[300\] "ADD 300"/);
+  });
+
+  await atest("a row of identical ADD buttons: each names its dish, and so does the history", async () => {
+    const menu = { pkg: SW, nodes: [
+      N(1, { text: "Veg Biryani", b: [40, 100, 600, 140] }), N(2, { text: "₹249", b: [40, 150, 200, 180] }),
+      N(3, { cls: "Button", text: "ADD", click: 1, b: [760, 150, 940, 200] }),
+      N(4, { text: "Paneer Biryani", b: [40, 400, 600, 440] }), N(5, { text: "₹299", b: [40, 450, 200, 480] }),
+      N(6, { cls: "Button", text: "ADD", click: 1, b: [760, 450, 940, 500] }),
+      N(7, { cls: "Button", text: "View Cart", click: 1, b: [0, 900, 1000, 960] })] };
+    const s = planner.describeScreen(menu);
+    assert.match(s, /\[3\] Button "ADD" for="Veg Biryani · ₹249" \(tap\)/);
+    assert.match(s, /\[6\] Button "ADD" for="Paneer Biryani · ₹299" \(tap\)/);
+    assert.ok(!/View Cart" for=/.test(s), "a button that is not repeated needs no context");
+    const r = await svc.start(UID, { goal: "Order paneer biryani", app: "swiggy", category: "food" });
+    prompts.length = 0;
+    script = [{ status: "continue", action: { type: "tap", id: 6 }, expect: "1 item in the cart" },
+      { status: "continue", action: { type: "tap", id: 7 }, expect: "the cart" }];
+    await svc.step(UID, r.run.id, { seq: 0, screen: menu });
+    const after = { ...menu, nodes: [...menu.nodes, N(8, { text: "1 item added", b: [0, 850, 1000, 890] })] };
+    await svc.step(UID, r.run.id, { seq: 1, screen: after, last: { ok: true, changed: true } });
+    assert.match(prompts[1],
+      /\n1\. tap "ADD" \(for "Paneer Biryani · ₹299"\) — expected: 1 item in the cart — done, screen changed — NEW: "1 item added" — GONE: nothing\n/);
+    const saved = await svc.get(UID, r.run.id);
+    assert.strictEqual(saved.steps[0].near, "Paneer Biryani · ₹299");
+    assert.ok(!saved.steps[0].seen, "a finished step does not keep the old screen's words");
+    assert.ok(Array.isArray(saved.steps[1].seen), "the newest step keeps them for the next look");
+    await svc.finish(UID, r.run.id, { reason: "stopped" });
+    const ended = await svc.get(UID, r.run.id);
+    assert.strictEqual(ended.status, "stopped");
+    assert.ok(!ended.steps.some((st) => st.seen) && ended.steps.length === 2, "a finished run keeps no screen's words");
+  });
+
+  await atest("ALREADY TRIED lists what did not work in the whole run, once each", () => {
+    const tap = (what, result, extra = {}) => ({ action: { type: "tap", id: 9, what }, expect: "x", result, ...extra });
+    const steps = [
+      tap("Ratings 4.0+", { ok: true, changed: false }),
+      tap("Ratings 4.0+", { ok: true, changed: false }),
+      tap("Pay now", { ok: false, changed: false, error: "refused: \"Pay now\" — the next step is payment" }, { vetoed: "payment" }),
+      tap("Filters", { ok: false, changed: false, error: "no_such_element" }),
+      { action: { type: "wait" }, expect: "load", result: { ok: true, changed: false } },
+      ...Array.from({ length: 12 }, () => tap("Veg", { ok: true, changed: true })),
+    ];
+    const p = planner.buildPrompt({ goal: "x", category: "food", steps, notes: [] }, swiggyMenu);
+    assert.match(p, /ALREADY TRIED — these did not work; do not repeat them the same way:\n- tap "Ratings 4\.0\+" — the screen did not change \(2 times\)\n- tap "Pay now" — refused by the safety rules\n- tap "Filters" — failed \(no_such_element\)\n\n/);
+    assert.ok(!/^- wait/m.test(p), "waiting is not a try");
+    assert.ok(!/WHAT HAS BEEN DONE:\n1\./.test(p), "the history shows the last 12; the list remembers the rest");
+    assert.match(planner.SYSTEM, /Never repeat anything under ALREADY TRIED the same way/);
+  });
+
+  await atest("the rules: a search box that shows nothing is submitted, never guessed at; 4b and 6b stay", () => {
+    assert.match(planner.SYSTEM, /3b\. SEARCH BOXES: after typing into a search box, look for the results or suggestions\. If they did not appear, submit the search \(type again with "submit": true\) or tap the matching suggestion — never tap_xy at a guess on an unrelated item\./);
+    assert.match(planner.SYSTEM, /4b\. PEOPLE AND PAGES/);
+    assert.match(planner.SYSTEM, /6b\. REPORT ONLY WHAT YOU CAN SEE/);
+    assert.match(planner.SYSTEM, /Element ids belong to the CURRENT SCREEN only/);
+  });
+
+  await atest("planner micro-benchmark: schema, AUTOMATION_MODEL, thinking per step and picture resolution in the request (no network)", async () => {
+    const realFetch = global.fetch;
+    const envKeys = ["GEMINI_API_KEY", "GEMINI_MODEL", "AUTOMATION_MODEL", "AUTOMATION_THINKING"];
+    const saved = Object.fromEntries(envKeys.map((k) => [k, process.env[k]]));
+    process.env.GEMINI_API_KEY = saved.GEMINI_API_KEY || "test-key";
+    process.env.GEMINI_MODEL = "gemini-2.5-flash";
+    process.env.AUTOMATION_MODEL = "gemini-3.5-flash";
+    delete process.env.AUTOMATION_THINKING;
+    const calls = [];
+    const decision = '{"status":"continue","action":{"type":"tap","id":1},"expect":"x"}';
+    let answer = () => ({ ok: true, status: 200, json: async () => ({
+      candidates: [{ content: { parts: [{ text: decision }] } }], usageMetadata: { promptTokenCount: 900 } }) });
+    global.fetch = async (url, init) => {
+      const body = JSON.parse(init.body);
+      calls.push({ url: String(url), body });
+      return answer(url, body);
+    };
+    ai.generateReply = realGenerateReply;
+    const run = (last) => ({ goal: "Order idli", category: "food", notes: [],
+      steps: last ? [{ action: { type: "tap", id: 1, what: "Idli" }, expect: "x", result: last }] : [] });
+    const big = { pkg: SW, shot: "QUJD", nodes: rows(25) };
+    const thin = { pkg: SW, shot: "QUJD", nodes: rows(3) };
+    try {
+      // A routine step: MINIMAL thinking, LOW resolution (25 named elements), the picture first.
+      const d = await planner.decide(run({ ok: true, changed: true }), big);
+      assert.strictEqual(d.status, "continue");
+      const { url, body } = calls[0];
+      assert.match(url, /\/models\/gemini-3\.5-flash:generateContent$/, "AUTOMATION_MODEL, not the chat model");
+      const gc = body.generationConfig;
+      assert.strictEqual(gc.responseMimeType, "application/json");
+      assert.deepStrictEqual(gc.responseSchema, planner.DECISION_SCHEMA);
+      assert.strictEqual(gc.responseSchema.propertyOrdering[0], "status");
+      assert.deepStrictEqual(gc.responseSchema.properties.status.enum, ["continue", "done", "handoff", "ask_user", "fail"]);
+      assert.ok(!gc.responseSchema.properties.action.properties.type.enum.includes("recents"));
+      assert.deepStrictEqual(gc.thinkingConfig, { thinkingLevel: "MINIMAL" });
+      assert.strictEqual(gc.mediaResolution, "MEDIA_RESOLUTION_LOW");
+      assert.deepStrictEqual(body.contents[0].parts[0], { inline_data: { mime_type: "image/jpeg", data: "QUJD" } });
+      assert.match(body.contents[0].parts[1].text, /^TASK: Order idli/);
+      assert.deepStrictEqual({ t: d.usage.thinking, m: d.usage.media, model: d.usage.model, tok: d.usage.in_tok, calls: d.usage.calls },
+        { t: "MINIMAL", m: "MEDIA_RESOLUTION_LOW", model: "gemini-3.5-flash", tok: 900, calls: 1 });
+      // A recovery step (the last tap changed nothing): one level higher; a thin list: MEDIUM.
+      await planner.decide(run({ ok: true, changed: false }), thin);
+      assert.deepStrictEqual(calls[1].body.generationConfig.thinkingConfig, { thinkingLevel: "LOW" });
+      assert.strictEqual(calls[1].body.generationConfig.mediaResolution, "MEDIA_RESOLUTION_MEDIUM");
+      // Failed, refused and re-planned steps are recovery too; a wait that changed nothing is not.
+      for (const [steps, want] of [
+        [[{ action: { type: "tap", id: 1 }, result: { ok: false, error: "tap_failed" } }], "LOW"],
+        [[{ action: { type: "tap", id: 1 }, result: { ok: false, changed: false, blocked: "payment" } }], "LOW"],
+        [[{ action: { type: "tap", id: 1 }, vetoed: "payment", result: { ok: false, changed: false } }], "LOW"],
+        [[{ action: { type: "wait" }, replan: true }], "LOW"],
+        [[{ action: { type: "wait" }, result: { ok: true, changed: false } }], "MINIMAL"],
+        [[], "MINIMAL"]]) {
+        assert.strictEqual(planner.thinkingFor({ steps }), want, JSON.stringify(steps));
+      }
+      // No picture: no resolution and no image part.
+      await planner.decide(run(null), { pkg: SW, nodes: rows(3) });
+      assert.strictEqual(calls[2].body.generationConfig.mediaResolution, undefined);
+      assert.strictEqual(calls[2].body.contents[0].parts.length, 1);
+      // The routine level is a setting; recovery stays one above it.
+      process.env.AUTOMATION_THINKING = "low";
+      assert.strictEqual(planner.thinkingFor(run({ ok: true, changed: true })), "LOW");
+      assert.strictEqual(planner.thinkingFor(run({ ok: true, changed: false })), "MEDIUM");
+      delete process.env.AUTOMATION_THINKING;
+      // 2.5 Flash takes a budget: none on a routine step, some on a recovery step.
+      process.env.AUTOMATION_MODEL = "gemini-2.5-flash";
+      await planner.decide(run({ ok: true, changed: true }), big);
+      await planner.decide(run({ ok: true, changed: false }), big);
+      assert.deepStrictEqual(calls[3].body.generationConfig.thinkingConfig, { thinkingBudget: 0 });
+      assert.deepStrictEqual(calls[4].body.generationConfig.thinkingConfig, { thinkingBudget: 1024 });
+      // Unset, the planner uses the chat model, as before.
+      delete process.env.AUTOMATION_MODEL;
+      await planner.decide(run(null), big);
+      assert.match(calls[5].url, /\/models\/gemini-2\.5-flash:generateContent$/);
+      // Chat callers are untouched: no schema, no picture setting, no JSON mode.
+      await realGenerateReply([{ role: "user", content: "hi" }], { system: "s" });
+      const chat = calls[6].body.generationConfig;
+      assert.ok(!chat.responseSchema && !chat.mediaResolution && !chat.responseMimeType, JSON.stringify(chat));
+      // A model that refuses a level: asked again at the default level, and
+      // only that model's pair is remembered — nobody's thinking is switched off.
+      process.env.AUTOMATION_MODEL = "gemini-3-test-levels";
+      answer = (u, b) => (/gemini-3-test-levels/.test(u) && b.generationConfig?.thinkingConfig?.thinkingLevel === "MINIMAL"
+        ? { ok: false, status: 400, text: async () => "thinking_level MINIMAL is not supported for this model" }
+        : { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: decision }] } }] }) });
+      const before = calls.length;
+      const errs = console.error;
+      console.error = () => {};
+      let refused;
+      try {
+        refused = await planner.decide(run(null), big);
+        await planner.decide(run(null), big);
+      } finally { console.error = errs; }
+      assert.strictEqual(refused.status, "continue");
+      const levels = calls.slice(before).map((c) => c.body.generationConfig.thinkingConfig?.thinkingLevel);
+      assert.strictEqual(levels.length, 3, JSON.stringify(levels));
+      assert.strictEqual(levels[0], "MINIMAL");
+      assert.ok(levels[1] && levels[1] !== "MINIMAL" && levels[2] === levels[1], JSON.stringify(levels));
+      process.env.AUTOMATION_MODEL = "gemini-3.5-flash";
+      await planner.decide(run(null), big);
+      assert.deepStrictEqual(calls[calls.length - 1].body.generationConfig.thinkingConfig, { thinkingLevel: "MINIMAL" });
+
+      // THE MICRO-BENCHMARK: what one step costs on this side of the wire,
+      // with a 300-element food screen and 14 steps of history.
+      answer = () => ({ ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: decision }] } }] }) });
+      const food = { pkg: SW, shot: "QUJD", nodes: Array.from({ length: 300 }, (_, i) =>
+        N(i + 1, { text: `Item ${i + 1} · ₹${100 + i}`, click: i % 3 === 0 ? 1 : 0, b: [0, i * 3, 1000, i * 3 + 3] })) };
+      const long = { ...run(null), steps: Array.from({ length: 14 }, (_, i) => ({ action: { type: "tap", id: i, what: `Item ${i}` },
+        expect: "x", result: { ok: true, changed: i % 4 !== 0 }, diff: { added: [`Item ${i + 1}`], gone: [] } })) };
+      const owner = await prefs.ownerInfo(UID);
+      const hints = require("../src/automation/hints").hintsFor("food");
+      const RUNS = 30;
+      let prompt = "";
+      let t0 = process.hrtime.bigint();
+      for (let i = 0; i < RUNS; i++) prompt = planner.buildPrompt(long, food, { owner, hints });
+      const buildMs = Number(process.hrtime.bigint() - t0) / 1e6 / RUNS;
+      t0 = process.hrtime.bigint();
+      for (let i = 0; i < RUNS; i++) await planner.decide(long, food, { owner, hints });
+      const decideMs = Number(process.hrtime.bigint() - t0) / 1e6 / RUNS;
+      console.log(`       micro-benchmark: buildPrompt ${buildMs.toFixed(2)} ms, decide with a stubbed model ` +
+        `${decideMs.toFixed(2)} ms, prompt ${prompt.length} chars (≈${Math.round((planner.SYSTEM.length + prompt.length) / 4)} ` +
+        `tokens with SYSTEM), thinking ${planner.thinkingFor(long)}, picture ${planner.mediaFor(food)}`);
+      assert.ok(buildMs < 50 && decideMs < 150, `${buildMs} / ${decideMs}`);
+      assert.ok(!/OWNER DETAILS YOU MAY USE/.test(prompt), "no profile on a food screen with no form field");
+      assert.ok(!/ALREADY TRIED/.test(prompt) || /the screen did not change/.test(prompt));
+      assert.ok(prompt.length < 9000, `prompt ${prompt.length} chars`);
+    } finally {
+      global.fetch = realFetch;
+      ai.generateReply = scriptedReply;
+      for (const k of envKeys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+    }
+  });
+
+  await atest("the phone may send a lean, gzipped step; the log line says how the call was made", async () => {
+    const routes = require("../src/automation/routes");
+    const c = routes.cleanScreen({ pkg: SW, nodes: [{ id: 3, text: "ADD", click: 1 }, { id: 4, text: "Off", en: 0 }] });
+    assert.deepStrictEqual(c.nodes[0], { id: 3, up: -1, cls: "", text: "ADD", desc: "", hint: "", rid: "", label: "",
+      click: 1, edit: 0, scroll: 0, check: 0, checked: 0, sel: 0, pwd: 0, en: 1, b: null });
+    assert.strictEqual(c.nodes[1].en, 0, "a disabled element must still say so");
+    const s = await svc.start(UID, { goal: "Order idli", app: "swiggy" });
+    script = [{ status: "continue", action: { type: "tap", id: 11 }, expect: "added" }];
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.user = { sub: String(UID) }; next(); });
+    app.use("/automation", routes);
+    const server = await new Promise((res) => { const x = app.listen(0, "127.0.0.1", () => res(x)); });
+    const logs = [];
+    const orig = console.log;
+    let r;
+    try {
+      console.log = (...a) => { logs.push(a.join(" ")); };
+      const body = require("zlib").gzipSync(Buffer.from(JSON.stringify({ seq: 0, last: null,
+        screen: { pkg: SW, nodes: [{ id: 10, text: "Veg Biryani ₹249" }, { id: 11, cls: "Button", text: "ADD", click: 1 }] } })));
+      r = await fetch(`http://127.0.0.1:${server.address().port}/automation/${s.run.id}/step`, {
+        method: "POST", headers: { "content-type": "application/json", "content-encoding": "gzip" }, body,
+      }).then((x) => x.json());
+    } finally { console.log = orig; server.close(); }
+    assert.strictEqual(r.status, "continue");
+    assert.strictEqual(r.action.id, 11);
+    const line = logs.find((l) => l.startsWith("automation step run="));
+    assert.match(line, / status=continue think=minimal res=- model=\S+ up=\d+KB gz$/);
+    assert.ok(!/Veg Biryani|ADD|249/.test(line), line);
+  });
+
+  await atest("'play / watch X on YouTube or Spotify' is one jump with play_music; the owner's library stays with the engine", async () => {
+    const intent = require("../src/automation/intent");
+    for (const [said, query, provider] of [
+      ["play arijit songs on spotify", "arijit songs", "spotify"],
+      ["Play Tum Hi Ho on YouTube", "Tum Hi Ho", "youtube"],
+      ["watch mrbeast on youtube", "mrbeast", "youtube"],
+      ["can you play lofi beats on youtube music please", "lofi beats", "youtube_music"],
+      ["put on some arijit singh on spotify", "some arijit singh", "spotify"]]) {
+      const m = intent.matchFor(said, 104);
+      assert.deepStrictEqual({ tool: m?.tool, args: m?.args }, { tool: "play_music", args: { query, provider } }, said);
+    }
+    for (const said of ["play my liked songs on spotify", "play my workout playlist on spotify",
+      "watch the latest episode of Kota Factory on youtube", "play arijit and like the song on spotify"]) {
+      const m = intent.match(said);
+      assert.ok(m && !m.tool && ["spotify", "youtube"].includes(m.app), `${said} -> ${JSON.stringify(m)}`);
+    }
+    // "open Swiggy" and the WhatsApp draft behave as today.
+    assert.strictEqual(intent.match("open swiggy"), null);
+    assert.strictEqual(intent.match("send hello to Ravi on WhatsApp"), null);
+    // Where this server has no play_music, the engine plays it the long way.
+    const r = registry();
+    const realGet = r.get;
+    r.get = (n) => (n === "play_music" ? null : realGet(n));
+    try {
+      const m = intent.matchFor("play arijit songs on spotify", 104);
+      assert.deepStrictEqual({ tool: m.tool, app: m.app, goal: m.goal }, { tool: undefined, app: "spotify", goal: "play arijit songs on spotify" });
+    } finally { r.get = realGet; }
+    // Typed in chat: straight to the player, no model call, one sentence, no talk of payment.
+    const tools = ai.generateWithTools;
+    ai.generateWithTools = async () => { throw new Error("the model must not be asked"); };
+    try {
+      const out = await require("../src/agents/runtime").runAgentTurn("play arijit songs on spotify",
+        { userId: UID, appBuild: 104, platform: "android", source: "text" }, () => {});
+      assert.strictEqual(out.routed, true);
+      assert.strictEqual(out.toolResults[0].name, "play_music");
+      assert.strictEqual(out.deviceActions[0].type, "open_url");
+      assert.strictEqual(out.text, "Playing arijit songs on Spotify.");
+    } finally { ai.generateWithTools = tools; }
+  });
+
+  await atest("spoken words take the typed route: a different tool or app is overridden, the model's own right pick kept", () => {
+    const intent = require("../src/automation/intent");
+    // Owner phrases, each with a wrong pick the live model has made or could make.
+    const golden = [
+      ["order biryani from swiggy", { name: "order_food", args: { dish: "biryani" } }],
+      ["Order veg biryani from a 4 star restaurant near me on Swiggy", { name: "open_named_app", args: { app: "Swiggy" } }],
+      ["add milk to my blinkit cart", { name: "open_app", args: { app: "blinkit" } }],
+      ["follow Neha Shetty on Instagram", { name: "open_app", args: { app: "instagram", person: "Neha Shetty" } }],
+      ["open amazon and search phone covers", { name: "open_named_app", args: { app: "Amazon" } }],
+      ["book a cab to the airport on uber", { name: "do_task_in_app", args: { goal: "cab to the airport", app: "ola" } }],
+      ["uninstall instagram", { name: "open_named_app", args: { app: "instagram" } }],
+      ["install zomato", { name: "open_named_app", args: { app: "zomato" } }],
+      ["play arijit songs on spotify", { name: "do_task_in_app", args: { goal: "play arijit songs", app: "spotify" } }],
+      ["fill the form at https://example.gov.in/apply with my details", { name: "open_app", args: { app: "chrome" } }],
+    ];
+    for (const [said, call] of golden) {
+      const typed = intent.matchFor(said, 105);
+      assert.ok(typed, said);
+      const spoken = intent.spokenRoute(call, said, 105);
+      assert.ok(spoken && spoken.override, `${said}: ${JSON.stringify(spoken)}`);
+      assert.deepStrictEqual({ tool: spoken.tool, args: spoken.args }, {
+        tool: typed.tool || "do_task_in_app",
+        args: typed.args || { goal: typed.goal, category: typed.category, app: typed.app, url: typed.url },
+      }, said);
+    }
+    // The model chose the route itself: its call stands (richer args), still with the fixed sentence.
+    const own = { name: "do_task_in_app", args: { goal: "order biryani", app: "Swiggy", query: "biryani" } };
+    assert.deepStrictEqual(intent.spokenRoute(own, "order biryani from swiggy", 105), { tool: "do_task_in_app", args: own.args, override: false });
+    // No route in the words, a resume, or a tool that is not routable: left alone.
+    assert.strictEqual(intent.spokenRoute({ name: "order_food", args: { dish: "biryani" } }, "order biryani", 105), null);
+    assert.strictEqual(intent.spokenRoute({ name: "do_task_in_app", args: { run_id: 7, answer: "x" } }, "order biryani from swiggy", 105), null);
+    assert.strictEqual(intent.spokenRoute({ name: "send_whatsapp_message", args: {} }, "order biryani from swiggy", 105), null);
+    assert.strictEqual(intent.spokenRoute({ name: "open_named_app", args: { app: "swiggy" } }, "open swiggy", 105), null,
+      "a plain 'open Swiggy' behaves as today");
+    assert.strictEqual(intent.spokenRoute({ name: "open_named_app", args: { app: "instagram" } }, "uninstall instagram", 104), null,
+      "an older phone that cannot carry the route out keeps the model's call");
+    // The live socket wires it in: once per turn, on fresh words, answering under the name the model called.
+    const live = fs.readFileSync(__dirname + "/../src/live/proxy.js", "utf8");
+    assert.match(live, /intent\.resumeFor\(\{ call: fc, text: lastUserText, build: deviceCtx\.build, waiting \}\)/);
+    assert.match(live, /intent\.spokenRoute\(fc, lastUserText, deviceCtx\.build\)/);
+    assert.match(live, /intent\.ROUTABLE\.has\(fc\.name\) && freshWords\)/);
+    assert.match(live, /if \(routedAt === lastUserAt\) \{/, "a second routable call for the same words is answered, not run");
+    assert.strictEqual((live.match(/routedAt = at;/g) || []).length, 2, "words the typed path handled are not run again");
+    assert.match(live, /name: calledAs, response: fixedLine \? fixedReply\(res\) : res/);
+  });
+
+  await atest("an owner's answer resumes the waiting task, typed or spoken, and never starts a second one", async () => {
+    const intent = require("../src/automation/intent");
+    await db.run(`UPDATE automation_runs SET status='failed' WHERE user_id=$1 AND status='waiting'`, [UID]);
+    const s = await svc.start(UID, { goal: "Order veg biryani on Swiggy", app: "swiggy", category: "food" });
+    script = [{ status: "ask_user", question: "Paradise or Meghana, Sir?" }];
+    assert.strictEqual((await svc.step(UID, s.run.id, { seq: 0, screen: swiggyFiltered })).status, "waiting");
+    const waiting = await svc.waitingRun(UID);
+    assert.strictEqual(waiting.id, s.run.id);
+    const resume = { tool: "do_task_in_app", args: { run_id: s.run.id, answer: "the veg one" } };
+    // Typed: a short answer, or the task's own app named again, is the answer.
+    assert.deepStrictEqual(intent.resumeFor({ text: "the veg one", build: 105, waiting }), resume);
+    assert.deepStrictEqual(intent.resumeFor({ text: "order from Meghana on Swiggy", build: 105, waiting })?.args,
+      { run_id: s.run.id, answer: "order from Meghana on Swiggy" });
+    // Spoken: the model starting a run, or the route it would take, becomes the answer.
+    assert.deepStrictEqual(intent.resumeFor({ call: { name: "do_task_in_app", args: { goal: "the veg one" } },
+      text: "the veg one", build: 105, waiting }), resume);
+    assert.strictEqual(intent.resumeFor({ call: { name: "order_food", args: { dish: "biryani" } },
+      text: "order from Meghana on Swiggy", build: 105, waiting })?.args.run_id, s.run.id);
+    // Not answers: calling it off, the app's own notes, another app, another fixed job, an unrelated tool.
+    for (const [text, call] of [["cancel", null], ["stop it", null], ["never mind", null],
+      ['[SYSTEM] The task "Order veg biryani on Swiggy" (run_id 7) needs one answer from the user.', null],
+      ["order a pizza on zomato", null], ["uninstall instagram", null], ["play arijit songs on spotify", null],
+      ["the veg one", { name: "open_app", args: { app: "youtube" } }],
+      ["the veg one", { name: "do_task_in_app", args: { goal: "x", app: "zomato" } }],
+      ["the veg one", { name: "do_task_in_app", args: { run_id: s.run.id, answer: "the veg one" } }]]) {
+      assert.strictEqual(intent.resumeFor({ call, text, build: 105, waiting }), null, `${text} ${JSON.stringify(call)}`);
+    }
+    assert.strictEqual(intent.resumeFor({ text: "the veg one", build: 105, waiting: null }), null);
+    // The resume itself: the same run carries on; no second run is made.
+    const count = async () => Number((await db.one(`SELECT count(*)::int AS n FROM automation_runs WHERE user_id=$1`, [UID])).n);
+    const n0 = await count();
+    const res = await registry().get("do_task_in_app").execute(resume.args, { userId: UID, platform: "android" });
+    assert.strictEqual(res.ok, true);
+    assert.strictEqual(res.speak, "Got it — carrying on in Swiggy.");
+    assert.strictEqual(res.deviceAction.resume, true);
+    assert.strictEqual(await count(), n0, "no second run");
+    assert.strictEqual(await svc.waitingRun(UID), null, "it is running again");
+    // A question left unanswered for more than ten minutes is not waited on.
+    const t = await svc.start(UID, { goal: "Order idli on Swiggy", app: "swiggy", category: "food" });
+    script = [{ status: "ask_user", question: "Which restaurant?" }];
+    await svc.step(UID, t.run.id, { seq: 0, screen: swiggyFiltered });
+    await db.run(`UPDATE automation_runs SET updated_at=$3 WHERE user_id=$1 AND id=$2`, [UID, t.run.id, Date.now() - 11 * 60_000]);
+    assert.strictEqual(await svc.waitingRun(UID), null);
+    // The typed live path: the answer resumes, "cancel" ends the task with one fixed line.
+    const live = fs.readFileSync(__dirname + "/../src/live/proxy.js", "utf8");
+    assert.match(live, /intent\.resumeFor\(\{ text: typed, build: deviceCtx\.build, waiting \}\)/);
+    assert.match(live, /waiting && intent\.STOP\.test\(typed\)/);
+    assert.match(live, /sayExactly\("Okay, I've stopped that task\.", false\)/);
   });
 
   for (const t of ["automation_runs", "agent_memories", "user_instructions", "fulfillment_tasks"]) {

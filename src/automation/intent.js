@@ -51,6 +51,21 @@ const INSTALL_IN =
 // left to the model, which splits them — read as one app name, the
 // second half was silently dropped (2026-09-24).
 const COMPOUND = /\b(?:and|then|also|plus)\b|&/i;
+// "play arijit on spotify", "watch mrbeast on youtube": ONE jump with
+// play_music (a /watch link that starts playing, or the music app's own
+// play-from-search), about 1-2 s. The task engine took four or more
+// looks for the same song — 12-40 s — and promised to "stop before any
+// payment" for it (audit, 2026-09-24).
+const PLAY =
+  /^\s*(?:(?:please|kindly|hey)\s+|(?:can|could|would) you\s+)*(?:play|put on|watch)\s+(.+?)\s+(?:on|in)\s+(?:the\s+)?(youtube music|yt music|youtube|spotify)(?:\s+app)?\s*(?:please|for me)?\s*[.!]?\s*$/i;
+// The owner's own library is inside the app, not a search: "play my liked
+// songs on Spotify" stays with the engine, which opens it there.
+const LIBRARY =
+  /\b(?:my|liked|likes|playlists?|library|downloads?|downloaded|saved|favou?rites?|episodes?|watch later|subscriptions?|recently played|watch history)\b/i;
+// The tools a SPOKEN request may be steered between (contract §3).
+const ROUTABLE = new Set(["do_task_in_app", "open_named_app", "uninstall_app", "order_food", "open_app"]);
+// Not an answer to the task's question: the owner calling it off.
+const STOP = /^\s*(?:(?:no|ok|okay)[,\s]+)?(?:stop|cancel|never ?mind|forget (?:it|about it)|leave it|don'?t bother)\b/i;
 
 function categoryOf(app) {
   for (const [cat, apps] of Object.entries(prefs.CATEGORIES)) {
@@ -62,7 +77,7 @@ function categoryOf(app) {
 /**
  * For a clear phone task: { goal, app?, url?, category } for the task
  * engine (tool do_task_in_app), or { tool: "uninstall_app" |
- * "open_named_app", args } — else null.
+ * "open_named_app" | "play_music", args } — else null.
  */
 function match(text) {
   const t = String(text || "").replace(/\s+/g, " ").trim();
@@ -93,6 +108,20 @@ function match(text) {
   }
   const url = t.match(/https?:\/\/\S+/i);
   if (url && FORM.test(t)) return { goal: t, url: url[0].replace(/[).,]+$/, ""), category: "web" };
+  const play = t.match(PLAY);
+  // A second job in the same breath ("… and like it") is the engine's.
+  if (play && !LIBRARY.test(play[1]) &&
+      !/\b(?:and|then)\s+(?:follow|like|subscribe|add|save|share|download|comment)\b/i.test(play[1])) {
+    const where = play[2].toLowerCase();
+    const provider = /music/.test(where) ? "youtube_music" : where;
+    const app = provider === "spotify" ? "spotify" : "youtube";
+    return {
+      tool: "play_music", args: { query: play[1].trim(), provider }, goal: t, app,
+      // Where there is no play_music on this server, the engine plays it
+      // the long way, exactly as before.
+      engine: { goal: t, app, category: categoryOf(app) },
+    };
+  }
   if (NOT_HERE.test(t)) return null;
   const open = t.match(OPEN_AND);
   if (open) {
@@ -132,11 +161,82 @@ function installTarget(goal, runApp = "") {
  * older app would drop the action after the fixed sentence promised it.
  */
 function matchFor(text, build) {
-  const m = match(text);
+  let m = match(text);
   if (!m) return null;
-  const tool = require("../tools/registry").get(m.tool || "do_task_in_app");
+  const registry = require("../tools/registry");
+  // play_music only when this server has it; otherwise the engine route.
+  if (m.tool === "play_music" && !registry.get("play_music")) m = m.engine;
+  const tool = registry.get(m.tool || "do_task_in_app");
   const need = Number(tool?.minAppBuild || 0);
   return Number(build) >= need ? m : null;
 }
 
-module.exports = { match, matchFor, installTarget };
+const flat = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+
+/** The tool and arguments the fixed route runs for a match. */
+function routeOf(m) {
+  return {
+    tool: m.tool || "do_task_in_app",
+    args: m.args || { goal: m.goal, category: m.category, app: m.app, url: m.url },
+  };
+}
+
+/**
+ * SPOKEN WORDS TAKE THE SAME ROUTE AS TYPED ONES (contract §3, 17-lite).
+ * The live model picks its own tool for what the owner SAID, and the same
+ * words could become order_food (a hand-off that adds nothing to the
+ * cart), do_task_in_app or open_named_app from one day to the next — while
+ * typed, they always took the fixed route. When the owner's words match a
+ * fixed route and the model called one of the ROUTABLE tools:
+ *   → { tool, args, override: true }  a different tool or app: run the route
+ *   → { tool, args, override: false } the model chose the route itself
+ *   → null                            no route, or not a routable call
+ * Either way the caller answers the model with the route's fixed sentence.
+ */
+function spokenRoute(call, userText, build) {
+  if (!call || !ROUTABLE.has(call.name)) return null;
+  const a = call.args || {};
+  if (call.name === "do_task_in_app" && a.run_id) return null; // a resume
+  const m = matchFor(userText, build);
+  if (!m) return null;
+  const want = routeOf(m);
+  let same = call.name === want.tool;
+  if (same && want.tool === "do_task_in_app") {
+    same = want.args.app ? flat(a.app) === flat(want.args.app)
+      : want.args.url ? String(a.url || "") === want.args.url : true;
+  } else if (same && (want.tool === "open_named_app" || want.tool === "uninstall_app")) {
+    same = flat(a.app) === flat(want.args.app) && !!a.install === !!want.args.install;
+  }
+  return same ? { tool: call.name, args: a, override: false } : { ...want, override: true };
+}
+
+/**
+ * THE OWNER'S ANSWER TO A WAITING TASK. `waiting` is the run that asked
+ * (service.waitingRun). Returns { tool: "do_task_in_app", args: { run_id,
+ * answer } } to resume it, or null when the words are something else:
+ * the owner calling it off, a note from the app itself, another fixed job
+ * (install, uninstall, play), or a task for a DIFFERENT app. With `call`
+ * (the live model's tool call) only a call that would START a new run is
+ * turned into the answer — "open YouTube" is not an answer to "which
+ * restaurant?".
+ */
+function resumeFor({ call = null, text = "", build = 0, waiting = null } = {}) {
+  const t = String(text || "").replace(/\s+/g, " ").trim();
+  if (!waiting || !t || /\[SYSTEM\]/i.test(t) || STOP.test(t)) return null;
+  const m = matchFor(t, build);
+  const sameApp = (app) => !!app && !!waiting.app_name &&
+    (flat(app) === flat(waiting.app_name) || flat(app) === flat(waiting.app_label));
+  if (m) {
+    if (m.tool && m.tool !== "do_task_in_app") return null;
+    if (!sameApp(m.app)) return null;
+  }
+  if (call) {
+    const a = call.args || {};
+    const starts = (call.name === "do_task_in_app" && !a.run_id) || (!!m && ROUTABLE.has(call.name));
+    if (!starts) return null;
+    if (!m && a.app && !sameApp(a.app)) return null;
+  }
+  return { tool: "do_task_in_app", args: { run_id: waiting.id, answer: t.slice(0, 400) } };
+}
+
+module.exports = { match, matchFor, installTarget, spokenRoute, resumeFor, ROUTABLE, STOP };

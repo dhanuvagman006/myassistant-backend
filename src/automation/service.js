@@ -357,7 +357,25 @@ const sameAction = (a, b) => a && b && a.type === b.type && a.id === b.id &&
 
 function labelOf(screen, id) {
   const n = (screen?.nodes || []).find((x) => Number(x.id) === Number(id));
-  return n ? String(n.text || n.desc || n.label || n.hint || "").slice(0, 60) : "";
+  if (!n) return "";
+  // A text field is named by what it is for ("Search for dishes"), not by
+  // what was typed in it — the history read `type "veg biryani" into
+  // "veg biryani"` once ids left it.
+  const words = n.edit ? (n.hint || n.desc || n.label || n.text) : (n.text || n.desc || n.label || n.hint);
+  return String(words || "").slice(0, 60);
+}
+
+/** A step as it is stored: what the screen said when it was chosen (for
+ *  NEW / GONE on the next look) and, for one of many identical buttons,
+ *  the row it sits in. */
+function stepRecord(action, expect, screen, extra = {}) {
+  const near = action && action.id != null && (action.type === "tap" || action.type === "long_press")
+    ? planner.nearFor(screen, action.id) : "";
+  return {
+    action, expect, ...extra,
+    ...(near ? { near } : {}),
+    ...((screen?.nodes || []).length ? { seen: planner.screenWords(screen) } : {}),
+  };
 }
 
 /** The owner's report: what was chosen, then what happened. */
@@ -373,9 +391,13 @@ function composeReport(r, { kind = "", model = "" } = {}) {
 
 async function end(userId, r, status, { kind = "", report = "" } = {}) {
   const text = String(report || "").slice(0, 600);
+  // The words of the screen the last step was chosen on were kept only for
+  // the next look's NEW / GONE; a finished run does not keep them.
+  const bare = (r.steps || []).some((s) => s.seen)
+    ? { steps: r.steps.map(({ seen: _drop, ...s }) => s) } : {};
   // Whoever ends the run first wins: Stop pressed while a step was still
   // thinking stays Stop.
-  const wrote = await save(userId, r, { status, handoff_kind: kind, report: text }, { onlyIf: LIVE });
+  const wrote = await save(userId, r, { status, handoff_kind: kind, report: text, ...bare }, { onlyIf: LIVE });
   if (!wrote) {
     const now = await get(userId, r.id);
     return { status: now?.status || status, handoff_kind: now?.handoff_kind || "", report: now?.report || text,
@@ -584,12 +606,20 @@ async function stepLocked(userId, runId, { screen, last, seq = null } = {}, meta
     }
   }
 
-  // The previous action's outcome belongs to the previous step.
+  // The previous action's outcome belongs to the previous step — and so
+  // does what it did to the screen: the words that appeared and went away
+  // (the model used to see only "done, screen changed", which reads as
+  // success even when Enter was ignored and only the typed text appeared).
   if (last && typeof last === "object") {
     const d = delivered(r.steps);
     const prev = d[d.length - 1];
-    if (prev && !prev.result) prev.result = resultOf(last);
+    if (prev && !prev.result) {
+      prev.result = resultOf(last);
+      if (prev.seen) prev.diff = planner.wordDiff(prev.seen, screen);
+    }
   }
+  // Only the newest step needs the words it was chosen on.
+  for (const s of r.steps) if (s.result && s.seen) delete s.seen;
 
   const pkg = String(screen?.pkg || "");
   // A run may use any app the task needs. Only the owner coming back to
@@ -708,6 +738,12 @@ async function stepLocked(userId, runId, { screen, last, seq = null } = {}, meta
     meta.in_tok = (meta.in_tok || 0) + (u.in_tok || 0);
     meta.calls = (meta.calls || 0) + (u.calls || 0);
     if (u.estimated) meta.estimated = true;
+    // How the call was made, for the step's log line: the thinking level
+    // (a re-plan after a refusal thinks one level higher), the picture's
+    // resolution and the model — so each change can be measured.
+    if (u.thinking) meta.think = meta.think ? `${meta.think}+${u.thinking}` : u.thinking;
+    if (u.media) meta.res = u.media;
+    if (u.model) meta.model = u.model;
     if (d.note && !notes.some((n) => say.noteText(n) === d.note)) notes = [...notes, { text: d.note, owner: true }];
     if (d.error || d.status !== "continue") break;
 
@@ -721,10 +757,11 @@ async function stepLocked(userId, runId, { screen, last, seq = null } = {}, meta
     const label = action.type === "tap_xy" ? action.label
       : action.type === "open_app" ? action.name : labelOf(screen, action.id);
     if (action.id != null) action.what = labelOf(screen, action.id);
-    const steps = [...r.steps, {
-      action, expect: d.expect, vetoed: veto.kind, target: targetOf(action, screen),
+    const { seen: _never, ...refusedStep } = stepRecord(action, d.expect, screen, {
+      vetoed: veto.kind, target: targetOf(action, screen),
       result: { ok: false, changed: false, error: `refused: "${String(label || action.type).slice(0, 60)}" — ${veto.reason}` },
-    }];
+    });
+    const steps = [...r.steps, refusedStep];
     if (!await save(userId, r, { steps, notes, llm_calls: calls }, { onlyIf: ["running"] })) {
       return reply(await current(userId, r.id));
     }
@@ -734,7 +771,7 @@ async function stepLocked(userId, runId, { screen, last, seq = null } = {}, meta
     if (deadline - Date.now() < MIN_REPLAN_MS) {
       // No time to think again inside this request: a short wait, and the
       // next look plans with the refusal in view.
-      const next = [...r.steps, { action: { type: "wait" }, expect: "the same screen", replan: true }];
+      const next = [...r.steps, stepRecord({ type: "wait" }, "the same screen", screen, { replan: true })];
       if (!await save(userId, r, { steps: next }, { onlyIf: ["running"] })) return reply(await current(userId, r.id));
       return { status: "continue", action: { type: "wait" }, expect: "the same screen", step: delivered(next).length };
     }
@@ -757,7 +794,7 @@ async function stepLocked(userId, runId, { screen, last, seq = null } = {}, meta
     // field's own button, which the guard can judge.
     if (action.type === "type" && action.submit && !guard.maySubmit(action, screen)) action.submit = false;
     const target = targetOf(action, screen);
-    const steps = [...r.steps, { action, expect: d.expect, ...(target ? { target } : {}) }];
+    const steps = [...r.steps, stepRecord(action, d.expect, screen, target ? { target } : {})];
     if (!await save(userId, r, { steps, notes, llm_calls: calls }, { onlyIf: ["running"] })) {
       return reply(await current(userId, r.id));
     }
@@ -797,6 +834,23 @@ async function stepLocked(userId, runId, { screen, last, seq = null } = {}, meta
   return reply(await end(userId, r, "failed", {
     report: say.clean(d.report) || `${say.lead(r)}I couldn't finish that ${say.at(r)}.`,
   }));
+}
+
+/**
+ * THE RUN WAITING FOR THE OWNER'S ANSWER, if one asked in the last ten
+ * minutes. "Paradise or Meghana?" answered "order from Meghana on Swiggy"
+ * used to start a SECOND run while the first waited for ever; a short
+ * answer ("the veg one") depended on the model remembering the run_id.
+ * The owner's next words resume this run instead (intent.resumeFor).
+ */
+const WAITING_FRESH_MS = 10 * 60_000;
+async function waitingRun(userId) {
+  if (!(Number(userId) > 0)) return null;
+  return hydrate(await one(
+    `SELECT * FROM automation_runs
+      WHERE user_id=$1 AND status='waiting' AND updated_at > $2
+      ORDER BY id DESC LIMIT 1`,
+    [Number(userId), Date.now() - WAITING_FRESH_MS]));
 }
 
 /** The run as it stands, when a step lost the race to Stop. */
@@ -861,6 +915,6 @@ async function finish(userId, runId, { reason = "error", kind = "", detail = "" 
 }
 
 module.exports = {
-  migrate, start, resume, step, finish, ownerDone, get, recent, directive,
+  migrate, start, resume, step, finish, ownerDone, get, recent, directive, waitingRun,
   composeReport, forPhone, MAX_STEPS, DAILY_RUNS, STEP_BUDGET_MS,
 };
