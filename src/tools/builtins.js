@@ -562,6 +562,28 @@ function registerBuiltins() {
     },
   });
 
+  // NOT SPOKEN TO — SAY NOTHING. Owner, 2026-09-24: the client spoke Tulu
+  // with someone in the room and the assistant answered them ("No … you
+  // haven't missed any calls"). Speech that is not addressed to the
+  // assistant gets this call and no reply at all; the live proxy drops
+  // whatever the model would have said for the rest of that turn.
+  registry.register({
+    name: "stay_silent",
+    description:
+      "Call this INSTEAD OF REPLYING when what you heard was NOT said to " +
+      "you: people talking to each other, the user talking to someone else " +
+      "in the room or on a phone call, a TV, radio or video, background " +
+      "chatter, or a conversation in another language that is clearly not " +
+      "a request to you. Say NOTHING — not 'okay', not a question. When in " +
+      "doubt whether something was meant for you, stay silent; the user " +
+      "will say it again, to you.",
+    risk: "low",
+    inputSchema: { type: "object", properties: {} },
+    async execute() {
+      return { ok: true, silent: true, speak: "" };
+    },
+  });
+
   // FEEDBACK TO THE DEVELOPER. Owner's brief, 2026-09-23: the assistant
   // should be able to tell the developer how to improve the app, and it
   // should appear in the admin panel (Feedback). No `speak`: the model

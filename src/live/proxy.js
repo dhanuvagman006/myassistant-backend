@@ -336,6 +336,13 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     + "just ask' → check_recent_actions, which is the record of what really "
     + "ran; recall_memory is for durable facts only. Never claim an action it "
     + "does not show; never deny one it does. "
+    + "NOT SPOKEN TO YOU: when what you heard was people talking to each "
+    + "other, the user talking to someone else or on a phone call, a TV, or "
+    + "chatter in any language that is not a request to you, call "
+    + "stay_silent and say nothing. "
+    + "CALL HISTORY: you cannot see the phone's missed or recent calls unless "
+    + "a tool returns them — never say they have or have not missed calls; "
+    + "call_recall only covers calls this app recorded and analysed. "
     + "ONE REQUEST AT A TIME: act only on what was just said; if it is "
     + "unclear or garbled, ask for a repeat instead of reusing the earlier "
     + "subject. CORRECTIONS REPLACE: a corrected name fully replaces the old "
@@ -946,6 +953,10 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   // signal arrives after the user stopped speaking (see repliedAt).
   let turnLatency = 0;
   let turnTools = [];
+  // Set by stay_silent: whatever the model says for the rest of this turn
+  // is dropped — speech that was not addressed to the assistant gets no
+  // reply at all (2026-09-24, a Tulu conversation was answered).
+  let silentTurn = false;
   // CORRECTION STORM GUARD.
   //
   // The claim check tells the model, mid-call, that it just said something
@@ -1298,6 +1309,13 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       flushUserTurn(); // the user's utterance caused this call — turn over
       const responses = [];
       for (const fc of msg.toolCall.functionCalls || []) {
+        if (fc.name === "stay_silent") {
+          silentTurn = true;
+          console.log("live: stay_silent — this turn gets no reply");
+          responses.push({ id: fc.id, name: fc.name,
+            response: { ok: true, result: "Stay silent: say nothing at all and wait for the user to speak to you." } });
+          continue;
+        }
         // HIGH-RISK CONFIRMATION IN LIVE MODE (§17).
         //
         // This used to pass approved:true unconditionally, which meant the
@@ -1584,7 +1602,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       // pushes every later sentence out of step for the rest of the call.
       if (recording) recording.interrupt();
     }
-    const parts = sc.modelTurn?.parts || [];
+    const parts = silentTurn ? [] : (sc.modelTurn?.parts || []);
     for (const p of parts) {
       const b64 = p.inlineData?.data;
       if (b64) {
@@ -1618,7 +1636,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         })
       );
     }
-    if (sc.outputTranscription?.text) {
+    if (sc.outputTranscription?.text && !silentTurn) {
       flushUserTurn(); // model is replying — the user's turn is over
       modelBuf += sc.outputTranscription.text;
       appWs.send(
@@ -1629,6 +1647,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       );
     }
     if (sc.turnComplete) {
+      if (silentTurn) { silentTurn = false; modelBuf = ""; }
       flushUserTurn();
       flushModelTurn();
       appWs.send(JSON.stringify({ type: "turn_complete" }));

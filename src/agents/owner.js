@@ -62,7 +62,12 @@ function addressRule(user = {}) {
     `HOW TO ADDRESS THEM — as "${title}", the respectful Indian way: ` +
     `"Hello ${title}!", "Done, ${title}.", "Sorry ${title}, that didn't go ` +
     `through." ` +
-    (first ? `Never by their bare first name ("${first}"). ` : "") +
+    // Owner, 2026-09-24: "never ever respond by calling the user's name —
+    // always Sir or Ma'am; know their name but don't use it unless it is
+    // necessary." ("No Hariraj ji, …" was heard by a client.)
+    (first ? `You KNOW their name (${first}) but NEVER say it — not "${first}", not "${first} ji", ` +
+      `not "Mr ${first}" — only "${title}". Use the name only if they ask what it is or a form ` +
+      `needs it. ` : "") +
     "In Hindi, Kannada or any Indian language keep calling them " +
     `"${title}" and use the respectful forms (aap, neevu) — never "ji" ` +
     "after their name. Always in a greeting; after that naturally — in " +

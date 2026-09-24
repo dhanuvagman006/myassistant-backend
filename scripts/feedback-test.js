@@ -174,7 +174,7 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
     assert.strictEqual(honorific({}), "Sir");
     const rule = addressRule({ name: "Ravi Kumar" });
     assert.match(rule, /as "Sir"/);
-    assert.ok(!/Ravi ji/.test(rule), "never '<name> ji'");
+    assert.match(rule, /NEVER say it — not "Ravi", not "Ravi ji"/, "the name is known, never said");
   });
 
   await atest("both voices are told how to address the owner", async () => {
@@ -183,7 +183,7 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
     try {
       const block = await require("../src/users/context").contextBlock(u.id);
       assert.match(block, /HOW TO ADDRESS THEM — as "Sir"/);
-      assert.match(block, /Never by their bare first name \("Dhanush"\)/);
+      assert.match(block, /You KNOW their name \(Dhanush\) but NEVER say it/);
     } finally {
       await db.run(`DELETE FROM users WHERE id=$1`, [u.id]);
     }
