@@ -638,7 +638,10 @@ const swiggyCart = { pkg: SW, nodes: [
       "https://example.gov.in/apply");
     // Unchanged flows: plain open/install, reminders, WhatsApp, bare orders.
     for (const t of ["open swiggy", "Install Zomato", "remind me at 5 to call Ravi",
-      "send hello to Ravi on WhatsApp", "order biryani", "what is the time", ""]) {
+      "send hello to Ravi on WhatsApp", "order biryani", "what is the time", "",
+      // The app's note when a task needs an answer quotes the task — it
+      // must never start a second one.
+      '[SYSTEM] The task "Order veg biryani on Swiggy" (run_id 7) needs one answer from the user.']) {
       assert.strictEqual(intent.match(t), null, t);
     }
   });

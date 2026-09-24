@@ -32,6 +32,9 @@ function categoryOf(app) {
 function match(text) {
   const t = String(text || "").replace(/\s+/g, " ").trim();
   if (!t || t.length > 300) return null;
+  // The app's own notes to the assistant ("[SYSTEM] The task … needs one
+  // answer") quote the task's words — they are never a new request.
+  if (/\[SYSTEM\]/i.test(t)) return null;
   const url = t.match(/https?:\/\/\S+/i);
   if (url && FORM.test(t)) return { goal: t, url: url[0].replace(/[).,]+$/, ""), category: "web" };
   const app = prefs.appNamedIn(t);
