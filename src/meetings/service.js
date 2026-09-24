@@ -184,6 +184,12 @@ async function complete(userId, id, { transcript, userName, tzOffsetMin }) {
     [userId, Number(id)]);
   if (!m) return null;
   const analysis = await analyze(transcript, { userName, participants: m.participants });
+  // Promises are filed BEFORE the row says 'done': "done" means everything
+  // the minutes promised is already in place — the screen showing them
+  // must never be ahead of the promises list.
+  const tracked = await fileCommitments(userId, analysis, {
+    title: m.title, participants: m.participants, tzOffsetMin, now: Date.now(),
+  });
   await run(
     `UPDATE meetings SET transcript=$3, summary=$4, decisions=$5, actions=$6,
             follow_up=$7, status='done'
@@ -192,9 +198,6 @@ async function complete(userId, id, { transcript, userName, tzOffsetMin }) {
      JSON.stringify(analysis.decisions), JSON.stringify(analysis.actions),
      analysis.follow_up]
   );
-  const tracked = await fileCommitments(userId, analysis, {
-    title: m.title, participants: m.participants, tzOffsetMin, now: Date.now(),
-  });
   return { id: Number(id), title: m.title, ...analysis, tracked };
 }
 

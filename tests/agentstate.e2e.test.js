@@ -1123,9 +1123,12 @@ console.log("\nexecution record");
     // An older build posts no permission map. Silently removing half the
     // assistant's abilities would be a worse bug than the one being fixed.
     const all = registry.declarations({ userId: USER_A }).length;
+    // A build new enough for every tool: this is about the missing
+    // permission map, not about app-build gates (tested below).
+    const newest = Math.max(26, ...registry.list().map((t) => Number(t.minAppBuild) || 0));
     const blind = registry.declarations({
       userId: USER_A,
-      deviceCaps: { build: 26, granted: [], denied: [] },
+      deviceCaps: { build: newest, granted: [], denied: [] },
     }).length;
     assert.strictEqual(blind, all, "an unreported device lost capabilities");
   });
