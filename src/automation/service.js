@@ -227,6 +227,19 @@ async function end(userId, r, status, { kind = "", report = "" } = {}) {
   return { status, handoff_kind: kind, report: text, step: r.steps.length };
 }
 
+// What we know about the owner is read once per run, not on every step
+// (three queries each time) — it does not change in the middle of a task.
+const OWNER_TTL = 5 * 60_000;
+const ownerCache = new Map(); // runId -> { at, info }
+async function ownerFor(userId, runId) {
+  const hit = ownerCache.get(runId);
+  if (hit && Date.now() - hit.at < OWNER_TTL) return hit.info;
+  const info = await prefs.ownerInfo(userId).catch(() => ({}));
+  ownerCache.set(runId, { at: Date.now(), info });
+  if (ownerCache.size > 200) ownerCache.delete(ownerCache.keys().next().value);
+  return info;
+}
+
 /**
  * One turn of the loop.
  * @param screen {pkg, nodes:[...], keyboard}
@@ -314,7 +327,7 @@ async function step(userId, runId, { screen, last } = {}) {
     });
   }
 
-  const [owner] = await Promise.all([prefs.ownerInfo(userId).catch(() => ({}))]);
+  const owner = await ownerFor(userId, r.id);
   const d = await planner.decide(r, screen, {
     hints: hintsFor(r.category, { web: r.web }),
     owner,

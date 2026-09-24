@@ -4816,6 +4816,51 @@ function registerBuiltins() {
     },
   });
 
+  // UNINSTALL ANY APP — owner, 2026-09-24: "install any app, delete any …
+  // only when user allows it". The phone opens Android's own "uninstall
+  // this app?" confirmation for the app they named; the app leaves only
+  // when THEY tap OK there. The assistant's hands never touch that dialog
+  // (the installer is on the never-act list on both ends), so that tap IS
+  // the permission — no extra "are you sure" first.
+  registry.register({
+    name: "uninstall_app",
+    minAppBuild: 105,
+    description:
+      "UNINSTALL (DELETE / REMOVE) AN APP from the user's phone — 'uninstall " +
+      "Candy Crush', 'delete Instagram', 'remove the Facebook app', 'get rid " +
+      "of TikTok'. Opens Android's own uninstall confirmation for the app " +
+      "they named; it is removed only when they tap OK there, so call it at " +
+      "once — do not ask 'are you sure' first. The phone reports whether the " +
+      "app really went. Apps that came with the phone cannot be uninstalled; " +
+      "their App info page opens instead so they can disable them. To " +
+      "INSTALL an app use open_named_app.",
+    risk: "medium",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        app: { type: "string", description: "The app's name exactly as the user said it." },
+      },
+      required: ["app"],
+    },
+    async execute(args, ctx) {
+      const asked = String(args.app || "").replace(/\s+/g, " ").trim().slice(0, 60);
+      if (!asked) return { ok: false, needsArgs: ["app"] };
+      if (ctx.platform === "ios") {
+        return { ok: false, error: "iPhones don't let an app remove other apps — press and hold its icon, then Remove App" };
+      }
+      const known = require("../automation/prefs").appInfo(
+        require("../fulfillment/deeplinks").resolveAppName?.(asked) || asked.toLowerCase());
+      const label = known?.label || asked;
+      return {
+        ok: true,
+        data: { app: label, needs_owner_tap: true },
+        deviceAction: { type: "uninstall_app", name: asked, pkg: known?.pkg || "" },
+        speak: `Opening the uninstall screen for ${label} — tap OK there to remove it.`,
+      };
+    },
+  });
+
   registry.register({
     name: "open_service_app",
     description:

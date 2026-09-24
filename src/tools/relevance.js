@@ -48,6 +48,8 @@ const CORE = new Set([
   // "Do it for me" is phrased a hundred ways ("get me", "sort out",
   // "book", "fill") — a miss here is a flat "I can't" for a flagship.
   "do_task_in_app",
+  // "delete Instagram", "get rid of this game", "remove the app".
+  "uninstall_app",
 ]);
 
 /**

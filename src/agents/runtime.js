@@ -664,10 +664,11 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   // the task engine, one fixed sentence back, the same way every time
   // (automation/intent.js; the live socket does the same for typed text).
   if (!ctx.background && ctx.userId && Number(ctx.appBuild) >= 104) {
-    const task = require("../automation/intent").match(userText);
+    const task = require("../automation/intent").matchFor(userText, ctx.appBuild);
     if (task) {
-      const res = await registry.execute("do_task_in_app",
-        { goal: task.goal, category: task.category, app: task.app, url: task.url }, ctx)
+      const tool = task.tool || "do_task_in_app";
+      const res = await registry.execute(tool,
+        task.args || { goal: task.goal, category: task.category, app: task.app, url: task.url }, ctx)
         .catch((e) => ({ ok: false, error: String(e.message || e) }));
       const line = res.ok
         ? (res.speak || "On it.")
@@ -683,7 +684,7 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
       return {
         text: line,
         deviceActions: res.ok && res.deviceAction ? [res.deviceAction] : [],
-        toolResults: [{ name: "do_task_in_app", ...res }],
+        toolResults: [{ name: tool, ...res }],
         routed: true,
       };
     }

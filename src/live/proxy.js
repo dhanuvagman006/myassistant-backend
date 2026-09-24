@@ -1707,11 +1707,11 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         // (automation/intent.js). Everything else goes to the model as
         // before.
         const task = Number(user?.sub) > 0 && Number(deviceCtx.build) >= 104
-          ? require("../automation/intent").match(m.text) : null;
+          ? require("../automation/intent").matchFor(m.text, deviceCtx.build) : null;
         if (task) {
           (async () => {
-            const res = await require("../tools/registry").execute("do_task_in_app",
-              { goal: task.goal, category: task.category, app: task.app, url: task.url }, {
+            const res = await require("../tools/registry").execute(task.tool || "do_task_in_app",
+              task.args || { goal: task.goal, category: task.category, app: task.app, url: task.url }, {
                 session: liveState, sessionId: liveSessionId, turnId: currentTurnId,
                 source: "live", userId: user?.sub, userName,
                 platform: deviceCtx.platform, tzOffsetMin: deviceCtx.tz,

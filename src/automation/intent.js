@@ -26,6 +26,12 @@ const NOT_HERE = /\b(?:whats ?app|g ?pay|google pay|phone ?pe|paytm|bhim|cred|ba
 const ONLY_OPEN =
   /^\s*(?:please\s+)?(?:install|download|open|launch|start)\s+(?:the\s+)?[a-z0-9]+(?:\s+app)?\s*[.!]?\s*$/i;
 const FORM = /\b(?:fill|apply|register|submit|sign me up)\b/i;
+// "uninstall Instagram", "delete the Candy Crush app", "get rid of
+// Snapchat". "uninstall" always means an app; delete / remove / get rid of
+// only when the thing is an app we know or is called an app — "delete my
+// 5 pm meeting" and "remove that reminder" are not apps.
+const UNINSTALL =
+  /^\s*(?:(?:please|kindly|hey|now)\s+|(?:can|could|would) you\s+)*(uninstall|delete|remove|get rid of)\s+(?:the\s+|my\s+|this\s+)?([a-z0-9][a-z0-9 .&'+-]{0,30}?)(\s+app(?:lication)?)?(?:\s+(?:from|on|off) (?:my|the) phone)?\s*(?:please)?\s*[.!]?\s*$/i;
 
 function categoryOf(app) {
   for (const [cat, apps] of Object.entries(prefs.CATEGORIES)) {
@@ -34,13 +40,28 @@ function categoryOf(app) {
   return "other";
 }
 
-/** { goal, app?, url?, category } for a clear phone task, else null. */
+/**
+ * For a clear phone task: { goal, app?, url?, category } for the task
+ * engine (tool do_task_in_app), or { tool: "uninstall_app", args } — else
+ * null.
+ */
 function match(text) {
   const t = String(text || "").replace(/\s+/g, " ").trim();
   if (!t || t.length > 300) return null;
   // The app's own notes to the assistant ("[SYSTEM] The task … needs one
   // answer") quote the task's words — they are never a new request.
   if (/\[SYSTEM\]/i.test(t)) return null;
+  const rm = t.match(UNINSTALL);
+  if (rm) {
+    const said = rm[2].trim();
+    // The WHOLE thing must be the app: "delete my WhatsApp messages" names
+    // WhatsApp but deletes messages.
+    const known = prefs.appNamedIn(said);
+    const whole = known && known === said.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    if (/^uninstall$/i.test(rm[1]) || rm[3] || whole) {
+      return { tool: "uninstall_app", args: { app: said }, goal: t };
+    }
+  }
   const url = t.match(/https?:\/\/\S+/i);
   if (url && FORM.test(t)) return { goal: t, url: url[0].replace(/[).,]+$/, ""), category: "web" };
   if (NOT_HERE.test(t)) return null;
@@ -57,4 +78,16 @@ function match(text) {
   return { goal: t, app, category: categoryOf(app) };
 }
 
-module.exports = { match };
+/**
+ * match(), but only for a tool this phone's app build can carry out — an
+ * older app would drop the action after the fixed sentence promised it.
+ */
+function matchFor(text, build) {
+  const m = match(text);
+  if (!m) return null;
+  const tool = require("../tools/registry").get(m.tool || "do_task_in_app");
+  const need = Number(tool?.minAppBuild || 0);
+  return Number(build) >= need ? m : null;
+}
+
+module.exports = { match, matchFor };

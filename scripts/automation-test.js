@@ -778,6 +778,54 @@ const swiggyCart = { pkg: SW, nodes: [
     } finally { server.close(); }
   });
 
+  await atest("'uninstall <app>' opens Android's own confirmation — the owner's OK is the permission", async () => {
+    const intent = require("../src/automation/intent");
+    for (const [said, app] of [["uninstall Instagram", "Instagram"], ["please delete the candy crush app", "candy crush"],
+      ["delete instagram", "instagram"], ["get rid of snapchat from my phone", "snapchat"],
+      ["remove the Facebook app please", "Facebook"], ["uninstall whatsapp", "whatsapp"]]) {
+      const m = intent.match(said);
+      assert.deepStrictEqual({ tool: m?.tool, app: m?.args?.app }, { tool: "uninstall_app", app }, said);
+    }
+    // Deleting THINGS is not removing an app.
+    for (const said of ["delete my whatsapp messages", "delete my 5 pm meeting", "remove that reminder",
+      "delete instagram photos", "delete candy crush"]) {
+      assert.ok(!intent.match(said) || intent.match(said).tool !== "uninstall_app", said);
+    }
+    const t = reg.get("uninstall_app");
+    assert.strictEqual(t.minAppBuild, 105);
+    const r = await t.execute({ app: "Instagram" }, { userId: UID, platform: "android" });
+    assert.deepStrictEqual(r.deviceAction, { type: "uninstall_app", name: "Instagram", pkg: "com.instagram.android" });
+    assert.match(r.speak, /tap OK there to remove it/);
+    assert.ok(!/uninstalled|removed it/i.test(r.speak), "never claims it is gone before the phone says so");
+    const unknown = await t.execute({ app: "Candy Crush" }, { userId: UID, platform: "android" });
+    assert.strictEqual(unknown.deviceAction.pkg, "", "an unknown app is found by name on the phone");
+    assert.strictEqual((await t.execute({ app: "x" }, { userId: UID, platform: "ios" })).ok, false);
+    // The same gates as the hands: never unattended, never on a web page's say-so.
+    assert.ok(reg.EFFECTIVE.unattendedBlocked.has("uninstall_app"));
+    assert.ok(reg.EFFECTIVE.world.has("uninstall_app"));
+    assert.strictEqual(reg.requiresConfirmation("uninstall_app", { userId: UID, __untrustedAt: Date.now() }), true);
+    assert.ok(require("../src/agents/claimCheck").FAMILY_TOOLS.has("uninstall_app"));
+    // The hands never tap the system's uninstall dialog themselves.
+    assert.strictEqual(guard.checkScreen({ pkg: "com.google.android.packageinstaller", nodes: [] }).kind, "blocked_app");
+  });
+
+  await atest("chat mode routes 'uninstall X' straight to the tool, no model call", async () => {
+    const tools = ai.generateWithTools;
+    ai.generateWithTools = async () => { throw new Error("the model must not be asked"); };
+    try {
+      const out = await require("../src/agents/runtime").runAgentTurn("uninstall instagram",
+        { userId: UID, appBuild: 105, platform: "android", source: "text" }, () => {});
+      assert.strictEqual(out.routed, true);
+      assert.strictEqual(out.deviceActions[0].type, "uninstall_app");
+      assert.strictEqual(out.toolResults[0].name, "uninstall_app");
+      // An app too old to carry it out is not promised it.
+      assert.strictEqual(require("../src/automation/intent").matchFor("uninstall instagram", 104), null);
+      assert.ok(require("../src/automation/intent").matchFor("order biryani on swiggy", 104));
+    } finally {
+      ai.generateWithTools = tools;
+    }
+  });
+
   await atest("the owner's export and account deletion include these runs", () => {
     const src = require("fs").readFileSync(__dirname + "/../src/routes/privacy.js", "utf8");
     assert.match(src, /\["automation_runs", "user_id"\]/);
