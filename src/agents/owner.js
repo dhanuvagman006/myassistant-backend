@@ -39,19 +39,16 @@ const FEEDBACK =
 const OWNER_RULE = RESPECT + FEEDBACK;
 
 /**
- * HOW TO ADDRESS THEM — the Indian way. Owner, 2026-09-23: "when I say
- * hello it says hello and my name — where is respect? … should say hello
- * Sir". Sir or Ma'am when the profile says which; otherwise "<first
- * name> ji", respectful in every Indian language and never a wrong guess
- * at someone's gender. Lives in the profile block, which the text agent
- * and live voice both read.
+ * HOW TO ADDRESS THEM. Owner, 2026-09-23: "when I say hello it says hello
+ * and my name — where is respect? … should say hello Sir". And 2026-09-24:
+ * "don't call them ji, call them Sir, as a respect." So: Ma'am when the
+ * profile says female, Sir otherwise — never "<name> ji". Lives in the
+ * profile block, which the text agent and live voice both read.
  */
-function honorific({ name, gender } = {}) {
+function honorific({ gender } = {}) {
   const g = String(gender || "").trim().toLowerCase();
-  if (g === "male") return "Sir";
   if (g === "female") return "Ma'am";
-  const first = String(name || "").trim().split(/\s+/)[0] || "";
-  return first ? `${first} ji` : "";
+  return "Sir";
 }
 
 function addressRule(user = {}) {
@@ -66,8 +63,9 @@ function addressRule(user = {}) {
     `"Hello ${title}!", "Done, ${title}.", "Sorry ${title}, that didn't go ` +
     `through." ` +
     (first ? `Never by their bare first name ("${first}"). ` : "") +
-    "In Hindi, Kannada or any Indian language use its respectful forms " +
-    "(aap, neevu, ji). Always in a greeting; after that naturally — in " +
+    "In Hindi, Kannada or any Indian language keep calling them " +
+    `"${title}" and use the respectful forms (aap, neevu) — never "ji" ` +
+    "after their name. Always in a greeting; after that naturally — in " +
     "confirmations and apologies, not in every sentence. Never 'hey', " +
     "'buddy' or 'dude'."
   );

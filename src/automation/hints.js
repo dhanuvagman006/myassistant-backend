@@ -30,7 +30,7 @@ const BY_CATEGORY = {
 
 // Every task: how to get around the phone itself.
 const PHONE = [
-  "open_app opens any installed app by name; home, back and recents work from anywhere.",
+  "open_app opens any installed app by name; home and back work from anywhere.",
   "Quick settings (swipe-down panel) has Wi-Fi, Bluetooth, torch, mobile data, rotation and do-not-disturb toggles.",
   "The Settings app has a search bar at the top — search the setting's name instead of browsing.",
 ];

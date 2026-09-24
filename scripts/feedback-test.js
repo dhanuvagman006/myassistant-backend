@@ -165,13 +165,16 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
     assert.doesNotMatch(RESPECT, /understand your frustration/i);
   });
 
-  await atest("Sir or Ma'am when known, '<name> ji' when not — never a guess", () => {
-    const { honorific } = require("../src/agents/owner");
+  await atest("Ma'am when the profile says female, Sir otherwise — never '<name> ji'", () => {
+    const { honorific, addressRule } = require("../src/agents/owner");
     assert.strictEqual(honorific({ name: "Dhanush K", gender: "male" }), "Sir");
     assert.strictEqual(honorific({ name: "Asha", gender: "female" }), "Ma'am");
-    assert.strictEqual(honorific({ name: "Ravi Kumar", gender: null }), "Ravi ji");
-    assert.strictEqual(honorific({ name: "Ravi", gender: "other" }), "Ravi ji");
-    assert.strictEqual(honorific({}), "");
+    assert.strictEqual(honorific({ name: "Ravi Kumar", gender: null }), "Sir");
+    assert.strictEqual(honorific({ name: "Ravi", gender: "other" }), "Sir");
+    assert.strictEqual(honorific({}), "Sir");
+    const rule = addressRule({ name: "Ravi Kumar" });
+    assert.match(rule, /as "Sir"/);
+    assert.ok(!/Ravi ji/.test(rule), "never '<name> ji'");
   });
 
   await atest("both voices are told how to address the owner", async () => {

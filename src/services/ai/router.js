@@ -176,8 +176,29 @@ const TTS_TIMEOUT_MS = Math.min(
 // ---------------- GEMINI ----------------
 
 async function callGemini(messages, system = SYSTEM_PROMPT, _retry = false, _model = null) {
+  return (await callGeminiMeta(messages, system, { _retry, _model })).text;
+}
+
+/**
+ * callGemini, plus what the call cost: { text, usage, model, ms }.
+ *
+ * opts.timeoutMs — a HARD deadline for the whole call, key rotation
+ *   included (the default is 30 s per request). opts.noRetry — no switch
+ *   to the quota fallback model: a caller with its own budget (the phone
+ *   planner, which must answer inside the phone's patience) would rather
+ *   fail fast and say so than wait for a second model. opts.json — ask for
+ *   a JSON reply (responseMimeType); dropped for good if the API rejects it.
+ */
+async function callGeminiMeta(messages, system = SYSTEM_PROMPT, opts = {}) {
+  const { _retry = false, _model = null } = opts;
   const model = _model || chatModel();
   const generationConfig = tuning(model);
+  if (opts.json && !UNSUPPORTED_FIELDS.has("responseMimeType")) {
+    generationConfig.responseMimeType = "application/json";
+  }
+  const started = Date.now();
+  const deadline = Number(opts.timeoutMs) > 0 ? started + Number(opts.timeoutMs) : 0;
+  const signal = () => AbortSignal.timeout(deadline ? Math.max(1, deadline - Date.now()) : TIMEOUT_MS);
   const payload = JSON.stringify({
     system_instruction: { parts: [{ text: system }] },
     contents: messages.map((m) => ({
@@ -206,7 +227,7 @@ async function callGemini(messages, system = SYSTEM_PROMPT, _retry = false, _mod
         {
           method: "POST",
           headers: { "content-type": "application/json", "x-goog-api-key": key },
-          signal: AbortSignal.timeout(TIMEOUT_MS),
+          signal: signal(),
           body: payload,
         }
       );
@@ -222,19 +243,34 @@ async function callGemini(messages, system = SYSTEM_PROMPT, _retry = false, _mod
           );
           throw Object.assign(new Error("retry without thinking"), { retryNoThinking: true });
         }
+        if (!_retry && generationConfig.responseMimeType &&
+            r.status === 400 && /mime/i.test(body)) {
+          UNSUPPORTED_FIELDS.add("responseMimeType");
+          console.error(`gemini: responseMimeType rejected — continuing without JSON mode.`);
+          throw Object.assign(new Error("retry without json mode"), { retryNoThinking: true });
+        }
         throw Object.assign(
           new Error(`gemini ${r.status} [model=${model}] ${body.slice(0, 300) || "(empty body)"}`),
           { status: r.status, body }
         );
       }
       const data = await r.json();
-      return data.candidates?.[0]?.content?.parts?.map((p) => p.text).join("\n") || "";
+      return {
+        text: data.candidates?.[0]?.content?.parts?.map((p) => p.text).join("\n") || "",
+        // Counts only — never the content.
+        usage: data.usageMetadata || null,
+        model,
+        ms: Date.now() - started,
+      };
     });
   } catch (e) {
-    if (e?.retryNoThinking) return callGemini(messages, system, true, _model);
-    if (e?.status === 429 && !_model && fallbackModel() !== model) {
+    const left = deadline ? deadline - Date.now() : 0;
+    if (e?.retryNoThinking && (!deadline || left > 0)) {
+      return callGeminiMeta(messages, system, { ...opts, _retry: true, timeoutMs: deadline ? left : 0 });
+    }
+    if (e?.status === 429 && !_model && !opts.noRetry && fallbackModel() !== model) {
       console.warn(`gemini: every key is spent on ${model} — retrying on ${fallbackModel()}`);
-      return callGemini(messages, system, _retry, fallbackModel());
+      return callGeminiMeta(messages, system, { ...opts, _model: fallbackModel() });
     }
     throw e;
   }
@@ -252,22 +288,41 @@ function requireKey(model = null) {
  * @param {string} [opts.extraSystem] appended to the base system prompt —
  *        used to inject the caller's per-user memory block.
  * @param {string} [opts.system] full replacement system prompt (extractor).
+ * @param {number} [opts.timeoutMs] hard deadline for the whole call.
+ * @param {boolean} [opts.noRetry] no transient retry, no fallback model.
+ * @param {boolean} [opts.json] ask for a JSON reply.
+ * @returns {{reply, provider, usage, model, ms}} — usage is Gemini's
+ *          usageMetadata (token counts), null when not reported.
  */
 async function generateReply(messages, opts = {}) {
   const system = opts.system || SYSTEM_PROMPT + (opts.extraSystem || "");
   requireKey();
+  const call = { timeoutMs: opts.timeoutMs, noRetry: !!opts.noRetry, json: !!opts.json };
+  const answer = (m) => ({ reply: m.text, provider: "gemini", usage: m.usage, model: m.model, ms: m.ms });
+  const run = () => callGeminiMeta(messages, system, call);
+  // A hard deadline holds even if a request ignores its abort signal.
+  const bounded = () => (Number(opts.timeoutMs) > 0 ? hardDeadline(run(), Number(opts.timeoutMs)) : run());
   try {
-    return { reply: await callGemini(messages, system), provider: "gemini" };
+    return answer(await bounded());
   } catch (e) {
     const msg = String(e.message);
     const transient = msg.includes("timeout") || /\b5\d\d\b/.test(msg) || e.name === "TimeoutError";
-    if (transient) {
+    if (transient && !opts.noRetry) {
       // One short-delay retry on transient network/5xx errors.
       await new Promise((res) => setTimeout(res, 800));
-      return { reply: await callGemini(messages, system), provider: "gemini" };
+      return answer(await bounded());
     }
     throw e;
   }
+}
+
+function hardDeadline(promise, ms) {
+  let timer;
+  const cut = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error(`gemini timeout after ${ms} ms`),
+      { name: "TimeoutError" })), ms);
+  });
+  return Promise.race([promise, cut]).finally(() => clearTimeout(timer));
 }
 
 /**

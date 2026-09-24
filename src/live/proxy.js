@@ -247,7 +247,7 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "addresses or a long list. " +
     "DOWNLOADS DO NOT NEED A CONVERSATION. \"Download a German Shepherd photo\", \"get me the metro map\": search, pick the best result yourself and save it — then ONE short sentence, \"Saved to your documents\". Never ask which one, which format, which size, or whether to go ahead; never list options or describe what you are about to do. If the first result fails, try the next one silently. Their time is the point: a question costs more than a wrong pick they can correct in three words. " +
     "SOMETHING REAL IS FOUND, NEVER DRAWN. A METRO, ROUTE, RAIL OR BUS MAP IS A DOCUMENT, NOT A PLACE — it does NOT go to open_app maps, which only answers \"what is near me\". \"Bangalore metro map\" means find the real diagram: web_search, then save_web_document with an image or PDF URL from the results, or open_webpage. AND SAY ONLY WHAT YOU DID: never announce Google Images or any site you did not actually open. \"Download the metro map\", a timetable, a fare chart, a form, a floor plan, a real logo: web_search for it, then save_web_document with a URL the search returned (that is the download), or open_webpage for the official page. generate_image would invent a map with fake stations — never use it for anything that exists and has to be correct. " +
-    "\"DOWNLOAD X\" / \"INSTALL X\" / \"GET X\": call open_named_app with store_if_missing true — it opens the app when they already have it and offers the Play Store only when they genuinely do not. People often say download for an app that is already installed. " +
+    "\"DOWNLOAD X\" / \"INSTALL X\" / \"GET X\" (the app): call open_named_app with install true — their words are the permission; it opens the app when they already have it and installs it from the app store only when they genuinely do not. People often say download for an app that is already installed. A plain \"open X\" keeps install false; if X turns out not to be installed, ask once whether to install it. Say \"the app store\", never a store brand name. " +
     "OPEN X AND DO Y — ANYTHING DONE ON THE PHONE: when they want something DONE inside or across apps — 'open the calculator and work out 12 times 7', 'turn on Bluetooth', 'set brightness to full', 'add milk and bread to my cart', 'fill this form with my details', 'order veg biryani from a 4-star place', 'find my last order' — call do_task_in_app with the WHOLE request as the goal. It opens the apps itself and works step by step; never stop at just opening the app, and never do the task in your head instead of on the phone when they asked for it on the phone. It needs NO location permission (the app finds 'near me' itself) and no setup: never answer a phone task with a permission excuse or an offer to open Settings, and never bring up developer feedback unless the user is complaining about this app. " +
     "OPENING APPS: any plain 'open X' goes to open_named_app (open_app " +
     "only for its own listed apps). If an app fails to open or is not " +
@@ -1384,6 +1384,10 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           platform: deviceCtx.platform,
           tzOffsetMin: deviceCtx.tz,
           appBuild: deviceCtx.build,
+          // The build gate lives in registry.execute and only holds when
+          // it is handed the caps: without them uninstall_app (build 105)
+          // ran for a build-104 phone that silently dropped it.
+          deviceCaps: deviceCtx.caps || null,
           userText: lastUserText,
         });
         try {
@@ -1715,7 +1719,8 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
                 session: liveState, sessionId: liveSessionId, turnId: currentTurnId,
                 source: "live", userId: user?.sub, userName,
                 platform: deviceCtx.platform, tzOffsetMin: deviceCtx.tz,
-                appBuild: deviceCtx.build, userText: lastUserText,
+                appBuild: deviceCtx.build, deviceCaps: deviceCtx.caps || null,
+                userText: lastUserText,
               }).catch((e) => ({ ok: false, error: String(e.message || e) }));
             if (res.ok && res.deviceAction) {
               try { appWs.send(JSON.stringify(res.deviceAction)); } catch (_) {}
@@ -1817,8 +1822,15 @@ function attachWs(server) {
       tz: num("tz") ?? 330,
       platform:
         String(url.searchParams.get("platform") || "").toLowerCase() || null,
-      caps: granted.length || denied.length
-        ? { platform: "android", build: num("build") ?? 0, granted, denied }
+      // Built whenever the phone says anything about itself — its build
+      // number included. Caps used to exist only when permission lists
+      // came along, so a phone that sent just its build was offered (and
+      // handed) tools its app version cannot carry out.
+      caps: granted.length || denied.length || (num("build") ?? 0) > 0
+        ? {
+            platform: String(url.searchParams.get("platform") || "").toLowerCase() || "android",
+            build: num("build") ?? 0, granted, denied,
+          }
         : null,
     };
     wss.handleUpgrade(req, socket, head, (ws) => bridge(ws, user, room, deviceCtx));

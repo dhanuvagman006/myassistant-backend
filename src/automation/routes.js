@@ -1,10 +1,11 @@
 /**
  * AUTOMATION ROUTES (behind appAuth). The phone runs the loop:
  *
- *   POST /automation/:id/step    { screen, last }   → next action, or a stop
- *   POST /automation/:id/finish  { reason, kind? }  → the phone stopped it
- *   GET  /automation/recent                        → the last few runs
- *   GET  /automation/:id                           → one run with its steps
+ *   POST /automation/:id/step       { seq?, screen, last } → next action, or a stop
+ *   POST /automation/:id/finish     { reason, kind?, detail? } → the phone stopped it
+ *   POST /automation/:id/owner_done                        → the owner tapped Continue
+ *   GET  /automation/recent                               → the last few runs
+ *   GET  /automation/:id                                  → one run with its steps
  *
  * Runs are STARTED by the do_task_in_app tool, never directly: the tool is
  * where the assistant's safety gates (untrusted content, unattended turns)
@@ -21,12 +22,28 @@ function uid(req) {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
+// What the phone could see on this look (app build 105+). Only these
+// values pass; anything else reads as "not reported".
+const SHOT = new Set(["ok", "black", "failed", "rate_limited", "unsupported", "none"]);
+const TREE = new Set(["ok", "empty", "no_root"]);
+function cleanAccess(a) {
+  if (!a || typeof a !== "object") return null;
+  return {
+    shot: SHOT.has(a.shot) ? a.shot : "none",
+    tree: TREE.has(a.tree) ? a.tree : "ok",
+    locked: a.locked === true,
+  };
+}
+
 /** Only what the planner reads — never trust the shape the phone sends. */
 function cleanScreen(s) {
   const nodes = Array.isArray(s?.nodes) ? s.nodes.slice(0, 400) : [];
   const str = (v, n) => (v == null ? "" : String(v).slice(0, n));
-  // The screenshot: a small JPEG, base64. Anything else is dropped.
-  const shot = typeof s?.shot === "string" && s.shot.length < 900_000 &&
+  const access = cleanAccess(s?.access);
+  // The screenshot: a small JPEG, base64. Anything else is dropped — and
+  // so is a picture the phone itself called black (a protected screen):
+  // it shows nothing and would only invite taps at nothing.
+  const shot = access?.shot !== "black" && typeof s?.shot === "string" && s.shot.length < 900_000 &&
     /^[A-Za-z0-9+/=]+$/.test(s.shot.slice(0, 200)) ? s.shot : "";
   const box = (b) => Array.isArray(b) && b.length === 4 && b.every((v) => Number.isFinite(Number(v)))
     ? b.map((v) => Math.max(0, Math.min(1000, Math.round(Number(v))))) : null;
@@ -34,6 +51,7 @@ function cleanScreen(s) {
     pkg: str(s?.pkg, 120),
     keyboard: !!s?.keyboard,
     shot,
+    ...(access ? { access } : {}),
     nodes: nodes.map((n) => ({
       id: Number(n?.id),
       up: Number.isInteger(Number(n?.up)) ? Number(n.up) : -1,
@@ -59,20 +77,45 @@ function cleanScreen(s) {
 router.post("/:id(\\d+)/step", async (req, res) => {
   const id = uid(req);
   if (!id) return res.status(401).json({ error: "sign in required" });
+  const runId = Number(req.params.id);
+  const started = Date.now();
+  const screen = cleanScreen(req.body?.screen);
+  const raw = req.body?.seq;
+  const seq = Number.isInteger(raw) && raw >= 0 && raw < 1000 ? raw : null;
+  const meta = {};
   try {
-    const screen = cleanScreen(req.body?.screen);
-    // Counts only — never the screen's content.
-    console.log(`automation step run=${req.params.id} pkg=${screen.pkg} nodes=${screen.nodes.length} ` +
-      `shot=${screen.shot ? Math.round(screen.shot.length * 0.75 / 1024) + "KB" : "none"}` +
-      `${req.body?.screen?.shot && !screen.shot ? " (dropped)" : ""}`);
-    const out = await svc.step(id, Number(req.params.id), {
+    const out = await svc.step(id, runId, {
       screen,
-      last: req.body?.last || null,
-    });
+      last: req.body?.last && typeof req.body.last === "object" ? req.body.last : null,
+      seq,
+    }, meta);
+    // COUNTS AND TIMES ONLY — never the screen's content. One line per
+    // step, so a slow run can be read phase by phase: the model's share
+    // (llm_ms, in_tok; ≈ when the model did not report its count) beside
+    // the whole step (ms).
+    console.log(`automation step run=${runId} seq=${seq ?? "-"} llm_ms=${meta.llm_ms || 0} ` +
+      `in_tok≈${meta.in_tok || 0} nodes=${screen.nodes.length} ` +
+      `shot=${screen.shot ? Math.round(screen.shot.length * 0.75 / 1024) + "KB" : "none"}` +
+      `${req.body?.screen?.shot && !screen.shot ? " (dropped)" : ""} ` +
+      `calls=${meta.calls || 0} ms=${Date.now() - started} status=${out?.status || "?"}`);
     res.json(out);
   } catch (e) {
-    console.error("automation step:", e.message);
-    res.status(500).json({ status: "failed", report: "Something went wrong on my side, so I stopped." });
+    console.error(`automation step run=${runId}:`, e.message);
+    // A 500 read on the phone as "I lost the connection" and a retry; the
+    // truth is that the step broke here. The run ends, with that sentence.
+    const f = await svc.finish(id, runId, { reason: "error", detail: "server" }).catch(() => null);
+    res.json({ status: "failed", report: f?.report || "Something went wrong on my side, so I stopped." });
+  }
+});
+
+router.post("/:id(\\d+)/owner_done", async (req, res) => {
+  const id = uid(req);
+  if (!id) return res.status(401).json({ error: "sign in required" });
+  try {
+    res.json(await svc.ownerDone(id, Number(req.params.id)));
+  } catch (e) {
+    console.error("automation owner_done:", e.message);
+    res.status(500).json({ ok: false, error: "could not record that" });
   }
 });
 

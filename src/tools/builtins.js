@@ -4691,10 +4691,15 @@ function registerBuiltins() {
       "('open the calculator and work out 12 x 7', 'open settings and " +
       "turn on dark mode', 'add it to my cart') use do_task_in_app — it " +
       "opens the app itself and does the steps.\n" +
-      "IF IT IS NOT INSTALLED the phone opens its Play Store page so they " +
-      "can install it, and offers to open it once it is in — so 'open X', " +
-      "'download X', 'install X' and 'get X' all go through this tool. " +
-      "Never answer 'open Swiggy' with the website.",
+      "IF IT IS NOT INSTALLED the phone opens its page in the app store. " +
+      "'open X', 'download X', 'install X' and 'get X' all go through this " +
+      "tool. INSTALLING IS THE USER'S WORD: set install true only when they " +
+      "asked to install / download / get the app, or said yes to installing " +
+      "it — then the phone installs it and opens it. For a plain 'open X' " +
+      "leave install false: if it comes back not installed, ask ONE " +
+      "question — \"It isn't installed — want me to install it?\" — and on " +
+      "yes call this again with install true. Say 'the app store', never a " +
+      "store's brand name. Never answer 'open Swiggy' with the website.",
     risk: "low",
     deviceAction: true,
     inputSchema: {
@@ -4706,10 +4711,16 @@ function registerBuiltins() {
             "The app's name exactly as the user said it — 'Swiggy', " +
             "'BigBasket', 'PhonePe'. Free text; any installed app works.",
         },
+        install: {
+          type: "boolean",
+          description:
+            "true only when the user asked to install / download / get the app, " +
+            "or said yes to installing it.",
+        },
         store_if_missing: {
           type: "boolean",
           description:
-            "Kept for older callers; the Play Store fallback now applies to every request.",
+            "Kept for older callers; the app store fallback now applies to every request.",
         },
       },
       required: ["app"],
@@ -4802,16 +4813,26 @@ function registerBuiltins() {
       // back. It says "opening" rather than "opened" because the receipt
       // has not arrived yet; if the app is not there, the phone reports a
       // failure and the assistant is corrected.
+      // INSTALL ONLY ON THE OWNER'S WORD (owner, 2026-09-24: "install any
+      // app … only when user allows it"). A plain "open X" used to press
+      // Install on its own when X was missing. Now `install` says whether
+      // they asked; without it the phone only opens the store page and the
+      // assistant asks once. A build-104 app ignores the field and behaves
+      // exactly as before.
+      const install = args.install === true || args.install === "true";
       return {
         ok: true,
         deviceAction: {
           type: "open_any_app",
           name: label,
           pkg: known ? known.pkg : "",
-          // Every request: an app they do not have goes to the Store.
+          // Every request: an app they do not have goes to the store.
           store_if_missing: true,
+          install,
         },
-        speak: `Opening ${label}.`,
+        speak: install
+          ? `Getting ${label} — I'll open it if it's already on your phone, or install it from the app store.`
+          : `Opening ${label}.`,
       };
     },
   });
@@ -6746,7 +6767,9 @@ function registerBuiltins() {
           ok: true,
           data: { run_id: out.run.id, resumed: true },
           deviceAction: out.directive,
-          speak: `Got it — carrying on in ${out.run.app_label}.`,
+          // "carrying on in your phone" read wrong for a task across the
+          // phone itself.
+          speak: out.run.app_name ? `Got it — carrying on in ${out.run.app_label}.` : "Got it — carrying on.",
         };
       }
       // THE APP THEY NAMED WINS. Asked "order biryani on Swiggy" after two
@@ -8084,8 +8107,11 @@ function registerBuiltins() {
       const runs = await require("../automation/service").recent(ctx.userId, 20).catch(() => []);
       const HOW = {
         running: "is still in progress", waiting: "is waiting for the user's answer",
+        waiting_owner: "is waiting for the user to sign in or answer on the phone, then tap Continue",
         done: "finished", handoff: "ended handoff (waiting for the user's own last step)",
         failed: "failed", stopped: "was stopped by the user",
+        blocked: "could not be done — the app itself keeps assistants out; the user must do it themselves",
+        unconfirmed: "ended, but the result could not be confirmed on screen — the user should check it",
       };
       const runLines = runs
         .filter((r) => Number(r.updated_at) >= since && (!words.length ||

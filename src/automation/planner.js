@@ -15,6 +15,15 @@ const ai = require("../services/ai/router");
 
 const MAX_NODES = 160;
 const MAX_TEXT = 90;
+// ONE PLANNER CALL NEVER OUTLASTS THE PHONE. It used to inherit the chat
+// path's 30 s timeout, a transient retry and a switch to the fallback
+// model on quota — up to about 90 s for one call, while the phone gave up
+// after 40 s and re-sent the step, so a second planner ran on the same
+// run (audit, 2026-09-24). Now each call is cut at 12 s with no retries
+// inside the router, and the whole step has a 24 s budget, so the phone
+// (30 s) always hears back.
+const CALL_TIMEOUT_MS = 12_000;
+const MIN_CALL_MS = 1_500;
 
 const clip = (s, n = MAX_TEXT) => {
   const t = String(s || "").replace(/\s+/g, " ").trim();
@@ -83,19 +92,23 @@ const SYSTEM = `You are the hands of a personal phone assistant, using the OWNER
 HOW TO WORK
 1. Look before you act. Every action must be based on the CURRENT SCREEN — the SCREENSHOT attached (what the owner actually sees) and the element list (what you can tap by id). Never act on what you expect a screen to look like. The screenshot is the truth when the list is thin or empty; apps change their design, so read the screen every time and never assume a layout.
 2. Verify. First check whether the LAST ACTION achieved its "expect". If it did not, try another way (a different element, scroll, back). After two failed tries at the same thing, stop with status "fail" and say what blocked you.
-3. Be quick. If the app was opened straight on the right search results (see CHOICES MADE SO FAR), work from those results — do not search again. Prefer search boxes and filter chips over scrolling long lists. To search, use "type" with "submit": true. To get to an app, use "open_app" with its name as shown on the phone — never hunt for icons. Toggles like Wi-Fi, Bluetooth, torch, mobile data and rotation are fastest in quick settings; everything else is in the Settings app (it has a search bar).
+3. Be quick. If the app was opened with a search link (see CHOICES MADE SO FAR) and the screen shows those results, work from them — do not search again; if it shows the app's home page instead, search once. Prefer search boxes and filter chips over scrolling long lists. To search, use "type" with "submit": true. To get to an app, use "open_app" with its name as shown on the phone — never hunt for icons. Toggles like Wi-Fi, Bluetooth, torch, mobile data and rotation are fastest in quick settings; everything else is in the Settings app (it has a search bar).
 4. When you choose for the owner (which restaurant, which item, which option), choose sensibly for what they asked — the rating they asked for, then the best rated, then the fastest — and say what you chose and why in "note".
+4b. PEOPLE AND PAGES (follow, subscribe, message, like a person's post): the owner means the REAL account, and never knows its username. If CHOICES MADE SO FAR give a username, use exactly that one. Otherwise search the person's NAME only — drop words like actor, singer, official — and pick the account the person runs: the verified tick, then their exact name, then by far the most followers. Never fan, update, edits or parody pages, and never an account just because its username contains the words the owner said. Open the profile and check it before Follow. If two accounts look alike and neither is verified, stop with "ask_user" naming both (username and followers). Your report names the exact username.
 5. Use only the owner details listed below. Never invent details. If the task needs something you do not have and cannot see on screen, stop with status "ask_user" and ask ONE short question.
 6. Status "done" only when the task is complete AND the screen shows it (a confirmation, the item in the cart, the form's thank-you page).
 6b. REPORT ONLY WHAT YOU CAN SEE. Your report may claim only what the CURRENT screenshot and list show — the cart bar with the item, "Following" on the profile, the confirmation page. If your last taps did not visibly change the screen, say plainly that you could not confirm it worked. Never say an item was added, a request went through or a setting changed without seeing it.
+6c. With "done" or "handoff", put in "evidence" the exact words copied from the CURRENT screen that prove where things stand (e.g. "View Cart · 1 item", "Following", "Thank you for registering"). Without evidence on the screen, the owner is told it could not be confirmed.
+6d. A step marked REFUSED was stopped by the owner's safety rules — never try it again, and never the same place another way (a tap_xy there under another name, or the element around it). Find another way to the goal, or stop with "handoff" if the goal is otherwise reached.
+6e. Install an app only when the TASK asks to install or download it.
 7. FORMS (applications, registrations, scholarships): fill every field you can from OWNER DETAILS — including "also known" facts and earlier form answers. For a REQUIRED field you have no answer for, ask_user ONE question (their answer is remembered for next time); leave optional unknowns empty rather than guessing. Pick dropdown options that match the owner's details exactly. Work down the page, scrolling as needed. When everything you can fill is filled and only a declaration / "I agree" tick, a CAPTCHA, a document upload or an ID/bank number remains, stop with "handoff" and list what is left.
 8. Cookie banners: choose Reject / Only necessary — never Accept all.
 9. Prefer tapping by id. When what you need is visible in the screenshot but not in the list, use "tap_xy" with its centre in 0-1000 screen coordinates and a "label" saying exactly what it is.
-10. If an app looks stuck, wait once, then go back — never use recent apps to close or clear apps, never force-stop anything. If it is still stuck, stop with "fail" and say so.
+10. If an app looks stuck, wait once, then go back — never close or clear apps, never force-stop anything. If it is still stuck, stop with "fail" and say so.
 
 LINES YOU NEVER CROSS — stop with status "handoff" instead:
 • anything that pays, places or confirms an order, booking or ride that costs money, or moves money
-• typing a password, PIN, OTP, card, bank or ID number; sign-in and OTP screens
+• typing a password, PIN, OTP, card, bank or ID number; sign-in and OTP screens, "Continue with Google" and other one-tap sign-ins
 • sending a message to a person or posting publicly — stop when it is written, the owner taps Send
 • deleting or erasing anything, uninstalling apps, factory reset
 • security settings: screen lock, passwords, fingerprint, accessibility, device admin, unknown apps, developer options, accounts, privacy, backup, reset
@@ -114,7 +127,7 @@ ACTIONS
 {"type":"long_press","id":N}
 {"type":"swipe","direction":"left"|"right"|"up"|"down"}     (a finger across the screen: pages, carousels, stories)
 {"type":"open_app","name":"<app name as shown on the phone>"}
-{"type":"back"}   {"type":"home"}   {"type":"recents"}
+{"type":"back"}   {"type":"home"}
 {"type":"notifications"}   {"type":"quick_settings"}   {"type":"screenshot"}
 {"type":"wait"}                                             (the screen is still loading)
 
@@ -123,6 +136,7 @@ Reply with STRICT JSON only, no markdown:
  "action":{...},            // only with "continue"
  "expect":"what the screen should show after this action",
  "note":"a choice you made for the owner and why (optional)",
+ "evidence":"done/handoff only: exact words on the current screen that prove it",
  "report":"when stopping: 1-2 plain sentences to the owner — what you did, what is left for them",
  "question":"ask_user only: one short question"}`;
 
@@ -152,22 +166,36 @@ function buildPrompt(run, screen, { hints = [], owner = {}, maxSteps = 25 } = {}
     const offset = steps.length - recent.length;
     lines.push("WHAT HAS BEEN DONE:\n" + recent.map((s, i) => {
       const r = s.result || {};
-      const outcome = r.ok === false
-        ? `FAILED${r.error ? ` (${r.error})` : ""}`
-        : r.changed === false ? "done, but the screen did not change" : "done, screen changed";
+      // A refusal is not a failure to retry: the safety rules said no.
+      let outcome = s.vetoed || r.blocked
+        ? `REFUSED by the safety rules — ${s.vetoed ? String(r.error || "").replace(/^refused:\s*/i, "") : `the phone said no (${r.blocked})`}`
+        : r.ok === false
+          ? `FAILED${r.error ? ` (${r.error})` : ""}`
+          : r.changed === false ? "done, but the screen did not change" : "done, screen changed";
+      if (r.submit_refused) outcome += " — typed, but Enter was NOT pressed; tap the field's own search/go button if needed";
       return `${offset + i + 1}. ${describeAction(s.action)} — expected: ${s.expect || "?"} — ${outcome}`;
     }).join("\n"));
   }
-  const notes = Array.isArray(run.notes) ? run.notes : [];
+  // Every note, including the ones written only for the planner (the
+  // start link); the owner's report uses only the owner's (say.js).
+  const notes = (Array.isArray(run.notes) ? run.notes : [])
+    .map((n) => (typeof n === "string" ? n : String(n?.text || ""))).filter(Boolean);
   if (notes.length) lines.push(`CHOICES MADE SO FAR:\n${notes.map((n) => `- ${n}`).join("\n")}`);
 
-  lines.push(`CURRENT SCREEN (app ${screen?.pkg || "?"}${screen?.keyboard ? ", keyboard open" : ""}${screen?.shot ? "; screenshot attached" : ""}):\n${describeScreen(screen) || (screen?.shot ? "(no element list for this app — work from the screenshot with tap_xy)" : "(nothing readable — the screen may still be loading)")}`);
+  // No picture this time: a point on the screen would be a blind guess.
+  const hidden = screen?.access?.shot === "black";
+  const picture = screen?.shot ? "" : hidden
+    ? "\n(this app hides its picture from assistants — tap_xy is NOT available; use element ids only)"
+    : (screen?.nodes || []).length ? "\n(no screenshot this time — tap_xy is NOT available; use element ids only)" : "";
+  lines.push(`CURRENT SCREEN (app ${screen?.pkg || "?"}${screen?.keyboard ? ", keyboard open" : ""}${screen?.shot ? "; screenshot attached" : ""}):\n${describeScreen(screen) || (screen?.shot ? "(no element list for this app — work from the screenshot with tap_xy)" : "(nothing readable — the screen may still be loading)")}${picture}`);
   return lines.join("\n\n");
 }
 
 const STATUSES = new Set(["continue", "done", "handoff", "ask_user", "fail"]);
+// No "recents": a swipe there can close the assistant itself, and the
+// owner opens recent apps on their own (audit, 2026-09-24).
 const TYPES = new Set(["tap", "tap_xy", "type", "scroll", "back", "wait", "long_press", "swipe",
-  "open_app", "home", "recents", "notifications", "quick_settings", "screenshot"]);
+  "open_app", "home", "notifications", "quick_settings", "screenshot"]);
 
 /** The model's answer, or a fail decision explaining why it was unusable. */
 function parseDecision(raw) {
@@ -186,6 +214,7 @@ function parseDecision(raw) {
     status,
     expect: clip(j.expect, 200),
     note: clip(j.note, 200),
+    evidence: clip(j.evidence, 160),
     report: clip(j.report, 400),
     question: clip(j.question, 200),
   };
@@ -225,25 +254,58 @@ function parseDecision(raw) {
   return out;
 }
 
+/** The call, or a timeout error once `ms` has passed — whatever it does. */
+function within(promise, ms) {
+  let timer;
+  const cut = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error(`planner timeout after ${ms} ms`),
+      { name: "TimeoutError" })), ms);
+  });
+  return Promise.race([promise, cut]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * One decision. Always returns — within opts.deadline (epoch ms) when
+ * given — and carries what it cost in `usage` for the step's log line
+ * (counts and times only): { llm_ms, in_tok, estimated, calls }.
+ */
 async function decide(run, screen, opts = {}) {
   const prompt = buildPrompt(run, screen, opts);
+  const perCall = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : CALL_TIMEOUT_MS;
+  const deadline = Number(opts.deadline) > 0 ? Number(opts.deadline) : Date.now() + 2 * perCall;
+  const usage = { llm_ms: 0, in_tok: 0, estimated: false, calls: 0 };
   let lastErr = null;
   // One retry: a malformed answer is common enough to be worth a second
   // look, rare enough that a second failure means something is wrong.
   for (let attempt = 0; attempt < 2; attempt++) {
+    const left = deadline - Date.now();
+    if (left < Math.min(MIN_CALL_MS, perCall)) { lastErr = lastErr || "no time left"; break; }
+    const started = Date.now();
     try {
       const images = screen?.shot ? [{ mime: "image/jpeg", data: screen.shot }] : undefined;
-      const { reply } = await ai.generateReply(
-        [{ role: "user", content: prompt + (attempt ? "\n\nReply with the JSON object only." : ""), images }],
-        { system: SYSTEM });
-      const d = parseDecision(reply);
-      if (d) return d;
+      const content = prompt + (attempt ? "\n\nReply with the JSON object only." : "");
+      usage.calls++;
+      const budget = Math.min(perCall, left);
+      const out = await within(ai.generateReply(
+        [{ role: "user", content, images }],
+        // noRetry: no transient retry and no switch to the quota fallback
+        // model inside the router — this caller has its own budget.
+        { system: SYSTEM, timeoutMs: budget, noRetry: true, json: true }), budget + 250);
+      usage.llm_ms += Date.now() - started;
+      const inTok = Number(out?.usage?.promptTokenCount);
+      if (Number.isFinite(inTok) && inTok > 0) usage.in_tok += inTok;
+      else { usage.in_tok += Math.round((SYSTEM.length + content.length) / 4); usage.estimated = true; }
+      const d = parseDecision(out?.reply);
+      if (d) return { ...d, usage };
       lastErr = "unreadable answer";
     } catch (e) {
+      usage.llm_ms += Date.now() - started;
       lastErr = String(e.message || e).slice(0, 160);
     }
   }
-  return { status: "fail", report: "", error: lastErr || "planner failed" };
+  return { status: "fail", report: "", error: lastErr || "planner failed", usage };
 }
 
-module.exports = { decide, buildPrompt, parseDecision, describeScreen, describeAction, SYSTEM };
+module.exports = {
+  decide, buildPrompt, parseDecision, describeScreen, describeAction, SYSTEM, CALL_TIMEOUT_MS,
+};
