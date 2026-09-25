@@ -119,4 +119,5 @@ async function sweep() {
   } catch (_) {}
 }
 
-module.exports = { get, put, sweep, LIVE_TTL_MS, STABLE_TTL_MS, ttlFor };
+// migrate: for the erase suite's schema guard (it must see every table).
+module.exports = { migrate, get, put, sweep, LIVE_TTL_MS, STABLE_TTL_MS, ttlFor };

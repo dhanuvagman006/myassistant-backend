@@ -10,8 +10,9 @@
  *   - /admin-panel/api/*           → JSON endpoints behind that cookie.
  *
  * Powers: full user management (search, detail, edit profile fields,
- * attach+verify phone, pause/resume, clear device, test push, cascade
- * delete via the same table list as /privacy/account), analytics series,
+ * attach+verify phone, pause/resume, clear device, test push, delete
+ * through the same routine as /privacy/account, and a "Leftovers" sweep
+ * for what older deletes left behind), analytics series,
  * audit-trail explorer, live feature-flag overrides (kv-backed, read by
  * /config), push broadcast, and a debug page with DB/integration probes.
  *
@@ -362,17 +363,46 @@ router.post("/api/users/:id/clear-device", async (req, res) => {
   res.json({ ok: true });
 });
 
+/**
+ * DELETE USER — the same eraser the app's own "Delete account" uses.
+ *
+ * Owner, 2026-09-25: "delete old user accounts and data's from the
+ * database", then "i ran but db files have not yet deleted". This route
+ * used to carry its own copy of the delete: rows only, so recordings,
+ * document files and the Google grant all outlived the account, and the
+ * Recordings page kept listing the calls. It now calls
+ * privacy.deleteUserEverywhere() and answers with what was removed, so
+ * the panel can show it instead of a bare "deleted".
+ */
 router.delete("/api/users/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
+  if (!(id > 0)) return res.status(400).json({ error: "bad user id" });
   try {
-    const tables = await privacy.existingUserTables();
-    await db.tx(async (client) => {
-      for (const [table, col] of tables) {
-        await client.query(`DELETE FROM ${table} WHERE ${col} = $1`, [String(id)]);
-      }
-      await client.query("DELETE FROM users WHERE id = $1", [id]);
-    });
-    res.json({ ok: true });
+    res.json(await privacy.deleteUserEverywhere(id, { reason: "admin panel" }));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * LEFTOVERS — what earlier deletes left behind.
+ *
+ * Every delete before 2026-09-25 left rows in the tables the old list did
+ * not know, plus call audio and document files on disk. GET counts them
+ * (rows whose user no longer exists, per table, and the files); POST
+ * removes exactly those. Behind the admin session like everything here.
+ */
+router.get("/api/maintenance/orphans", async (_req, res) => {
+  try {
+    res.json(await privacy.findOrphans());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post("/api/maintenance/orphans/purge", async (_req, res) => {
+  try {
+    res.json(await privacy.purgeOrphans());
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

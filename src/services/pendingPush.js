@@ -107,4 +107,5 @@ async function countFor(userId) {
   return r?.n || 0;
 }
 
-module.exports = { queue, flush, countFor };
+// migrate: for the erase suite's schema guard (it must see every table).
+module.exports = { migrate, queue, flush, countFor };

@@ -528,8 +528,10 @@ async function list({ userId, limit = 50, offset = 0 } = {}) {
   const lim = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const off = Math.max(Number(offset) || 0, 0);
   return query(
-    `SELECT r.id, r.user_id, u.name AS user_name, r.session_id, r.started_at,
-            r.duration_ms, r.bytes, r.turns, r.format
+    // user_exists: a call whose account was deleted is labelled as such in
+    // the panel instead of passing for a user with no name.
+    `SELECT r.id, r.user_id, u.name AS user_name, (u.id IS NOT NULL) AS user_exists,
+            r.session_id, r.started_at, r.duration_ms, r.bytes, r.turns, r.format
        FROM live_recordings r LEFT JOIN users u ON u.id = r.user_id
       WHERE ${where}
       ORDER BY r.started_at DESC LIMIT ${lim} OFFSET ${off}`,
@@ -627,10 +629,42 @@ async function stopAll() {
   await Promise.allSettled(open.map((r) => r.stop()));
 }
 
+/**
+ * ACCOUNT DELETED MID-CALL: DROP THE RECORDING, DO NOT FINISH IT.
+ *
+ * Owner, 2026-09-25: "delete old user accounts and data's from the
+ * database", then "i ran but db files have not yet deleted" — the
+ * Recordings page still listed the calls of accounts already deleted.
+ *
+ * Account deletion removes this user's live_recordings rows. A call still
+ * open on this pod would otherwise carry on writing, find no row to
+ * update when it stops, and leave an .m4a that nothing points at. So the
+ * open recording is closed here without a merge and its raw halves are
+ * unlinked; the caller deletes the rows. Returns how many were dropped.
+ */
+async function abortUser(userId) {
+  const uid = Number(userId);
+  const mine = [...live].filter((r) => r.userId === uid);
+  for (const r of mine) {
+    r.stopped = true;
+    live.delete(r);
+    try {
+      await r.user?.close(0);
+      await r.agent?.close(0);
+    } catch (_) { /* closing is best effort; the unlink below is what counts */ }
+    await r.cleanupRaw();
+    if (r.out) await fsp.unlink(r.out).catch(() => {});
+  }
+  return mine.length;
+}
+
 function safeName(s) {
   return String(s).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 90);
 }
 
 module.exports = {
   begin, stopAll, list, get, destroy, usage, prune, ENABLED, KEEP_DAYS,
+  // Account erasure (src/routes/privacy.js) finds the files through the
+  // rows, checks every path is under ROOT, and tidies the day folders.
+  migrate, abortUser, sweepEmptyDays, ROOT, MAX_MINUTES,
 };
