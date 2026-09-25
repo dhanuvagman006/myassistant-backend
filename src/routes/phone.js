@@ -31,12 +31,27 @@ router.get("/", async (req, res) => {
   });
 });
 
+/**
+ * THE ACCOUNT MAY BE GONE. 2026-09-25: the owner deleted every account
+ * from the admin panel, including the one his own phone was signed in
+ * to. The session token still verifies (it is signed, not looked up), so
+ * both verify paths ran against a user that no longer exists, crashed
+ * reading it back (publicUser(null)), and the app showed its catch-all
+ * "Could not reach the server". Say what actually happened, as JSON the
+ * app already displays, before touching anything.
+ */
+const ACCOUNT_GONE = "This account no longer exists. Tap Sign out, then sign in again.";
+async function accountGone(uid) {
+  return !(await db.findById(uid).catch(() => null));
+}
+
 router.post("/verify", async (req, res) => {
   if (!configured()) {
     return res.status(503).json({ error: "phone verification unavailable" });
   }
   const uid = Number(req.user?.sub);
   if (!Number.isFinite(uid)) return res.status(401).json({ error: "unauthorized" });
+  if (await accountGone(uid)) return res.status(401).json({ error: ACCOUNT_GONE });
 
   const decoded = await verifyIdToken(req.body?.firebaseIdToken);
   if (!decoded) return res.status(401).json({ error: "invalid verification token" });
@@ -126,6 +141,7 @@ router.post("/dev-verify", async (req, res) => {
   }
   const uid = Number(req.user?.sub);
   if (!Number.isFinite(uid)) return res.status(401).json({ error: "unauthorized" });
+  if (await accountGone(uid)) return res.status(401).json({ error: ACCOUNT_GONE });
 
   const phone = normalizePhone(req.body?.phone);
   if (!phone) return res.status(400).json({ error: "Enter a valid phone number." });
@@ -160,3 +176,4 @@ router.post("/dev-verify", async (req, res) => {
 });
 
 module.exports = router;
+module.exports.ACCOUNT_GONE = ACCOUNT_GONE;

@@ -131,6 +131,35 @@ async function atest(name, fn) {
       "the phone feature must not reach into the app's live path");
   });
 
+  // 2026-09-25: every account was deleted while a phone stayed signed in;
+  // verifying crashed on the missing user and the app said "Could not
+  // reach the server".
+  await atest("a deleted account is told to sign in again, not crashed on", async () => {
+    const express = require("express");
+    const phone = require("../src/routes/phone");
+    const was = process.env.ALLOW_DEV_PHONE_VERIFY;
+    process.env.ALLOW_DEV_PHONE_VERIFY = "true";
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.user = { sub: "987654321" }; next(); }); // no such user
+    app.use("/phone", phone);
+    const server = app.listen(0);
+    try {
+      const url = `http://127.0.0.1:${server.address().port}/phone/dev-verify`;
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: "+919999999999" }),
+      });
+      assert.strictEqual(r.status, 401);
+      assert.deepStrictEqual(await r.json(), { error: phone.ACCOUNT_GONE });
+    } finally {
+      server.close();
+      if (was === undefined) delete process.env.ALLOW_DEV_PHONE_VERIFY;
+      else process.env.ALLOW_DEV_PHONE_VERIFY = was;
+    }
+  });
+
   await new Promise((r) => setTimeout(r, 200));
   await db.close();
   console.log(`\n${passed} checks passed`);
