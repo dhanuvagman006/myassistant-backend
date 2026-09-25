@@ -149,7 +149,7 @@ const USER_TABLES = [
   ["usage", "user_id"],
   ["families", "owner_id"],
   ["family_members", "user_id"],
-  ["payments", "user_id"],
+  // payments: kept, see NOT_PERSONAL.
   // More legacy tables (review, 2026-09-25): made by code that shipped and
   // was later removed, and never DROPped either. Missing here, they
   // outlived every delete and every Leftovers run on a database that has
@@ -182,11 +182,19 @@ const SHARED_TABLES = {
 };
 
 /**
- * Tables with a user column that hold nothing personal. None today. An
- * entry needs a reason, because the erase suite's schema guard accepts a
- * user-keyed table only when it is in USER_TABLES, SHARED_TABLES or here.
+ * Tables with a user column that are deliberately NOT erased: either they
+ * hold nothing personal, or the law asks us to keep them. An entry needs
+ * a reason, because the erase suite's schema guard accepts a user-keyed
+ * table only when it is in USER_TABLES, SHARED_TABLES or here. Neither an
+ * account delete nor the Leftovers sweep touches these.
  */
-const NOT_PERSONAL = {};
+const NOT_PERSONAL = {
+  // 2026-09-25: payment records (Razorpay id, plan, amount, date) are
+  // financial records that normally have to be kept for accounting, and
+  // deleting them cannot be undone. Kept until the owner decides otherwise;
+  // clearing them is one line in USER_TABLES.
+  payments: "financial record kept for accounting; the owner decides when it may go",
+};
 
 /** The column names the schema guard treats as "this row is a user's". */
 const USER_COLUMNS = ["user_id", "from_user_id", "owner_id", "created_by"];

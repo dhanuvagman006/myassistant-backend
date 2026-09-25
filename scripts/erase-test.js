@@ -363,7 +363,7 @@ const tell = (from, toPhone, message) => db.one(
   await atest("the legacy tables of removed code are in this run, and every one is erased", async () => {
     // The guard above now sees them too; this pins that it really does.
     const erased = new Set((await privacy.existingUserTables()).map(([t]) => t));
-    const missing = Object.keys(LEGACY_TABLES).filter((t) => !erased.has(t));
+    const missing = Object.keys(LEGACY_TABLES).filter((t) => !erased.has(t) && !privacy.NOT_PERSONAL[t]);
     assert.deepStrictEqual(missing, [], "legacy tables not erased — add them to USER_TABLES");
   });
 
