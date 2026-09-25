@@ -237,6 +237,8 @@ app.use("/automation", appAuth, require("./automation/routes"));
 // Reminders (voice-created via /chat intents + Today screen CRUD).
 app.use("/reminders", appAuth, require("./reminders/routes"));
 app.use("/commitments", appAuth, require("./routes/commitments"));
+// MOMENTUM — Today's 3, habits, focus and the streak (momentum/routes.js).
+app.use("/momentum", appAuth, require("./momentum/routes"));
 app.use("/messages", appAuth, require("./routes/messages"));
 app.use("/usage", appAuth, require("./routes/usage").router);
 app.use("/finance", appAuth, require("./routes/finance").router);

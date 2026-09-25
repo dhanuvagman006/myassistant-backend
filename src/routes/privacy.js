@@ -139,6 +139,11 @@ const USER_TABLES = [
   ["chat_group_members", "user_id"], // what they SAID in groups: see SHARED_TABLES
   ["chat_prefs", "user_id"], // their own mute / clear-chat settings
   ["chat_hidden_messages", "user_id"],
+  // Momentum (2026-09-25): Today's 3, habits and their ticks, focus sessions.
+  ["momentum_priorities", "user_id"],
+  ["momentum_habits", "user_id"],
+  ["momentum_habit_checks", "user_id"],
+  ["momentum_focus", "user_id"],
 
   // Legacy tables, taken out of init() on 2026-08-10 but never DROPped, so
   // a database created before that date may still hold them.
@@ -205,7 +210,9 @@ const USER_COLUMNS = ["user_id", "from_user_id", "owner_id", "created_by"];
  * markers.
  */
 const KV_EXACT = ["call_analysis"]; // call_analysis:<uid>
-const KV_PREFIX = ["brief", "morning", "pdate"]; // <name>:<uid>:…
+// momentum:<uid>:<day> is a nudge already sent; momentum:<uid>:earned the
+// milestones reached.
+const KV_PREFIX = ["brief", "morning", "pdate", "momentum"]; // <name>:<uid>:…
 
 /**
  * Quotes a table or column name. Every name here comes from the lists above,
