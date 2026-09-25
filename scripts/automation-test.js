@@ -1932,6 +1932,10 @@ const swiggyCart = { pkg: SW, nodes: [
   await atest("the rules: a search box that shows nothing is submitted, never guessed at; 4b and 6b stay", () => {
     assert.match(planner.SYSTEM, /3b\. SEARCH BOXES: after typing into a search box, look for the results or suggestions\. If they did not appear, submit the search \(type again with "submit": true\) or tap the matching suggestion — never tap_xy at a guess on an unrelated item\./);
     assert.match(planner.SYSTEM, /4b\. PEOPLE AND PAGES/);
+    // Instagram's "Meta AI" results page: use the Accounts tab / account
+    // row, not the preview card, and unfollow needs the confirm sheet.
+    assert.match(planner.SYSTEM, /tap the ACCOUNTS tab and open the account ROW/);
+    assert.match(planner.SYSTEM, /To UNFOLLOW, tap "Following" on the profile and confirm "Unfollow"/);
     assert.match(planner.SYSTEM, /6b\. REPORT ONLY WHAT YOU CAN SEE/);
     assert.match(planner.SYSTEM, /Element ids belong to the CURRENT SCREEN only/);
   });
