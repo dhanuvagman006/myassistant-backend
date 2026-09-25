@@ -98,6 +98,8 @@ const FAMILIES = [
       // family backed them, so the assistant could apologise for a
       // schedule the user was looking at.
       "show_schedule", "show_news",
+      // "Bringing up the second story" — its card comes to the front.
+      "read_news_story",
     ],
     claim: /\b(opening|opened|launching|launched|pulling up|bringing up)\b/i,
     // खोल…, ओपन कर…, ತೆರೆ…/ಓಪನ್ ಮಾಡ…, திறக்க…, తెరుస్…, തുറക്ക…

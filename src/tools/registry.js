@@ -417,7 +417,9 @@ const SEED_UNATTENDED = new Set([
  * search-engine chosen, and tainting every searched turn would put a card
  * in front of "find their address and send it to Ravi".
  */
-const UNTRUSTED_SOURCES = new Set(["email_read", "read_webpage", "deep_research"]);
+const UNTRUSTED_SOURCES = new Set(["email_read", "read_webpage", "deep_research",
+  // It hands back an article's text, exactly as read_webpage does.
+  "read_news_story"]);
 const TAINT_SENSITIVE = new Set([
   "email_send", "send_agent_message", "send_whatsapp_message", "send_document",
   "send_patient_document", "place_phone_call", "delete_calendar_event",
