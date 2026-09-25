@@ -639,6 +639,8 @@ async function listImportant(userId, { limit = 12, force = false } = {}) {
 }
 
 module.exports = {
+  // For the erase suite's schema guard, which must see every table.
+  migrate: () => Promise.all([ensureTable(), ensureSentTable()]),
   getAccount,
   listImportant,
   listSent,

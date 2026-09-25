@@ -54,4 +54,28 @@ async function verifyIdToken(idToken) {
   }
 }
 
-module.exports = { ensure, configured, verifyIdToken };
+/**
+ * Forget a phone number at Firebase when its account is deleted.
+ *
+ * Owner, 2026-09-25: "delete old user accounts and data's from the
+ * database". The OTP sign-in leaves a Firebase user holding the number;
+ * our side never stored that user's id, so it is looked up by the number
+ * itself. Best effort: "not found" and "not configured" are both fine, and
+ * nothing here may stop the account deletion that called it.
+ *
+ * @returns "deleted" | "not found" | "not configured" | "failed: …"
+ */
+async function deletePhoneUser(phone) {
+  if (!phone) return "no phone";
+  if (!ensure()) return "not configured";
+  try {
+    const u = await getAuth().getUserByPhoneNumber(String(phone));
+    await getAuth().deleteUser(u.uid);
+    return "deleted";
+  } catch (e) {
+    if (e && e.code === "auth/user-not-found") return "not found";
+    return "failed: " + String(e?.message || e).slice(0, 120);
+  }
+}
+
+module.exports = { ensure, configured, verifyIdToken, deletePhoneUser };

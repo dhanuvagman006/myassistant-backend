@@ -243,6 +243,21 @@ class Track {
 /** Every recording currently open, so a deploy can finish them. */
 const live = new Set();
 
+/**
+ * Users abortUser() has dropped: their account is being deleted. A
+ * recording still starting then (its INSERT in flight, so not yet in
+ * `live` for abortUser to see) checks this and abandons itself, instead
+ * of recording a whole call for an account that no longer exists
+ * (review, 2026-09-25). Ids are never reused, so a mark is never wrong
+ * once the delete has gone through; if it fails, cancelErase() lifts it.
+ */
+const erasedUsers = new Set();
+
+/** The delete failed and the account is still there: record them again. */
+function cancelErase(userId) {
+  erasedUsers.delete(Number(userId));
+}
+
 class Recording {
   constructor(userId, sessionId) {
     this.userId = Number(userId) || 0;
@@ -275,11 +290,21 @@ class Recording {
     await Promise.all([this.user.open(), this.agent.open()]);
     try {
       await migrate();
+      if (erasedUsers.has(this.userId)) throw new Error("account deleted");
       await run(
         `INSERT INTO live_recordings (user_id, session_id, started_at, file, state)
               VALUES ($1, $2, $3, $4, 'recording')`,
         [this.userId, this.sessionId, this.startedAt, this.out]
       );
+      // Deleted while that INSERT was in flight. The delete's transaction
+      // may already have run and missed this row, so it is ours to remove.
+      // Checked in the same tick as live.add() below: abortUser either
+      // finds this recording in `live` or this check finds the mark.
+      if (erasedUsers.has(this.userId)) {
+        await run(`DELETE FROM live_recordings WHERE session_id = $1`, [this.sessionId])
+          .catch(() => {});
+        throw new Error("account deleted");
+      }
     } catch (e) {
       // The handles are already open; leaving them dangling would leak a
       // file descriptor and two files for the life of the process.
@@ -528,8 +553,10 @@ async function list({ userId, limit = 50, offset = 0 } = {}) {
   const lim = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const off = Math.max(Number(offset) || 0, 0);
   return query(
-    `SELECT r.id, r.user_id, u.name AS user_name, r.session_id, r.started_at,
-            r.duration_ms, r.bytes, r.turns, r.format
+    // user_exists: a call whose account was deleted is labelled as such in
+    // the panel instead of passing for a user with no name.
+    `SELECT r.id, r.user_id, u.name AS user_name, (u.id IS NOT NULL) AS user_exists,
+            r.session_id, r.started_at, r.duration_ms, r.bytes, r.turns, r.format
        FROM live_recordings r LEFT JOIN users u ON u.id = r.user_id
       WHERE ${where}
       ORDER BY r.started_at DESC LIMIT ${lim} OFFSET ${off}`,
@@ -627,10 +654,44 @@ async function stopAll() {
   await Promise.allSettled(open.map((r) => r.stop()));
 }
 
+/**
+ * ACCOUNT DELETED MID-CALL: DROP THE RECORDING, DO NOT FINISH IT.
+ *
+ * Owner, 2026-09-25: "delete old user accounts and data's from the
+ * database", then "i ran but db files have not yet deleted" — the
+ * Recordings page still listed the calls of accounts already deleted.
+ *
+ * Account deletion removes this user's live_recordings rows. A call still
+ * open on this pod would otherwise carry on writing, find no row to
+ * update when it stops, and leave an .m4a that nothing points at. So the
+ * open recording is closed here without a merge and its raw halves are
+ * unlinked; the caller deletes the rows. Returns how many were dropped.
+ */
+async function abortUser(userId) {
+  const uid = Number(userId);
+  // Marked before looking, in the same tick: see erasedUsers.
+  if (uid > 0) erasedUsers.add(uid);
+  const mine = [...live].filter((r) => r.userId === uid);
+  for (const r of mine) {
+    r.stopped = true;
+    live.delete(r);
+    try {
+      await r.user?.close(0);
+      await r.agent?.close(0);
+    } catch (_) { /* closing is best effort; the unlink below is what counts */ }
+    await r.cleanupRaw();
+    if (r.out) await fsp.unlink(r.out).catch(() => {});
+  }
+  return mine.length;
+}
+
 function safeName(s) {
   return String(s).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 90);
 }
 
 module.exports = {
   begin, stopAll, list, get, destroy, usage, prune, ENABLED, KEEP_DAYS,
+  // Account erasure (src/routes/privacy.js) finds the files through the
+  // rows, checks every path is under ROOT, and tidies the day folders.
+  migrate, abortUser, cancelErase, sweepEmptyDays, ROOT, MAX_MINUTES,
 };

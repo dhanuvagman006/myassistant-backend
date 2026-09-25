@@ -302,4 +302,6 @@ async function turns(userId, { sessionId, sinceMs, role, match, limit = 20 } = {
   );
 }
 
-module.exports = { append, recentBlock, turns, adminConversations, adminStats };
+// migrate is exported for the erase suite's schema guard, which has to see
+// every table before it can say none was forgotten.
+module.exports = { migrate, append, recentBlock, turns, adminConversations, adminStats };

@@ -160,4 +160,5 @@ router.delete("/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
-module.exports = { router, listItems, summarize };
+// migrate: for the erase suite's schema guard (it must see every table).
+module.exports = { router, listItems, summarize, migrate: ensure };

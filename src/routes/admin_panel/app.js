@@ -517,10 +517,15 @@ async function viewUserDetail(id) {
   const deleteBtn = h("button", {
     class: "btn danger", onclick: async () => {
       const typed = prompt(
-        `This permanently deletes user #${id} (${u.email || u.name || "no email"}) and ALL their data — documents, memories, reminders, everything. Type DELETE to confirm.`);
+        `This permanently deletes user #${id} (${u.email || u.name || "no email"}) and ALL their data — call recordings, documents, memories, reminders, everything. Type DELETE to confirm.`);
       if (typed !== "DELETE") return;
-      try { await api("/users/" + id, { method: "DELETE" }); toast("User deleted."); location.hash = "#/users"; }
-      catch (e) { toast(e.message, true); }
+      try {
+        // Show what actually went. Owner, 2026-09-25: "i ran but db files
+        // have not yet deleted" — a bare "User deleted." proved nothing.
+        const r = await api("/users/" + id, { method: "DELETE" });
+        alert(erasedSummary(id, r));
+        location.hash = "#/users";
+      } catch (e) { toast(e.message, true); }
     },
   }, "Delete user");
 
@@ -1349,6 +1354,85 @@ async function viewFlags() {
 /* Debug                                                               */
 /* ------------------------------------------------------------------ */
 
+/** What Delete user removed, in words, for the alert after it. */
+function erasedSummary(id, r) {
+  const rows = Object.entries(r.rows || {}).sort((a, b) => b[1] - a[1]);
+  const files = r.files || {};
+  const lines = [
+    `User #${id} deleted.`,
+    "",
+    `${r.totalRows || 0} database rows removed from ${rows.length} tables.`,
+    `${r.totalFiles || 0} files removed (${files.recordings || 0} recording, ${files.documents || 0} document).`,
+    `Google access: ${(r.revoked && r.revoked.google) || "—"}.`,
+  ];
+  if (r.revoked && r.revoked.liveSessions > 0) {
+    lines.push(`Live calls in progress, ended: ${r.revoked.liveSessions}.`);
+  }
+  if (rows.length) {
+    lines.push("");
+    for (const [t, n] of rows.slice(0, 15)) lines.push(`  ${t}: ${n}`);
+    if (rows.length > 15) lines.push(`  …and ${rows.length - 15} more tables`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * LEFTOVERS — rows and files of accounts that no longer exist.
+ *
+ * Owner, 2026-09-25: "i ran but db files have not yet deleted". Deletes
+ * before that date left recordings, conversations and document files
+ * behind; this card counts them and removes them in one go, after a
+ * confirm() that states the numbers.
+ */
+function leftoversCard() {
+  const title = (hint) => h("h3", {}, "Leftovers from deleted accounts ",
+    h("span", { class: "hint" }, hint));
+  const card = h("div", { class: "card section-gap" }, title("checking…"));
+  const line = (k, v) => h("div", { class: "stat-mini" },
+    h("span", { class: "k" }, k), h("span", { class: "v" }, String(v)));
+
+  async function load() {
+    const d = await api("/maintenance/orphans");
+    const f = d.files || {};
+    const rows = Object.entries(d.tables || {}).sort((a, b) => b[1] - a[1]);
+    const recFiles = (f.recordingFiles || 0) + (f.strayRecordingFiles || 0);
+    const anything = d.totalRows > 0 || d.totalFiles > 0 || f.documentFolders > 0;
+
+    const btn = h("button", {
+      class: "btn danger", disabled: !anything, onclick: async () => {
+        const msg =
+          "Remove everything left behind by deleted accounts?\n\n" +
+          `${d.totalRows} database rows in ${rows.length} tables\n` +
+          `${recFiles} call recording files\n` +
+          `${f.documentFiles || 0} document files in ${f.documentFolders || 0} folders\n\n` +
+          "None of it belongs to an account that still exists. This cannot be undone.";
+        if (!confirm(msg)) return;
+        btn.disabled = true;
+        try {
+          const r = await api("/maintenance/orphans/purge", { method: "POST" });
+          toast(`Removed ${r.totalRows} rows and ${r.totalFiles} files.`);
+          await load();
+        } catch (e) {
+          btn.disabled = false;
+          toast(e.message, true);
+        }
+      },
+    }, "Remove leftovers");
+
+    // replaceChildren() would print a null as the word "null": filter first.
+    card.replaceChildren(...[
+      title(anything ? "rows and files whose account no longer exists" : "nothing left behind"),
+      ...rows.map(([t, n]) => line(t, n)),
+      anything ? line("call recording files", recFiles) : null,
+      anything ? line("document files", `${f.documentFiles || 0} in ${f.documentFolders || 0} folders`) : null,
+      h("div", { style: "margin-top:12px;" }, btn),
+    ].filter(Boolean));
+  }
+  load().catch((e) => card.replaceChildren(title("could not check"),
+    h("div", { class: "faint" }, e.message)));
+  return card;
+}
+
 async function viewDebug(probe) {
   shell("#/debug", loading());
   const d = await api("/debug" + (probe ? "?probe=1" : ""));
@@ -1391,7 +1475,8 @@ async function viewDebug(probe) {
           h("h3", { style: "margin-top:14px;" }, "Errands by status"),
           ...d.fulfillment.map((f) => h("div", { class: "stat-mini" },
             h("span", { class: "k" }, f.status), h("span", { class: "v" }, f.count))),
-        ] : null))));
+        ] : null)),
+    leftoversCard()));
 }
 
 /* ------------------------------------------------------------------ */
@@ -1425,9 +1510,12 @@ async function viewRecordings() {
       h("td", { class: "sub", style: "white-space:nowrap;" },
         h("div", {}, fmtDate(r.started_at)),
         h("div", { class: "faint" }, timeAgo(r.started_at))),
-      h("td", {}, r.user_id
-        ? h("a", { href: "#/user/" + r.user_id }, r.user_name || "#" + r.user_id)
-        : h("span", { class: "faint" }, "—")),
+      h("td", {}, r.user_id && r.user_exists === false
+        // Left behind by an older delete; System & debug → Leftovers removes it.
+        ? h("a", { class: "faint", href: "#/debug" }, "#" + r.user_id + " · deleted account")
+        : r.user_id
+          ? h("a", { href: "#/user/" + r.user_id }, r.user_name || "#" + r.user_id)
+          : h("span", { class: "faint" }, "—")),
       h("td", { style: "white-space:nowrap;" }, fmtLen(r.duration_ms)),
       h("td", { class: "sub" }, String(r.turns || 0)),
       h("td", { class: "sub", style: "white-space:nowrap;" }, fmtBytes(r.bytes)),

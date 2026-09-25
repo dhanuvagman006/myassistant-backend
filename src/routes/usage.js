@@ -66,4 +66,5 @@ async function usageOf(uid, { days = 7 } = {}) {
   ).catch(() => []);
 }
 
-module.exports = { router, usageOf };
+// migrate: for the erase suite's schema guard (it must see every table).
+module.exports = { router, usageOf, migrate: ensureTable };
