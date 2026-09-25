@@ -32,6 +32,7 @@ const intent = require("./intent");
 const { hintsFor } = require("./hints");
 // Looked up at call time so tests can stub the model behind it.
 const planner = require("./planner");
+const recipes = require("./recipes");
 
 const MAX_STEPS = 30;
 // The assistant's own app: the owner coming back to it ends the run.
@@ -283,6 +284,9 @@ async function start(userId, { goal, category = "", app = "", url = "", query = 
           "the verified tick; if it does not, or two accounts look alike, ask the owner which one.",
         owner: false,
         handle: who.handle,
+        // Only a confident lookup may drive a recipe (automation/recipes.js);
+        // an unsure one leaves the choice to the planner, which checks.
+        confident: !!who.confident,
       });
       notes.push({ text: `Found ${who.name}'s account: @${who.handle}.`, owner: true });
     }
@@ -721,14 +725,25 @@ async function stepLocked(userId, runId, { screen, last, seq = null } = {}, meta
   const opts = { installApp: installApp(r) };
   let calls = r.llm_calls || 0;
   let notes = r.notes;
-  let d;
+  let d = null;
+  // RECIPES FIRST (automation/recipes.js). A flow the owners repeat, on a
+  // screen the recipe recognises exactly, takes its next step from the
+  // recipe — no model call. A screen it does not know, a recipe step that
+  // did not move the screen, or one the guard refuses: the planner below
+  // decides, exactly as before. Owner, 2026-09-25: "multiple API calls …
+  // glitches … sometimes we get stuck".
+  const fromRecipe = recipes.next(r, screen);
+  if (fromRecipe && !(fromRecipe.status === "continue" && refusal(fromRecipe.action, screen, opts, r.steps))) {
+    d = fromRecipe;
+    meta.recipe = fromRecipe.recipe;
+  }
   // A REFUSED STEP IS A FAILED STEP, NOT THE END. A veto used to end the
   // run on the spot with the payment sentence — "It's ready for payment"
   // after the planner tapped a "Buy 2 at ₹99" card with nothing in the
   // cart (2026-09-24). Now the refusal is written into the history, the
   // planner picks another way at once, and only a second refusal in the
   // run hands over, naming exactly what was refused.
-  for (;;) {
+  if (!d) for (;;) {
     d = await planner.decide(r, screen, {
       hints: hintsFor(r.category, { web: r.web }),
       owner,
@@ -797,7 +812,10 @@ async function stepLocked(userId, runId, { screen, last, seq = null } = {}, meta
     // field's own button, which the guard can judge.
     if (action.type === "type" && action.submit && !guard.maySubmit(action, screen)) action.submit = false;
     const target = targetOf(action, screen);
-    const steps = [...r.steps, stepRecord(action, d.expect, screen, target ? { target } : {})];
+    // A recipe's step is marked, so it can step aside when it stalls and
+    // so the model calls it saved can be counted.
+    const extra = { ...(target ? { target } : {}), ...(d.recipe ? { recipe: d.recipe } : {}) };
+    const steps = [...r.steps, stepRecord(action, d.expect, screen, extra)];
     if (!await save(userId, r, { steps, notes, llm_calls: calls }, { onlyIf: ["running"] })) {
       return reply(await current(userId, r.id));
     }

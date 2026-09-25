@@ -2452,6 +2452,170 @@ const swiggyCart = { pkg: SW, nodes: [
     }
   });
 
+  /* ------------- RECIPES: a common flow with no model call ------------- */
+  // Owner, 2026-09-25: "multiple API calls … glitches … sometimes we get
+  // stuck". The screens below are the ones the owner's phone showed while
+  // following the actor Yash (@thenameisyash) by hand that day.
+  const recipes = require("../src/automation/recipes");
+  const IGP = "com.instagram.android";
+  const igRun = (over = {}) => ({
+    goal: "Open Instagram and follow Yash", app_name: "instagram", app_label: "Instagram",
+    app_pkg: IGP, web: 0, steps: [],
+    notes: [{ text: "…", owner: false, handle: "thenameisyash", confident: true }], ...over,
+  });
+  const ig = (nodes) => ({ pkg: IGP, nodes });
+  const igHome = ig([N(1, { desc: "Home", click: 1 }), N(2, { desc: "Search and explore", click: 1 }),
+    N(3, { desc: "Profile", click: 1 })]);
+  const igExplore = ig([N(1, { desc: "Search", text: "Yash", click: 1 }), N(2, { desc: "Search and explore", click: 1 })]);
+  const igSearch = ig([N(1, { cls: "EditText", edit: 1, click: 1, hint: "Search with Meta AI" }),
+    N(2, { desc: "Clear recent search for neha shetty", click: 1 }), N(3, { text: "neha shetty", click: 1 })]);
+  const igTyped = ig([N(1, { cls: "EditText", edit: 1, text: "thenameisyash" }), N(2, { text: "yash" }),
+    N(3, { text: "thenameisyash • 14.8M followers", click: 1 }),
+    N(4, { text: "the_name_is_yash_fc • 174K followers", click: 1 }), N(5, { text: "<thenameisyash", click: 1 }),
+    N(6, { text: "thenameisyashu", click: 1 }), N(7, { text: "thenameisyash2029 • 198K followers", click: 1 })]);
+  const igForYou = ig([N(1, { cls: "EditText", edit: 1, text: "yash" }), N(2, { text: "For you", click: 1 }),
+    N(3, { text: "Accounts", click: 1 }), N(4, { text: "Audio", click: 1 }), N(5, { text: "Tags", click: 1 }),
+    N(6, { text: "Yash (thenameisyash), actor and producer, recently promoted his upcoming film Toxic" })]);
+  const igAccounts = ig([N(1, { cls: "EditText", edit: 1, text: "yash" }), N(2, { text: "Accounts", click: 1 }),
+    N(3, { text: "thenameisyash", click: 1 }), N(4, { text: "Yash · 14.8M followers" }),
+    N(5, { text: "thenameisyash2029", click: 1 })]);
+  // The profile: the counters, the title, the lowercase "following" LABEL
+  // under the counters, and the button that names the person.
+  const igProfile = (btn, extra = [], title = "thenameisyash") => ig([N(1, { desc: "Back", click: 1 }),
+    N(2, { text: title }), N(3, { text: "261posts" }), N(4, { text: "14.8Mfollowers" }), N(5, { text: "following" }),
+    N(6, { text: "Actor & Proud Kannadiga" }), btn, N(8, { text: "Message", click: 1 }), ...extra]);
+  const followBtn = N(7, { desc: "Follow Yash", text: "Follow", click: 1 });
+  const followingBtn = N(7, { desc: "Following Yash", text: "Following", click: 1 });
+  // After a follow, Instagram adds "Suggested for you" cards with their
+  // OWN Follow buttons — never the profile's.
+  const suggested = [N(9, { text: "Suggested for you" }), N(10, { text: "nayanthara" }),
+    N(11, { desc: "Follow nayanthara", text: "Follow", click: 1 })];
+
+  await atest("recipe: Instagram follow walks the owner's own screens, one fixed step each", () => {
+    const run = igRun();
+    const at = (screen) => recipes.next(run, screen);
+    assert.deepStrictEqual(at(igHome).action, { type: "tap", id: 2 }, "the Search tab");
+    assert.deepStrictEqual(at(igExplore).action, { type: "tap", id: 1 }, "Explore's search bar, not the tab");
+    assert.deepStrictEqual(at(igSearch).action, { type: "type", id: 1, text: "thenameisyash", submit: true });
+    assert.deepStrictEqual(at(igTyped).action, { type: "tap", id: 3 },
+      "the row whose username IS thenameisyash — not thenameisyashu, _fc, 2029 or a recent search");
+    assert.deepStrictEqual(at(igForYou).action, { type: "tap", id: 3 }, "assistant-style results: the Accounts tab");
+    assert.deepStrictEqual(at(igAccounts).action, { type: "tap", id: 3 }, "the exact account row");
+    assert.deepStrictEqual(at(igProfile(followBtn)).action, { type: "tap", id: 7 }, "the profile's own Follow");
+    const done = at(igProfile(followingBtn, suggested));
+    assert.deepStrictEqual({ status: done.status, evidence: done.evidence, report: done.report },
+      { status: "done", evidence: "Following", report: "Followed @thenameisyash on Instagram." });
+    for (const s of [igHome, igTyped, igProfile(followBtn)]) assert.strictEqual(at(s).recipe, "instagram.follow");
+  });
+
+  await atest("recipe: the profile's button is told apart from the 'following' label and suggestion cards", () => {
+    const run = igRun();
+    // A button with no name in it: the capital F tells it from the label.
+    const plain = recipes.next(run, igProfile(N(7, { text: "Following", click: 1 })));
+    assert.strictEqual(plain.status, "done");
+    // Not following yet, but a suggestion card says Follow further down:
+    // the profile's own button is tapped, never the suggestion's.
+    const both = recipes.next(run, igProfile(followBtn, suggested));
+    assert.deepStrictEqual(both.action, { type: "tap", id: 7 });
+    // A private account: a request is all Instagram allows.
+    const req = recipes.next(run, igProfile(N(7, { desc: "Requested Yash", text: "Requested", click: 1 })));
+    assert.deepStrictEqual({ status: req.status, evidence: req.evidence }, { status: "done", evidence: "Requested" });
+    assert.match(req.report, /private/);
+    // A display name that contains "Requested" is not a pending request.
+    const name = recipes.next(run, igProfile(N(7, { desc: "Follow Requested Tunes", text: "Follow", click: 1 })));
+    assert.deepStrictEqual(name.action, { type: "tap", id: 7 });
+  });
+
+  await atest("recipe: Instagram unfollow taps Following, then the sheet's Unfollow, and ends on Follow", () => {
+    const run = igRun({ goal: "Unfollow Yash on Instagram" });
+    assert.deepStrictEqual(recipes.next(run, igProfile(followingBtn)).action, { type: "tap", id: 7 });
+    const sheet = igProfile(followingBtn, [N(20, { text: "Add to close friends list", click: 1 }),
+      N(21, { text: "Mute", click: 1 }), N(22, { text: "Unfollow", click: 1 })]);
+    assert.deepStrictEqual(recipes.next(run, sheet).action, { type: "tap", id: 22 });
+    const end = recipes.next(run, igProfile(followBtn));
+    assert.deepStrictEqual({ status: end.status, evidence: end.evidence, report: end.report },
+      { status: "done", evidence: "Follow", report: "Unfollowed @thenameisyash on Instagram." });
+    // Following's sheet never makes a FOLLOW run tap Unfollow.
+    assert.strictEqual(recipes.next(igRun(), sheet).status, "done");
+  });
+
+  await atest("recipe: steps aside for the planner when it cannot be sure", () => {
+    // Someone else's profile: the recipe does not act on it.
+    assert.strictEqual(recipes.next(igRun(), igProfile(followBtn, [], "thenameisyashu")), null);
+    // The web lookup was not sure: the planner checks the tick itself.
+    assert.strictEqual(recipes.next(igRun({ notes: [{ handle: "thenameisyash", confident: false }] }), igHome), null);
+    assert.strictEqual(recipes.next(igRun({ notes: [] }), igHome), null, "no username at all");
+    // A username the owner said themselves is trusted.
+    const said = recipes.next(igRun({ goal: "follow @TheNameIsYash on instagram", notes: [] }), igSearch);
+    assert.strictEqual(said.action.text, "thenameisyash");
+    // Not a follow, not Instagram, not Instagram's screen: nothing to do.
+    assert.strictEqual(recipes.next(igRun({ goal: "open instagram and like yash's latest post" }), igHome), null);
+    assert.strictEqual(recipes.next(igRun({ app_name: "youtube", app_label: "YouTube", app_pkg: "" }), igHome), null);
+    assert.strictEqual(recipes.next(igRun(), { pkg: "com.sec.android.app.launcher", nodes: [N(1, { text: "Instagram" })] }), null);
+    // Typed already and no row matched: the planner looks further.
+    assert.strictEqual(recipes.next(igRun(), ig([N(1, { cls: "EditText", edit: 1, text: "thenameisyash" })])), null);
+  });
+
+  await atest("recipe: a step that did not move the screen hands over to the planner; two such steps end the recipe", () => {
+    const tapped = (changed, recipe = "instagram.follow") =>
+      ({ action: { type: "tap", id: 3 }, expect: "x", recipe, result: { ok: true, changed } });
+    assert.strictEqual(recipes.next(igRun({ steps: [tapped(false)] }), igTyped), null, "the stalled step");
+    // The planner then moved the screen: the recipe may carry on.
+    const planned = { action: { type: "back" }, expect: "y", result: { ok: true, changed: true } };
+    assert.ok(recipes.next(igRun({ steps: [tapped(false), planned] }), igTyped));
+    // A second stall anywhere in the run: the planner's for good.
+    assert.strictEqual(recipes.next(igRun({ steps: [tapped(false), planned, tapped(false), planned] }), igTyped), null);
+    // A refused step never counts as the recipe's.
+    assert.ok(recipes.next(igRun({ steps: [{ ...tapped(false), vetoed: "payment" }] }), igTyped));
+  });
+
+  await atest("recipe through the service: a whole follow run with ZERO model calls, then the planner only on a stall", async () => {
+    const people = require("../src/automation/people");
+    const resolve = people.resolveAccount;
+    const decide = planner.decide;
+    let calls = 0;
+    people.resolveAccount = async () => ({ app: "instagram", label: "Instagram", name: "Yash",
+      handle: "thenameisyash", url: "https://www.instagram.com/thenameisyash/", openUrl: "",
+      confident: true, alternatives: [] });
+    planner.decide = async () => { calls++; return { status: "continue", action: { type: "back" }, expect: "back", usage: {} }; };
+    try {
+      const s = await svc.start(UID, { goal: "Open Instagram and follow Yash", app: "instagram" });
+      assert.ok(s.ok, JSON.stringify(s));
+      const moved = { ok: true, changed: true };
+      const flow = [igHome, igExplore, igSearch, igTyped, igForYou, igAccounts, igProfile(followBtn)];
+      const actions = [];
+      for (let i = 0; i < flow.length; i++) {
+        const out = await svc.step(UID, s.run.id, { screen: flow[i], seq: i, ...(i ? { last: moved } : {}) });
+        assert.strictEqual(out.status, "continue", `step ${i}: ${JSON.stringify(out)}`);
+        actions.push(out.action);
+      }
+      // Instagram is a messaging app to the guard: Enter is never pressed.
+      // (The service adds "what", the element's label, which the phone
+      // checks again before acting — the same as for the planner's steps.)
+      const { what, ...typed } = actions[2];
+      assert.deepStrictEqual(typed, { type: "type", id: 1, text: "thenameisyash", submit: false });
+      assert.strictEqual(what, "Search with Meta AI");
+      const end = await svc.step(UID, s.run.id, { screen: igProfile(followingBtn, suggested), seq: flow.length, last: moved });
+      assert.deepStrictEqual({ status: end.status, report: end.report },
+        { status: "done", report: "Followed @thenameisyash on Instagram." });
+      assert.strictEqual(calls, 0, "no model call on a flow the recipe knows");
+      const r = await svc.get(UID, s.run.id);
+      assert.strictEqual(r.llm_calls || 0, 0);
+      assert.strictEqual(r.steps.filter((st) => st.recipe === "instagram.follow").length, flow.length);
+
+      // The same run shape where a tap did NOT move the screen: the planner
+      // takes that one step, with fresh eyes.
+      const t = await svc.start(UID, { goal: "Open Instagram and follow Yash", app: "instagram" });
+      await svc.step(UID, t.run.id, { screen: igTyped, seq: 0 });
+      const aside = await svc.step(UID, t.run.id, { screen: igTyped, seq: 1, last: { ok: true, changed: false } });
+      assert.strictEqual(calls, 1, "the stalled step went to the planner");
+      assert.deepStrictEqual(aside.action, { type: "back" });
+    } finally {
+      people.resolveAccount = resolve;
+      planner.decide = decide;
+    }
+  });
+
   for (const t of ["automation_runs", "agent_memories", "user_instructions", "fulfillment_tasks"]) {
     await db.run(`DELETE FROM ${t} WHERE user_id=$1`, [UID]);
   }
