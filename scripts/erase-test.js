@@ -16,7 +16,15 @@
  *       handled as shared, or explicitly declared not personal — so the
  *       next new table cannot be forgotten the way these were;
  *   (c) the panel's Leftovers: it counts exactly what older deletes left,
- *       removes exactly that, and nothing that still belongs to someone.
+ *       removes exactly that, and nothing that still belongs to someone —
+ *       and when it cannot tell what is in use, it removes nothing;
+ *   (d) a live call the account is on is ended by the delete, and writes
+ *       nothing under the erased id afterwards (review, 2026-09-25).
+ *
+ * The whole run includes the LEGACY tables: made by code that shipped and
+ * was later removed, never DROPped, so an older database still has them.
+ * They are created here with their historical columns and dropped again at
+ * the end, so every delete and the Leftovers are checked against them too.
  *
  * Nothing leaves this machine: fetch is stubbed for every host but the
  * local test server, and Firebase is stubbed. The files live in a temp
@@ -71,6 +79,26 @@ firebase.deletePhoneUser = async (phone) => { firebaseCalls.push(phone); return 
 const privacy = require("../src/routes/privacy");
 const recorder = require("../src/live/recorder");
 
+/**
+ * A second copy of privacy.js whose database is `wrap(realDb)`, for making
+ * one query fail. Everything else (recorder, Firebase stub, the admin
+ * panel's copy) stays as it was.
+ */
+function privacyWithDb(wrap) {
+  const dbMod = require.cache[require.resolve("../src/db")];
+  const privPath = require.resolve("../src/routes/privacy");
+  const realDb = dbMod.exports;
+  const realPriv = require.cache[privPath];
+  try {
+    dbMod.exports = wrap(realDb);
+    delete require.cache[privPath];
+    return require("../src/routes/privacy");
+  } finally {
+    dbMod.exports = realDb;
+    require.cache[privPath] = realPriv;
+  }
+}
+
 let passed = 0;
 async function atest(name, fn) {
   try { await fn(); passed++; console.log(`  ok  ${name}`); }
@@ -88,6 +116,73 @@ async function ensureEveryTable() {
   ]) {
     await require("../src/" + m).migrate();
   }
+}
+
+/**
+ * Tables the code once made and no longer does, with the columns they had
+ * (from git history). None was ever DROPped, so a production database
+ * created before the removal still holds them, rows and all.
+ */
+const LEGACY_TABLES = {
+  // Taken out of init() on 2026-08-10 (917ca95).
+  memories: `id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL,
+    category TEXT NOT NULL DEFAULT 'fact', key TEXT NOT NULL, value TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'ai', created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL, UNIQUE(user_id, key)`,
+  agent_calls: `id TEXT PRIMARY KEY, user_id TEXT NOT NULL, contact_name TEXT NOT NULL,
+    to_number TEXT NOT NULL, task TEXT NOT NULL, lang TEXT NOT NULL DEFAULT 'en-IN',
+    state TEXT NOT NULL DEFAULT 'queued', transcript TEXT NOT NULL DEFAULT '[]',
+    result TEXT, provider_call_id TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL`,
+  agent_call_settings: `user_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1,
+    daily_limit INTEGER NOT NULL DEFAULT 10, hours_start INTEGER NOT NULL DEFAULT 8,
+    hours_end INTEGER NOT NULL DEFAULT 21`,
+  subscriptions: `user_id TEXT PRIMARY KEY, plan TEXT NOT NULL, period_end BIGINT NOT NULL,
+    last_payment TEXT, updated_at BIGINT NOT NULL`,
+  usage: `user_id TEXT NOT NULL, kind TEXT NOT NULL, period TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, kind, period)`,
+  families: `id SERIAL PRIMARY KEY, owner_id TEXT NOT NULL UNIQUE, code TEXT NOT NULL UNIQUE,
+    created_at BIGINT NOT NULL`,
+  family_members: `family_id INTEGER NOT NULL, user_id TEXT NOT NULL UNIQUE,
+    joined_at BIGINT NOT NULL, PRIMARY KEY (family_id, user_id)`,
+  payments: `payment_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, plan TEXT NOT NULL,
+    amount INTEGER NOT NULL, created_at BIGINT NOT NULL`,
+  swiggy_tokens: `user_id INTEGER PRIMARY KEY, refresh_token TEXT NOT NULL, access_token TEXT,
+    expires_at BIGINT, updated_at BIGINT NOT NULL`,
+  // Removed later (review, 2026-09-25). Four hold the id of something an
+  // outside service keeps; the delete removes the row, not the thing.
+  calling_agent_prefs: `user_id INTEGER PRIMARY KEY, character TEXT NOT NULL DEFAULT 'polite',
+    persona TEXT NOT NULL DEFAULT '', voice TEXT NOT NULL DEFAULT 'monika',
+    brain TEXT NOT NULL DEFAULT 'balanced', language TEXT NOT NULL DEFAULT 'hi',
+    bolna_agent_id TEXT NOT NULL DEFAULT '', updated_at BIGINT NOT NULL DEFAULT 0`,
+  voice_profiles: `user_id TEXT PRIMARY KEY, provider TEXT NOT NULL DEFAULT 'elevenlabs',
+    voice_id TEXT NOT NULL, label TEXT, created_at BIGINT NOT NULL`,
+  assistant_settings: `user_id TEXT PRIMARY KEY, disclose_assistant INT NOT NULL DEFAULT 1,
+    require_confirmation INT NOT NULL DEFAULT 1`,
+  avatar_personas: `user_id INTEGER PRIMARY KEY, persona_id TEXT NOT NULL, api_key TEXT NOT NULL,
+    created_at BIGINT NOT NULL`,
+  avatar_sessions: `conversation_id TEXT PRIMARY KEY, user_id INTEGER NOT NULL,
+    started_at BIGINT NOT NULL, ended_at BIGINT`,
+  conversation_state: `user_id INTEGER PRIMARY KEY, summary TEXT NOT NULL DEFAULT '',
+    updated_at BIGINT NOT NULL`,
+  did_agents: `user_id INTEGER NOT NULL, mode TEXT NOT NULL DEFAULT 'assistant',
+    agent_id TEXT NOT NULL, created_at BIGINT NOT NULL, PRIMARY KEY (user_id, mode)`,
+  did_briefings: `user_id INTEGER NOT NULL, day TEXT NOT NULL, talk_id TEXT,
+    status TEXT NOT NULL DEFAULT 'creating', result_url TEXT, script TEXT,
+    created_at BIGINT NOT NULL, PRIMARY KEY (user_id, day)`,
+};
+
+/** Creates the legacy tables this database lacks; returns those it made. */
+async function createLegacyTables() {
+  const have = new Set((await db.query(
+    `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`
+  )).map((r) => r.table_name));
+  const made = [];
+  for (const [t, cols] of Object.entries(LEGACY_TABLES)) {
+    if (have.has(t)) continue; // a real legacy table: used, never dropped
+    await db.run(`CREATE TABLE "${t}" (${cols})`);
+    made.push(t);
+  }
+  return made;
 }
 
 /* ------------------------------------------------------------------ *
@@ -205,6 +300,7 @@ const tell = (from, toPhone, message) => db.one(
 
 (async () => {
   await ensureEveryTable();
+  const legacyMade = await createLegacyTables();
 
   /* ================================================================ *
    * (b) SCHEMA GUARD
@@ -262,6 +358,13 @@ const tell = (from, toPhone, message) => db.one(
       "task_outcomes", "chat_group_members", "user_devices", "pending_pushes"]) {
       assert.ok(keys.some((k) => k.startsWith(t + ".")), `${t} is not erased`);
     }
+  });
+
+  await atest("the legacy tables of removed code are in this run, and every one is erased", async () => {
+    // The guard above now sees them too; this pins that it really does.
+    const erased = new Set((await privacy.existingUserTables()).map(([t]) => t));
+    const missing = Object.keys(LEGACY_TABLES).filter((t) => !erased.has(t));
+    assert.deepStrictEqual(missing, [], "legacy tables not erased — add them to USER_TABLES");
   });
 
   /* ================================================================ *
@@ -467,12 +570,17 @@ const tell = (from, toPhone, message) => db.one(
     assert.ok(!firebaseCalls.includes(PHONE.B));
   });
 
-  await atest("B's export has their data, with the mail password redacted", async () => {
+  await atest("B's export has their data, with the mail password and the persona key redacted", async () => {
     const res = await fetch(`${base}/privacy/export`, { headers: { "x-test-user": String(B) } });
     const d = await res.json();
     assert.strictEqual(d.live_recordings.length, 1);
     assert.strictEqual(d.email_accounts.length, 1);
     assert.strictEqual(d.email_accounts[0].secrets_enc, "[stored — redacted]");
+    // Legacy: the bearer key a Tavus persona presented to this server.
+    assert.strictEqual(d.avatar_personas.length, 1);
+    assert.strictEqual(d.avatar_personas[0].api_key, "[stored — redacted]");
+    assert.match(d.avatar_personas[0].persona_id, /^seed-/);
+    assert.strictEqual(d.voice_profiles.length, 1);
   });
 
   /* ================================================================ *
@@ -585,8 +693,190 @@ const tell = (from, toPhone, message) => db.one(
     assert.match(js, /Remove leftovers/);
   });
 
+  await atest("when the recordings list cannot be read, Remove leftovers leaves every recording alone", async () => {
+    // B's recording, aged past the point where an unlisted file counts as
+    // a stray, and a real stray beside it.
+    const aDayAgo = new Date(Date.now() - 86_400_000);
+    for (const ext of [".m4a", ".user.pcm", ".agent.pcm"]) fs.utimesSync(recStem(B) + ext, aDayAgo, aDayAgo);
+    const realStray = touch(path.join(RECS, "2026-09-03", "stray-real.m4a"));
+    fs.utimesSync(realStray, aDayAgo, aDayAgo);
+
+    // This privacy module's database fails that one query, as a dropped
+    // connection or a Postgres restart would.
+    let failed = 0;
+    const flaky = privacyWithDb((real) => ({
+      ...real,
+      query: (sql, params) => {
+        if (/^SELECT file FROM live_recordings$/.test(String(sql).trim())) {
+          failed++;
+          return Promise.reject(new Error("Connection terminated unexpectedly"));
+        }
+        return real.query(sql, params);
+      },
+    }));
+    const seen = await flaky.findOrphans();
+    const done = await flaky.purgeOrphans();
+    assert.strictEqual(failed, 2, "the failing query was not reached");
+    assert.strictEqual(seen.files.strayRecordingFiles, 0, "the panel would have offered B's audio");
+    assert.strictEqual(done.files.strayRecordingFiles, 0);
+    for (const ext of [".m4a", ".user.pcm", ".agent.pcm"]) {
+      assert.ok(exists(recStem(B) + ext), `B's ${ext} was deleted as a stray`);
+    }
+    assert.ok(exists(realStray), "with no list, nothing is a stray — not even a real one");
+
+    // Once the list reads again: the real stray goes, B's (listed) stays.
+    const ok = await privacy.purgeOrphans();
+    assert.strictEqual(ok.files.strayRecordingFiles, 1);
+    assert.ok(!exists(realStray));
+    for (const ext of [".m4a", ".user.pcm", ".agent.pcm"]) assert.ok(exists(recStem(B) + ext));
+  });
+
+  /* ================================================================ *
+   * (d) A CALL IN PROGRESS
+   * ================================================================ */
+  console.log("\na call in progress when the account is deleted");
+
+  // The real bridge, with Google's socket and the phone's faked in memory
+  // (the harness scripts/automation-test.js uses). A closed fake delivers
+  // nothing further, as a closed socket does.
+  const EventEmitter = require("events");
+  const realWs = require("ws");
+  class FakeWs extends EventEmitter {
+    constructor(url) {
+      super(); this.readyState = 1; this.sent = []; this.closedWith = null;
+      if (url) FakeWs.upstream = this;
+    }
+    send(x) { this.sent.push(Buffer.isBuffer(x) ? x : String(x)); }
+    close(code) {
+      if (this.readyState === 3) return;
+      this.readyState = 3; this.closedWith = code || 1005; this.emit("close", this.closedWith);
+    }
+    terminate() { this.close(); }
+    ping() {}
+  }
+  Object.assign(FakeWs, { OPEN: 1, CONNECTING: 0, CLOSING: 2, CLOSED: 3, Server: realWs.Server });
+  process.env.GEMINI_API_KEY = process.env.GEMINI_API_KEY || "test-key";
+  const wsModule = require.cache[require.resolve("ws")];
+  const wsExports = wsModule.exports;
+  const proxyPath = require.resolve("../src/live/proxy");
+  let proxy;
+  try {
+    wsModule.exports = FakeWs;
+    delete require.cache[proxyPath]; // privacy.js requires this same instance
+    proxy = require("../src/live/proxy");
+  } finally {
+    wsModule.exports = wsExports;
+  }
+  const until = async (fn, what) => {
+    for (let i = 0; i < 300; i++) { if (await fn()) return; await new Promise((r) => setTimeout(r, 10)); }
+    throw new Error(`timed out: ${what}`);
+  };
+  const device = { build: 106, platform: "android", tz: 330 };
+  const today = path.join(RECS, new Date().toISOString().slice(0, 10));
+  const liveFiles = () => (fs.existsSync(today) ? fs.readdirSync(today) : []).filter((f) => f.startsWith("live_"));
+  const D = (await db.createUser({ email: `erase-d-${stamp}@example.test`, name: "Erase d" })).id;
+  const turnsOfD = async () =>
+    (await db.one(`SELECT count(*)::int AS n FROM conversation_turns WHERE user_id = $1`, [D])).n;
+  const recsOfD = async () =>
+    (await db.one(`SELECT count(*)::int AS n FROM live_recordings WHERE user_id = $1`, [D])).n;
+
+  await atest("the delete ends the call: both sockets close, and nothing is written after", async () => {
+    const before = new Set(liveFiles());
+    const phone = new FakeWs();
+    proxy.bridge(phone, { sub: String(D) }, null, device);
+    const up = FakeWs.upstream;
+    up.emit("open");
+    await until(() => up.sent.some((x) => /"setup"/.test(x)), "setup");
+    up.emit("message", Buffer.from(JSON.stringify({ setupComplete: {} })));
+    await until(() => phone.sent.some((x) => /"ready"/.test(String(x))), "ready");
+    const fromGoogle = (o) => { if (up.readyState === 1) up.emit("message", Buffer.from(JSON.stringify(o))); };
+    const speak = (text) => {
+      fromGoogle({ serverContent: { inputTranscription: { text } } });
+      fromGoogle({ serverContent: { turnComplete: true } });
+    };
+    // Proof the harness is live: a turn is written, the call is recorded.
+    speak("what is the weather tomorrow");
+    await until(async () => (await turnsOfD()) === 1, "the call writes its turns");
+    await until(async () => (await recsOfD()) === 1, "the call is recorded");
+
+    const res = await admin(`/users/${D}`, { method: "DELETE" });
+    assert.strictEqual(res.status, 200);
+    const report = await res.json();
+    assert.strictEqual(report.revoked.liveSessions, 1);
+    assert.strictEqual(report.revoked.liveRecordings, 1);
+    assert.strictEqual(phone.readyState, 3, "the phone is still connected to a deleted account");
+    assert.strictEqual(phone.closedWith, 1008);
+    assert.strictEqual(up.readyState, 3, "the Gemini session is still open");
+
+    speak("and book me a cab home");
+    await new Promise((r) => setTimeout(r, 300));
+    assert.strictEqual(await turnsOfD(), 0, "a turn was written under the erased id");
+    assert.strictEqual(await recsOfD(), 0);
+    const left = liveFiles().filter((f) => !before.has(f));
+    assert.deepStrictEqual(left, [], "the call's audio is still on disk");
+  });
+
+  await atest("a call that reaches the bridge just after the delete is closed on arrival", async () => {
+    const before = new Set(liveFiles());
+    const late = new FakeWs();
+    proxy.bridge(late, { sub: String(D) }, null, device); // authorised a moment before the delete
+    assert.strictEqual(late.readyState, 3);
+    assert.strictEqual(late.closedWith, 1008);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.strictEqual(await recsOfD(), 0, "it recorded a call for a deleted account");
+    assert.deepStrictEqual(liveFiles().filter((f) => !before.has(f)), []);
+  });
+
+  await atest("a recording still starting when the delete runs removes itself", async () => {
+    // Its INSERT is held back (a lock on the table) until the delete has
+    // looked for open recordings, so the delete cannot see it: the
+    // recording has to notice by itself.
+    const E = (await db.createUser({ email: `erase-e-${stamp}@example.test`, name: "Erase e" })).id;
+    const session = `race-${E}-${stamp}`;
+    let release;
+    let locked = false;
+    const held = new Promise((r) => { release = r; });
+    const locker = db.tx(async (c) => {
+      await c.query(`LOCK TABLE live_recordings IN EXCLUSIVE MODE`);
+      locked = true;
+      await held;
+    });
+    const waiting = (pattern) => db.one(
+      `SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE pid <> pg_backend_pid() AND wait_event_type = 'Lock' AND query LIKE $1`,
+      [pattern]).then((r) => r.n > 0);
+    const day = path.join(RECS, new Date().toISOString().slice(0, 10));
+    const raw = [".user.pcm", ".agent.pcm"].map((ext) => path.join(day, session + ext));
+    let handle = null;
+    try {
+      await until(() => locked, "lock");
+      handle = recorder.begin(E, session);
+      await until(() => waiting("%INSERT INTO live_recordings%"), "the recording's INSERT waits");
+      assert.ok(raw.every(exists), "the raw halves are open while it starts");
+      const deleting = privacy.deleteUserEverywhere(E, { reason: "race test" });
+      // The delete has passed abortUser once its own transaction queues
+      // behind the same lock.
+      await until(() => waiting("DELETE FROM live_recordings%"), "the delete's transaction waits");
+      release();
+      await locker;
+      const report = await deleting;
+      assert.strictEqual(report.revoked.liveRecordings, 0, "the delete saw it: this is not the race");
+      // Not stopped from here: a real call would keep sending audio. The
+      // recording has to give up on its own, row and raw halves together.
+      await until(() => raw.every((p) => !exists(p)), "still recording a deleted account's call");
+      assert.strictEqual(
+        (await db.one(`SELECT count(*)::int AS n FROM live_recordings WHERE session_id = $1`, [session])).n, 0);
+      assert.ok(!exists(path.join(day, session + ".m4a")));
+    } finally {
+      release();
+      await locker.catch(() => {});
+      if (handle) await handle.stop();
+    }
+  });
+
   // Tidy up after ourselves.
   server.close();
+  await privacy.deleteUserEverywhere(D, { reason: "test cleanup" }).catch(() => {});
   await privacy.deleteUserEverywhere(B, { reason: "test cleanup" }).catch(() => {});
   await db.run(`DELETE FROM chat_group_messages WHERE group_id = ANY($1::bigint[])`, [[G1, G4]]);
   await db.run(`DELETE FROM chat_groups WHERE id = ANY($1::bigint[])`, [[G1, G4]]);
@@ -595,6 +885,7 @@ const tell = (from, toPhone, message) => db.one(
   await db.run(`DELETE FROM agent_messages WHERE id = $1`, [toStranger]);
   await db.run(`DELETE FROM kv WHERE k = $1`, [lookalike]);
   await db.run(`DELETE FROM jobs WHERE id = $1`, [systemJob.id]);
+  for (const t of legacyMade) await db.run(`DROP TABLE IF EXISTS "${t}"`);
   fs.rmSync(TMP, { recursive: true, force: true });
   console.log(`\n${passed} passed${process.exitCode ? ", some FAILED" : ""}`);
   process.exit(process.exitCode || 0);

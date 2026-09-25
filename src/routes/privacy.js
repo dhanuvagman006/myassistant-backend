@@ -30,6 +30,21 @@
  *   • Files are found only through values in the database, and a path is
  *     used only when it resolves inside its known root. A bad row can never
  *     aim an unlink at anything else.
+ *   • A live call they are on when the delete starts is cut off first
+ *     (live/proxy.js closeUser), so it cannot write turns, tool logs or
+ *     audio under the erased id once the rows are gone.
+ *
+ * Not revoked (known limits, review 2026-09-25). Some legacy rows below
+ * point at things kept by an outside service. The rows go; the things
+ * they point at stay where they are, because the code that made them was
+ * removed long ago and this routine does not call those services:
+ *   • a per-user Bolna agent      calling_agent_prefs.bolna_agent_id
+ *   • an ElevenLabs voice clone    voice_profiles.voice_id
+ *   • a Tavus persona              avatar_personas.persona_id
+ *   • a D-ID agent                 did_agents.agent_id
+ * To remove those by hand in each provider's dashboard, note the ids
+ * BEFORE deleting the account or pressing Remove leftovers: after that
+ * nothing here remembers them.
  */
 const express = require("express");
 const fs = require("fs");
@@ -135,6 +150,19 @@ const USER_TABLES = [
   ["families", "owner_id"],
   ["family_members", "user_id"],
   ["payments", "user_id"],
+  // More legacy tables (review, 2026-09-25): made by code that shipped and
+  // was later removed, and never DROPped either. Missing here, they
+  // outlived every delete and every Leftovers run on a database that has
+  // them. The outside things four of them point at are NOT removed: see
+  // "Not revoked" at the top of this file.
+  ["calling_agent_prefs", "user_id"], // 2026-09-20 to 09-21: their own Bolna agent's id
+  ["voice_profiles", "user_id"], // 2026-08-08 to 08-10, TEXT id: ElevenLabs voice clone id
+  ["assistant_settings", "user_id"], // 2026-08-08 to 08-10, TEXT id
+  ["avatar_personas", "user_id"], // 2026-08-14 to 08-26: Tavus persona id and its bearer key
+  ["avatar_sessions", "user_id"],
+  ["conversation_state", "user_id"], // a rolling summary of their conversation
+  ["did_agents", "user_id"], // 2026-08-05 to 08-11: D-ID agent id
+  ["did_briefings", "user_id"], // briefing scripts and D-ID video links
 ];
 
 /**
@@ -195,6 +223,9 @@ async function existingUserTables(cols) {
 const REDACT = new Set([
   "password_hash", "refresh_token", "access_token", "token", "id_token",
   "secrets_enc",
+  // avatar_personas.api_key: the bearer key a Tavus persona presented to
+  // this server (legacy, above).
+  "api_key",
 ]);
 function redactRow(row) {
   const out = {};
@@ -288,6 +319,28 @@ async function closeMcp(uid, cols) {
   return n;
 }
 
+/** Cuts off their live calls on this pod. Returns how many were open. */
+async function closeLiveSessions(uid) {
+  try {
+    // Required here, not at the top: the live proxy is a large module
+    // that nothing else in this file needs.
+    return require("../live/proxy").closeUser(uid);
+  } catch (e) {
+    console.warn("live close during account delete:", e.message);
+    return 0;
+  }
+}
+
+/**
+ * The transaction failed, so the account still exists: lift the marks
+ * abortUser/closeUser left, or this pod would refuse the user's calls and
+ * recordings until it restarts. A call already cut off stays cut off.
+ */
+function cancelLiveErase(uid) {
+  try { recorder.cancelErase(uid); } catch (_) {}
+  try { require("../live/proxy").cancelErase(uid); } catch (_) {}
+}
+
 /* ------------------------------------------------------------------ *
  * deleteUserEverywhere — the one routine both delete buttons call
  * ------------------------------------------------------------------ */
@@ -326,6 +379,16 @@ async function deleteUserEverywhere(userId, { reason = "" } = {}) {
   report.revoked.mcpConnections = await closeMcp(uid, cols);
   // A call still open on this pod would write audio after its row is gone.
   report.revoked.liveRecordings = await recorder.abortUser(uid).catch(() => 0);
+  // ...and the call itself would carry on (review, 2026-09-25): the live
+  // socket checks the account once, when it opens, so a user deleted
+  // mid-call kept talking to the assistant, and every turn after this
+  // point wrote conversation_turns, executed_actions and the like under
+  // the erased id — the admin Conversations page showed them again.
+  // After abortUser on purpose: closing the call stops its recording, and
+  // a stop that got there first would merge the audio into a new file.
+  // Known limit: a tool already running when the call is cut can still
+  // finish and write its one row; the Leftovers card finds that.
+  report.revoked.liveSessions = await closeLiveSessions(uid);
 
   // 2) Every row, one transaction.
   let recordingFiles = [];
@@ -391,6 +454,9 @@ async function deleteUserEverywhere(userId, { reason = "" } = {}) {
 
     const u = await client.query(`DELETE FROM users WHERE id = $1`, [uid]);
     count("users", u.rowCount);
+  }).catch((e) => {
+    cancelLiveErase(uid);
+    throw e;
   });
 
   // 3) After commit. The account is gone; from here nothing may throw.
@@ -449,11 +515,20 @@ async function strayRecordingFiles() {
   const root = recorder.ROOT;
   let days = [];
   try { days = await fsp.readdir(root); } catch (_) { return []; }
-  const known = new Set(
-    (await query(`SELECT file FROM live_recordings`).catch(() => []))
-      .map((r) => inside(root, r.file))
-      .filter(Boolean)
-  );
+  // FAILS CLOSED (review, 2026-09-25). This list is what keeps a file.
+  // It used to fall back to an empty list when the query failed (a
+  // dropped connection, a restart, a timeout), which made every call
+  // recording of every existing user a "stray", and Remove leftovers
+  // would have unlinked up to KEEP_DAYS of them. A check that cannot be
+  // made now finds no strays; the next run will.
+  let rows;
+  try {
+    rows = await query(`SELECT file FROM live_recordings`);
+  } catch (e) {
+    console.warn("leftovers: recordings list unavailable, stray audio left alone:", e.message);
+    return [];
+  }
+  const known = new Set(rows.map((r) => inside(root, r.file)).filter(Boolean));
   // The same test reclaimOrphans() uses: no live call can own a file this old.
   const staleBefore = Date.now() - (recorder.MAX_MINUTES + 10) * 60_000;
   const out = [];

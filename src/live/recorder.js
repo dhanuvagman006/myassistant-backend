@@ -243,6 +243,21 @@ class Track {
 /** Every recording currently open, so a deploy can finish them. */
 const live = new Set();
 
+/**
+ * Users abortUser() has dropped: their account is being deleted. A
+ * recording still starting then (its INSERT in flight, so not yet in
+ * `live` for abortUser to see) checks this and abandons itself, instead
+ * of recording a whole call for an account that no longer exists
+ * (review, 2026-09-25). Ids are never reused, so a mark is never wrong
+ * once the delete has gone through; if it fails, cancelErase() lifts it.
+ */
+const erasedUsers = new Set();
+
+/** The delete failed and the account is still there: record them again. */
+function cancelErase(userId) {
+  erasedUsers.delete(Number(userId));
+}
+
 class Recording {
   constructor(userId, sessionId) {
     this.userId = Number(userId) || 0;
@@ -275,11 +290,21 @@ class Recording {
     await Promise.all([this.user.open(), this.agent.open()]);
     try {
       await migrate();
+      if (erasedUsers.has(this.userId)) throw new Error("account deleted");
       await run(
         `INSERT INTO live_recordings (user_id, session_id, started_at, file, state)
               VALUES ($1, $2, $3, $4, 'recording')`,
         [this.userId, this.sessionId, this.startedAt, this.out]
       );
+      // Deleted while that INSERT was in flight. The delete's transaction
+      // may already have run and missed this row, so it is ours to remove.
+      // Checked in the same tick as live.add() below: abortUser either
+      // finds this recording in `live` or this check finds the mark.
+      if (erasedUsers.has(this.userId)) {
+        await run(`DELETE FROM live_recordings WHERE session_id = $1`, [this.sessionId])
+          .catch(() => {});
+        throw new Error("account deleted");
+      }
     } catch (e) {
       // The handles are already open; leaving them dangling would leak a
       // file descriptor and two files for the life of the process.
@@ -644,6 +669,8 @@ async function stopAll() {
  */
 async function abortUser(userId) {
   const uid = Number(userId);
+  // Marked before looking, in the same tick: see erasedUsers.
+  if (uid > 0) erasedUsers.add(uid);
   const mine = [...live].filter((r) => r.userId === uid);
   for (const r of mine) {
     r.stopped = true;
@@ -666,5 +693,5 @@ module.exports = {
   begin, stopAll, list, get, destroy, usage, prune, ENABLED, KEEP_DAYS,
   // Account erasure (src/routes/privacy.js) finds the files through the
   // rows, checks every path is under ROOT, and tidies the day folders.
-  migrate, abortUser, sweepEmptyDays, ROOT, MAX_MINUTES,
+  migrate, abortUser, cancelErase, sweepEmptyDays, ROOT, MAX_MINUTES,
 };

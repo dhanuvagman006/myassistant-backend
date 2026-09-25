@@ -54,6 +54,62 @@ const GOOGLE_WS =
   "wss://generativelanguage.googleapis.com/ws/" +
   "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 
+/**
+ * OPEN CALLS, BY USER — so deleting an account can end the call it is on.
+ *
+ * Owner, 2026-09-25: "delete old user accounts and data's from the
+ * database", then "i ran but db files have not yet deleted". The socket
+ * checks the account once, at the upgrade; nothing in bridge() looks
+ * again. A user deleted mid-call therefore kept talking to the assistant,
+ * and every turn after the delete wrote conversation_turns,
+ * executed_actions and so on under an id that no longer exists, and the
+ * admin Conversations page listed them again (review, 2026-09-25).
+ *
+ * uid → Set of { appWs, closeBoth } for this pod's open bridges.
+ * `erased` remembers whom closeUser() has cut off, so a socket that was
+ * authorised just before the delete and bridged just after it is closed
+ * on arrival instead of slipping in behind it. User ids are never reused,
+ * so that set grows by one id per deleted account and a mark is never
+ * wrong once the delete has gone through; if it fails, cancelErase()
+ * lifts it.
+ */
+const openBridges = new Map();
+const erased = new Set();
+
+function trackBridge(uid, entry) {
+  if (!(uid > 0)) return;
+  if (!openBridges.has(uid)) openBridges.set(uid, new Set());
+  openBridges.get(uid).add(entry);
+}
+
+function untrackBridge(uid, entry) {
+  const set = openBridges.get(uid);
+  if (!set) return;
+  set.delete(entry);
+  if (!set.size) openBridges.delete(uid);
+}
+
+/// Ends every live call this user has open on this pod, now: the app's
+/// socket with 1008 (policy) and the Gemini socket with it. Called by
+/// privacy.deleteUserEverywhere(). Returns how many calls were open.
+function closeUser(userId) {
+  const uid = Number(userId);
+  if (!(uid > 0)) return 0;
+  erased.add(uid);
+  const open = [...(openBridges.get(uid) || [])];
+  for (const b of open) {
+    try { b.appWs.close(1008, "account deleted"); } catch (_) {}
+    b.closeBoth("account deleted");
+  }
+  openBridges.delete(uid);
+  return open.length;
+}
+
+/// The delete failed and the account is still there: it may call again.
+function cancelErase(userId) {
+  erased.delete(Number(userId));
+}
+
 /// Same auth tiers as the REST middleware, adapted for a WS query string.
 /// The token goes through verifySession, so a paused or signed-out account
 /// cannot open a live session either.
@@ -1156,7 +1212,10 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     return;
   }
 
+  // This call's entry in openBridges (registered at the end of bridge()).
+  const liveBridge = { appWs, closeBoth: null };
   const closeBoth = (why) => {
+    untrackBridge(Number(user?.sub), liveBridge);
     try {
       appWs.close();
     } catch (_) {}
@@ -2046,6 +2105,19 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
 
   appWs.on("close", () => closeBoth());
   appWs.on("error", () => closeBoth("app error"));
+
+  // Registered last, once every listener above is attached: closing a
+  // Gemini socket that is still connecting emits 'error', and with no
+  // listener that would take the process down. Nothing above awaits, so
+  // this still runs in the same tick the bridge began.
+  liveBridge.closeBoth = closeBoth;
+  if (erased.has(Number(user?.sub))) {
+    // Deleted between the upgrade's account check and this bridge.
+    try { appWs.close(1008, "account deleted"); } catch (_) {}
+    closeBoth("account deleted");
+    return;
+  }
+  trackBridge(Number(user?.sub), liveBridge);
 }
 
 /// Express router for the /live availability probe (registered at app
@@ -2138,4 +2210,5 @@ function attachWs(server) {
 
 // bridge is exported for the tests only (scripts/automation-test.js drives
 // it with both sockets faked in memory); the server uses attachWs.
-module.exports = { probeRouter, attachWs, bridge };
+// closeUser and cancelErase are for account deletion (src/routes/privacy.js).
+module.exports = { probeRouter, attachWs, bridge, closeUser, cancelErase };

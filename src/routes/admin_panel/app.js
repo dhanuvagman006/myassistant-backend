@@ -1365,6 +1365,9 @@ function erasedSummary(id, r) {
     `${r.totalFiles || 0} files removed (${files.recordings || 0} recording, ${files.documents || 0} document).`,
     `Google access: ${(r.revoked && r.revoked.google) || "—"}.`,
   ];
+  if (r.revoked && r.revoked.liveSessions > 0) {
+    lines.push(`Live calls in progress, ended: ${r.revoked.liveSessions}.`);
+  }
   if (rows.length) {
     lines.push("");
     for (const [t, n] of rows.slice(0, 15)) lines.push(`  ${t}: ${n}`);
