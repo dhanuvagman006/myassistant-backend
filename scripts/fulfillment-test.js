@@ -13,6 +13,10 @@ process.env.DATABASE_URL =
 const assert = require("assert");
 const deeplinks = require("../src/fulfillment/deeplinks");
 const youtube = require("../src/fulfillment/youtube");
+// The app checkout the tests below read: the sibling myassistant-flutter,
+// or APP_DIR for a feature branch tested against its own app worktree
+// (2026-09-25: Momentum added screens the main checkout does not have yet).
+const APP_DIR = process.env.APP_DIR || __dirname + "/../../myassistant-flutter";
 
 let passed = 0;
 
@@ -359,7 +363,7 @@ test("a known provider is opened BY THE PHONE, by package — never its website"
 test("the app resolves an unknown name against what is actually installed", () => {
   const fs = require("fs");
   const engine = fs.readFileSync(
-    __dirname + "/../../myassistant-flutter/lib/features/assistant/state/assistant_engine.dart",
+    APP_DIR + "/lib/features/assistant/state/assistant_engine.dart",
     "utf8"
   );
   assert.match(engine, /case 'open_any_app':/, "the engine must handle it");
@@ -370,14 +374,14 @@ test("the app resolves an unknown name against what is actually installed", () =
     "a missing app must be reported honestly");
 
   const kt = fs.readFileSync(
-    __dirname + "/../../myassistant-flutter/android/app/src/main/kotlin/com/myassistant/myassistant/MainActivity.kt",
+    APP_DIR + "/android/app/src/main/kotlin/com/myassistant/myassistant/MainActivity.kt",
     "utf8"
   );
   assert.match(kt, /"launchApp" ->/, "Android must implement launchApp");
   assert.match(kt, /getLaunchIntentForPackage/, "and launch by package");
 
   const manifest = fs.readFileSync(
-    __dirname + "/../../myassistant-flutter/android/app/src/main/AndroidManifest.xml",
+    APP_DIR + "/android/app/src/main/AndroidManifest.xml",
     "utf8"
   );
   // Without this, Android 11+ hides every package and matching finds nothing.
@@ -549,7 +553,7 @@ test("every screen open_app_screen offers is one the app can actually build", as
   // The four tabs live in the shell; the rest must have a builder entry.
   const TABS = ["home", "hub", "chat", "settings"];
   const engine = fs.readFileSync(
-    __dirname + "/../../myassistant-flutter/lib/features/assistant/state/assistant_engine.dart",
+    APP_DIR + "/lib/features/assistant/state/assistant_engine.dart",
     "utf8"
   );
   const missing = screens
@@ -586,7 +590,7 @@ test("asking for a male voice actually changes the voice, not just the label", (
 test("the app actually handles the voice-change action it is sent", () => {
   const fs = require("fs");
   const engine = fs.readFileSync(
-    __dirname + "/../../myassistant-flutter/lib/features/assistant/state/assistant_engine.dart",
+    APP_DIR + "/lib/features/assistant/state/assistant_engine.dart",
     "utf8"
   );
   // The backend emitting an action nothing handles is the exact shape of
@@ -600,7 +604,7 @@ test("the app actually handles the voice-change action it is sent", () => {
 test("barge-in is GONE: nothing goes upstream while she is speaking", () => {
   const fs = require("fs");
   const live = fs.readFileSync(
-    __dirname + "/../../myassistant-flutter/lib/services/live_service.dart",
+    APP_DIR + "/lib/services/live_service.dart",
     "utf8"
   );
   // REVERSED ON PURPOSE, 2026-09-20: "remove the interruption or barge-in
