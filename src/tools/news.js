@@ -12,9 +12,18 @@
  * the subject. Cached for twenty minutes in the shared store, so the
  * second person to ask this morning costs nothing and gets the answer
  * instantly.
+ *
+ * CARDS, 2026-09-25. Owner: "update how we read the news and how it is
+ * dispayed now need card style with images.stacked swipe to see or tap
+ * to explan". Every story now carries what a card needs — a stable id,
+ * the publisher's picture and a small copy of it, the publisher's icon
+ * and the exact publication time — in the one shape the voice deck, the
+ * News screen and read_news_story all share.
  */
+const crypto = require("crypto");
 const TIMEOUT = 9000;
 const searchCache = require("./searchCache");
+const newsImages = require("./newsImages");
 
 /** "3 hours ago" -> 180. Used to sort and to drop anything stale. */
 function ageMinutes(age) {
@@ -153,15 +162,74 @@ function countFromText(text) {
   return Math.min(n, 10);
 }
 
+/** A story's id: the first 12 hex of sha1(url) — the app derives the same. */
+function storyId(url) {
+  return crypto.createHash("sha1").update(String(url || "")).digest("hex").slice(0, 12);
+}
+
+/** A picture or icon the phone can load: https only (release builds refuse http). */
+function httpsOnly(u) {
+  const s = String(u || "").trim();
+  return /^https:\/\/\S+$/i.test(s) && s.length <= 2048 ? s : "";
+}
+
+/**
+ * page_age ("2026-09-25T08:10:00", UTC, usually without a zone) as ISO,
+ * or null. A time in the future is a wrong time, not an early one.
+ */
+function publishedAtOf(pageAge) {
+  const s = String(pageAge || "").trim();
+  if (!s) return null;
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00:00Z`
+    : /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(s) ? s
+    : `${s}Z`;
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t) || t > Date.now() + 60 * 60_000) return null;
+  return new Date(t).toISOString();
+}
+
+/**
+ * The News screen's topic chips, as queries. "Top" is the country term
+ * the voice path has always used (see headlines below); "India" is asked
+ * as national news so the two chips are not the same deck twice.
+ */
+const TOPIC_QUERY = {
+  top: "", today: "", india: "India national news", tech: "technology",
+};
+function queryFor(topic) {
+  const t = String(topic || "").trim();
+  const mapped = TOPIC_QUERY[t.toLowerCase()];
+  return (mapped !== undefined ? mapped : t) || "India";
+}
+
+/** The most a caller can ask for; the cached list holds all of them. */
+const MAX_STORIES = 20;
+
 async function headlines({ topic = "", count = 10, sort = "relevance" } = {}) {
   // "top news today" matched AGGREGATORS — "NDTV Live TV", "Top 10 Hindi
   // News Headlines" — rather than stories, because those pages are
   // literally titled that. A plain country term returns actual reporting;
   // country=IN below is what localises it.
-  const q = (topic && topic.trim()) || "India";
-  const shape = `news:${q.toLowerCase()}`;
+  const q = queryFor(topic);
+  const order = sort === "recent" ? "recent" : "relevance";
+  const n = Math.max(1, Math.min(Math.trunc(Number(count)) || 10, MAX_STORIES));
+  // CACHED PER TOPIC AND ORDER, SLICED AFTER (2026-09-25). This used to be
+  // stored without `ok`, which searchCache refuses, so no answer was ever
+  // cached and every "news" cost a search call. Its key also ignored the
+  // count and the order: fixed alone, "the top two stories" would then
+  // have answered the next "ten headlines" with two. The whole filtered
+  // list is kept now and each caller takes its own count.
+  const shape = `news:v2:${order}:${q.toLowerCase()}`;
   const hit = await searchCache.get(shape).catch(() => null);
-  if (hit) return { ...hit, cached: true };
+  if (hit && Array.isArray(hit.items)) {
+    return {
+      ok: true,
+      topic: hit.topic,
+      sort: order,
+      items: newsImages.fillFromMemory(hit.items).slice(0, n),
+      cached: true,
+    };
+  }
 
   if (!process.env.BRAVE_SEARCH_API_KEY) {
     throw new Error("no news provider configured");
@@ -196,16 +264,27 @@ async function headlines({ topic = "", count = 10, sort = "relevance" } = {}) {
     if (NOT_A_STORY.test(title)) continue;
     if (!mostlyLatin(title)) continue;
     if (rows.some((p) => sameStory(p.title, title))) continue;
+    const publishedAt = publishedAtOf(x.page_age);
     rows.push({
+      id: storyId(x.url),
       title,
       url: x.url,
       source: clean((x.meta_url && x.meta_url.hostname) || "").replace(/^www\./, ""),
       age: clean(x.age),
-      ageMins: ageMinutes(x.age),
+      // The exact time when the index has it; its "3 hours ago" otherwise.
+      ageMins: publishedAt
+        ? Math.max(0, Math.round((Date.now() - Date.parse(publishedAt)) / 60_000))
+        : ageMinutes(x.age),
+      publishedAt,
       snippet: clean(x.description).slice(0, 400),
       extra: (x.extra_snippets || []).map(clean).filter(Boolean).slice(0, 2),
-      thumbnail: (x.thumbnail && (x.thumbnail.src || x.thumbnail.original)) || "",
+      // `original` is the publisher's own full-size picture; `src` is the
+      // index's small copy, kept as the fallback the card tries second.
+      image: httpsOnly(x.thumbnail && x.thumbnail.original),
+      thumbnail: httpsOnly(x.thumbnail && x.thumbnail.src),
+      favicon: httpsOnly(x.meta_url && x.meta_url.favicon),
     });
+    if (rows.length >= MAX_STORIES) break;
   }
   // RECENCY IS NOT IMPORTANCE, and sorting by it destroyed the index's own
   // ranking. Brave returns news in relevance order — which is roughly what
@@ -215,14 +294,174 @@ async function headlines({ topic = "", count = 10, sort = "relevance" } = {}) {
   // were answering "what matters", we were answering "what just landed".
   //
   // Only an explicit ask for the LATEST re-orders by clock.
-  if (sort === "recent") rows.sort((a, b) => a.ageMins - b.ageMins);
-  const out = {
-    topic: topic || "today",
-    sort,
-    items: rows.slice(0, Math.max(1, Math.min(count, 10))),
-  };
+  if (order === "recent") rows.sort((a, b) => a.ageMins - b.ageMins);
+  const items = await newsImages.enrich(rows);
+  const out = { ok: true, topic: topic || "today", sort: order, items };
   searchCache.put(shape, q, out, true).catch(() => {}); // live: 20 min
-  return { ...out, cached: false };
+  return { ...out, items: items.slice(0, n), cached: false };
 }
 
-module.exports = { headlines, ageMinutes, sameStory, clean, NOT_A_STORY, mostlyLatin, countFromText };
+/**
+ * THE SAME STORIES WITHOUT A NEWS KEY. The free RSS headlines carry no
+ * pictures, summaries or times, so their cards are the gradient kind —
+ * but the deck and the News screen still work.
+ */
+function fromRss(h) {
+  const url = String((h && h.link) || "");
+  return {
+    id: storyId(url || (h && h.title)),
+    title: String((h && h.title) || ""),
+    url,
+    source: String((h && h.source) || ""),
+    age: "",
+    ageMins: null,
+    publishedAt: null,
+    snippet: "",
+    extra: [],
+    image: "",
+    thumbnail: "",
+    favicon: "",
+  };
+}
+
+/**
+ * Stories for the deck and the News screen: the news index when it is
+ * configured, the RSS headlines when it is not — or when it fails, since
+ * yesterday's layout with today's headlines beats an empty screen.
+ */
+async function feed({ topic = "", count = 12, sort = "relevance" } = {}) {
+  const n = Math.max(1, Math.min(Math.trunc(Number(count)) || 12, MAX_STORIES));
+  if (process.env.BRAVE_SEARCH_API_KEY) {
+    try {
+      const out = await headlines({ topic, count: n, sort });
+      if (out.items.length) return out;
+    } catch (e) {
+      console.warn(`news: index failed, using RSS: ${String(e.message).slice(0, 120)}`);
+    }
+  }
+  const rss = require("../services/tools/news");
+  const q = queryFor(topic);
+  const rows = await rss.getHeadlines({
+    // Top stories are the feed's own front page, not a search.
+    topic: String(topic || "").trim() && !/^(top|today)$/i.test(topic) ? q : undefined,
+    max: n,
+  });
+  return {
+    ok: true,
+    topic: topic || "today",
+    sort: sort === "recent" ? "recent" : "relevance",
+    items: rows.map(fromRss).filter((s) => s.title),
+    cached: false,
+    fallback: "rss",
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * "READ ME THE SECOND ONE"
+ *
+ * The deck on the screen is numbered in the order it was sent, so "the
+ * second one" and "the cricket story" can only be answered from THAT
+ * list — not from a fresh search, whose order may already have moved.
+ * Kept per user for half an hour: long enough for a conversation about
+ * the morning's news, short enough that "the second one" tomorrow does
+ * not reach back to a deck nobody is looking at.
+ * ------------------------------------------------------------------ */
+const SHOWN_TTL_MS = 30 * 60_000;
+const shown = new Map(); // user id -> { at, topic, items }
+
+function userKey(userId) {
+  const k = String(userId ?? "").trim();
+  return k && k !== "undefined" && k !== "null" ? k : "";
+}
+
+function rememberShown(userId, topic, items) {
+  const key = userKey(userId);
+  if (!key || !Array.isArray(items) || !items.length) return;
+  shown.delete(key);
+  shown.set(key, {
+    at: Date.now(),
+    topic: String(topic || ""),
+    items: items.map((s) => ({
+      id: s.id, title: s.title, url: s.url, source: s.source,
+      snippet: s.snippet || "", extra: Array.isArray(s.extra) ? s.extra : [],
+    })),
+  });
+  // One entry per active user; a busy morning must not grow this forever.
+  while (shown.size > 5000) shown.delete(shown.keys().next().value);
+}
+
+function lastShown(userId) {
+  const hit = shown.get(userKey(userId));
+  if (!hit) return null;
+  if (Date.now() - hit.at > SHOWN_TTL_MS) {
+    shown.delete(userKey(userId));
+    return null;
+  }
+  return hit;
+}
+
+const ORDINAL = {
+  first: 1, one: 1, second: 2, two: 2, third: 3, three: 3, fourth: 4, four: 4,
+  fifth: 5, five: 5, sixth: 6, six: 6, seventh: 7, seven: 7, eighth: 8, eight: 8,
+  ninth: 9, nine: 9, tenth: 10, ten: 10, eleventh: 11, eleven: 11,
+  twelfth: 12, twelve: 12, top: 1,
+};
+const PICK_STOP = new Set(
+  ("the and for with from that this about tell more read what whats says said " +
+   "story stories news headline headlines article one please give know some " +
+   "into over after your their them they have has had was were will just").split(" ")
+);
+
+function keywords(text) {
+  return new Set(
+    String(text || "").toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .split(/\s+/)
+      .filter((w) => w.length >= 3 && !PICK_STOP.has(w) && !GENERIC.has(w))
+      // "elections" finds "election": a plural is not a different story.
+      .map((w) => (w.length > 4 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w))
+  );
+}
+
+/**
+ * Which story [which] means: its number on the deck ("2", "2nd", "the
+ * second one", "last") or words from it ("the cricket story"). Headline
+ * words count double against summary words; a tie goes to the higher
+ * story. Returns { index, item } or null — never a guess.
+ */
+function pickStory(items, which) {
+  const list = Array.isArray(items) ? items : [];
+  const w = String(which ?? "").trim().toLowerCase().replace(/[?!.,]+$/g, "");
+  if (!list.length || !w) return null;
+  const at = (i) => (i >= 1 && i <= list.length ? { index: i - 1, item: list[i - 1] } : null);
+
+  if (/^(?:the\s+)?(?:last|final|bottom)(?:\s+(?:one|story|headline|news))?$/.test(w)) {
+    return at(list.length);
+  }
+  const num = /^(?:the\s+)?(?:number\s+|no\.?\s*|#|story\s+|headline\s+)?(\d{1,2})(?:st|nd|rd|th)?(?:\s+(?:one|story|headline|news|item))?$/.exec(w);
+  if (num) return at(Number(num[1]));
+  const ord = /^(?:the\s+)?([a-z]+)(?:\s+(?:one|story|headline|news|item))?$/.exec(w);
+  if (ord && ORDINAL[ord[1]]) return at(ORDINAL[ord[1]]);
+
+  const want = keywords(w);
+  if (!want.size) return null;
+  let best = null;
+  list.forEach((item, index) => {
+    const title = keywords(item.title);
+    const body = keywords([item.snippet, ...(item.extra || [])].join(" "));
+    let score = 0;
+    for (const k of want) {
+      if (title.has(k)) score += 2;
+      else if (body.has(k)) score += 1;
+    }
+    if (score > 0 && (!best || score > best.score)) best = { index, item, score };
+  });
+  return best ? { index: best.index, item: best.item } : null;
+}
+
+module.exports = {
+  headlines, feed, ageMinutes, sameStory, clean, NOT_A_STORY, mostlyLatin, countFromText,
+  storyId, publishedAtOf, queryFor, fromRss, MAX_STORIES,
+  rememberShown, lastShown, pickStory,
+  _forgetShown: () => shown.clear(),
+};
