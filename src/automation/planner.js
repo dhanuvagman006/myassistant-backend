@@ -38,6 +38,20 @@ const MAX_TEXT = 90;
 // (30 s) always hears back.
 const CALL_TIMEOUT_MS = 12_000;
 const MIN_CALL_MS = 1_500;
+// NEVER FAIL JUST BECAUSE ONE MODEL IS SLOW. On the owner's phone,
+// 2026-09-25, an Instagram step ended "I couldn't reach my planner just
+// now, so I stopped" (post_ms=19219): both tries went to the same model,
+// and gemini-3.5-flash needed 14.6 s for that Explore screen with its
+// ~260 KB screenshot — past the 12 s cut ("The operation was aborted due
+// to timeout"). Measured the same day, the same call with the owner's key:
+// gemini-3.5-flash-lite 2.9 s, gemini-3.1-flash-lite 3.2 s,
+// gemini-flash-lite-latest 3.7 s. So the second try now goes to the FAST
+// model (AUTOMATION_FAST_MODEL), and the first is cut early enough to leave
+// it FAST_RESERVE_MS: the slowest lite answer measured (3.7 s) with room
+// for a slower network or a bigger screen. With the step's 24 s the
+// reserve costs the first try nothing (12 s + 6 s fit); it only bites on
+// a re-plan after a refusal, when less is left.
+const FAST_RESERVE_MS = 6_000;
 
 const clip = (s, n = MAX_TEXT) => {
   const t = String(s || "").replace(/\s+/g, " ").trim();
@@ -545,11 +559,28 @@ function mediaFor(screen) {
   return named >= 20 ? "MEDIA_RESOLUTION_LOW" : "MEDIA_RESOLUTION_MEDIUM";
 }
 
+/** Why a try did not answer, in a word for the log line (never content). */
+function failedWhy(e) {
+  if (e?.name === "TimeoutError" || /timeout|aborted/i.test(String(e?.message || ""))) return "timeout";
+  const status = Number(e?.status) || Number((String(e?.message || "").match(/\b([45]\d\d)\b/) || [])[1]);
+  return status ? String(status) : "error";
+}
+
 /**
  * One decision. Always returns — within opts.deadline (epoch ms) when
  * given — and carries what it cost in `usage` for the step's log line
  * (counts and times only): { llm_ms, in_tok, estimated, calls, thinking,
- * media, model }.
+ * media, model, fallback? }. `model` is the model that answered (the last
+ * one asked when none did); `fallback` is "<first model>:<why>" when the
+ * fast model was asked instead.
+ *
+ * Two tries at most, one after the other. The first goes to
+ * AUTOMATION_MODEL, cut early enough to leave the fast model its
+ * FAST_RESERVE_MS; when it runs out of time, errors (a retired model's
+ * 404, a spent quota's 429, a 5xx, the network) or answers unreadably, the
+ * second goes to AUTOMATION_FAST_MODEL with whatever time is left. When
+ * the two are one model, that model is asked twice as before, each try
+ * with its whole budget and nothing kept back.
  */
 async function decide(run, screen, opts = {}) {
   const prompt = buildPrompt(run, screen, opts);
@@ -557,26 +588,43 @@ async function decide(run, screen, opts = {}) {
   const deadline = Number(opts.deadline) > 0 ? Number(opts.deadline) : Date.now() + 2 * perCall;
   const thinking = thinkingFor(run);
   const media = mediaFor(screen);
-  const model = typeof ai.automationModel === "function" ? ai.automationModel() : undefined;
-  const usage = { llm_ms: 0, in_tok: 0, estimated: false, calls: 0, thinking, media: media || "", model: model || "" };
-  let lastErr = null;
-  // One retry: with the answer's shape fixed by the schema a malformed
-  // reply is rare; a second one means something is wrong.
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const primary = typeof ai.automationModel === "function" ? ai.automationModel() : undefined;
+  const fast = typeof ai.automationFastModel === "function" ? ai.automationFastModel() : undefined;
+  const twoModels = !!(primary && fast && fast !== primary);
+  const tries = twoModels ? [primary, fast] : [primary, primary];
+  // Which setting names each model, for the router's one line if Google
+  // says the model is gone.
+  const envs = twoModels ? ["AUTOMATION_MODEL", "AUTOMATION_FAST_MODEL"] : ["AUTOMATION_MODEL", "AUTOMATION_MODEL"];
+  const usage = { llm_ms: 0, in_tok: 0, estimated: false, calls: 0, thinking, media: media || "", model: primary || "" };
+  const images = screen?.shot ? [{ mime: "image/jpeg", data: screen.shot }] : undefined;
+  // A call shorter than this cannot answer (a test's own tiny budget aside).
+  const floor = Math.min(MIN_CALL_MS, perCall);
+  const errors = [];
+  let why = "";
+  for (let attempt = 0; attempt < tries.length; attempt++) {
+    const model = tries[attempt];
+    const name = model || "the model";
     const left = deadline - Date.now();
-    if (left < Math.min(MIN_CALL_MS, perCall)) { lastErr = lastErr || "no time left"; break; }
+    if (left < floor) { errors.push("no time left"); break; }
+    if (attempt && twoModels) usage.fallback = `${primary}:${why || "error"}`;
+    // The first of two models leaves the fast one its time. Too little
+    // left for both: the fast model gets it all.
+    const keep = twoModels && attempt === 0 ? Math.min(FAST_RESERVE_MS, perCall) : 0;
+    const budget = Math.min(perCall, left - keep);
+    if (budget < floor) { errors.push(`${name}: no time`); why = "no_time"; continue; }
     const started = Date.now();
     try {
-      const images = screen?.shot ? [{ mime: "image/jpeg", data: screen.shot }] : undefined;
+      // With the answer's shape fixed by the schema an unreadable reply is
+      // rare; the second try is told plainly once more.
       const content = prompt + (attempt ? "\n\nReply with the JSON object only." : "");
       usage.calls++;
-      const budget = Math.min(perCall, left);
+      usage.model = model || "";
       const out = await within(ai.generateReply(
         [{ role: "user", content, images }],
         // noRetry: no transient retry and no switch to the quota fallback
         // model inside the router — this caller has its own budget.
         {
-          system: SYSTEM, model, thinking, json: true, schema: DECISION_SCHEMA,
+          system: SYSTEM, model, modelEnv: envs[attempt], thinking, json: true, schema: DECISION_SCHEMA,
           ...(media ? { mediaResolution: media } : {}),
           timeoutMs: budget, noRetry: true,
         }), budget + 250);
@@ -587,17 +635,19 @@ async function decide(run, screen, opts = {}) {
       else { usage.in_tok += Math.round((SYSTEM.length + content.length) / 4); usage.estimated = true; }
       const d = parseDecision(out?.reply);
       if (d) return { ...d, usage };
-      lastErr = "unreadable answer";
+      errors.push(`${name}: unreadable answer`);
+      why = "unreadable";
     } catch (e) {
       usage.llm_ms += Date.now() - started;
-      lastErr = String(e.message || e).slice(0, 160);
+      errors.push(`${name}: ${String(e.message || e).slice(0, 160)}`);
+      why = failedWhy(e);
     }
   }
-  return { status: "fail", report: "", error: lastErr || "planner failed", usage };
+  return { status: "fail", report: "", error: errors.join(" | ").slice(0, 400) || "planner failed", usage };
 }
 
 module.exports = {
   decide, buildPrompt, parseDecision, describeScreen, describeAction, pickNodes, nearFor,
   screenWords, wordDiff, alreadyTried, thinkingFor, mediaFor, recovering,
-  SYSTEM, DECISION_SCHEMA, CALL_TIMEOUT_MS, MAX_NODES,
+  SYSTEM, DECISION_SCHEMA, CALL_TIMEOUT_MS, FAST_RESERVE_MS, MAX_NODES,
 };

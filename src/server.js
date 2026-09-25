@@ -499,11 +499,16 @@ require("./db")
       } catch (_) {}
       // Print the models actually in use. A wrong/retired name otherwise
       // only shows up as a 404 on the user's first voice turn, which reads
-      // like "the app can't hear me" rather than a config problem.
+      // like "the app can't hear me" rather than a config problem. Read
+      // from the router itself, so the defaults printed are the ones used
+      // (they are the -latest aliases since 2026-09-25).
+      const ai = require("./services/ai/router");
       console.log(
-        `  models: chat=${process.env.GEMINI_MODEL || "gemini-2.5-flash"}` +
+        `  models: chat=${ai.chatModel()}` +
           ` stt=${process.env.GEMINI_STT_MODEL || "(same as chat)"}` +
-          ` vision=${process.env.GEMINI_VISION_MODEL || "gemini-2.5-flash"}` +
+          ` vision=${ai.envModel("GEMINI_VISION_MODEL", "gemini-flash-latest")}` +
+          ` fallback=${ai.fallbackModel()}` +
+          ` planner=${ai.automationModel()} planner_fast=${ai.automationFastModel()}` +
           ` tts=${process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts"}` +
           ` thinking=${process.env.GEMINI_THINKING_LEVEL || "low"}`
       );

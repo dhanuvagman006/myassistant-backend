@@ -15,6 +15,8 @@
  */
 const router = require("express").Router();
 const { tzFromReq } = require("../services/tz");
+// The -latest aliases count as Gemini 3 too (no temperature for them).
+const { isGemini3 } = require("../services/ai/router");
 const multer = require("multer");
 
 const upload = multer({
@@ -105,7 +107,9 @@ router.post("/", receiveFile, async (req, res) => {
       }
     } catch (_) {}
 
-    const model = process.env.GEMINI_VISION_MODEL || "gemini-2.5-flash";
+    // Unset, the alias Google keeps current: the old default,
+    // gemini-2.5-flash, answers new users 404 (2026-09-25).
+    const model = process.env.GEMINI_VISION_MODEL || "gemini-flash-latest";
     const r = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
       {
@@ -138,9 +142,9 @@ router.post("/", receiveFile, async (req, res) => {
             mode === "screenshot"
               ? {
                   response_mime_type: "application/json",
-                  ...(/^gemini-3/i.test(model) ? {} : { temperature: 0.2 }),
+                  ...(isGemini3(model) ? {} : { temperature: 0.2 }),
                 }
-              : /^gemini-3/i.test(model)
+              : isGemini3(model)
                 ? {}
                 : { temperature: 0.4 },
         }),

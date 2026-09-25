@@ -1366,6 +1366,385 @@ const swiggyCart = { pkg: SW, nodes: [
     }
   });
 
+  /* ---- THE PLANNER NEVER FAILS JUST BECAUSE ONE MODEL IS SLOW ---- */
+  // Owner's phone, 2026-09-25: an Instagram step ended "I couldn't reach my
+  // planner just now, so I stopped" (post_ms=19219) — gemini-3.5-flash
+  // needed 14.6 s for that screen and its screenshot, the lite models 3-4 s.
+  console.log("\nplanner: a slow or retired model hands the step to the fast one (2026-09-25)");
+
+  // A model stub that behaves like the router: a slow model runs out its
+  // budget (the router's own hard deadline), the others answer at once.
+  const PLAN = '{"status":"continue","action":{"type":"tap","id":3},"expect":"the restaurant"}';
+  const timeoutErr = (ms) => Object.assign(new Error(`gemini timeout after ${ms} ms`), { name: "TimeoutError" });
+  const modelStub = (behave) => {
+    const seen = [];
+    ai.generateReply = async (messages, o) => {
+      seen.push({ ...o, content: messages[0].content, images: messages[0].images });
+      return behave(o.model, o);
+    };
+    return seen;
+  };
+  const withEnv = async (vals, fn) => {
+    const saved = Object.fromEntries(Object.keys(vals).map((k) => [k, process.env[k]]));
+    for (const [k, v] of Object.entries(vals)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    try { return await fn(); } finally {
+      ai.generateReply = scriptedReply;
+      for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    }
+  };
+  const menuShot = { ...swiggyMenu, shot: "QUJD" };
+  // The last tap changed nothing: a recovery step, so the planner thinks LOW.
+  const plannerRun = () => ({ goal: "Order veg biryani on Swiggy", category: "food", notes: [],
+    steps: [{ action: { type: "tap", id: 1, what: "Biryani" }, expect: "x", result: { ok: true, changed: false } }] });
+
+  await atest("a first model that runs out of time: the fast model answers the step, inside the step's deadline", async () => {
+    await withEnv({ AUTOMATION_MODEL: "gemini-3.5-flash", AUTOMATION_FAST_MODEL: undefined }, async () => {
+      assert.strictEqual(ai.automationFastModel(), "gemini-flash-lite-latest", "the fast model's default");
+      // Real time, scaled down: 400 ms a call, 1 s for the step.
+      const seen = modelStub(async (model, o) => {
+        if (model === "gemini-3.5-flash") { await new Promise((r) => setTimeout(r, o.timeoutMs)); throw timeoutErr(o.timeoutMs); }
+        return { reply: PLAN };
+      });
+      const deadline = Date.now() + 1000;
+      const d = await planner.decide(plannerRun(), menuShot, { timeoutMs: 400, deadline });
+      assert.ok(Date.now() <= deadline, `answered ${Date.now() - deadline} ms after the deadline`);
+      assert.strictEqual(d.status, "continue", JSON.stringify(d));
+      assert.deepStrictEqual(d.action, { type: "tap", id: 3 });
+      assert.deepStrictEqual(seen.map((c) => c.model), ["gemini-3.5-flash", "gemini-flash-lite-latest"]);
+      assert.strictEqual(d.usage.model, "gemini-flash-lite-latest", "the model that answered");
+      assert.strictEqual(d.usage.calls, 2);
+      assert.strictEqual(d.usage.fallback, "gemini-3.5-flash:timeout");
+      // Both calls own their budget (no router retry, no router fallback),
+      // think alike (a recovery step: one level up) and see the picture.
+      for (const c of seen) {
+        assert.ok(c.noRetry === true && c.json === true && c.thinking === "LOW" && c.images?.length === 1,
+          JSON.stringify({ ...c, content: undefined, schema: undefined }));
+      }
+      assert.deepStrictEqual(seen.map((c) => c.modelEnv), ["AUTOMATION_MODEL", "AUTOMATION_FAST_MODEL"]);
+    });
+  });
+
+  await atest("the fast model keeps its time: the first call ends FAST_RESERVE_MS before the deadline, and is skipped when too little is left", async () => {
+    await withEnv({ AUTOMATION_MODEL: "gemini-3.5-flash", AUTOMATION_FAST_MODEL: undefined }, async () => {
+      // The reserve against the measurements: lite models answered in
+      // 2.9-3.7 s with a screenshot, and 12 s + the reserve fit in a step.
+      assert.ok(planner.FAST_RESERVE_MS >= 4000 && planner.FAST_RESERVE_MS + planner.CALL_TIMEOUT_MS <= svc.STEP_BUDGET_MS,
+        `${planner.FAST_RESERVE_MS} ms kept back`);
+      // Each call "runs out" at once, so only the budgets it was given are read.
+      const seen = modelStub(async (model, o) => {
+        if (model === "gemini-3.5-flash") throw timeoutErr(o.timeoutMs);
+        return { reply: PLAN };
+      });
+      const near = (a, b) => Math.abs(a - b) <= 150;
+      const budgets = () => JSON.stringify(seen.map((c) => [c.model, c.timeoutMs]));
+      // A whole step (24 s): the first call keeps its full 12 s — 12 + 6 fit.
+      await planner.decide(plannerRun(), menuShot, { deadline: Date.now() + svc.STEP_BUDGET_MS });
+      assert.strictEqual(seen[0].timeoutMs, planner.CALL_TIMEOUT_MS, budgets());
+      assert.ok(seen[1].model === "gemini-flash-lite-latest" && seen[1].timeoutMs === planner.CALL_TIMEOUT_MS, budgets());
+      // A re-plan after a refusal, 10 s left: the first gets 4 s, the fast one the rest.
+      seen.length = 0;
+      await planner.decide(plannerRun(), menuShot, { deadline: Date.now() + 10_000 });
+      assert.ok(near(seen[0].timeoutMs, 10_000 - planner.FAST_RESERVE_MS), budgets());
+      assert.ok(seen[1].timeoutMs >= planner.FAST_RESERVE_MS - 150, budgets());
+      // 7 s left: not enough for both — the fast model is asked at once, with all of it.
+      seen.length = 0;
+      const d = await planner.decide(plannerRun(), menuShot, { deadline: Date.now() + 7_000 });
+      assert.deepStrictEqual(seen.map((c) => c.model), ["gemini-flash-lite-latest"]);
+      assert.ok(near(seen[0].timeoutMs, 7_000), budgets());
+      assert.deepStrictEqual({ s: d.status, m: d.usage.model, c: d.usage.calls, f: d.usage.fallback },
+        { s: "continue", m: "gemini-flash-lite-latest", c: 1, f: "gemini-3.5-flash:no_time" });
+    });
+  });
+
+  await atest("an error or an unreadable answer from the first model goes to the fast model too", async () => {
+    await withEnv({ AUTOMATION_MODEL: "gemini-3.5-flash", AUTOMATION_FAST_MODEL: "gemini-3.1-flash-lite" }, async () => {
+      const first = [
+        [Object.assign(new Error("gemini 404 [model=gemini-3.5-flash] no longer available"), { status: 404 }), "404"],
+        [Object.assign(new Error("gemini 429 [model=gemini-3.5-flash] quota exceeded"), { status: 429 }), "429"],
+        [Object.assign(new Error("gemini 503 [model=gemini-3.5-flash] high demand"), { status: 503 }), "503"],
+        [Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" }), "timeout"],
+        [new Error("fetch failed"), "error"],
+        ["not json at all", "unreadable"],
+      ];
+      for (const [answer, why] of first) {
+        const seen = modelStub(async (model) => {
+          if (model === "gemini-3.5-flash") { if (answer instanceof Error) throw answer; return { reply: answer }; }
+          return { reply: PLAN, model };
+        });
+        const d = await planner.decide(plannerRun(), menuShot, { deadline: Date.now() + svc.STEP_BUDGET_MS });
+        assert.deepStrictEqual({ s: d.status, m: d.usage.model, c: d.usage.calls, f: d.usage.fallback },
+          { s: "continue", m: "gemini-3.1-flash-lite", c: 2, f: `gemini-3.5-flash:${why}` }, why);
+        assert.deepStrictEqual(seen.map((c) => c.model), ["gemini-3.5-flash", "gemini-3.1-flash-lite"], why);
+        assert.match(seen[1].content, /Reply with the JSON object only\.$/);
+      }
+      // Both down: an honest failure naming what each said, never a guess.
+      modelStub(async (model) => { throw Object.assign(new Error(`gemini 503 [model=${model}]`), { status: 503 }); });
+      const down = await planner.decide(plannerRun(), menuShot, { deadline: Date.now() + svc.STEP_BUDGET_MS });
+      assert.strictEqual(down.status, "fail");
+      assert.match(down.error, /gemini-3\.5-flash: .*503.* \| gemini-3\.1-flash-lite: .*503/);
+      assert.strictEqual(down.usage.calls, 2);
+    });
+  });
+
+  await atest("when the configured model IS the fast one, it is asked as before: whole budget, one model, never a third call", async () => {
+    for (const env of [{ AUTOMATION_MODEL: "gemini-flash-lite-latest", AUTOMATION_FAST_MODEL: undefined },
+      { AUTOMATION_MODEL: "gemini-3.5-flash", AUTOMATION_FAST_MODEL: "gemini-3.5-flash" }]) {
+      await withEnv(env, async () => {
+        const model = env.AUTOMATION_MODEL;
+        const seen = modelStub(async (m, o) => { throw timeoutErr(o.timeoutMs); });
+        // 15 s left: were a reserve kept back, the first call would get 9 s.
+        const d = await planner.decide(plannerRun(), menuShot, { deadline: Date.now() + 15_000 });
+        assert.strictEqual(d.status, "fail");
+        assert.deepStrictEqual(seen.map((c) => c.model), [model, model], "today's one retry, on the same model");
+        assert.strictEqual(seen[0].timeoutMs, planner.CALL_TIMEOUT_MS, "nothing kept back for a second model");
+        assert.strictEqual(d.usage.fallback, undefined);
+        // An answer on the first try: one call, as before.
+        const once = modelStub(async () => ({ reply: PLAN }));
+        const ok = await planner.decide(plannerRun(), menuShot);
+        assert.deepStrictEqual({ s: ok.status, c: ok.usage.calls, m: ok.usage.model, n: once.length },
+          { s: "continue", c: 1, m: model, n: 1 });
+      });
+    }
+  });
+
+  await atest("the owner's step through the service: the first model times out, the fast one answers, the run goes on", async () => {
+    await withEnv({ AUTOMATION_MODEL: "gemini-3.5-flash", AUTOMATION_FAST_MODEL: undefined }, async () => {
+      await resetDaily();
+      const s = await svc.start(UID, { goal: "Order veg biryani on Swiggy", app: "swiggy", category: "food" });
+      const before = plannerOpts.length;
+      script = [timeoutErr(12000), { status: "continue", action: { type: "tap", id: 4 }, expect: "4.0+ restaurants" }];
+      const meta = {};
+      const out = await svc.step(UID, s.run.id, { screen: swiggyResults, seq: 0 }, meta);
+      assert.strictEqual(out.status, "continue", JSON.stringify(out));
+      assert.deepStrictEqual({ type: out.action.type, id: out.action.id }, { type: "tap", id: 4 });
+      assert.deepStrictEqual(plannerOpts.slice(before).map((o) => o.model), ["gemini-3.5-flash", "gemini-flash-lite-latest"]);
+      assert.deepStrictEqual({ model: meta.model, calls: meta.calls, after: meta.fallback },
+        { model: "gemini-flash-lite-latest", calls: 2, after: "gemini-3.5-flash:timeout" });
+      await svc.finish(UID, s.run.id, { reason: "stopped" }).catch(() => {});
+    });
+  });
+
+  /* ---- RETIRED DEFAULTS AND RETIRED MODELS ---- */
+  await atest("unset model settings fall on the -latest aliases; live, TTS and image models are untouched", async () => {
+    const envs = ["GEMINI_MODEL", "GEMINI_FALLBACK_MODEL", "AUTOMATION_MODEL", "AUTOMATION_FAST_MODEL"];
+    await withEnv(Object.fromEntries(envs.map((k) => [k, undefined])), async () => {
+      // gemini-2.5-flash answered the owner's key 404 "no longer available
+      // to new users" (2026-09-25): no default may name it again.
+      assert.deepStrictEqual([ai.chatModel(), ai.fallbackModel(), ai.automationModel(), ai.automationFastModel()],
+        ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-flash-latest", "gemini-flash-lite-latest"]);
+    });
+    const read = (f) => require("fs").readFileSync(require("path").join(__dirname, "..", f), "utf8");
+    for (const f of ["src/services/ai/router.js", "src/docs/analyze.js", "src/people/card.js", "src/routes/vision.js",
+      "src/services/docgen.js", "src/server.js"]) {
+      assert.ok(!/["']gemini-2\.5-flash["']/.test(read(f)), `${f} still defaults to gemini-2.5-flash`);
+    }
+    for (const f of ["src/docs/analyze.js", "src/people/card.js"]) {
+      assert.match(read(f), /envModel\("GEMINI_VISION_MODEL", "gemini-flash-latest"\)/, f);
+    }
+    assert.match(read("src/routes/vision.js"), /process\.env\.GEMINI_VISION_MODEL \|\| "gemini-flash-latest"/);
+    assert.match(read("src/services/docgen.js"), /envModel\("GEMINI_DOC_MODEL", "gemini-flash-latest"\)/);
+    // Different families, working today: left exactly as they were.
+    assert.match(read("src/services/ai/router.js"), /envModel\("GEMINI_TTS_MODEL", "gemini-2\.5-flash-preview-tts"\)/);
+    assert.match(read("src/live/proxy.js"), /envModel\("GEMINI_LIVE_MODEL", "gemini-2\.5-flash-native-audio-preview"\)/);
+    // The aliases think like the Gemini 3 models they point at.
+    assert.ok(ai.isGemini3("gemini-flash-latest") && ai.isGemini3("gemini-flash-lite-latest") && ai.isGemini3("gemini-3.5-flash"));
+    assert.ok(!ai.isGemini3("gemini-2.5-flash-lite") && !ai.isGemini3("gemini-flash-latest-tts"));
+  });
+
+  // Google's own words for a model this key's project cannot use (2026-09-25).
+  const gone = (m) => JSON.stringify({ error: { code: 404, status: "NOT_FOUND",
+    message: `This model models/${m} is no longer available to new users. Please update your code to use a newer model.` } });
+  // A streamGenerateContent body: one SSE event carrying the whole text.
+  const sseBody = (text) => {
+    let sent = false;
+    return { getReader: () => ({
+      read: async () => (sent ? { done: true } : (sent = true, { done: false, value: new TextEncoder().encode(
+        `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text }] } }] })}\n\n`) })),
+      releaseLock() {},
+    }) };
+  };
+
+  await atest("a retired model (404) is not a spent key: the turn moves to the fallback, no key is filed out of quota, one log line names the setting", async () => {
+    const keys = require("../src/services/ai/keys");
+    const realFetch = global.fetch;
+    const logs = [];
+    const [warn, error] = [console.warn, console.error];
+    const hits = [];
+    const seen = () => hits.map((h) => `${h.model}/${h.key.slice(-4)}`);
+    try {
+      await withEnv({ GEMINI_API_KEY: "test-key-aaaa-1111", GEMINI_FALLBACK_KEYS: "test-key-bbbb-2222",
+        GEMINI_MODEL: "gemini-retired-chat", GEMINI_FALLBACK_MODEL: "gemini-fallback-alive", GEMINI_STT_MODEL: undefined,
+        AUTOMATION_MODEL: "gemini-retired-planner", AUTOMATION_FAST_MODEL: undefined }, async () => {
+        console.warn = (...a) => logs.push(a.join(" "));
+        console.error = (...a) => logs.push(a.join(" "));
+        global.fetch = async (url, init) => {
+          const model = String(url).match(/models\/([^:]+):/)[1];
+          hits.push({ model, key: init.headers["x-goog-api-key"], body: JSON.parse(init.body) });
+          if (/retired/.test(model)) return { ok: false, status: 404, text: async () => gone(model) };
+          const text = /TASK:/.test(init.body) ? PLAN : "hello";
+          if (/:streamGenerateContent/.test(url)) return { ok: true, status: 200, body: sseBody(text) };
+          return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text }] } }] }) };
+        };
+        // Chat: both keys asked (a model can be missing on one key only,
+        // measured 2026-09-20), then the fallback model answers the turn.
+        const out = await realGenerateReply([{ role: "user", content: "hi" }], { system: "s" });
+        assert.strictEqual(out.reply, "hello");
+        assert.strictEqual(out.model, "gemini-fallback-alive");
+        assert.deepStrictEqual(seen(), ["gemini-retired-chat/1111", "gemini-retired-chat/2222", "gemini-fallback-alive/1111"]);
+        // Neither key was filed as out of quota. Both are set aside for that
+        // model only, quietly — they cannot answer it (review, 2026-09-25).
+        assert.ok(!logs.some((l) => /out of quota/.test(l)), logs.join("\n"));
+        assert.ok(!keys.status().spent.some((s) => /retired/.test(s.model)), JSON.stringify(keys.status().spent));
+        assert.strictEqual(keys.status().missing.filter((s) => s.model === "gemini-retired-chat").length, 2);
+        assert.ok(keys.missingEverywhere("gemini-retired-chat"));
+        assert.strictEqual(keys.usable("gemini-retired-chat").length, 2, "all set aside: the full list, never none");
+        assert.strictEqual(keys.usable("gemini-fallback-alive").length, 2, "the keys serve every other model");
+        // Said once, naming the setting to change. The next turn does not
+        // ask the retired model again: every key said 404 moments ago.
+        hits.length = 0;
+        await realGenerateReply([{ role: "user", content: "hi again" }], { system: "s" });
+        assert.deepStrictEqual(seen(), ["gemini-fallback-alive/1111"]);
+        assert.strictEqual(logs.filter((l) => /model gemini-retired-chat unavailable — set GEMINI_MODEL/.test(l)).length, 1,
+          logs.join("\n"));
+        // The chat's tool path moves to the fallback the same way.
+        hits.length = 0;
+        const tools = await ai.generateWithTools({ contents: [{ role: "user", parts: [{ text: "hi" }] }], system: "s" });
+        assert.strictEqual(tools.text, "hello");
+        assert.deepStrictEqual(seen(), ["gemini-fallback-alive/1111"]);
+        // So do the two streams and speech-to-text (whose model is the chat
+        // model here): straight to the fallback, nothing else said.
+        hits.length = 0;
+        const streamed = await ai.generateWithToolsStream({ contents: [{ role: "user", parts: [{ text: "hi" }] }], system: "s" });
+        let said = "";
+        for await (const d of ai.generateReplyStream([{ role: "user", content: "hi" }], { system: "s" })) said += d;
+        const heard = await ai.transcribeAudio(Buffer.from("clip"), "audio/mp4");
+        assert.deepStrictEqual([streamed.text, said, heard.text], ["hello", "hello", "hello"]);
+        assert.deepStrictEqual(seen(), ["gemini-fallback-alive/1111", "gemini-fallback-alive/1111", "gemini-fallback-alive/1111"]);
+        assert.strictEqual(logs.filter((l) => /unavailable/.test(l)).length, 1, logs.join("\n"));
+        // A stream meeting a retired model for the first time asks both
+        // keys, then the fallback — and says so once.
+        process.env.GEMINI_MODEL = "gemini-retired-stream";
+        hits.length = 0;
+        const first = await ai.generateWithToolsStream({ contents: [{ role: "user", parts: [{ text: "hi" }] }], system: "s" });
+        assert.strictEqual(first.text, "hello");
+        assert.deepStrictEqual(seen(), ["gemini-retired-stream/1111", "gemini-retired-stream/2222", "gemini-fallback-alive/1111"]);
+        assert.strictEqual(logs.filter((l) => /model gemini-retired-stream unavailable — set GEMINI_MODEL/.test(l)).length, 1,
+          logs.join("\n"));
+        process.env.GEMINI_MODEL = "gemini-retired-chat";
+        // A caller with its own budget (noRetry) gets the 404 back at once — no second model.
+        hits.length = 0;
+        await assert.rejects(realGenerateReply([{ role: "user", content: "x" }], { system: "s", noRetry: true }),
+          (e) => e.status === 404);
+        assert.ok(hits.every((h) => h.model !== "gemini-fallback-alive"), JSON.stringify(hits.map((h) => h.model)));
+        // The planner on a retired AUTOMATION_MODEL: the fast model answers
+        // the step, and the log says which setting to change.
+        ai.generateReply = realGenerateReply;
+        hits.length = 0;
+        const d = await planner.decide(plannerRun(), menuShot, { deadline: Date.now() + svc.STEP_BUDGET_MS });
+        assert.strictEqual(d.status, "continue", JSON.stringify(d));
+        assert.deepStrictEqual({ m: d.usage.model, c: d.usage.calls, f: d.usage.fallback },
+          { m: "gemini-flash-lite-latest", c: 2, f: "gemini-retired-planner:404" });
+        assert.ok(logs.some((l) => /model gemini-retired-planner unavailable — set AUTOMATION_MODEL/.test(l)), logs.join("\n"));
+        // The alias is sent a thinking level like any Gemini 3 model (a
+        // recovery step: LOW) and the picture's resolution.
+        const fastCall = hits.find((h) => h.model === "gemini-flash-lite-latest");
+        assert.deepStrictEqual(fastCall.body.generationConfig.thinkingConfig, { thinkingLevel: "LOW" });
+        assert.strictEqual(fastCall.body.generationConfig.mediaResolution, "MEDIA_RESOLUTION_MEDIUM");
+      });
+    } finally {
+      global.fetch = realFetch;
+      [console.warn, console.error] = [warn, error];
+    }
+  });
+
+  // REVIEW, 2026-09-25: with key 1 lacking the model and key 2 serving it,
+  // every streamed chat and voice turn was answered by the fallback model
+  // on key 1, every transcription failed with a 404, and the log said "set
+  // GEMINI_MODEL" — the three paths take a key by hand and never rotated.
+  await atest("a model ONE key lacks: the streams and speech ask the next key, the configured model answers there, nothing is logged", async () => {
+    const keys = require("../src/services/ai/keys");
+    const realFetch = global.fetch;
+    const logs = [];
+    const [warn, error] = [console.warn, console.error];
+    const hits = [];
+    const seen = () => hits.map((h) => `${h.model}/${h.key.slice(-4)}`);
+    const K1 = "test-key-cccc-1111";
+    const K2 = "test-key-dddd-2222";
+    try {
+      await withEnv({ GEMINI_API_KEY: K1, GEMINI_FALLBACK_KEYS: K2, GEMINI_MODEL: undefined,
+        GEMINI_FALLBACK_MODEL: "gemini-fallback-alive", GEMINI_STT_MODEL: undefined }, async () => {
+        console.warn = (...a) => logs.push(a.join(" "));
+        console.error = (...a) => logs.push(a.join(" "));
+        // Key 1's project cannot reach the "-half" models; key 2's can
+        // (his keys differ in the models they reach, measured 2026-09-20).
+        global.fetch = async (url, init) => {
+          const model = String(url).match(/models\/([^:]+):/)[1];
+          const key = init.headers["x-goog-api-key"];
+          hits.push({ model, key });
+          if (/-half$/.test(model) && key === K1) return { ok: false, status: 404, text: async () => gone(model) };
+          const text = /Transcribe this audio/.test(init.body) ? '{"text":"hello there","language":"en"}' : `hello from ${model}`;
+          if (/:streamGenerateContent/.test(url)) return { ok: true, status: 200, body: sseBody(text) };
+          return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text }] } }] }) };
+        };
+        const paths = {
+          "tools stream": async () =>
+            (await ai.generateWithToolsStream({ contents: [{ role: "user", parts: [{ text: "hi" }] }], system: "s" })).text,
+          "reply stream": async () => {
+            let t = "";
+            for await (const d of ai.generateReplyStream([{ role: "user", content: "hi" }], { system: "s" })) t += d;
+            return t;
+          },
+          // GEMINI_STT_MODEL unset: speech runs on the chat model.
+          "speech": async () => (await ai.transcribeAudio(Buffer.from("clip"), "audio/mp4")).text,
+        };
+        let n = 0;
+        for (const [name, run] of Object.entries(paths)) {
+          // A model of its own per path, so none leans on another's set-aside key.
+          const model = `gemini-two-key-${++n}-half`;
+          process.env.GEMINI_MODEL = model;
+          hits.length = 0;
+          assert.strictEqual(await run(), name === "speech" ? "hello there" : `hello from ${model}`, name);
+          assert.deepStrictEqual(seen(), [`${model}/1111`, `${model}/2222`], name);
+          // Key 1 is set aside for that model, quietly: the next turn starts on key 2.
+          hits.length = 0;
+          assert.strictEqual(await run(), name === "speech" ? "hello there" : `hello from ${model}`, `${name}, again`);
+          assert.deepStrictEqual(seen(), [`${model}/2222`], `${name}, again`);
+          assert.deepStrictEqual(keys.status().missing.filter((m) => m.model === model), [{ key: keys.fingerprint(K1), model }], name);
+          assert.ok(!keys.status().spent.some((m) => m.model === model), name);
+          assert.ok(!keys.missingEverywhere(model), name);
+          // Key 1 still serves every other model.
+          assert.deepStrictEqual(keys.usable("gemini-fallback-alive"), [K1, K2], name);
+        }
+        // Nothing said: not "out of quota", and not "set GEMINI_MODEL" —
+        // the setting is right, key 2 serves it.
+        assert.ok(!logs.some((l) => /out of quota|unavailable|returned 404|retrying as/.test(l)), logs.join("\n"));
+        // The paths that rotate by themselves skip key 1 too: no extra round trip.
+        hits.length = 0;
+        const out = await realGenerateReply([{ role: "user", content: "hi" }], { system: "s" });
+        const tools = await ai.generateWithTools({ contents: [{ role: "user", parts: [{ text: "hi" }] }], system: "s" });
+        assert.deepStrictEqual([out.reply, tools.text], ["hello from gemini-two-key-3-half", "hello from gemini-two-key-3-half"]);
+        assert.deepStrictEqual(seen(), ["gemini-two-key-3-half/2222", "gemini-two-key-3-half/2222"]);
+        // A speech model of its own that only key 2 reaches is not written
+        // off as dead on key 1's 404: key 2 transcribes with it.
+        process.env.GEMINI_MODEL = "gemini-two-key-chat";
+        process.env.GEMINI_STT_MODEL = "gemini-two-key-stt-half";
+        hits.length = 0;
+        assert.strictEqual((await ai.transcribeAudio(Buffer.from("clip"), "audio/mp4")).text, "hello there");
+        assert.deepStrictEqual(seen(), ["gemini-two-key-stt-half/1111", "gemini-two-key-stt-half/2222"]);
+        hits.length = 0;
+        await ai.transcribeAudio(Buffer.from("clip"), "audio/mp4");
+        assert.deepStrictEqual(seen(), ["gemini-two-key-stt-half/2222"], "still the speech model, on key 2");
+        assert.ok(!logs.some((l) => /unavailable|returned 404/.test(l)), logs.join("\n"));
+        // An EMPTY 404 is a missing model too (Google sends one at times).
+        assert.ok(keys.isModelMissingForKey(404, "") && keys.isModelMissingForKey(404, gone("x")));
+        assert.ok(!keys.isModelMissingForKey(404, "<html>proxy error</html>") && !keys.isModelMissingForKey(429, ""));
+      });
+    } finally {
+      global.fetch = realFetch;
+      [console.warn, console.error] = [warn, error];
+    }
+  });
+
   console.log("\nphase A · 5: every step logs its times and counts, never the screen");
 
   await atest("the step log line carries seq, llm_ms and in_tok — and none of the screen's words", async () => {
@@ -1945,7 +2324,10 @@ const swiggyCart = { pkg: SW, nodes: [
     const envKeys = ["GEMINI_API_KEY", "GEMINI_MODEL", "AUTOMATION_MODEL", "AUTOMATION_THINKING"];
     const saved = Object.fromEntries(envKeys.map((k) => [k, process.env[k]]));
     process.env.GEMINI_API_KEY = saved.GEMINI_API_KEY || "test-key";
-    process.env.GEMINI_MODEL = "gemini-2.5-flash";
+    // 2.5 Flash-Lite, not 2.5 Flash: the owner's key gets 404 "no longer
+    // available to new users" for 2.5 Flash (2026-09-25). Flash-Lite is the
+    // 2.5 model it still reaches, and it takes the same thinking budget.
+    process.env.GEMINI_MODEL = "gemini-2.5-flash-lite";
     process.env.AUTOMATION_MODEL = "gemini-3.5-flash";
     delete process.env.AUTOMATION_THINKING;
     const calls = [];
@@ -2003,8 +2385,8 @@ const swiggyCart = { pkg: SW, nodes: [
       assert.strictEqual(planner.thinkingFor(run({ ok: true, changed: true })), "LOW");
       assert.strictEqual(planner.thinkingFor(run({ ok: true, changed: false })), "MEDIUM");
       delete process.env.AUTOMATION_THINKING;
-      // 2.5 Flash takes a budget: none on a routine step, some on a recovery step.
-      process.env.AUTOMATION_MODEL = "gemini-2.5-flash";
+      // 2.5 Flash(-Lite) takes a budget: none on a routine step, some on a recovery step.
+      process.env.AUTOMATION_MODEL = "gemini-2.5-flash-lite";
       await planner.decide(run({ ok: true, changed: true }), big);
       await planner.decide(run({ ok: true, changed: false }), big);
       assert.deepStrictEqual(calls[3].body.generationConfig.thinkingConfig, { thinkingBudget: 0 });
@@ -2012,7 +2394,7 @@ const swiggyCart = { pkg: SW, nodes: [
       // Unset, the planner uses the chat model, as before.
       delete process.env.AUTOMATION_MODEL;
       await planner.decide(run(null), big);
-      assert.match(calls[5].url, /\/models\/gemini-2\.5-flash:generateContent$/);
+      assert.match(calls[5].url, /\/models\/gemini-2\.5-flash-lite:generateContent$/);
       // Chat callers are untouched: no schema, no picture setting, no JSON mode.
       await realGenerateReply([{ role: "user", content: "hi" }], { system: "s" });
       const chat = calls[6].body.generationConfig;
@@ -2552,8 +2934,15 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.strictEqual(recipes.next(igRun({ goal: "open instagram and like yash's latest post" }), igHome), null);
     assert.strictEqual(recipes.next(igRun({ app_name: "youtube", app_label: "YouTube", app_pkg: "" }), igHome), null);
     assert.strictEqual(recipes.next(igRun(), { pkg: "com.sec.android.app.launcher", nodes: [N(1, { text: "Instagram" })] }), null);
-    // Typed already and no row matched: the planner looks further.
-    assert.strictEqual(recipes.next(igRun(), ig([N(1, { cls: "EditText", edit: 1, text: "thenameisyash" })])), null);
+    // Typed already and no row matched. This used to step aside at once;
+    // since 2026-09-25 a box that already holds the name is TAPPED first —
+    // Explore's bar shows the last search and only opens the search screen
+    // when tapped — and when that tap changes nothing either, the recipe
+    // would only tap again, so the planner looks further.
+    const shown = ig([N(1, { cls: "EditText", edit: 1, text: "thenameisyash" })]);
+    assert.deepStrictEqual(recipes.next(igRun(), shown).action, { type: "tap", id: 1 });
+    const tappedBox = { action: { type: "tap", id: 1 }, expect: "x", recipe: "instagram.follow", result: { ok: true, changed: false } };
+    assert.strictEqual(recipes.next(igRun({ steps: [tappedBox] }), shown), null);
   });
 
   await atest("recipe: a step that did not move the screen hands over to the planner; two such steps end the recipe", () => {
@@ -2567,6 +2956,77 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.strictEqual(recipes.next(igRun({ steps: [tapped(false), planned, tapped(false), planned] }), igTyped), null);
     // A refused step never counts as the recipe's.
     assert.ok(recipes.next(igRun({ steps: [{ ...tapped(false), vetoed: "payment" }] }), igTyped));
+  });
+
+  // EXPLORE'S BAR, as the owner's phone read it on 2026-09-25: a text field
+  // showing the last search ("thenameisyash") as its hint over the Explore
+  // grid. Typing into it changed nothing (settle=quiet) — it is a button
+  // that opens the real search screen.
+  const igExploreBar = ig([N(1, { cls: "EditText", edit: 1, click: 1, hint: "thenameisyash", text: "" }),
+    N(2, { desc: "Reel by rocking_star_fans", click: 1 }), N(3, { desc: "Search and explore", click: 1, sel: 1 })]);
+  const stall = (action, recipe = "instagram.follow") =>
+    ({ action, expect: "x", recipe, result: { ok: true, changed: false } });
+
+  await atest("recipe: Explore's bar — typed, nothing happened, so it is tapped; the same step twice, or two stalls, hand over", () => {
+    // First look: type, as before — the real search box may show the last
+    // search as its hint too, and there typing is what works.
+    const typed = recipes.next(igRun(), igExploreBar);
+    assert.deepStrictEqual(typed.action, { type: "type", id: 1, text: "thenameisyash", submit: true });
+    // That type changed nothing: the recipe sees its own step (the run is
+    // passed to it) and taps the bar instead of stepping aside.
+    const typedStep = stall({ ...typed.action, submit: false, what: "thenameisyash" });
+    const tapped = recipes.next(igRun({ steps: [typedStep] }), igExploreBar);
+    assert.deepStrictEqual({ action: tapped.action, expect: tapped.expect, recipe: tapped.recipe },
+      { action: { type: "tap", id: 1 }, expect: "the search screen with suggestions", recipe: "instagram.follow" });
+    // The tap opened the search screen: the real box is typed into.
+    const opened = { action: { type: "tap", id: 1 }, expect: "x", recipe: "instagram.follow", result: { ok: true, changed: true } };
+    assert.deepStrictEqual(recipes.next(igRun({ steps: [typedStep, opened] }), igSearch).action,
+      { type: "type", id: 1, text: "thenameisyash", submit: true });
+    // The SAME action again right after it stalled: the planner looks instead.
+    assert.strictEqual(recipes.next(igRun({ steps: [stall({ type: "tap", id: 3 })] }), igTyped), null, "same tap again");
+    // Another element is another action: the recipe goes on.
+    assert.ok(recipes.next(igRun({ steps: [stall({ type: "tap", id: 4 })] }), igTyped), "a different row");
+    // Two stalls: off for the rest of the run, even on screens it knows.
+    const two = igRun({ steps: [typedStep, stall({ type: "tap", id: 1 })] });
+    for (const s of [igExploreBar, igSearch, igTyped, igProfile(followBtn)]) assert.strictEqual(recipes.next(two, s), null);
+    // A refused step is not the recipe's last step.
+    assert.deepStrictEqual(recipes.next(igRun({ steps: [typedStep, { ...stall({ type: "tap", id: 2 }), vetoed: "other" }] }),
+      igExploreBar).action, { type: "tap", id: 1 });
+  });
+
+  await atest("recipe through the service: Explore's bar is typed into, then tapped, then the real box — no model call", async () => {
+    const people = require("../src/automation/people");
+    const resolve = people.resolveAccount;
+    const decide = planner.decide;
+    let calls = 0;
+    people.resolveAccount = async () => ({ app: "instagram", label: "Instagram", name: "Yash",
+      handle: "thenameisyash", url: "https://www.instagram.com/thenameisyash/", openUrl: "",
+      confident: true, alternatives: [] });
+    planner.decide = async () => { calls++; return { status: "continue", action: { type: "back" }, expect: "back", usage: {} }; };
+    try {
+      await resetDaily();
+      const s = await svc.start(UID, { goal: "Open Instagram and follow Yash", app: "instagram" });
+      assert.ok(s.ok, JSON.stringify(s));
+      const moved = { ok: true, changed: true };
+      const quiet = { ok: true, changed: false };
+      const look = (screen, seq, last) => svc.step(UID, s.run.id, { screen, seq, ...(last ? { last } : {}) });
+      // (The service adds "what", the element's label, for the phone's own check.)
+      const act = async (...a) => { const { what: _what, ...rest } = (await look(...a)).action; return rest; };
+      assert.deepStrictEqual(await act(igHome, 0), { type: "tap", id: 2 });
+      assert.deepStrictEqual(await act(igExploreBar, 1, moved), { type: "type", id: 1, text: "thenameisyash", submit: false });
+      // settle=quiet on the phone: the bar is tapped, still no model call.
+      const tap = await look(igExploreBar, 2, quiet);
+      assert.deepStrictEqual({ type: tap.action.type, id: tap.action.id, expect: tap.expect },
+        { type: "tap", id: 1, expect: "the search screen with suggestions" });
+      assert.deepStrictEqual(await act(igSearch, 3, moved), { type: "type", id: 1, text: "thenameisyash", submit: false });
+      assert.deepStrictEqual(await act(igTyped, 4, moved), { type: "tap", id: 3 });
+      assert.strictEqual(calls, 0, "the recipe found its own way past Explore's bar");
+      const r = await svc.get(UID, s.run.id);
+      assert.strictEqual(r.steps.filter((st) => st.recipe === "instagram.follow").length, 5);
+    } finally {
+      people.resolveAccount = resolve;
+      planner.decide = decide;
+    }
   });
 
   await atest("recipe through the service: a whole follow run with ZERO model calls, then the planner only on a stall", async () => {

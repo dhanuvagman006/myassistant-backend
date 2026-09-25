@@ -6,7 +6,9 @@
 // Sanitized: a stray inline comment in .env must not become the model name.
 const { envModel } = require("../services/ai/router");
 const { extractText } = require("./extract");
-const MODEL = () => envModel("GEMINI_VISION_MODEL", "gemini-2.5-flash");
+// Unset, the alias Google keeps current: gemini-2.5-flash, the old
+// default, answers new users 404 (2026-09-25).
+const MODEL = () => envModel("GEMINI_VISION_MODEL", "gemini-flash-latest");
 
 // What the multimodal call can read as BYTES. Everything else (Word,
 // Excel, PowerPoint, CSV, plain text) is turned into text first — see
