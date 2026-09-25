@@ -226,6 +226,31 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
     }
   });
 
+  // 2026-09-25: a reminder call to the client opened "Hello, hariraj?".
+  await atest("a call to the owner themself says Sir or Ma'am, and never carries the name", async () => {
+    const { _addressFor } = require("../src/agents/agentCall");
+    const stamp = Date.now();
+    const him = await db.createUser({ email: `self-m-${stamp}@example.test`, name: "Hariraj Shetty", gender: "male" });
+    const her = await db.createUser({ email: `self-f-${stamp}@example.test`, name: "Asha Rao", gender: "female" });
+    try {
+      const m = await _addressFor({ selfCall: true, userId: him.id, contactName: "Hariraj", userName: "Hariraj" });
+      assert.deepStrictEqual(m, { honorific: "Sir", contact_name: "Sir", user_name: "Sir" });
+      const f = await _addressFor({ selfCall: true, userId: her.id, contactName: "Asha", userName: "Asha" });
+      assert.deepStrictEqual(f, { honorific: "Ma'am", contact_name: "Ma'am", user_name: "Ma'am" });
+      // No profile to read: still a title, never an empty "Hello, ?".
+      const none = await _addressFor({ selfCall: true, contactName: "Hariraj" });
+      assert.strictEqual(none.honorific, "Sir");
+      assert.doesNotMatch(JSON.stringify([m, f, none]), /Hariraj|Asha/);
+      // A call to someone else still says whose assistant is calling.
+      const other = await _addressFor({ selfCall: false, contactName: "Dr Ravi Kumar", userName: "Hariraj" });
+      assert.strictEqual(other.contact_name, "Ravi");
+      assert.strictEqual(other.user_name, "Hariraj");
+      assert.ok(["sir", "ma'am"].includes(other.honorific));
+    } finally {
+      await db.run(`DELETE FROM users WHERE id = ANY($1)`, [[him.id, her.id]]);
+    }
+  });
+
   server.close();
   await db.run(`DELETE FROM developer_feedback WHERE user_id=$1`, [UID]);
   console.log(`\n${passed} passed${process.exitCode ? ", some FAILED" : ""}`);

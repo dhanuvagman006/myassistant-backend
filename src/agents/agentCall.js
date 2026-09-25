@@ -187,6 +187,45 @@ async function honorificFor(name) {
   return "sir";
 }
 
+/**
+ * WHO SHE IS TALKING TO, AND HOW SHE SAYS IT.
+ *
+ * A call to the OWNER THEMSELF (a reminder or wake-up call) used to put
+ * their first name in every slot — the welcome line opened "Hello,
+ * hariraj?" — on the idea that their own assistant using their name was
+ * warm. The owner, 2026-09-24: "never ever respond by calling users name,
+ * always mention sir or ma'am — know their name but don't use it unless
+ * it's necessary"; and 2026-09-25, from that very call's transcript:
+ * "only for this user calling by name". A self-call never needs the name
+ * (she is not checking she has the right person — she rang their own
+ * number for them), so it is not sent at all: the welcome line, the
+ * contact and the "user" the prompt talks about are all "Sir" or "Ma'am"
+ * from the profile (owner.honorific), and the prompt already in the
+ * dashboard cannot say a name it was never given.
+ *
+ * A call to someone else keeps its rules: "sir"/"ma'am" from the
+ * contact's name, first name only for checking, and the owner's name so
+ * she can say whose assistant is calling.
+ */
+async function addressFor(rec) {
+  if (rec.selfCall) {
+    let title = "Sir";
+    try {
+      const me = rec.userId ? await require("../db").findById(rec.userId) : null;
+      title = require("./owner").honorific(me || {});
+    } catch (_) {
+      // The profile being unreadable must never stop the reminder going out.
+    }
+    return { honorific: title, contact_name: title, user_name: title };
+  }
+  return {
+    honorific: await honorificFor(rec.contactName),
+    // First name only — see spokenName().
+    contact_name: spokenName(rec.contactName),
+    user_name: rec.userName || "the caller",
+  };
+}
+
 async function bolnaPlaceCall({ to, rec }) {
   const c = cfg();
   // ONE AGENT FOR EVERYBODY. Each user used to be able to build their own
@@ -207,9 +246,7 @@ async function bolnaPlaceCall({ to, rec }) {
   // table, makes a model call with a 30-second ceiling of its own. A
   // slow lookup burned the whole budget and fetch was handed an
   // already-aborted signal, so the call never left the building.
-  const honorific = rec.selfCall
-    ? spokenName(rec.contactName)
-    : await honorificFor(rec.contactName);
+  const who = await addressFor(rec);
   const r = await fetch("https://api.bolna.ai/call", {
     method: "POST",
     headers: {
@@ -223,17 +260,16 @@ async function bolnaPlaceCall({ to, rec }) {
       from_phone_number: c.bolnaFrom,
       user_data: {
         task: rec.task || "",
-        // First name only — see spokenName().
-        contact_name: spokenName(rec.contactName),
-        user_name: rec.userName || "the caller",
+        // See addressFor(): never the owner's own name on a self-call.
+        contact_name: who.contact_name,
+        user_name: who.user_name,
         mode: rec.selfCall ? "self" : rec.mode || "inform",
-        // How she addresses them, and what the welcome line says. A
-        // self-call is the user's own assistant talking to them, so
-        // their own name is warm rather than presumptuous — and an
-        // EMPTY honorific here would have opened every wake-up call
-        // with a literal "Hello, ?", because the welcome message is
-        // built from this same variable. Resolved above the fetch.
-        honorific,
+        // How she addresses them, and what the welcome line says
+        // ("Hello, {{honorific}}?"). Never empty — an empty one opened
+        // every wake-up call with a literal "Hello, ?" — and on a
+        // self-call "Sir"/"Ma'am", never the name (addressFor).
+        // Resolved above the fetch.
+        honorific: who.honorific,
         // THE PROMPT SAYS "HOW YOU SOUND: {{tone}}" AND NOTHING WAS
         // FILLING IT IN. The tool collected a tone, the route passed it,
         // start() dropped it on the floor and the agent was left reading
@@ -827,6 +863,8 @@ module.exports = {
   // For tests: the failure bookkeeping, and a way to clear it.
   _trouble: trouble,
   redactNumbers,
+  // For tests: how a call addresses the person it rings.
+  _addressFor: addressFor,
   _resetTrouble() {
     Object.assign(trouble, { callerRejectedAt: 0, alertedAt: 0, windowStart: 0, count: 0 });
   },
