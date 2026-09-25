@@ -1,7 +1,8 @@
 /**
  * AI PROVIDER ROUTER — GEMINI ONLY
  * --------------------------------
- * Single provider: Google Gemini (gemini-2.5-flash by default).
+ * Single provider: Google Gemini (gemini-flash-latest by default — the
+ * alias Google keeps pointed at its current Flash; set GEMINI_MODEL).
  * Handles chat (generateReply), voice streaming (generateReplyStream via
  * streamGenerateContent SSE) and audio transcription (transcribeAudio).
  *
@@ -59,12 +60,15 @@ const SYSTEM_PROMPT =
 
 const TIMEOUT_MS = 30_000;
 
-// Default chat model. NOTE: the gemini-2.5-* family has a published shutdown
-// date of 2026-10-16 — set GEMINI_MODEL to a current model (e.g.
-// gemini-3.5-flash) well before then.
 const keys = require("./keys");
 
-const DEFAULT_MODEL = "gemini-2.5-flash";
+// Default chat model, used only when GEMINI_MODEL is unset. It was
+// gemini-2.5-flash — and on 2026-09-25 that name answered the owner's key
+// with 404 "no longer available to new users" (the 2.5 family's shutdown
+// date is 2026-10-16). A dated name in the code goes stale; the -latest
+// aliases are the names Google keeps pointed at its current models, so an
+// unset variable never lands on a retired one again.
+const DEFAULT_MODEL = "gemini-flash-latest";
 
 // ---------------- GEMINI 3 TUNING (latency) ----------------
 // Gemini 3 models THINK BY DEFAULT at thinking_level "high". For a
@@ -90,7 +94,15 @@ const THINKING_LEVEL = String(process.env.GEMINI_THINKING_LEVEL || "low")
 /// nonsense model name and a bare 404 on every request — which looks to the
 /// user like "the app can't hear me" rather than a typo. Strip comments and
 /// whitespace, and reject anything that isn't a plausible model id.
-const isGemini3 = (model) => /^gemini-3/i.test(String(model || ""));
+// The -latest aliases (the defaults now) count as the current family: they
+// point at Google's newest Flash / Flash-Lite / Pro, which is Gemini 3 today
+// — 2.5 Flash is closed to new users (2026-09-25). Without this, an alias
+// was sent no thinking setting at all and thought at the model's own
+// default (high on Gemini 3 Flash: the biggest delay there is). If an alias
+// ever refuses a level, the refusal is dropped and the call asked again
+// (refusedOption below), as for any other model.
+const isGemini3 = (model) => /^gemini-3/i.test(String(model || "")) ||
+  /^gemini-(?:flash|flash-lite|pro)-latest$/i.test(String(model || ""));
 // 2.5 Flash / Flash-Lite accept thinkingBudget: 0. 2.5 Pro does not, and the
 // TTS models take no thinkingConfig at all — so match narrowly.
 const isGemini25Flash = (model) =>
@@ -118,6 +130,15 @@ const chatModel = () => envModel("GEMINI_MODEL", DEFAULT_MODEL);
 // family halfway through (audit, 2026-09-24). AUTOMATION_MODEL lets the
 // hands run on a model of their own; unset, nothing changes.
 const automationModel = () => envModel("AUTOMATION_MODEL", chatModel());
+
+// THE PLANNER'S SECOND CHANCE: a model that answers fast. Measured
+// 2026-09-25 with the owner's key, one planner call on an Instagram Explore
+// screen with its ~260 KB screenshot: gemini-3.5-flash ran out the 12 s
+// and the run failed ("I couldn't reach my planner just now"), while
+// gemini-3.5-flash-lite answered in 2.9 s, gemini-3.1-flash-lite in 3.2 s
+// and gemini-flash-lite-latest in 3.7 s. When AUTOMATION_MODEL is slow,
+// failing or retired, the step is asked again on this one (planner.js).
+const automationFastModel = () => envModel("AUTOMATION_FAST_MODEL", "gemini-flash-lite-latest");
 
 // Per-call thinking (the phone planner: MINIMAL on a routine step, one
 // level higher right after a step failed, changed nothing or was
@@ -162,8 +183,39 @@ function refusedOption(status, body, cfg, model, opts) {
 // wildly by model (gemini-3.5-flash: 20/day, measured 2026-08-29 — one
 // conversation exhausts it). When the primary chat model 429s, each entry
 // point retries ONCE on this model instead of failing the user's turn.
-// Keep it a model with a generous free allowance.
-const fallbackModel = () => envModel("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash");
+// Keep it a model with a generous free allowance. The default was
+// gemini-2.5-flash, which the owner's key can no longer reach (404, "no
+// longer available to new users", 2026-09-25) — so a spent chat model fell
+// back onto a retired one. Flash-Lite is the family with the most
+// allowance, and the alias keeps it current.
+const fallbackModel = () => envModel("GEMINI_FALLBACK_MODEL", "gemini-flash-lite-latest");
+
+/**
+ * A RETIRED MODEL IS NOT A SPENT KEY. Google answers a model it no longer
+ * serves with 404 ("models/gemini-2.5-flash is no longer available to new
+ * users", 2026-09-25). The key pool used to file that as "out of quota",
+ * set the key aside for that model for 15 minutes, and the call failed —
+ * no fallback, because only a 429 switched models. Now the key is left
+ * alone (keys.js), the caller's turn goes to the fallback model (unless
+ * it owns its own budget: noRetry), and the log says once which setting
+ * names the dead model, so somebody can change it.
+ */
+const UNAVAILABLE = new Set();
+const MODEL_ENVS = ["GEMINI_MODEL", "AUTOMATION_MODEL", "AUTOMATION_FAST_MODEL", "GEMINI_FALLBACK_MODEL",
+  "GEMINI_STT_MODEL", "GEMINI_VISION_MODEL", "GEMINI_DOC_MODEL", "GEMINI_SEARCH_MODEL"];
+
+/** A 404 from a model endpoint: that model name is unusable for this key. */
+const isModelGone = (e) => e?.status === 404;
+
+/** Logs once per model which variable to change. `env` names its default. */
+function modelUnavailable(model, env = "GEMINI_MODEL") {
+  if (!model || UNAVAILABLE.has(model)) return;
+  UNAVAILABLE.add(model);
+  const named = MODEL_ENVS.filter((n) =>
+    String(process.env[n] || "").split("#")[0].trim().replace(/^["']|["']$/g, "").trim() === model);
+  console.error(`gemini: model ${model} unavailable — set ${named.length ? named.join(" / ") : env} ` +
+    `(Google answered 404: retired, or not enabled for this key).`);
+}
 
 /// generationConfig additions that control per-model-family behaviour.
 ///
@@ -346,6 +398,13 @@ async function callGeminiMeta(messages, system = SYSTEM_PROMPT, opts = {}) {
         timeoutMs: deadline ? left : 0,
       });
     }
+    // A retired model: said once, and this turn answered on the fallback.
+    if (isModelGone(e)) {
+      modelUnavailable(model, _model ? "GEMINI_FALLBACK_MODEL" : opts.modelEnv || "GEMINI_MODEL");
+      if (!_model && !opts.noRetry && fallbackModel() !== model) {
+        return callGeminiMeta(messages, system, { ...opts, _model: fallbackModel() });
+      }
+    }
     if (e?.status === 429 && !_model && !opts.noRetry && fallbackModel() !== model) {
       console.warn(`gemini: every key is spent on ${model} — retrying on ${fallbackModel()}`);
       return callGeminiMeta(messages, system, { ...opts, _model: fallbackModel() });
@@ -370,6 +429,8 @@ function requireKey(model = null) {
  * @param {boolean} [opts.noRetry] no transient retry, no fallback model.
  * @param {boolean} [opts.json] ask for a JSON reply.
  * @param {string} [opts.model] this model instead of GEMINI_MODEL.
+ * @param {string} [opts.modelEnv] the variable that names opts.model, for
+ *        the one log line if Google says the model is gone.
  * @param {string} [opts.thinking] MINIMAL | LOW | MEDIUM | HIGH, this call.
  * @param {Object} [opts.schema] responseSchema (with json).
  * @param {string} [opts.mediaResolution] for the attached pictures.
@@ -383,6 +444,7 @@ async function generateReply(messages, opts = {}) {
     timeoutMs: opts.timeoutMs, noRetry: !!opts.noRetry, json: !!opts.json,
     model: opts.model || null, thinking: opts.thinking || null,
     schema: opts.schema || null, mediaResolution: opts.mediaResolution || null,
+    ...(opts.modelEnv ? { modelEnv: String(opts.modelEnv) } : {}),
   };
   const answer = (m) => ({ reply: m.text, provider: "gemini", usage: m.usage, model: m.model, ms: m.ms });
   const run = () => callGeminiMeta(messages, system, call);
@@ -459,8 +521,9 @@ async function* generateReplyStream(messages, opts = {}) {
       yield* generateReplyStream(messages, opts);
       return;
     }
-    if (r.status === 429 && !opts._model && fallbackModel() !== model) {
-      console.warn(`gemini stream: ${model} out of quota — retrying on ${fallbackModel()}`);
+    if (r.status === 404) modelUnavailable(model, opts._model ? "GEMINI_FALLBACK_MODEL" : "GEMINI_MODEL");
+    if ((r.status === 429 || r.status === 404) && !opts._model && fallbackModel() !== model) {
+      if (r.status === 429) console.warn(`gemini stream: ${model} out of quota — retrying on ${fallbackModel()}`);
       yield* generateReplyStream(messages, { ...opts, _model: fallbackModel() });
       return;
     }
@@ -498,8 +561,8 @@ async function* generateReplyStream(messages, opts = {}) {
 }
 
 /**
- * AUDIO TRANSCRIPTION via Gemini (audio is a first-class input to
- * gemini-2.5-flash). Replaces the old Groq Whisper dependency so the
+ * AUDIO TRANSCRIPTION via Gemini (audio is a first-class input to the
+ * Gemini chat models). Replaces the old Groq Whisper dependency so the
  * whole voice loop runs on a single provider/key.
  * @param {Buffer} buffer  raw audio bytes (m4a/aac from the app)
  * @param {string} mimeType e.g. "audio/mp4"
@@ -884,6 +947,14 @@ async function generateWithTools({ contents, system, declarations = [], _model =
       throw lastErr;
     });
   } catch (e) {
+    // A retired model (404): the tool turn — the one chat waits on — is
+    // answered on the fallback, and the log says once what to change.
+    if (isModelGone(e)) {
+      modelUnavailable(model, _model ? "GEMINI_FALLBACK_MODEL" : "GEMINI_MODEL");
+      if (!_model && fallbackModel() !== model) {
+        return generateWithTools({ contents, system, declarations, timeoutMs, _model: fallbackModel() });
+      }
+    }
     // Every key spent on this model — the other family usually still has
     // allowance, and a tool turn is what the user is waiting on.
     if (e?.status === 429 && !_model && fallbackModel() !== model) {
@@ -962,8 +1033,9 @@ async function generateWithToolsStream(
       return generateWithToolsStream({ contents, system, declarations, onDelta, _model, timeoutMs }, true);
     }
     if (keys.isQuotaError(r.status, errBody)) keys.markSpent(key, model);
-    if (r.status === 429 && !_model && fallbackModel() !== model) {
-      console.warn(`gemini tools stream: ${model} out of quota — retrying on ${fallbackModel()}`);
+    if (r.status === 404) modelUnavailable(model, _model ? "GEMINI_FALLBACK_MODEL" : "GEMINI_MODEL");
+    if ((r.status === 429 || r.status === 404) && !_model && fallbackModel() !== model) {
+      if (r.status === 429) console.warn(`gemini tools stream: ${model} out of quota — retrying on ${fallbackModel()}`);
       // timeoutMs rides along: a background turn's longer deadline was
       // dropped here, so a retried scheduled task fell back to the 30 s one.
       return generateWithToolsStream(
@@ -1028,7 +1100,11 @@ module.exports = {
   generateWithTools,
   generateWithToolsStream,
   envModel,
+  isGemini3,
+  chatModel,
+  fallbackModel,
   automationModel,
+  automationFastModel,
   generateReply,
   generateReplyStream,
   transcribeAudio,

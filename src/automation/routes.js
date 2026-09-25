@@ -104,7 +104,8 @@ router.post("/:id(\\d+)/step", async (req, res) => {
     // the whole step (ms). Phase B (2026-09-24) adds how the call was made
     // — thinking level, picture resolution, model — and what the phone
     // uploaded (KB on the wire; gz when it came compressed), so every
-    // speed change is measured on this same line.
+    // speed change is measured on this same line. after=<model>:<why>
+    // when that model could not answer and the fast one was asked (2026-09-25).
     const len = Number(req.headers["content-length"]);
     const gz = /gzip|deflate|br/i.test(String(req.headers["content-encoding"] || ""));
     console.log(`automation step run=${runId} seq=${seq ?? "-"} llm_ms=${meta.llm_ms || 0} ` +
@@ -114,7 +115,7 @@ router.post("/:id(\\d+)/step", async (req, res) => {
       `calls=${meta.calls || 0} ms=${Date.now() - started} status=${out?.status || "?"} ` +
       `think=${String(meta.think || "-").toLowerCase()} ` +
       `res=${String(meta.res || "-").replace(/^MEDIA_RESOLUTION_/, "").toLowerCase()} ` +
-      `model=${meta.model || "-"} up=${Number.isFinite(len) ? Math.round(len / 1024) + "KB" : "-"}${gz ? " gz" : ""}`);
+      `model=${meta.model || "-"}${meta.fallback ? ` after=${meta.fallback}` : ""} up=${Number.isFinite(len) ? Math.round(len / 1024) + "KB" : "-"}${gz ? " gz" : ""}`);
     res.json(out);
   } catch (e) {
     console.error(`automation step run=${runId}:`, e.message);

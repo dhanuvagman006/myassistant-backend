@@ -30,11 +30,14 @@ const fs = require("fs");
 const path = require("path");
 const { envModel } = require("./ai/router");
 
-const DOC_MODEL = () => envModel("GEMINI_DOC_MODEL", "gemini-2.5-flash");
+// Unset, the alias Google keeps current: the old default, gemini-2.5-flash,
+// answers new users 404 "no longer available" (2026-09-25).
+const DOC_MODEL = () => envModel("GEMINI_DOC_MODEL", "gemini-flash-latest");
 
 /** Authoring thinking budget. 0 = fastest, which is the product default
  *  ("time is precious"); raise via env if a deck ever reads thin — no
- *  rebuild needed. Only the 2.5-flash family accepts this field. */
+ *  rebuild needed. Only the 2.5-flash family accepts this field; any
+ *  other model (the -latest default included) thinks at its own level. */
 const DOC_THINKING = () => {
   const n = Number(process.env.GEMINI_DOC_THINKING);
   return Number.isFinite(n) ? n : 0;

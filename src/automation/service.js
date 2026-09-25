@@ -762,6 +762,8 @@ async function stepLocked(userId, runId, { screen, last, seq = null } = {}, meta
     if (u.thinking) meta.think = meta.think ? `${meta.think}+${u.thinking}` : u.thinking;
     if (u.media) meta.res = u.media;
     if (u.model) meta.model = u.model;
+    // The first model could not answer, so the fast one was asked (planner.js).
+    if (u.fallback) meta.fallback = u.fallback;
     if (d.note && !notes.some((n) => say.noteText(n) === d.note)) notes = [...notes, { text: d.note, owner: true }];
     if (d.error || d.status !== "continue") break;
 

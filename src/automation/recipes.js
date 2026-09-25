@@ -10,14 +10,16 @@
  *
  * How a recipe steps aside (the planner then decides as it always has):
  *   • it does not recognise the screen — a pop-up, a new layout, an A/B test;
- *   • its last step did not change the screen, or failed (and after two
- *     such steps it is off for the rest of the run: no ping-pong);
+ *   • its last step did not change the screen, or failed, and it would do
+ *     the very same thing again (and after two such steps it is off for
+ *     the rest of the run: no ping-pong);
  *   • the guard refuses its action (service.js checks it like any other).
  * A recipe's "done" still needs its proof on the screen (service.proven).
  *
- * A recipe is { id, matches(run) -> params|null, next(screen, params) ->
- * decision|null }, where a decision has the planner's own shape:
+ * A recipe is { id, matches(run) -> params|null, next(screen, params, run)
+ * -> decision|null }, where a decision has the planner's own shape:
  *   { status: "continue", action, expect } | { status: "done", evidence, report }.
+ * `run` is there so a recipe can see its own steps and how they went.
  */
 
 const norm = (s) => String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -31,6 +33,16 @@ function recipeSteps(run, id) {
 
 /** A step that left the screen as it was, or did not happen. */
 const stalled = (s) => s && s.result && (s.result.ok === false || s.result.changed === false);
+
+/** The last step the phone was handed (a refused one never was). */
+function lastDelivered(run) {
+  const delivered = (run?.steps || []).filter((s) => !s.vetoed);
+  return delivered[delivered.length - 1] || null;
+}
+
+/** The same action: same kind, same element, same words. */
+const sameAction = (a, b) => !!a && !!b && a.type === b.type &&
+  String(a.id ?? "") === String(b.id ?? "") && String(a.text || "") === String(b.text || "");
 
 /* ------------------------------ Instagram ------------------------------ */
 
@@ -64,7 +76,7 @@ const instagramFollow = {
     return handle ? { verb, handle } : null;
   },
 
-  next(screen, { verb, handle }) {
+  next(screen, { verb, handle }, run = {}) {
     if (String(screen?.pkg || "") !== IG) return null;
     const nodes = screen?.nodes || [];
     const tap = (n, expect) => ({ status: "continue", action: { type: "tap", id: n.id }, expect });
@@ -124,10 +136,24 @@ const instagramFollow = {
     // 5. The search box: type the username. (Instagram is a messaging
     //    app to the guard, so Enter is not pressed; the suggestion row
     //    is tapped on the next look.)
+    //
+    //    EXPLORE'S BAR IS NOT A BOX (the owner's phone, 2026-09-25). On the
+    //    Explore tab the bar at the top reads as a text field, showing the
+    //    last search ("thenameisyash"); typing into it changes nothing
+    //    (settle=quiet) — it is a button that opens the real search
+    //    screen. So when the box already holds the name, or this recipe's
+    //    last step typed into it and the screen stayed as it was, the box
+    //    is TAPPED. A hint alone is not enough to skip typing: the real
+    //    search box may show the last search as its hint too, and there
+    //    typing is what works — one stalled try tells the two apart.
     const box = nodes.find((n) => Number(n.edit));
     if (box) {
-      // Already typed and nothing matched: the planner looks further.
-      if (norm(textOf(box)) === handle) return null;
+      const last = lastDelivered(run);
+      const typedHere = last && last.recipe === instagramFollow.id && stalled(last) &&
+        last.action?.type === "type" && Number(last.action.id) === Number(box.id);
+      if (norm(textOf(box)) === handle || typedHere) {
+        return { status: "continue", action: { type: "tap", id: box.id }, expect: "the search screen with suggestions" };
+      }
       return { status: "continue", action: { type: "type", id: box.id, text: handle, submit: true },
         expect: `accounts named like "${handle}"` };
     }
@@ -155,14 +181,18 @@ function next(run, screen) {
     const mine = recipeSteps(run, rec.id);
     // Two steps that went nowhere: this run is the planner's from now on.
     if (mine.filter(stalled).length >= 2) return null;
-    // The last delivered step was this recipe's and it did not move the
-    // screen: step aside once, so the planner looks with fresh eyes.
-    const delivered = (run.steps || []).filter((s) => !s.vetoed);
-    const last = delivered[delivered.length - 1];
-    if (last && last.recipe === rec.id && stalled(last)) return null;
     let d = null;
-    try { d = rec.next(screen, params); } catch (_) { d = null; }
-    if (d) return { ...d, recipe: rec.id };
+    try { d = rec.next(screen, params, run); } catch (_) { d = null; }
+    if (!d) continue;
+    // The last delivered step was this recipe's and it did not move the
+    // screen. Asked again, a recipe may know another way (Explore's bar:
+    // typed, nothing happened — tap it instead, 2026-09-25); if it would
+    // only do the same thing again, it steps aside so the planner looks
+    // with fresh eyes.
+    const last = lastDelivered(run);
+    if (last && last.recipe === rec.id && stalled(last) && d.status === "continue" &&
+        sameAction(d.action, last.action)) return null;
+    return { ...d, recipe: rec.id };
   }
   return null;
 }

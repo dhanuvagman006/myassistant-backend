@@ -12,7 +12,8 @@
 const { envModel } = require("../services/ai/router");
 const db = require("../db");
 
-const MODEL = () => envModel("GEMINI_VISION_MODEL", "gemini-2.5-flash");
+// Unset, the alias Google keeps current (2.5 Flash answers new users 404).
+const MODEL = () => envModel("GEMINI_VISION_MODEL", "gemini-flash-latest");
 
 const PROMPT = `This is a photo of a business / visiting card. Read it and reply
 with STRICT JSON only (no markdown):
