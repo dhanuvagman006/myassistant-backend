@@ -4703,23 +4703,47 @@ function registerBuiltins() {
             "settings", "home", "hub", "chat",
             "documents", "clients", "finance", "stocks",
             "diagnostics", "mcp", "meetings", "reminders", "call_notes",
+            "news",
           ],
           description:
             "settings = the assistant's own settings (voice, name, theme). " +
-            "home/hub/chat are the main tabs. The rest are feature screens.",
+            "home/hub/chat are the main tabs. The rest are feature screens. " +
+            "news = the News screen, only when they ask to OPEN it — for " +
+            "'what's the news' use show_news.",
         },
       },
       required: ["screen"],
     },
-    async execute(args) {
+    async execute(args, ctx = {}) {
       const screen = String(args.screen || "").toLowerCase().trim();
       const ALLOWED = [
         "settings", "home", "hub", "chat", "documents", "clients",
         "finance", "stocks", "diagnostics", "mcp", "meetings", "reminders",
-        "call_notes",
+        "call_notes", "news",
       ];
       if (!ALLOWED.includes(screen)) {
         return { ok: false, error: `I don't have a screen called "${args.screen}"` };
+      }
+      // The News screen arrives in build 111. An older app would report
+      // "that screen is not available", so it gets the voice deck — the
+      // news it CAN show — instead.
+      if (screen === "news" && !(Number(ctx.appBuild) >= 111)) {
+        const news = require("./news");
+        try {
+          const out = await news.feed({ count: 10 });
+          if (out.items.length) {
+            news.rememberShown(ctx.userId, out.topic, out.items);
+            return {
+              ok: true,
+              deviceAction: { type: "show_news", topic: out.topic, items: out.items },
+              speak: "Here are today's headlines.",
+              note:
+                "The headlines are on their screen. Read ONLY the top two or " +
+                "three in your own words; do not read URLs or source names.",
+            };
+          }
+        } catch (_) { /* reported below */ }
+        return { ok: false, error: "the news could not be fetched just now" };
       }
       const LABEL = {
         settings: "your settings", home: "Home", hub: "the Hub", chat: "Chat",
@@ -4727,7 +4751,7 @@ function registerBuiltins() {
         finance: "your finances", stocks: "your stocks",
         diagnostics: "diagnostics", mcp: "your connected servers",
         meetings: "your meetings", reminders: "your reminders",
-        call_notes: "your call notes",
+        call_notes: "your call notes", news: "the news",
       };
       return {
         ok: true,
@@ -5237,19 +5261,34 @@ function registerBuiltins() {
         const spoken = out.items.slice(0, 3)
           .map((x, i) => `${i + 1}. ${x.title}`)
           .join(" ");
+        // The deck on screen is what "read me the second one" counts from.
+        news.rememberShown(ctx.userId, out.topic, out.items);
+        // Build 111 shows a deck of cards and has read_news_story; older
+        // apps still show the list, and must not be told to swipe.
+        const deck = Number(ctx.appBuild) >= 111;
         return {
           ok: true,
           deviceAction: { type: "show_news", topic: out.topic, items: out.items },
           speak: spoken,
-          note:
-            "THE HEADLINES ARE NOW ON THEIR SCREEN. Say in ONE short line " +
-            "that today's headlines are up, then read out ONLY the top two " +
-            "or three in your own words — or ALL of them when they asked " +
-            "for just one or two. Do NOT list every item, do NOT read " +
-            "URLs or source names, and do NOT ask which one they want — " +
-            "they can see the list and will tap one. Tapping a headline " +
-            "opens the full story for you to read, so there is nothing for " +
-            "them to do first.",
+          note: deck
+            ? "THE STORIES ARE NOW ON THEIR SCREEN as a deck of cards they " +
+              "can swipe through. Say in ONE short line that the headlines " +
+              "are up, then read ONLY the top three headlines — ONE short " +
+              "line each, keeping each headline's own key words (the deck " +
+              "follows along as you say them) — or ALL of them when they " +
+              "asked for just one or two. Do NOT read URLs or source names " +
+              "and do NOT ask which one they want. They can say 'read me " +
+              "the second one' or 'tell me more about the cricket story': " +
+              "for that call read_news_story. Tapping a card opens the full " +
+              "story."
+            : "THE HEADLINES ARE NOW ON THEIR SCREEN. Say in ONE short line " +
+              "that today's headlines are up, then read out ONLY the top two " +
+              "or three in your own words — or ALL of them when they asked " +
+              "for just one or two. Do NOT list every item, do NOT read " +
+              "URLs or source names, and do NOT ask which one they want — " +
+              "they can see the list and will tap one. Tapping a headline " +
+              "opens the full story for you to read, so there is nothing for " +
+              "them to do first.",
         };
       } catch (e) {
         return {
@@ -5261,6 +5300,110 @@ function registerBuiltins() {
             "today's.",
         };
       }
+    },
+  });
+
+  // ONE STORY FROM THE DECK, READ PROPERLY (2026-09-25). "Read me the
+  // second one" / "tell me more about the cricket story" — picked from
+  // the deck this user was just shown (show_news or Hub → News), never
+  // from a new search whose order may have moved. The article is read
+  // with read_webpage's own guarded fetch, and the card comes forward on
+  // the phone while it is summarised.
+  registry.register({
+    name: "read_news_story",
+    // news_focus is new in build 111; an older app would drop it.
+    minAppBuild: 111,
+    deviceAction: true,
+    description:
+      "Read ONE story from the news cards on their screen and summarise it " +
+      "— 'read me the second one', 'tell me more about the cricket story', " +
+      "'what does the third one say'. Pass `which`: the story's number on " +
+      "the deck (1 is the first card) or words from its headline. It works " +
+      "only from the deck they were just shown; if there is none, use " +
+      "show_news first. It brings that card to the front and returns the " +
+      "article's text for a SHORT spoken summary.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        which: {
+          type: "string",
+          description:
+            "The story's number on the deck ('2', 'second', 'last') or words " +
+            "from its headline ('cricket', 'the budget').",
+        },
+      },
+      required: ["which"],
+    },
+    async execute(args, ctx = {}) {
+      const news = require("./news");
+      const deck = news.lastShown(ctx.userId);
+      if (!deck || !deck.items.length) {
+        return {
+          ok: false,
+          error: "no_news_on_screen",
+          note:
+            "There is no news deck from the last half hour to pick from. " +
+            "Offer to show today's headlines — do NOT guess a story.",
+        };
+      }
+      const pick = news.pickStory(deck.items, args.which);
+      if (!pick) {
+        return {
+          ok: false,
+          error: "no_such_story",
+          data: {
+            stories: deck.items.slice(0, 12).map((s, i) => `${i + 1}. ${s.title}`),
+          },
+          note:
+            `"${String(args.which || "").slice(0, 60)}" does not match a story ` +
+            "on their screen. Ask which one they mean, by number or a word " +
+            "from its headline, in one short line.",
+        };
+      }
+      const { index, item } = pick;
+      const about = {
+        number: index + 1, title: item.title, source: item.source, url: item.url,
+      };
+      const focus = { type: "news_focus", id: item.id };
+      let page = null;
+      try {
+        page = await registry.get("read_webpage").execute({ url: item.url }, ctx);
+      } catch (e) {
+        page = { ok: false, error: String(e.message || e) };
+      }
+      if (page && page.ok && page.data && page.data.text) {
+        const text = String(page.data.text);
+        return {
+          ok: true,
+          deviceAction: focus,
+          data: { ...about, text: text.slice(0, 6000), truncated: text.length > 6000 || !!page.data.truncated },
+          speak: "",
+          note:
+            `Story ${index + 1} is now at the front of their deck. Give a ` +
+            "SHORT spoken summary of THIS article: three or four sentences " +
+            "in your own words, from the text above, the main point first. " +
+            "Do not read the URL or the web address. If the text does not " +
+            "say something, do not fill the gap.",
+        };
+      }
+      // Paywalls and script-built pages cannot be read. The card still
+      // comes forward, and its own summary is what there is to say.
+      const summary = [item.snippet, ...(item.extra || [])].filter(Boolean).join(" ").slice(0, 1200);
+      return {
+        ok: true,
+        deviceAction: focus,
+        data: { ...about, text: "", summary, readable: false },
+        speak: "",
+        note: summary
+          ? "The article itself could not be read, so all you have is its " +
+            "summary above. Give its gist in one or two sentences, say that " +
+            "is all the summary says, and offer to open the full article. " +
+            "Never add details that are not in it."
+          : "The article could not be read and there is no summary. Say so " +
+            "in one line and offer to open the full article on their screen. " +
+            "Never invent what it says.",
+      };
     },
   });
 
