@@ -225,6 +225,9 @@ function registerBuiltins() {
   // tools/knowledge.js for why it is not one tool per domain.
   require("./knowledge").registerKnowledgeTools();
 
+  // Momentum: Today's 3, habits, focus and "how am I doing?" (2026-09-25).
+  require("../momentum/tools").registerMomentumTools(registry);
+
   // ---------------- INFORMATION (low risk) ----------------
 
   registry.register({
@@ -4703,13 +4706,14 @@ function registerBuiltins() {
             "settings", "home", "hub", "chat",
             "documents", "clients", "finance", "stocks",
             "diagnostics", "mcp", "meetings", "reminders", "call_notes",
-            "news",
+            "news", "momentum", "focus",
           ],
           description:
             "settings = the assistant's own settings (voice, name, theme). " +
-            "home/hub/chat are the main tabs. The rest are feature screens. " +
+            "home/hub/chat are the main tabs. momentum = streak, today's 3, " +
+            "habits and the week; focus = the focus timer. " +
             "news = the News screen, only when they ask to OPEN it — for " +
-            "'what's the news' use show_news.",
+            "'what's the news' use show_news. The rest are feature screens.",
         },
       },
       required: ["screen"],
@@ -4719,10 +4723,16 @@ function registerBuiltins() {
       const ALLOWED = [
         "settings", "home", "hub", "chat", "documents", "clients",
         "finance", "stocks", "diagnostics", "mcp", "meetings", "reminders",
-        "call_notes", "news",
+        "call_notes", "news", "momentum", "focus",
       ];
       if (!ALLOWED.includes(screen)) {
         return { ok: false, error: `I don't have a screen called "${args.screen}"` };
+      }
+      // Momentum's screens arrive in app build 111; an older app would
+      // report "not available" after hearing that it was opening.
+      const build = Number(ctx.appBuild) || 0;
+      if ((screen === "momentum" || screen === "focus") && build && build < 111) {
+        return { ok: false, error: "that screen needs the latest app update — say so, and offer momentum_status instead" };
       }
       // The News screen arrives in build 111. An older app would report
       // "that screen is not available", so it gets the voice deck — the
@@ -4752,6 +4762,7 @@ function registerBuiltins() {
         diagnostics: "diagnostics", mcp: "your connected servers",
         meetings: "your meetings", reminders: "your reminders",
         call_notes: "your call notes", news: "the news",
+        momentum: "your Momentum page", focus: "the focus timer",
       };
       return {
         ok: true,

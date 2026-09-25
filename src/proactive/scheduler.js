@@ -498,6 +498,19 @@ async function sweepPatientRecalls() {
   return placed;
 }
 
+/**
+ * SWEEP 6 — MOMENTUM. The evening check-in, the streak guard and the
+ * Sunday recap: at most one a day, for people who use it (2026-09-25,
+ * momentum/nudges.js holds the rules).
+ */
+async function sweepMomentum() {
+  try {
+    return await require("../momentum/nudges").sweep();
+  } catch (_) {
+    return 0;
+  }
+}
+
 async function sweep() {
   const results = await Promise.allSettled([
     sweepCommitments(),
@@ -506,19 +519,21 @@ async function sweep() {
     sweepFares(),
     sweepMorningBriefs(),
     sweepPersonDates(),
+    sweepMomentum(),
   ]);
   // One name per sweep, in order — it used to unpack six results into four
   // names, so "briefs" logged the recall count and "fares" the meetings.
-  const [nudges, recalls, briefs, fares, mornings, dates] = results.map((r) =>
+  const [nudges, recalls, briefs, fares, mornings, dates, momentum] = results.map((r) =>
     r.status === "fulfilled" ? Number(r.value) || 0 : 0
   );
-  if (nudges || recalls || briefs || fares || mornings || dates) {
+  if (nudges || recalls || briefs || fares || mornings || dates || momentum) {
     console.log(
       `proactive: ${nudges} nudge(s), ${recalls} recall call(s), ${briefs} brief(s), ` +
-        `${fares} fare alert(s), ${mornings} morning brief(s), ${dates} date reminder(s)`
+        `${fares} fare alert(s), ${mornings} morning brief(s), ${dates} date reminder(s), ` +
+        `${momentum} momentum nudge(s)`
     );
   }
-  return { nudges, recalls, briefs, fares, mornings, dates };
+  return { nudges, recalls, briefs, fares, mornings, dates, momentum };
 }
 
 function start() {
@@ -547,7 +562,7 @@ function stop() {
 module.exports = {
   start, stop, sweep,
   sweepCommitments, sweepPatientRecalls, sweepMeetings, sweepFares, sweepMorningBriefs,
-  sweepPersonDates,
+  sweepPersonDates, sweepMomentum,
   buildBrief, morningBody,
   inQuietHours, localHour,
 };

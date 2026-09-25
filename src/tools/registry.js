@@ -309,6 +309,8 @@ const SEED_WORLD = new Set([
   // 2026-09-23: a reply leaves the mailbox, a payment screen moves money.
   "email_reply", "pay_by_upi", "save_upi_id",
   "scan_business_card", "record_meeting",
+  // Momentum (2026-09-25): the user's own list, habits and focus timer.
+  "plan_my_day", "complete_priority", "add_habit", "check_habit", "start_focus",
 ]);
 
 function isWorldAction(name) {

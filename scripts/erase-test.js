@@ -265,7 +265,8 @@ async function seedUser(uid, { phone }) {
   touch(path.join(FILES, String(uid), "1.pdf"));
   touch(path.join(FILES, String(uid), "2.jpg"));
   // The keys kv holds for them.
-  for (const k of [`call_analysis:${uid}`, `brief:${uid}:ev1`, `morning:${uid}:2026-09-25`, `pdate:${uid}:3:2026`]) {
+  for (const k of [`call_analysis:${uid}`, `brief:${uid}:ev1`, `morning:${uid}:2026-09-25`, `pdate:${uid}:3:2026`,
+    `momentum:${uid}:2026-09-25`, `momentum:${uid}:earned`]) {
     await db.run(`INSERT INTO kv (k, v) VALUES ($1, '1') ON CONFLICT (k) DO NOTHING`, [k]);
   }
   if (phone) await db.run(`UPDATE users SET phone_number = $1 WHERE id = $2`, [phone, uid]);
@@ -496,7 +497,7 @@ const tell = (from, toPhone, message) => db.one(
 
   await atest("A's keys are gone, and a longer id that starts the same is not touched", async () => {
     const left = await db.query(`SELECT k FROM kv WHERE k LIKE ANY($1::text[]) OR k = $2`,
-      [[`brief:${A}:%`, `morning:${A}:%`, `pdate:${A}:%`], `call_analysis:${A}`]);
+      [[`brief:${A}:%`, `morning:${A}:%`, `pdate:${A}:%`, `momentum:${A}:%`], `call_analysis:${A}`]);
     assert.deepStrictEqual(left, []);
     assert.ok(await db.one(`SELECT 1 AS x FROM kv WHERE k = $1`, [lookalike]));
   });

@@ -93,6 +93,8 @@ const FAMILIES = [
       "show_alarms",
       // "Opening the installer" is the same claim again.
       "update_app",
+      // "Opening your focus timer" (Momentum, 2026-09-25).
+      "start_focus",
       // In-app panels the model announces the same way ("here's your
       // schedule", "pulling up the headlines"). Both were orphans — no
       // family backed them, so the assistant could apologise for a
@@ -122,7 +124,10 @@ const FAMILIES = [
     id: "remind",
     // set_timer was missing: "I've set a timer for ten minutes" matches
     // this family, so the timer was set and then denied.
-    tools: ["create_reminder", "update_reminder", "set_alarm", "set_timer", "schedule_task", "schedule_patient_recall", "set_morning_brief"],
+    tools: ["create_reminder", "update_reminder", "set_alarm", "set_timer", "schedule_task", "schedule_patient_recall", "set_morning_brief",
+            // "I've set today's three", "I've set a 25-minute focus", "I've set
+            // a daily reminder for water" — Momentum, 2026-09-25.
+            "plan_my_day", "start_focus", "add_habit"],
     claim: /\b(reminder (is )?(set|saved)|i'?ve set|alarm (is )?set|scheduled it|i'?ll remind you)\b/i,
     // रिमाइंडर/अलार्म सेट…, ರಿಮೈಂಡರ್/ಅಲಾರಂ ಇಟ್ಟ…, நினைவூட்ட…, గుర్తు చేస…, ഓർമ്മിപ്പിക്ക…
     claimIntl: /(रिमाइंडर\s*(सेट|लगा)|अलार्म\s*(सेट|लगा)|याद\s*दिला|ರಿಮೈಂಡರ್|ಅಲಾರಂ|ಅಲಾರಾಂ|ನೆನಪಿಸ|நினைவூட்ட|அலாரம்|గుర్తు\s*చేస|అలారం|ഓർമ്മിപ്പിക്ക|അലാറം)/,
@@ -186,7 +191,9 @@ const FAMILIES = [
     tools: ["record_entry", "amend_last_entry", "record_patient_payment", "remember_fact",
             "remember_person", "add_person_note", "file_document_under_client",
             "associate_document", "save_web_document", "send_developer_feedback",
-            "save_upi_id"],
+            "save_upi_id",
+            // "Logged your water", "noted it down", "I've saved today's list".
+            "plan_my_day", "complete_priority", "add_habit", "check_habit"],
     claim: /\b(logged|recorded|noted it down|saved (it |that )?(to|in) your|filed under|i'?ve (written|saved)|written that down)\b/i,
     // सहेज/सेव/नोट कर…, ಉಳಿಸ/ಸೇವ್ ಮಾಡ…, சேமிக்க…, సేవ్ చేస…, സേവ് ചെയ്…
     claimIntl: /(सहेज|सेव\s*कर|नोट\s*कर|लिख\s*दिया|ಉಳಿಸ|ಸೇವ್\s*ಮಾಡ|ಬರೆದಿ|சேமிக்க|குறித்து|సేవ్\s*చేస|రాశా|സേവ്\s*ചെയ്|എഴുതി)/,

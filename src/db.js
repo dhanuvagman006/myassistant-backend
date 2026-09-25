@@ -447,6 +447,9 @@ async function init() {
   // Hands-on tasks inside other apps, one checked step at a time.
   await require("./automation/service").migrate((sql) => pool.query(sql));
 
+  // Momentum: Today's 3, habits, focus sessions and the streak they feed.
+  await require("./momentum/service").migrate((sql) => pool.query(sql));
+
   // Live avatar persistence: per-user personas (the brain hookup),
   // session records, and the rolling recent-conversation window.
 

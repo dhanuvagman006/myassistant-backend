@@ -371,8 +371,12 @@ function outcomeOf(res) {
   if (res.ok === false) return OUTCOME.FAILED;
   // A device action is only "ok" once the phone says so. `data.generated`
   // marks the server-side results (an image, a video) that are genuinely
-  // finished despite riding in a deviceAction envelope.
-  if (res.deviceAction && !(res.data && res.data.generated)) return OUTCOME.DISPATCHED;
+  // finished despite riding in a deviceAction envelope. A `notice` asks
+  // the phone for nothing (momentum_updated only tells an open app to
+  // redraw what the server already saved, 2026-09-25): no receipt comes,
+  // so waiting for one would leave a finished write "dispatched" forever.
+  if (res.deviceAction && !(res.data && res.data.generated) &&
+      res.deviceAction.notice !== true) return OUTCOME.DISPATCHED;
   return OUTCOME.OK;
 }
 
