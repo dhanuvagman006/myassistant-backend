@@ -195,10 +195,12 @@ const fallbackModel = () => envModel("GEMINI_FALLBACK_MODEL", "gemini-flash-lite
  * serves with 404 ("models/gemini-2.5-flash is no longer available to new
  * users", 2026-09-25). The key pool used to file that as "out of quota",
  * set the key aside for that model for 15 minutes, and the call failed —
- * no fallback, because only a 429 switched models. Now the key is left
- * alone (keys.js), the caller's turn goes to the fallback model (unless
- * it owns its own budget: noRetry), and the log says once which setting
- * names the dead model, so somebody can change it.
+ * no fallback, because only a 429 switched models. Now the key is set
+ * aside for that model QUIETLY (keys.markMissing) and every path asks the
+ * next key first — his keys differ in the models they reach (2026-09-20).
+ * Only when no key reaches it does the caller's turn go to the fallback
+ * model (unless it owns its own budget: noRetry), and the log says once
+ * which setting names the dead model, so somebody can change it.
  */
 const UNAVAILABLE = new Set();
 const MODEL_ENVS = ["GEMINI_MODEL", "AUTOMATION_MODEL", "AUTOMATION_FAST_MODEL", "GEMINI_FALLBACK_MODEL",
@@ -207,14 +209,19 @@ const MODEL_ENVS = ["GEMINI_MODEL", "AUTOMATION_MODEL", "AUTOMATION_FAST_MODEL",
 /** A 404 from a model endpoint: that model name is unusable for this key. */
 const isModelGone = (e) => e?.status === 404;
 
-/** Logs once per model which variable to change. `env` names its default. */
+/**
+ * Logs once per model which variable to change. `env` names its default.
+ * Only once EVERY key has said 404: the review of 2026-09-25 caught this
+ * line saying "set GEMINI_MODEL" when key 1 lacked the model and key 2
+ * served it — changing the setting would have been the wrong fix.
+ */
 function modelUnavailable(model, env = "GEMINI_MODEL") {
-  if (!model || UNAVAILABLE.has(model)) return;
+  if (!model || UNAVAILABLE.has(model) || !keys.missingEverywhere(model)) return;
   UNAVAILABLE.add(model);
   const named = MODEL_ENVS.filter((n) =>
     String(process.env[n] || "").split("#")[0].trim().replace(/^["']|["']$/g, "").trim() === model);
   console.error(`gemini: model ${model} unavailable — set ${named.length ? named.join(" / ") : env} ` +
-    `(Google answered 404: retired, or not enabled for this key).`);
+    `(Google answered 404 on every key: retired, or not enabled for them).`);
 }
 
 /// generationConfig additions that control per-model-family behaviour.
@@ -420,6 +427,35 @@ function requireKey(model = null) {
 }
 
 /**
+ * KEY BY KEY, THEN THE FALLBACK MODEL — for the requests made by hand (the
+ * two streams and speech-to-text), which do not go through
+ * keys.withKeyRotation. The next key to ask for this model: the first
+ * usable one this call has not tried yet, or null when none is left — or
+ * when every key has just said the model is gone.
+ *
+ * Review, 2026-09-25: these paths took the first usable key and, on its
+ * 404, went straight to the fallback model (or, for speech, failed). With
+ * his keys, which differ in the models they reach, every streamed chat and
+ * voice turn was answered by Flash-Lite on key 1 while key 2 served the
+ * configured model, and every transcription failed.
+ */
+function nextKey(model, tried = []) {
+  if (keys.missingEverywhere(model)) return null;
+  return keys.usable(model).find((k) => !tried.includes(k)) || null;
+}
+
+/**
+ * A request made by hand failed on this key: set the key aside the way
+ * withKeyRotation would (spent on a quota 429, missing on a 404 — quietly)
+ * and say whether it was the KEY's failure, i.e. worth asking another key.
+ */
+function setKeyAside(key, model, status, body) {
+  if (keys.isQuotaError(status, body)) { keys.markSpent(key, model); return true; }
+  if (keys.isModelMissingForKey(status, body)) { keys.markMissing(key, model); return true; }
+  return false;
+}
+
+/**
  * @param {Array} messages
  * @param {Object} [opts]
  * @param {string} [opts.extraSystem] appended to the base system prompt —
@@ -483,7 +519,19 @@ function hardDeadline(promise, ms) {
 async function* generateReplyStream(messages, opts = {}) {
   const system = opts.system || SYSTEM_PROMPT + (opts.extraSystem || "");
   const model = opts._model || chatModel();
-  const key = requireKey(model);
+  requireKey(model);
+  const tried = opts._tried || [];
+  const key = nextKey(model, tried);
+  if (!key) {
+    // Every key has just said this model is gone: the fallback answers at
+    // once, instead of after one 404 per key on every turn.
+    modelUnavailable(model, opts._model ? "GEMINI_FALLBACK_MODEL" : "GEMINI_MODEL");
+    if (!opts._model && fallbackModel() !== model) {
+      yield* generateReplyStream(messages, { ...opts, _model: fallbackModel(), _tried: [] });
+      return;
+    }
+    throw keys.goneEverywhere(model);
+  }
 
   // The streaming path is what the user actually waits on before hearing
   // Hari speak, so low thinking matters most here.
@@ -510,7 +558,6 @@ async function* generateReplyStream(messages, opts = {}) {
   );
   if (!r.ok || !r.body) {
     const body = r.ok ? "" : await r.text().catch(() => "");
-    if (keys.isQuotaError(r.status, body)) keys.markSpent(key, model);
     // Drop a rejected tuning field and let the caller's retry/fallback run.
     if (generationConfig.thinkingConfig && rejectsField(r.status, body, "thinking")) {
       UNSUPPORTED_FIELDS.add("thinkingConfig");
@@ -521,10 +568,16 @@ async function* generateReplyStream(messages, opts = {}) {
       yield* generateReplyStream(messages, opts);
       return;
     }
+    // Another key before another model (nextKey): nothing has been said
+    // yet, so the same turn can simply be asked again.
+    if (setKeyAside(key, model, r.status, body) && nextKey(model, [...tried, key])) {
+      yield* generateReplyStream(messages, { ...opts, _tried: [...tried, key] });
+      return;
+    }
     if (r.status === 404) modelUnavailable(model, opts._model ? "GEMINI_FALLBACK_MODEL" : "GEMINI_MODEL");
     if ((r.status === 429 || r.status === 404) && !opts._model && fallbackModel() !== model) {
       if (r.status === 429) console.warn(`gemini stream: ${model} out of quota — retrying on ${fallbackModel()}`);
-      yield* generateReplyStream(messages, { ...opts, _model: fallbackModel() });
+      yield* generateReplyStream(messages, { ...opts, _model: fallbackModel(), _tried: [] });
       return;
     }
     throw new Error(
@@ -602,10 +655,42 @@ async function transcribeAudio(buffer, mimeType, opts = {}) {
   // main chat model so existing deploys are unchanged.
   const mainModel = chatModel();
   const wanted = envModel("GEMINI_STT_MODEL", mainModel);
-  const model = DEAD_MODELS.has(wanted) ? mainModel : wanted;
+  // opts._model: the fallback model, once no key reaches the chat model.
+  const model = opts._model || (DEAD_MODELS.has(wanted) ? mainModel : wanted);
   // Resolved AFTER the model, so a key already known to be spent on this
-  // particular model is skipped rather than burned on another 429.
-  const key = requireKey(model);
+  // particular model is skipped rather than burned on another 429 — and
+  // one known not to reach it (a 404) is skipped too (nextKey).
+  requireKey(model);
+  const tried = opts._tried || [];
+  // NO KEY REACHES THIS MODEL. The speech model hands over to the chat
+  // model, as before; the chat model now hands over to the fallback model
+  // (2026-09-25: a retired GEMINI_MODEL left chat answering on the
+  // fallback while every transcription failed with a 404). Null: nothing
+  // left to hand over to.
+  const noKeyReaches = () => {
+    if (model !== mainModel && !opts._model) {
+      if (!DEAD_MODELS.has(model)) {
+        DEAD_MODELS.add(model);
+        console.error(
+          `gemini stt: model "${model}" returned 404 (retired, or not ` +
+            `enabled for this API key) — falling back to "${mainModel}". ` +
+            `Set GEMINI_STT_MODEL= (blank) in your .env to silence this.`
+        );
+      }
+      return transcribeAudio(buffer, mimeType, { ...opts, _tried: [] });
+    }
+    modelUnavailable(model, opts._model ? "GEMINI_FALLBACK_MODEL" : "GEMINI_MODEL");
+    if (!opts._model && fallbackModel() !== model) {
+      return transcribeAudio(buffer, mimeType, { ...opts, _model: fallbackModel(), _tried: [] });
+    }
+    return null;
+  };
+  const key = nextKey(model, tried);
+  if (!key) {
+    const next = noKeyReaches();
+    if (next) return next;
+    throw keys.goneEverywhere(model);
+  }
   // The app records .m4a (AAC in an MP4 container). Normalize the label,
   // and keep a fallback: some Gemini deployments accept audio/mp4 but not
   // audio/aac, others the reverse — a 4xx triggers ONE retry with the
@@ -700,18 +785,16 @@ async function transcribeAudio(buffer, mimeType, opts = {}) {
   }
   if (!r.ok) {
     const body = await r.text().catch(() => "");
-    // 404 = this model name is unusable for this key. Remember it and retry
-    // on the main chat model so speech input keeps working.
-    if (looksRetired(r.status) && model !== mainModel) {
-      if (!DEAD_MODELS.has(model)) {
-        DEAD_MODELS.add(model);
-        console.error(
-          `gemini stt: model "${model}" returned 404 (retired, or not ` +
-            `enabled for this API key) — falling back to "${mainModel}". ` +
-            `Set GEMINI_STT_MODEL= (blank) in your .env to silence this.`
-        );
-      }
-      return transcribeAudio(buffer, mimeType, opts);
+    // A spent key or one that cannot reach this model: the next key is
+    // asked the same model first (nextKey).
+    if (setKeyAside(key, model, r.status, body) && nextKey(model, [...tried, key])) {
+      return transcribeAudio(buffer, mimeType, { ...opts, _tried: [...tried, key] });
+    }
+    // 404 = this model name is unusable for this key, and no other key is
+    // left to ask. Hand over to the next model so speech input keeps working.
+    if (looksRetired(r.status)) {
+      const next = noKeyReaches();
+      if (next) return next;
     }
     // A rejected tuning field must never break speech input: remember it,
     // stop sending it, and retry immediately.
@@ -996,11 +1079,24 @@ async function generateWithTools({ contents, system, declarations = [], _model =
  * non-streaming call, so the tool loop in agents/runtime is unchanged.
  */
 async function generateWithToolsStream(
-  { contents, system, declarations = [], onDelta = () => {}, _model = null, timeoutMs = 0 },
+  { contents, system, declarations = [], onDelta = () => {}, _model = null, timeoutMs = 0, _tried = [] },
   _retry = false
 ) {
   const model = _model || chatModel();
-  const key = requireKey(model);
+  requireKey(model);
+  // timeoutMs rides along on every retry below: a background turn's longer
+  // deadline was once dropped on one, so a retried scheduled task fell back
+  // to the 30 s one.
+  const again = (over = {}, retry = _retry) => generateWithToolsStream(
+    { contents, system, declarations, onDelta, _model, timeoutMs, _tried, ...over }, retry);
+  const key = nextKey(model, _tried);
+  if (!key) {
+    // Every key has just said this model is gone: the fallback answers at
+    // once, instead of after one 404 per key on every turn.
+    modelUnavailable(model, _model ? "GEMINI_FALLBACK_MODEL" : "GEMINI_MODEL");
+    if (!_model && fallbackModel() !== model) return again({ _model: fallbackModel(), _tried: [] });
+    throw keys.goneEverywhere(model);
+  }
   const body = {
     system_instruction: { parts: [{ text: system }] },
     contents,
@@ -1030,18 +1126,17 @@ async function generateWithToolsStream(
         `gemini tools stream: thinkingLevel "${THINKING_LEVEL}" rejected — ` +
           `continuing without it. Set GEMINI_THINKING_LEVEL.`
       );
-      return generateWithToolsStream({ contents, system, declarations, onDelta, _model, timeoutMs }, true);
+      return again({}, true);
     }
-    if (keys.isQuotaError(r.status, errBody)) keys.markSpent(key, model);
+    // Another key before another model (nextKey). Nothing was streamed
+    // yet, so onDelta has said nothing and the turn can be asked again.
+    if (setKeyAside(key, model, r.status, errBody) && nextKey(model, [..._tried, key])) {
+      return again({ _tried: [..._tried, key] });
+    }
     if (r.status === 404) modelUnavailable(model, _model ? "GEMINI_FALLBACK_MODEL" : "GEMINI_MODEL");
     if ((r.status === 429 || r.status === 404) && !_model && fallbackModel() !== model) {
       if (r.status === 429) console.warn(`gemini tools stream: ${model} out of quota — retrying on ${fallbackModel()}`);
-      // timeoutMs rides along: a background turn's longer deadline was
-      // dropped here, so a retried scheduled task fell back to the 30 s one.
-      return generateWithToolsStream(
-        { contents, system, declarations, onDelta, _model: fallbackModel(), timeoutMs },
-        _retry
-      );
+      return again({ _model: fallbackModel(), _tried: [] });
     }
     throw new Error(
       `gemini tools stream ${r.status} [model=${model}] ${errBody.slice(0, 300) || "(empty body)"}`

@@ -1551,17 +1551,29 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.ok(!ai.isGemini3("gemini-2.5-flash-lite") && !ai.isGemini3("gemini-flash-latest-tts"));
   });
 
-  await atest("a retired model (404) is not a spent key: the turn moves to the fallback, no key is set aside, one log line names the setting", async () => {
+  // Google's own words for a model this key's project cannot use (2026-09-25).
+  const gone = (m) => JSON.stringify({ error: { code: 404, status: "NOT_FOUND",
+    message: `This model models/${m} is no longer available to new users. Please update your code to use a newer model.` } });
+  // A streamGenerateContent body: one SSE event carrying the whole text.
+  const sseBody = (text) => {
+    let sent = false;
+    return { getReader: () => ({
+      read: async () => (sent ? { done: true } : (sent = true, { done: false, value: new TextEncoder().encode(
+        `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text }] } }] })}\n\n`) })),
+      releaseLock() {},
+    }) };
+  };
+
+  await atest("a retired model (404) is not a spent key: the turn moves to the fallback, no key is filed out of quota, one log line names the setting", async () => {
     const keys = require("../src/services/ai/keys");
     const realFetch = global.fetch;
     const logs = [];
     const [warn, error] = [console.warn, console.error];
-    const gone = (m) => JSON.stringify({ error: { code: 404, status: "NOT_FOUND",
-      message: `This model models/${m} is no longer available to new users. Please update your code to use a newer model.` } });
     const hits = [];
+    const seen = () => hits.map((h) => `${h.model}/${h.key.slice(-4)}`);
     try {
       await withEnv({ GEMINI_API_KEY: "test-key-aaaa-1111", GEMINI_FALLBACK_KEYS: "test-key-bbbb-2222",
-        GEMINI_MODEL: "gemini-retired-chat", GEMINI_FALLBACK_MODEL: "gemini-fallback-alive",
+        GEMINI_MODEL: "gemini-retired-chat", GEMINI_FALLBACK_MODEL: "gemini-fallback-alive", GEMINI_STT_MODEL: undefined,
         AUTOMATION_MODEL: "gemini-retired-planner", AUTOMATION_FAST_MODEL: undefined }, async () => {
         console.warn = (...a) => logs.push(a.join(" "));
         console.error = (...a) => logs.push(a.join(" "));
@@ -1570,6 +1582,7 @@ const swiggyCart = { pkg: SW, nodes: [
           hits.push({ model, key: init.headers["x-goog-api-key"], body: JSON.parse(init.body) });
           if (/retired/.test(model)) return { ok: false, status: 404, text: async () => gone(model) };
           const text = /TASK:/.test(init.body) ? PLAN : "hello";
+          if (/:streamGenerateContent/.test(url)) return { ok: true, status: 200, body: sseBody(text) };
           return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text }] } }] }) };
         };
         // Chat: both keys asked (a model can be missing on one key only,
@@ -1577,26 +1590,52 @@ const swiggyCart = { pkg: SW, nodes: [
         const out = await realGenerateReply([{ role: "user", content: "hi" }], { system: "s" });
         assert.strictEqual(out.reply, "hello");
         assert.strictEqual(out.model, "gemini-fallback-alive");
-        assert.deepStrictEqual(hits.map((h) => `${h.model}/${h.key.slice(-4)}`),
-          ["gemini-retired-chat/1111", "gemini-retired-chat/2222", "gemini-fallback-alive/1111"]);
-        // Neither key was filed as out of quota or set aside.
+        assert.deepStrictEqual(seen(), ["gemini-retired-chat/1111", "gemini-retired-chat/2222", "gemini-fallback-alive/1111"]);
+        // Neither key was filed as out of quota. Both are set aside for that
+        // model only, quietly — they cannot answer it (review, 2026-09-25).
         assert.ok(!logs.some((l) => /out of quota/.test(l)), logs.join("\n"));
         assert.ok(!keys.status().spent.some((s) => /retired/.test(s.model)), JSON.stringify(keys.status().spent));
-        assert.strictEqual(keys.usable("gemini-retired-chat").length, 2);
-        // Said once, naming the setting to change.
+        assert.strictEqual(keys.status().missing.filter((s) => s.model === "gemini-retired-chat").length, 2);
+        assert.ok(keys.missingEverywhere("gemini-retired-chat"));
+        assert.strictEqual(keys.usable("gemini-retired-chat").length, 2, "all set aside: the full list, never none");
+        assert.strictEqual(keys.usable("gemini-fallback-alive").length, 2, "the keys serve every other model");
+        // Said once, naming the setting to change. The next turn does not
+        // ask the retired model again: every key said 404 moments ago.
+        hits.length = 0;
         await realGenerateReply([{ role: "user", content: "hi again" }], { system: "s" });
+        assert.deepStrictEqual(seen(), ["gemini-fallback-alive/1111"]);
         assert.strictEqual(logs.filter((l) => /model gemini-retired-chat unavailable — set GEMINI_MODEL/.test(l)).length, 1,
           logs.join("\n"));
         // The chat's tool path moves to the fallback the same way.
         hits.length = 0;
         const tools = await ai.generateWithTools({ contents: [{ role: "user", parts: [{ text: "hi" }] }], system: "s" });
         assert.strictEqual(tools.text, "hello");
-        assert.strictEqual(hits[hits.length - 1].model, "gemini-fallback-alive");
+        assert.deepStrictEqual(seen(), ["gemini-fallback-alive/1111"]);
+        // So do the two streams and speech-to-text (whose model is the chat
+        // model here): straight to the fallback, nothing else said.
+        hits.length = 0;
+        const streamed = await ai.generateWithToolsStream({ contents: [{ role: "user", parts: [{ text: "hi" }] }], system: "s" });
+        let said = "";
+        for await (const d of ai.generateReplyStream([{ role: "user", content: "hi" }], { system: "s" })) said += d;
+        const heard = await ai.transcribeAudio(Buffer.from("clip"), "audio/mp4");
+        assert.deepStrictEqual([streamed.text, said, heard.text], ["hello", "hello", "hello"]);
+        assert.deepStrictEqual(seen(), ["gemini-fallback-alive/1111", "gemini-fallback-alive/1111", "gemini-fallback-alive/1111"]);
+        assert.strictEqual(logs.filter((l) => /unavailable/.test(l)).length, 1, logs.join("\n"));
+        // A stream meeting a retired model for the first time asks both
+        // keys, then the fallback — and says so once.
+        process.env.GEMINI_MODEL = "gemini-retired-stream";
+        hits.length = 0;
+        const first = await ai.generateWithToolsStream({ contents: [{ role: "user", parts: [{ text: "hi" }] }], system: "s" });
+        assert.strictEqual(first.text, "hello");
+        assert.deepStrictEqual(seen(), ["gemini-retired-stream/1111", "gemini-retired-stream/2222", "gemini-fallback-alive/1111"]);
+        assert.strictEqual(logs.filter((l) => /model gemini-retired-stream unavailable — set GEMINI_MODEL/.test(l)).length, 1,
+          logs.join("\n"));
+        process.env.GEMINI_MODEL = "gemini-retired-chat";
         // A caller with its own budget (noRetry) gets the 404 back at once — no second model.
         hits.length = 0;
         await assert.rejects(realGenerateReply([{ role: "user", content: "x" }], { system: "s", noRetry: true }),
           (e) => e.status === 404);
-        assert.ok(hits.length && hits.every((h) => h.model === "gemini-retired-chat"), JSON.stringify(hits.map((h) => h.model)));
+        assert.ok(hits.every((h) => h.model !== "gemini-fallback-alive"), JSON.stringify(hits.map((h) => h.model)));
         // The planner on a retired AUTOMATION_MODEL: the fast model answers
         // the step, and the log says which setting to change.
         ai.generateReply = realGenerateReply;
@@ -1611,6 +1650,94 @@ const swiggyCart = { pkg: SW, nodes: [
         const fastCall = hits.find((h) => h.model === "gemini-flash-lite-latest");
         assert.deepStrictEqual(fastCall.body.generationConfig.thinkingConfig, { thinkingLevel: "LOW" });
         assert.strictEqual(fastCall.body.generationConfig.mediaResolution, "MEDIA_RESOLUTION_MEDIUM");
+      });
+    } finally {
+      global.fetch = realFetch;
+      [console.warn, console.error] = [warn, error];
+    }
+  });
+
+  // REVIEW, 2026-09-25: with key 1 lacking the model and key 2 serving it,
+  // every streamed chat and voice turn was answered by the fallback model
+  // on key 1, every transcription failed with a 404, and the log said "set
+  // GEMINI_MODEL" — the three paths take a key by hand and never rotated.
+  await atest("a model ONE key lacks: the streams and speech ask the next key, the configured model answers there, nothing is logged", async () => {
+    const keys = require("../src/services/ai/keys");
+    const realFetch = global.fetch;
+    const logs = [];
+    const [warn, error] = [console.warn, console.error];
+    const hits = [];
+    const seen = () => hits.map((h) => `${h.model}/${h.key.slice(-4)}`);
+    const K1 = "test-key-cccc-1111";
+    const K2 = "test-key-dddd-2222";
+    try {
+      await withEnv({ GEMINI_API_KEY: K1, GEMINI_FALLBACK_KEYS: K2, GEMINI_MODEL: undefined,
+        GEMINI_FALLBACK_MODEL: "gemini-fallback-alive", GEMINI_STT_MODEL: undefined }, async () => {
+        console.warn = (...a) => logs.push(a.join(" "));
+        console.error = (...a) => logs.push(a.join(" "));
+        // Key 1's project cannot reach the "-half" models; key 2's can
+        // (his keys differ in the models they reach, measured 2026-09-20).
+        global.fetch = async (url, init) => {
+          const model = String(url).match(/models\/([^:]+):/)[1];
+          const key = init.headers["x-goog-api-key"];
+          hits.push({ model, key });
+          if (/-half$/.test(model) && key === K1) return { ok: false, status: 404, text: async () => gone(model) };
+          const text = /Transcribe this audio/.test(init.body) ? '{"text":"hello there","language":"en"}' : `hello from ${model}`;
+          if (/:streamGenerateContent/.test(url)) return { ok: true, status: 200, body: sseBody(text) };
+          return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text }] } }] }) };
+        };
+        const paths = {
+          "tools stream": async () =>
+            (await ai.generateWithToolsStream({ contents: [{ role: "user", parts: [{ text: "hi" }] }], system: "s" })).text,
+          "reply stream": async () => {
+            let t = "";
+            for await (const d of ai.generateReplyStream([{ role: "user", content: "hi" }], { system: "s" })) t += d;
+            return t;
+          },
+          // GEMINI_STT_MODEL unset: speech runs on the chat model.
+          "speech": async () => (await ai.transcribeAudio(Buffer.from("clip"), "audio/mp4")).text,
+        };
+        let n = 0;
+        for (const [name, run] of Object.entries(paths)) {
+          // A model of its own per path, so none leans on another's set-aside key.
+          const model = `gemini-two-key-${++n}-half`;
+          process.env.GEMINI_MODEL = model;
+          hits.length = 0;
+          assert.strictEqual(await run(), name === "speech" ? "hello there" : `hello from ${model}`, name);
+          assert.deepStrictEqual(seen(), [`${model}/1111`, `${model}/2222`], name);
+          // Key 1 is set aside for that model, quietly: the next turn starts on key 2.
+          hits.length = 0;
+          assert.strictEqual(await run(), name === "speech" ? "hello there" : `hello from ${model}`, `${name}, again`);
+          assert.deepStrictEqual(seen(), [`${model}/2222`], `${name}, again`);
+          assert.deepStrictEqual(keys.status().missing.filter((m) => m.model === model), [{ key: keys.fingerprint(K1), model }], name);
+          assert.ok(!keys.status().spent.some((m) => m.model === model), name);
+          assert.ok(!keys.missingEverywhere(model), name);
+          // Key 1 still serves every other model.
+          assert.deepStrictEqual(keys.usable("gemini-fallback-alive"), [K1, K2], name);
+        }
+        // Nothing said: not "out of quota", and not "set GEMINI_MODEL" —
+        // the setting is right, key 2 serves it.
+        assert.ok(!logs.some((l) => /out of quota|unavailable|returned 404|retrying as/.test(l)), logs.join("\n"));
+        // The paths that rotate by themselves skip key 1 too: no extra round trip.
+        hits.length = 0;
+        const out = await realGenerateReply([{ role: "user", content: "hi" }], { system: "s" });
+        const tools = await ai.generateWithTools({ contents: [{ role: "user", parts: [{ text: "hi" }] }], system: "s" });
+        assert.deepStrictEqual([out.reply, tools.text], ["hello from gemini-two-key-3-half", "hello from gemini-two-key-3-half"]);
+        assert.deepStrictEqual(seen(), ["gemini-two-key-3-half/2222", "gemini-two-key-3-half/2222"]);
+        // A speech model of its own that only key 2 reaches is not written
+        // off as dead on key 1's 404: key 2 transcribes with it.
+        process.env.GEMINI_MODEL = "gemini-two-key-chat";
+        process.env.GEMINI_STT_MODEL = "gemini-two-key-stt-half";
+        hits.length = 0;
+        assert.strictEqual((await ai.transcribeAudio(Buffer.from("clip"), "audio/mp4")).text, "hello there");
+        assert.deepStrictEqual(seen(), ["gemini-two-key-stt-half/1111", "gemini-two-key-stt-half/2222"]);
+        hits.length = 0;
+        await ai.transcribeAudio(Buffer.from("clip"), "audio/mp4");
+        assert.deepStrictEqual(seen(), ["gemini-two-key-stt-half/2222"], "still the speech model, on key 2");
+        assert.ok(!logs.some((l) => /unavailable|returned 404/.test(l)), logs.join("\n"));
+        // An EMPTY 404 is a missing model too (Google sends one at times).
+        assert.ok(keys.isModelMissingForKey(404, "") && keys.isModelMissingForKey(404, gone("x")));
+        assert.ok(!keys.isModelMissingForKey(404, "<html>proxy error</html>") && !keys.isModelMissingForKey(429, ""));
       });
     } finally {
       global.fetch = realFetch;
