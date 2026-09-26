@@ -202,6 +202,9 @@ function queryFor(topic) {
   return (mapped !== undefined ? mapped : t) || "India";
 }
 
+/** How long an answer waits for article pictures before it goes without. */
+const IMAGE_WAIT_MS = 1200;
+
 /** The most a caller can ask for; the cached list holds all of them. */
 const MAX_STORIES = 20;
 
@@ -295,7 +298,15 @@ async function headlines({ topic = "", count = 10, sort = "relevance" } = {}) {
   //
   // Only an explicit ask for the LATEST re-orders by clock.
   if (order === "recent") rows.sort((a, b) => a.ageMins - b.ageMins);
-  const items = await newsImages.enrich(rows);
+  // STORIES FIRST, PICTURES CATCH UP (2026-09-26). On the owner's phone
+  // the first News of the morning sat on a spinner: the index answered,
+  // then the deck waited up to three more seconds while article pages were
+  // read for their pictures. The answer now waits at most IMAGE_WAIT_MS;
+  // the pages still being read, and the ones not yet asked for, carry on
+  // in the background into the per-page memory, and the next request —
+  // a cache hit — picks their pictures up (fillFromMemory above).
+  const items = await newsImages.enrich(rows, { budgetMs: IMAGE_WAIT_MS });
+  newsImages.enrich(rows, { budgetMs: 15_000 }).catch(() => {});
   const out = { ok: true, topic: topic || "today", sort: order, items };
   searchCache.put(shape, q, out, true).catch(() => {}); // live: 20 min
   return { ...out, items: items.slice(0, n), cached: false };
