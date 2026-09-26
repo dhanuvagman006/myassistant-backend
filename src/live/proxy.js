@@ -1280,9 +1280,8 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           //
           // Unset, Google's default silence window is long enough to feel
           // broken — the user sits in silence wondering if it heard them.
-          // ~600 ms is the sweet spot for conversational speech: short
-          // enough to feel instant, long enough not to cut people off
-          // mid-sentence. Tune with LIVE_SILENCE_MS if it clips anyone.
+          // The window is set below (silenceDurationMs, 1.1 s since
+          // 2026-09-26). Tune with LIVE_SILENCE_MS if it clips anyone.
           // VOICE ACTIVITY DETECTION.
           //
           // MANUAL MODE DOES NOT WORK ON THIS MODEL. It was tried: the app
@@ -1325,8 +1324,9 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
               disabled: false,
               startOfSpeechSensitivity:
                 process.env.LIVE_START_SENSITIVITY || "START_SENSITIVITY_HIGH",
+              // LOW since 2026-09-26: see silenceDurationMs below.
               endOfSpeechSensitivity:
-                process.env.LIVE_END_SENSITIVITY || "END_SENSITIVITY_HIGH",
+                process.env.LIVE_END_SENSITIVITY || "END_SENSITIVITY_LOW",
               // prefixPadding is how much audio BEFORE detected onset is
               // kept. It was 20ms, which clips the first consonant clean
               // off every sentence — "hello" reaches the model as "ello",
@@ -1337,9 +1337,23 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
               // pause mid-sentence to think, and cutting there sends half a
               // question to the model, which then answers the wrong one.
               // 700ms survived a breath but was the largest single share of
-              // the "why is it still silent" wait; 500ms still clears a
-              // normal breath and shaves a fifth of a second off EVERY turn.
-              silenceDurationMs: Number(process.env.LIVE_SILENCE_MS || 500),
+              // the "why is it still silent" wait, so it went to 500ms.
+              //
+              // PATIENCE OVER SPEED (2026-09-26). The client: "When we want
+              // to say something the Assistant should listen carefully till
+              // we finish telling, before we complete what we want to say
+              // if it stops then it's a major problem". At 500ms with the
+              // end sensitivity HIGH, a breath or a moment's thought ended
+              // his turn; the reply started, the microphone closed for it
+              // (no barge-in), and the rest of his sentence was lost. Now
+              // the turn ends after 1.1s of quiet and the detector is slow
+              // to call a pause the end: every answer starts about half a
+              // second later, and nobody is cut off mid-sentence. Both are
+              // env-tunable without a rebuild (LIVE_SILENCE_MS,
+              // LIVE_END_SENSITIVITY). The app streams 1.2s of quiet after
+              // speech (tailMs in live_service.dart) — keep this below it,
+              // or the pause is never heard in full.
+              silenceDurationMs: Number(process.env.LIVE_SILENCE_MS || 1100),
             },
           },
           systemInstruction: {

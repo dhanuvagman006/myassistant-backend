@@ -31,12 +31,30 @@ const SHORT_OK = new Set([
   // requests on a phone — a user saying one of these wants exactly that,
   // and refusing them as "a single word with no sentence around it" was
   // measured in production ("hotspot" → asked to repeat).
+  // YES, NO, OKAY, ENOUGH IN THE SOUTHERN LANGUAGES (2026-09-26). The
+  // client, answering in Malayalam, was told "sorry, I didn't catch that"
+  // to a plain "ശരി": no Malayalam, Tamil or Telugu word was here, and the
+  // Kannada and Hindi ones above never matched either (see the single-word
+  // check below). Written as spoken, and romanised as recognisers often
+  // return them.
+  "ശരി", "അതെ", "ഇല്ല", "വേണ്ട", "വേണം", "മതി", "ഉണ്ട്", "ഓക്കെ", "ശരിയാണ്",
+  "சரி", "ஆமாம்", "ஆம்", "இல்லை", "வேண்டாம்", "போதும்",
+  "సరే", "అవును", "ఔను", "లేదు", "వద్దు", "చాలు",
+  "ಬೇಡ", "ಬೇಕು", "ಸಾಕು", "जी", "हाँजी",
+  "shari", "sheri", "illa", "venda", "venam", "mathi", "aama", "aamaam",
+  "illai", "vendaam", "podhum", "sare", "avunu", "ledu", "vaddu", "chaalu",
+  "ji", "beda", "beku", "saaku",
   "hotspot", "flashlight", "torch", "bluetooth", "wifi", "wi-fi", "volume",
   "mute", "unmute", "quieter", "softer", "brighter", "dimmer", "pause",
   "play", "resume", "skip", "previous", "alarm", "timer", "snooze", "camera",
   "screenshot", "lock", "silent", "vibrate", "home", "settings", "news",
   "weather", "brief", "update", "help", "navigate", "music", "radio",
 ]);
+
+/** Devanagari, Bengali, Gurmukhi, Gujarati, Odia, Tamil, Telugu, Kannada, Malayalam. */
+const INDIC_SCRIPT = /[ऀ-ൿ]/u;
+
+for (const w of [...SHORT_OK]) SHORT_OK.add(w.normalize("NFC"));
 
 /** Verbs that make two to four words a request rather than a fragment. */
 const IMPERATIVE =
@@ -132,8 +150,17 @@ function assess(text, { expectsNumber = false, languages = [] } = {}) {
 
   // One short token that is not a known word: "con", "flow", "me", "aí".
   if (words.length === 1) {
-    const w = lower.replace(/[^\p{L}\p{N}]/gu, "");
+    // Marks kept (2026-09-26): with them stripped, "ಸರಿ" became "ಸರ" and
+    // "हाँ" became "ह", so the Indian words listed above never matched and
+    // every one-word Indian-language answer was refused as noise.
+    const w = lower.replace(/[^\p{L}\p{M}\p{N}]/gu, "").normalize("NFC");
     if (SHORT_OK.has(w)) return { quality: "clear", reason: "short but unambiguous", digitsOnly: false };
+    // A single word in an Indian script is a real word the recogniser
+    // heard, not the "con"/"flow" crumbs a mis-set English recogniser
+    // makes of noise: understandable, just too thin to act on alone.
+    if (INDIC_SCRIPT.test(w)) {
+      return { quality: "weak", reason: "single word with no sentence around it", digitsOnly: false };
+    }
     if (w.length <= 4) {
       return { quality: "garbled", reason: "single short fragment", digitsOnly: false };
     }
@@ -172,6 +199,9 @@ function clarificationFor(assessment, { language = "" } = {}) {
   if (/hindi/.test(l)) return "माफ़ कीजिए, वह ठीक से सुनाई नहीं दिया — फिर से बोलिए?";
   if (/kannada/.test(l)) return "ಕ್ಷಮಿಸಿ, ಅದು ಸರಿಯಾಗಿ ಕೇಳಿಸಲಿಲ್ಲ — ಇನ್ನೊಮ್ಮೆ ಹೇಳ್ತೀರಾ?";
   if (/tulu/.test(l)) return "ಕ್ಷಮಿಸಿ, ಅವು ಸರಿಯಾದ್ ಕೇನ್ಜಿ — ಒಂಜಿ ಸರ್ತಿ ಪನ್ಪರಾ?";
+  if (/malayalam/.test(l)) return "ക്ഷമിക്കണം, അത് ശരിയായി കേട്ടില്ല — ഒന്നുകൂടി പറയാമോ?";
+  if (/tamil/.test(l)) return "மன்னிக்கவும், அது சரியாகக் கேட்கவில்லை — மீண்டும் சொல்ல முடியுமா?";
+  if (/telugu/.test(l)) return "క్షమించండి, అది సరిగ్గా వినిపించలేదు — మళ్ళీ చెప్పగలరా?";
   if (assessment && assessment.digitsOnly) {
     return "I heard some numbers but nothing else — what would you like me to do with them?";
   }

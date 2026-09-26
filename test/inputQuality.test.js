@@ -17,6 +17,15 @@ check("चाय दिखाओ।", "clear");
 check("set timer 10 min", "clear");
 check("call mom", "clear");
 check("volume", "clear");
+// One-word answers in Indian languages (2026-09-26: the client's
+// Malayalam "ശരി" was answered "sorry, I didn't catch that").
+for (const w of ["ശരി", "അതെ", "ഇല്ല", "ಸರಿ", "ಇಲ್ಲ", "ಹೌದು", "हाँ", "नहीं", "ठीक",
+  "சரி", "ஆமாம்", "இல்லை", "సరే", "అవును", "లేదు"]) {
+  check(w, "clear", { languages: ["Malayalam"] });
+}
+// Any other single Indian-script word is a real word, if too thin to act on.
+check("കാപ്പി", "weak");
+check("ಕಾಫಿ", "weak");
 // Must still be refused
 check("con", "garbled");
 check("149", "garbled");
