@@ -57,11 +57,12 @@ test("build 112 keeps the patient, uninterruptible session it has today", () => 
   assert.strictEqual(s.realtimeInputConfig.automaticActivityDetection.silenceDurationMs, 1100);
   assert.strictEqual(s.blockingTools, false);
 }));
-test("build 113 can be interrupted, answers sooner, on Gemini 3.8 Live", () => withEnv({}, () => {
+test("build 113 can be interrupted and answers sooner, on the model everyone has", () => withEnv({}, () => {
   tt._forgetRefusals();
   const s = tt.forSession({ build: 113 });
-  assert.strictEqual(s.model, "gemini-3.8-live");
-  assert.strictEqual(s.next, true);
+  // The newer model is opt-in since its first test (voice and goals).
+  assert.strictEqual(s.model, "gemini-2.5-flash-native-audio-preview");
+  assert.strictEqual(s.next, false);
   assert.strictEqual(s.bargeIn, true);
   assert.ok(!("activityHandling" in s.realtimeInputConfig),
     "interrupting is Google's default, so nothing is sent for it");
@@ -72,8 +73,18 @@ test("build 113 can be interrupted, answers sooner, on Gemini 3.8 Live", () => w
   assert.strictEqual(d.endOfSpeechSensitivity, "END_SENSITIVITY_LOW");
   assert.strictEqual(d.prefixPaddingMs, 300);
   assert.ok(d.silenceDurationMs < 1200, "must stay under the app's 1.2 s quiet tail");
-  assert.strictEqual(s.blockingTools, true);
+  assert.strictEqual(s.blockingTools, false);
 }));
+test("GEMINI_LIVE_MODEL_NEXT puts build 113 on the newer model, tools kept waiting", () =>
+  withEnv({ GEMINI_LIVE_MODEL_NEXT: "gemini-3.8-live" }, () => {
+    tt._forgetRefusals();
+    const s = tt.forSession({ build: 113 });
+    assert.strictEqual(s.model, "gemini-3.8-live");
+    assert.strictEqual(s.next, true);
+    assert.strictEqual(s.blockingTools, true);
+    assert.strictEqual(tt.forSession({ build: 112 }).model, "gemini-2.5-flash-native-audio-preview",
+      "older builds never move");
+  }));
 test("LIVE_BARGE_IN=off puts build 113 back to half-duplex", () => withEnv({ LIVE_BARGE_IN: "off" }, () => {
   tt._forgetRefusals();
   const s = tt.forSession({ build: 113 });
@@ -97,7 +108,7 @@ test("the windows are tunable, and a typo falls back instead of breaking", () =>
   }));
 
 console.log("\na model that refuses a session");
-test("is set aside for half an hour, then tried again", () => withEnv({}, () => {
+test("is set aside for half an hour, then tried again", () => withEnv({ GEMINI_LIVE_MODEL_NEXT: "gemini-3.8-live" }, () => {
   tt._forgetRefusals();
   const t0 = 1_800_000_000_000;
   tt.markRefused("gemini-3.8-live", t0);

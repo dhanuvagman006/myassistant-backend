@@ -7070,8 +7070,10 @@ function registerBuiltins() {
         goal: {
           type: "string",
           description:
-            "The whole task in the user's words with every detail they gave " +
-            "(dish, rating, veg, quantity, size, address, time).",
+            "The task itself, as one instruction with every detail they gave " +
+            "(dish, rating, veg, quantity, size, address, time): 'order veg " +
+            "biryani from a 4-star place on Swiggy'. Not their sentence word " +
+            "for word — no 'open Swiggy and', no filler.",
         },
         category: {
           type: "string",
@@ -7083,7 +7085,7 @@ function registerBuiltins() {
         app: { type: "string", description: "ONLY if the user named an app." },
         query: {
           type: "string",
-          description: "The thing to search for in the app, in their words: 'veg biryani', 'phone cover'. Lets the app open straight on the results.",
+          description: "The thing to search for in the app, in their words: 'veg biryani', 'phone cover'. ALWAYS fill it when they named a dish or product. Lets the app open straight on the results.",
         },
         url: { type: "string", description: "For a website task: the page to open (https://…)." },
         run_id: { type: "integer", description: "Resuming a task that asked the user a question." },

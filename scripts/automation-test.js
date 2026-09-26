@@ -583,6 +583,17 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.strictEqual(intents.extractQuery("please get me a phone cover on Amazon", "amazon"), "phone cover");
     assert.strictEqual(intents.extractQuery("add milk to my blinkit cart", "blinkit"), "milk");
     assert.strictEqual(intents.extractQuery("Book a table for dinner", ""), "table for dinner");
+    // Owner's test, 2026-09-26: the whole sentence, as spoken, went to
+    // Swiggy's search as "Open . And order biryani".
+    for (const said of ["Open Swiggy. And order biryani.", "Open Swiggy and order biryani",
+      "open swiggy, then order biryani", "Please open Swiggy app and order biryani",
+      "Open Swiggy. Order biryani."]) {
+      assert.strictEqual(intents.extractQuery(said, "swiggy"), "biryani", said);
+    }
+    assert.strictEqual(intents.extractQuery("Open Swiggy and order veg biryani from Meghana", "swiggy"), "veg biryani");
+    assert.strictEqual(intents.extractQuery("Open Swiggy", "swiggy"), "", "nothing to search for");
+    assert.strictEqual(intents.extractQuery("order chicken and mutton biryani", "swiggy"), "chicken and mutton biryani",
+      "an 'and' inside the dish stays");
     const s = await svc.start(UID, { goal: "Order veg biryani from a 4 star restaurant near me on Swiggy", app: "swiggy", category: "food" });
     assert.strictEqual(s.directive.start_url, "https://www.swiggy.com/search?query=veg%20biryani");
     // A note for the planner only: it says both outcomes, and the owner

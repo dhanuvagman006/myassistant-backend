@@ -207,6 +207,10 @@ function directive(r, { resume = false } = {}) {
     goal: r.goal,
     app: r.app_label || r.app_name,
     app_name: r.app_name,
+    // Build 115: when the named app is not on the phone, the phone looks
+    // for one it does have in the same kind (food: Swiggy for Zomato) and
+    // offers it, together with installing the one asked for.
+    category: r.category || "",
     pkg: r.app_pkg,
     start_url: resume ? "" : r.start_url,
     web: r.web,
@@ -931,7 +935,17 @@ async function finish(userId, runId, { reason = "error", kind = "", detail = "" 
       }
     } else if (reason === "returned") report = composeReport(r, { kind: k || "payment" });
     else if (reason === "left_app") report = `${say.lead(r)}Another screen took over from ${say.app(r)}, so I stopped there.`;
-    else if (reason === "not_installed") report = `${say.pretty(r.app_label) || "That app"} isn't installed on your phone.`;
+    // The owner, 2026-09-26: "it's saying Zomato is not present, but it
+    // should ask should I install it". Build 115 asks inside the
+    // conversation before the task starts; an older phone only has this
+    // report, so it says how to get either outcome.
+    else if (reason === "not_installed") {
+      const name = say.pretty(r.app_label);
+      report = name
+        ? `${name} isn't installed on your phone. Say "install ${name}" and I'll get it, ` +
+          `or tell me another app to use.`
+        : "That app isn't installed on your phone. Tell me another app to use.";
+    }
     else report = `${say.lead(r)}${say.deviceFailure(detail, r)}`;
   }
   return forPhone(await end(userId, r, status, { kind: k, report: report.trim() }), proto);

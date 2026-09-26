@@ -21,14 +21,15 @@
  * builds keep the patient settings, since an early end still loses their
  * words there.
  *
- * Build 113 also talks to Gemini 3.8 Live, Google's stable default live
- * model since 2026-09-15 (lower latency, more natural speech). If it ever
- * refuses a session, the model that has served everyone so far takes over
- * for half an hour (markRefused), and the app's own reconnect lands on it.
+ * Build 113 can also be put on a newer live model (GEMINI_LIVE_MODEL_NEXT,
+ * e.g. gemini-3.8-live, Google's default since 2026-09-15); see NEXT below
+ * for why that is opt-in. If it ever refuses a session, the model that has
+ * served everyone so far takes over for half an hour (markRefused), and
+ * the app's own reconnect lands on it.
  *
  * Every number is env-tunable without a rebuild:
  *   LIVE_BARGE_IN=off           build 113 goes back to half-duplex
- *   GEMINI_LIVE_MODEL_NEXT=off  build 113 stays on GEMINI_LIVE_MODEL
+ *   GEMINI_LIVE_MODEL_NEXT=<m>  build 113 talks to model <m> (unset: GEMINI_LIVE_MODEL)
  *   LIVE_SILENCE_MS_DUPLEX      the pause that ends a turn when barge-in is on
  *   LIVE_SILENCE_MS             the same, half-duplex
  */
@@ -38,9 +39,24 @@ const { envModel } = require("../services/ai/router");
 const DUPLEX_BUILD = 113;
 
 const CURRENT = () => envModel("GEMINI_LIVE_MODEL", "gemini-2.5-flash-native-audio-preview");
-const NEXT = () => envModel("GEMINI_LIVE_MODEL_NEXT", "gemini-3.8-live");
 
 const off = (v) => /^(off|0|false|no|none)$/i.test(String(v ?? "").trim());
+
+/**
+ * THE NEWER MODEL IS OPT-IN (2026-09-26, the same evening). It was the
+ * default for build 113 for a few hours, and the owner's first test with it
+ * found two regressions: the voice came back as a woman's instead of the
+ * one chosen (Fenrir), and his sentence reached the phone task word for
+ * word ("Open Swiggy. And order biryani.") where the older model wrote a
+ * clean goal. So build 113 keeps the model everyone had, with its faster
+ * turns and barge-in, until the newer one is checked;
+ * GEMINI_LIVE_MODEL_NEXT=gemini-3.8-live puts it back on for 113+.
+ */
+const NEXT = () => {
+  const v = process.env.GEMINI_LIVE_MODEL_NEXT;
+  if (!v || off(v)) return null;
+  return envModel("GEMINI_LIVE_MODEL_NEXT", null);
+};
 const ms = (v, fallback) => {
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? Math.round(n) : fallback;
@@ -87,8 +103,7 @@ const toolsMustBlock = (model) =>
  */
 function forSession({ build = 0, now = Date.now() } = {}) {
   const capable = Number(build) >= DUPLEX_BUILD;
-  const nextWanted = capable && !off(process.env.GEMINI_LIVE_MODEL_NEXT);
-  const next = nextWanted ? NEXT() : null;
+  const next = capable ? NEXT() : null;
   const useNext = Boolean(next) && next !== CURRENT() && !isRefused(next, now);
   const model = useNext ? next : CURRENT();
   const bargeIn = capable && !off(process.env.LIVE_BARGE_IN);
