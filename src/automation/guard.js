@@ -627,8 +627,25 @@ function handoffSentence(kind, appLabel) {
   }
 }
 
+/**
+ * A PAGE THAT SAYS IT IS STILL LOADING (2026-09-26, the owner's "file my
+ * ITR", run 32): the income tax site showed only "LOADING" under the
+ * browser's own bar, the planner was asked what to do with it, timed out,
+ * and the run was abandoned a second before the login form it would have
+ * handed over at. Such a screen is waited out, with no model call. A form
+ * already on screen, or a busy page, is not "still loading".
+ */
+const LOADING_TEXT = /^s*(?:loading|please wait|loading,? please wait|just a moment|one moment|fetching (?:details|data))s*(?:.{1,3}|…)?s*$/i;
+function stillLoading(screen) {
+  const nodes = screen?.nodes || [];
+  if (!nodes.length || nodes.length > 25) return false;
+  if (nodes.some((n) => n.edit)) return false;
+  return screenTexts(screen).some((t) => LOADING_TEXT.test(t));
+}
+
 module.exports = {
   checkAction, checkScreen, checkPackage, handoffSentence, maySubmit, screenTexts, payLabel,
+  stillLoading,
   PAY_ACTION, MONEY_ACTION, CREDENTIAL_FIELD, BROWSERS, OTP_SCREEN,
   PAYMENT_PKGS, SYSTEM_PKGS, SETTINGS_PKGS, MESSAGING_PKGS, HANDOFF_TEXT,
   isSystemPkg,

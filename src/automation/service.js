@@ -712,6 +712,17 @@ async function stepLocked(userId, runId, { screen, last, seq = null } = {}, meta
     return { status: "continue", action: { type: "wait" }, expect: "the screen to load", step: delivered(steps).length };
   }
 
+  // STILL LOADING (guard.stillLoading, 2026-09-26): waited out with no
+  // model call, for up to four looks; after that the planner decides.
+  if (guard.stillLoading(screen)) {
+    const recent = delivered(r.steps).slice(-4);
+    if (!(recent.length === 4 && recent.every((st) => st.action?.type === "wait" && st.loading))) {
+      const steps = [...r.steps, { action: { type: "wait" }, expect: "the page to finish loading", loading: true }];
+      if (!await save(userId, r, { steps }, { onlyIf: ["running"] })) return reply(await current(userId, r.id));
+      return { status: "continue", action: { type: "wait" }, expect: "the page to finish loading", step: delivered(steps).length };
+    }
+  }
+
   // Opening the same app again and again is a loop, not progress.
   const reopens = delivered(r.steps).filter((st) => st.action?.type === "open_app").map((st) => String(st.action.name || "").toLowerCase());
   if (reopens.length >= 3 && new Set(reopens.slice(-3)).size === 1) {
@@ -806,6 +817,17 @@ async function stepLocked(userId, runId, { screen, last, seq = null } = {}, meta
   // as a planner note or "I've stopped here for you to take over".
   if (d.error) {
     console.warn(`automation planner error run=${r.id}: ${d.error}`);
+    // ONE SLOW ANSWER IS NOT THE END (2026-09-26, run 32: both models timed
+    // out once, on a page that was still loading). The next look plans
+    // again; only a second failure in a row ends the run.
+    const last = delivered(r.steps).slice(-1)[0];
+    if (!(last && last.action?.type === "wait" && last.plannerRetry)) {
+      const steps = [...r.steps, { action: { type: "wait" }, expect: "the same screen", plannerRetry: true }];
+      if (!await save(userId, r, { steps, notes, llm_calls: calls }, { onlyIf: ["running"] })) {
+        return reply(await current(userId, r.id));
+      }
+      return { status: "continue", action: { type: "wait" }, expect: "the same screen", step: delivered(steps).length };
+    }
     await save(userId, r, { steps: r.steps, notes, llm_calls: calls });
     return reply(await end(userId, r, "failed", { kind: "planner_down", report: say.plannerDown(r) }));
   }

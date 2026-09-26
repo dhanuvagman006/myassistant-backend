@@ -541,9 +541,37 @@ const swiggyCart = { pkg: SW, nodes: [
 
   await atest("a planner that cannot answer fails the run, never guesses", async () => {
     const s = await svc.start(UID, { goal: "Order idli", app: "swiggy" });
+    // One bad answer is a look again (2026-09-26); a second in a row fails.
+    script = ["garbage", "still garbage"];
+    const first = await svc.step(UID, s.run.id, { screen: swiggyHome });
+    assert.strictEqual(first.status, "continue");
+    assert.deepStrictEqual(first.action, { type: "wait" });
     script = ["garbage", "still garbage"];
     const out = await svc.step(UID, s.run.id, { screen: swiggyHome });
     assert.strictEqual(out.status, "failed");
+  });
+
+  await atest("a page still loading is waited out with no model call (ITR, 2026-09-26)", async () => {
+    const s = await svc.start(UID, { goal: "file my ITR", url: "https://www.incometax.gov.in/iec/foportal/", category: "web" });
+    const BR = "com.brave.browser";
+    const loading = { pkg: BR, nodes: [
+      N(1, { text: "eportal.incometax.gov.in", click: 1 }),
+      N(2, { text: "LOADING" })] };
+    prompts.length = 0;
+    const out = await svc.step(UID, s.run.id, { screen: loading });
+    assert.strictEqual(out.status, "continue");
+    assert.deepStrictEqual(out.action, { type: "wait" });
+    assert.strictEqual(prompts.length, 0, "no planner call for a loading page");
+    // The login form that follows is the owner's step, again with no model call.
+    const login = { pkg: BR, nodes: [
+      N(1, { text: "Login" }),
+      N(2, { cls: "EditText", edit: 1, hint: "PAN/ AADHAAR/ OTHER USER ID" }),
+      N(3, { cls: "Button", text: "Continue", click: 1 })] };
+    const next = await svc.step(UID, s.run.id, { screen: login });
+    assert.notStrictEqual(next.status, "failed");
+    assert.notStrictEqual(next.status, "continue", "the sign-in is handed over");
+    assert.strictEqual(prompts.length, 0);
+    await db.run("DELETE FROM automation_runs WHERE id=$1", [s.run.id]);
   });
 
   await atest("a scholarship form: filled from memory, one question asked and remembered, stops at the declaration", async () => {
@@ -1338,7 +1366,12 @@ const swiggyCart = { pkg: SW, nodes: [
     const s = await svc.start(UID, { goal: "Order veg biryani on Swiggy", app: "swiggy", category: "food" });
     const quota = () => Object.assign(new Error("gemini 429 [model=x] quota exceeded"), { status: 429 });
     script = [quota(), quota()];
-    const out = await svc.step(UID, s.run.id, { screen: swiggyResults, seq: 0 });
+    // One failed look is a look again (another key may answer); the
+    // second in a row is the end, in one true sentence.
+    const first = await svc.step(UID, s.run.id, { screen: swiggyResults, seq: 0 });
+    assert.strictEqual(first.status, "continue");
+    script = [quota(), quota()];
+    const out = await svc.step(UID, s.run.id, { screen: swiggyResults, seq: 1 });
     assert.strictEqual(out.status, "failed");
     assert.strictEqual(out.report,
       "I couldn't reach my planner just now, so I stopped — Swiggy is open where I left it. Try again in a minute.");
