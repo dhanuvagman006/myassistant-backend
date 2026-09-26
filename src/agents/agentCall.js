@@ -178,8 +178,18 @@ function spokenName(name) {
  * a neutral greeting with no honorific at all sounds like a robocall.
  */
 async function honorificFor(name) {
+  // A NUMBER IS NOT A NAME (2026-09-26). "Call 6360139965 and tell him…"
+  // sent the digits to the name-gender model, the start of the call waited
+  // on it, the phone gave up after 20 s and dialled the number ITSELF —
+  // while the relayed call went out a moment later to a busy line. No
+  // letters, nothing to guess from: the default at once.
+  if (!/\p{L}/u.test(String(name || ""))) return "sir";
   try {
-    const g = await require("../users/voiceGender").nameGender(name);
+    // Never more than two seconds: a slow guess must not hold up the call.
+    const g = await Promise.race([
+      require("../users/voiceGender").nameGender(name),
+      new Promise((resolve) => setTimeout(() => resolve(null), 2000).unref?.()),
+    ]);
     if (g === "female") return "ma'am";
   } catch (_) {
     // The model being unreachable must never stop a call going out.

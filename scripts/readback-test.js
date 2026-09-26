@@ -164,6 +164,28 @@ const lang = require("../src/agents/callLanguage");
     }
   });
 
+  await atest("a number as the contact is addressed at once, never guessed at", async () => {
+    // 2026-09-26: "call 6360139965 and tell him…" waited on a model to
+    // guess a gender from the digits, the phone gave up after 20 s and
+    // dialled the number itself.
+    const vg = require("../src/users/voiceGender");
+    const real = vg.nameGender;
+    let asked = 0;
+    vg.nameGender = () => { asked++; return new Promise(() => {}); }; // never answers
+    try {
+      const t0 = Date.now();
+      const who = await agentCall._addressFor({ contactName: "6360139965", userName: "Dhanush" });
+      assert.strictEqual(who.honorific, "sir");
+      assert.strictEqual(asked, 0, "digits were sent to the name model");
+      assert.ok(Date.now() - t0 < 500, "addressing a number took too long");
+      const t1 = Date.now();
+      await agentCall._addressFor({ contactName: "Ravi", userName: "Dhanush" });
+      assert.ok(Date.now() - t1 < 3000, "a slow name guess held the call up");
+    } finally {
+      vg.nameGender = real;
+    }
+  });
+
   await atest("a message to another person is read back before it goes", async () => {
     rb._forget();
     const res = await registry.get("send_agent_message").execute(
