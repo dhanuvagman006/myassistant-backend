@@ -2546,7 +2546,11 @@ function registerBuiltins() {
             toNumber: own,
             contactName: me?.name ? String(me.name).split(" ")[0] : "you",
             task,
-            lang: ctx.lang || null,
+            // The language asked for ("call me and tell me in Malayalam"),
+            // else the message's script (agents/callLanguage.js).
+            lang: (require("../agents/callLanguage").resolve({
+              requested: args.language, message: task, userText: ctx.userText,
+            }) || {}).code || ctx.lang || null,
             selfCall: true,
             retryTimes: args.retry_times,
             retryGapMinutes: args.retry_gap_minutes,
