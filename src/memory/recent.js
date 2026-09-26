@@ -218,6 +218,29 @@ async function adminStats(days = 7) {
 const FAILURE_LINE =
   /\b(i can'?t|i cannot|couldn'?t|could not|unable to|didn'?t (work|set|go through)|did not (work|set)|failed|not working|isn'?t working|went wrong|something went wrong|sorry about that|my apologies|wasn'?t saved|was not saved)\b/i;
 
+/**
+ * PAST REPLIES DO NOT TEACH THE TITLE (owner, 2026-09-26: "Sir" once, in
+ * the greeting — "in each and every sentence, I think it's not
+ * necessary"). A dozen earlier lines of "Done, Sir." are a dozen worked
+ * examples, and examples beat a rule (see FAILURE_LINE above). So the
+ * title comes off the assistant's own past lines; what was said stays.
+ */
+const TITLE_WORD = "(?:Sir|Ma['’]am|Madam)";
+const TITLE_ANY = new RegExp(`\\b${TITLE_WORD}\\b`, "i");
+function withoutTitle(text) {
+  let t = String(text || "");
+  if (!TITLE_ANY.test(t)) return t;
+  t = t
+    // "Sir, you missed two calls" — opening a sentence.
+    .replace(new RegExp(`(^|[.!?]\\s+)${TITLE_WORD}\\b,?\\s+(\\p{L})`, "giu"),
+      (_, pre, c) => pre + c.toUpperCase())
+    // "Done, Sir." / "Hello Sir!" / "Sure Sir, shall I…" — before punctuation.
+    .replace(new RegExp(`,?\\s*\\b${TITLE_WORD}\\b(?=\\s*[,.!?]|\\s*$)`, "gi"), "")
+    // "Okay Sir calling you back" — mid-sentence.
+    .replace(new RegExp(`\\s+\\b${TITLE_WORD}\\b(?=\\s)`, "gi"), "");
+  return t.replace(/\s{2,}/g, " ").replace(/^[,\s]+/, "").trim();
+}
+
 /** Bare greetings and filler — noise that crowds out real context. */
 const FILLER_LINE =
   /^(good (morning|afternoon|evening)|hello|hi|hey|namaste|sure|okay|ok|right|understood|no problem|you'?re welcome)\b[\s,!.…-]*$/i;
@@ -244,7 +267,8 @@ async function recentBlock(userId, { maxTurns = 12, maxAgeMs = 48 * 3600_000, ma
     const lines = [];
     let used = 0;
     for (const r of rows) { // newest→oldest; keep newest within budget
-      const text = String(r.text || "").trim();
+      const said = String(r.text || "").trim();
+      const text = r.role === "assistant" ? withoutTitle(said) : said;
       if (!text) continue;
       // A REPLY THAT REPORTS A FAILURE IS NOT CONTEXT, IT IS A LESSON.
       // Only the assistant's own lines are filtered: what the USER asked
@@ -304,4 +328,4 @@ async function turns(userId, { sessionId, sinceMs, role, match, limit = 20 } = {
 
 // migrate is exported for the erase suite's schema guard, which has to see
 // every table before it can say none was forgotten.
-module.exports = { migrate, append, recentBlock, turns, adminConversations, adminStats };
+module.exports = { migrate, append, recentBlock, turns, adminConversations, adminStats, withoutTitle };

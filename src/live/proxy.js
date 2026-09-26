@@ -275,10 +275,21 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "say the same acknowledgement twice in a session. Do not restate the " +
     "user's question, do not narrate what you are about to do, do not " +
     "summarise what you just did. Say the answer, then stop talking. " +
-    "PROFESSIONAL, RESPECTFUL TONE — always. You are a capable executive " +
-    "assistant: calm, precise, courteous, in every language. In Kannada, " +
-    "Hindi or Telugu always use the polite/formal register (ನೀವು / आप), " +
-    "never brusque phrasing like 'ಏನು ಬೇಕು?'. When you cannot do " +
+    // SOUND LIKE A PERSON (the owner, 2026-09-26: "it sounds robotic, we
+    // need more natural"). This line used to read "a capable executive
+    // assistant: calm, precise", and a native-audio model takes a style
+    // instruction as a way to SPEAK: it delivered clipped, flat,
+    // announcer-like lines. The respect stays; the stiffness goes.
+    "SOUND LIKE A PERSON, NOT A MACHINE. Talk the way a warm, easy-going " +
+    "person talks to someone they know on a phone call: natural rhythm " +
+    "and intonation, a relaxed pace, contractions (I'll, that's, you've) " +
+    "and everyday words. Never stiff, announcer-like or read-from-a-script " +
+    "lines such as 'Task completed', 'Initiating the call' or 'Your " +
+    "request has been processed' — say 'Done', 'Calling him now'. Vary " +
+    "how you begin; never open two replies in a row the same way. Always " +
+    "respectful and courteous — in Kannada, Hindi or Telugu the polite " +
+    "register (ನೀವು / आप), never brusque phrasing like 'ಏನು ಬೇಕು?' — but " +
+    "relaxed, never formal or stiff. When you cannot do " +
     "something: ONE courteous sentence saying what stops you, then one " +
     "thing you CAN do instead — never a bare 'I can't do that. What " +
     "else?'. NEVER narrate your own confusion or contradict yourself " +
@@ -670,12 +681,14 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
  * with the same context they get on the SSE path.
  */
 async function bridge(appWs, user, room, deviceCtx = {}) {
+  // Which model, and who may talk when — by app build (see turnTaking.js).
+  const turns = require("./turnTaking").forSession({ build: deviceCtx.build });
   // The live socket takes whichever key still has allowance for the live
   // model. A WebSocket cannot be re-keyed mid-session, so this is a
   // best-first choice rather than the rotation the request paths do —
   // see services/ai/keys.js.
   const key = (() => {
-    try { return require("../services/ai/keys").currentKey(LIVE_MODEL()); }
+    try { return require("../services/ai/keys").currentKey(turns.model); }
     catch { return ""; }
   })();
   if (!key) {
@@ -1243,7 +1256,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     upstream.send(
       JSON.stringify({
         setup: {
-          model: `models/${LIVE_MODEL()}`,
+          model: `models/${turns.model}`,
           generationConfig: {
             responseModalities: ["AUDIO"],
             speechConfig: {
@@ -1276,86 +1289,45 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
               : {}),
           },
 
-          // LATENCY: how long a pause means "they've finished talking".
+          // TURN-TAKING, PER SESSION (src/live/turnTaking.js). What was
+          // learnt getting here, so nobody walks back into it:
           //
-          // Unset, Google's default silence window is long enough to feel
-          // broken — the user sits in silence wondering if it heard them.
-          // The window is set below (silenceDurationMs, 1.1 s since
-          // 2026-09-26). Tune with LIVE_SILENCE_MS if it clips anyone.
-          // VOICE ACTIVITY DETECTION.
+          // MANUAL MODE DOES NOT WORK on gemini-2.5-flash-native-audio. It
+          // was tried: the app sent activityStart/activityEnd around real
+          // speech, the markers arrived correctly (logged, ~530ms
+          // utterances), the audio framing was right, and the model simply
+          // never generated a reply. So Google's own detector decides.
           //
-          // MANUAL MODE DOES NOT WORK ON THIS MODEL. It was tried: the app
-          // sent activityStart/activityEnd around real speech, the markers
-          // arrived correctly (logged, ~530ms utterances), the audio framing
-          // was right — and gemini-2.5-flash-native-audio simply never
-          // generated a reply. No error, no close, just silence. So the
-          // detector goes back to Google, which demonstrably does answer.
+          // startOfSpeechSensitivity MUST be HIGH. Measured directly (a clean
+          // −19 dBFS "hello, how can I help you today"), LOW never detected
+          // the utterance at all: no transcript, no reply, silence until the
+          // session closed. Room noise is the app's job (noise-suppressed
+          // voiceCommunication mic, and a -28 dB whisper outside speech).
           //
-          // startOfSpeechSensitivity MUST be HIGH. This was LOW to keep a
-          // fan or a TV from opening turns — but measured directly (a clean
-          // −19 dBFS spoken "hello, how can I help you today"), LOW never
-          // detected the utterance AT ALL: no transcript, no reply, the
-          // session just sat silent until it closed. That is the "I speak
-          // and it waits forever in silence" bug. HIGH detects the same
-          // clip immediately. Room noise is handled by the app's own
-          // noise-suppressed voiceCommunication mic path instead.
-          //   endOfSpeechSensitivity HIGH   — a pause SHOULD promptly count
-          //     as the user finishing.
+          // prefixPaddingMs was 20, which clipped the first consonant off
+          // every sentence ("hello" reached the model as "ello"); 300 keeps
+          // the whole first syllable.
           //
-          // silenceDurationMs is what the user actually feels: the gap
-          // between them stopping and Hari starting.
-          realtimeInputConfig: {
-            // BARGE-IN IS OFF. His call, 2026-09-20: "remove the
-            // interruption or barge-in completely… it fails on a Samsung
-            // S24" — on that handset the echo canceller leaks enough of
-            // her own voice back that Google heard it as the user and cut
-            // her off mid-sentence, repeatedly.
-            //
-            // The app already stops sending microphone audio while she
-            // speaks, so in practice there is nothing here to interrupt
-            // on. This is the second lock: whatever does reach Google
-            // during her turn cannot end it. Verified accepted by the
-            // live endpoint on gemini-2.5-flash-native-audio-preview
-            // before shipping; env-overridable back to
-            // START_OF_ACTIVITY_INTERRUPTS without a rebuild.
-            activityHandling:
-              process.env.LIVE_ACTIVITY_HANDLING || "NO_INTERRUPTION",
-            automaticActivityDetection: {
-              disabled: false,
-              startOfSpeechSensitivity:
-                process.env.LIVE_START_SENSITIVITY || "START_SENSITIVITY_HIGH",
-              // LOW since 2026-09-26: see silenceDurationMs below.
-              endOfSpeechSensitivity:
-                process.env.LIVE_END_SENSITIVITY || "END_SENSITIVITY_LOW",
-              // prefixPadding is how much audio BEFORE detected onset is
-              // kept. It was 20ms, which clips the first consonant clean
-              // off every sentence — "hello" reaches the model as "ello",
-              // and a model given a truncated word guesses. 300ms keeps the
-              // whole first syllable.
-              prefixPaddingMs: Number(process.env.LIVE_PREFIX_PADDING_MS || 300),
-              // The pause that ends a turn. 400ms was too eager: people
-              // pause mid-sentence to think, and cutting there sends half a
-              // question to the model, which then answers the wrong one.
-              // 700ms survived a breath but was the largest single share of
-              // the "why is it still silent" wait, so it went to 500ms.
-              //
-              // PATIENCE OVER SPEED (2026-09-26). The client: "When we want
-              // to say something the Assistant should listen carefully till
-              // we finish telling, before we complete what we want to say
-              // if it stops then it's a major problem". At 500ms with the
-              // end sensitivity HIGH, a breath or a moment's thought ended
-              // his turn; the reply started, the microphone closed for it
-              // (no barge-in), and the rest of his sentence was lost. Now
-              // the turn ends after 1.1s of quiet and the detector is slow
-              // to call a pause the end: every answer starts about half a
-              // second later, and nobody is cut off mid-sentence. Both are
-              // env-tunable without a rebuild (LIVE_SILENCE_MS,
-              // LIVE_END_SENSITIVITY). The app streams 1.2s of quiet after
-              // speech (tailMs in live_service.dart) — keep this below it,
-              // or the pause is never heard in full.
-              silenceDurationMs: Number(process.env.LIVE_SILENCE_MS || 1100),
-            },
-          },
+          // silenceDurationMs is what the user feels: the gap between them
+          // stopping and Hari starting. 400 cut people off mid-thought, 500
+          // with END_SENSITIVITY_HIGH cut the client off mid-sentence
+          // (2026-09-26: "if it stops then it's a major problem"), and 1100
+          // with LOW was patient but slow (the owner, same day: "it's taking
+          // so much time to respond"). Half-duplex builds keep 1100, because
+          // without barge-in an early end loses their words. Build 113 can
+          // interrupt, so it gets 600: an early end costs a word of hers, not
+          // a sentence of theirs. The app streams 1.2 s of quiet after speech
+          // (tailMs in live_service.dart); keep both windows below that, or
+          // the pause is never heard in full.
+          //
+          // BARGE-IN went off on 2026-09-20 (the owner: "remove the
+          // interruption or barge-in completely… it fails on a Samsung S24"):
+          // that phone's echo canceller let her own voice back in and Google
+          // cut her off with it. Half-duplex builds send nothing while she
+          // speaks, and NO_INTERRUPTION is their second lock. Build 113 sends
+          // audio over her only after its own check that the owner really is
+          // talking (lib/services/barge_in.dart).
+          realtimeInputConfig: turns.realtimeInputConfig,
           systemInstruction: {
             parts: [{
               text: liveSystemPrompt(
@@ -1380,13 +1352,18 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           // Set LIVE_GOOGLE_SEARCH=off to disable everywhere.
           tools: [
             {
-              functionDeclarations: require("../tools/registry").declarations({
-                userId: user?.sub,
-                deviceCaps: deviceCtx.caps || null,
-              }),
+              // BLOCKING on models whose tools would otherwise run in the
+              // background while she talks on (turnTaking.declarationsFor).
+              functionDeclarations: require("./turnTaking").declarationsFor(
+                require("../tools/registry").declarations({
+                  userId: user?.sub,
+                  deviceCaps: deviceCtx.caps || null,
+                }),
+                turns
+              ),
             },
             ...(process.env.LIVE_GOOGLE_SEARCH === "off" ||
-            /^gemini-[3-9]/i.test(LIVE_MODEL())
+            /^gemini-[3-9]/i.test(turns.model)
               ? []
               : [{ googleSearch: {} }]),
           ],
@@ -1424,7 +1401,10 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           [unreadMessages.map((m) => m.id)]
         ).catch((e) => console.error("live: could not retire messages:", e.message));
       }
-      appWs.send(JSON.stringify({ type: "ready", model: LIVE_MODEL() }));
+      // bargeIn tells build 113+ whether it may send audio over her (its
+      // own strict check still decides when); older builds ignore it.
+      appWs.send(JSON.stringify({ type: "ready", model: turns.model, bargeIn: turns.bargeIn }));
+      if (turns.next) console.log(`live: build ${deviceCtx.build} on ${turns.model}, barge-in ${turns.bargeIn ? "on" : "off"}`);
       for (const frame of pending.splice(0)) sendAudioUp(frame);
       return;
     }
@@ -1855,8 +1835,26 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     }
   });
 
+  // A NEWER MODEL THAT REFUSES THE SESSION IS NOT ASKED AGAIN FOR A WHILE.
+  // Before setupComplete nothing has been said, so instead of an error
+  // (which puts the app on the classic loop for the rest of the run) the
+  // socket just closes: the app reconnects within seconds, and
+  // turnTaking hands that session the model everyone else is on.
+  let refusalNoted = false; // 'error' is followed by 'close': log it once
+  const refusedByNext = (why) => {
+    if (!turns.next || upstreamReady) return false;
+    if (refusalNoted) return true;
+    refusalNoted = true;
+    require("./turnTaking").markRefused(turns.model);
+    console.error(`live: ${turns.model} refused the session (${why}) — using the current model for 30 min`);
+    return true;
+  };
   upstream.on("error", (e) => {
     console.error("live: upstream error:", e.message);
+    if (refusedByNext(String(e.message).slice(0, 120))) {
+      closeBoth("next model refused");
+      return;
+    }
     try {
       appWs.send(
         JSON.stringify({
@@ -1867,7 +1865,8 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     } catch (_) {}
     closeBoth("upstream error");
   });
-  upstream.on("close", (code) => {
+  upstream.on("close", (code, reason) => {
+    refusedByNext(`${code} ${String(reason || "").slice(0, 120)}`);
     if (liveState) sessionState.end(Number(user?.sub), liveSessionId);
     closeBoth(`upstream ${code}`);
   });
@@ -2225,4 +2224,8 @@ function attachWs(server) {
 // bridge is exported for the tests only (scripts/automation-test.js drives
 // it with both sockets faked in memory); the server uses attachWs.
 // closeUser and cancelErase are for account deletion (src/routes/privacy.js).
-module.exports = { probeRouter, attachWs, bridge, closeUser, cancelErase };
+module.exports = {
+  probeRouter, attachWs, bridge, closeUser, cancelErase,
+  // For scripts/live-turn-test.js: the prompt's wording is part of the product.
+  _liveSystemPrompt: liveSystemPrompt,
+};

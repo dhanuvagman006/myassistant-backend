@@ -58,21 +58,28 @@ function addressRule(user = {}) {
     return "HOW TO ADDRESS THEM — respectfully, the Indian way: polite forms " +
       "(aap, neevu), never casual or over-familiar.";
   }
+  // ONCE, IN THE GREETING (owner, 2026-09-26: "initially we need hello sir,
+  // but in each and every sentence, I think it's not necessary"). The rule
+  // used to say "not in every sentence" while its only examples were
+  // "Done, Sir." and "Sorry Sir, that didn't go through" — so the title
+  // landed on nearly every reply. The examples now show replies without it.
   return (
-    `HOW TO ADDRESS THEM — as "${title}", the respectful Indian way: ` +
-    `"Hello ${title}!", "Done, ${title}.", "Sorry ${title}, that didn't go ` +
-    `through." ` +
+    `HOW TO ADDRESS THEM — as "${title}", the respectful Indian way, and ` +
+    `ONCE: greet them with it at the start of a conversation ("Hello ` +
+    `${title}!"), then stop saying it. A title on every reply sounds like a ` +
+    `script, not a person: say "Done.", "Sure, calling him now.", "Sorry, ` +
+    `that didn't go through." — no "${title}". In a long conversation it may ` +
+    `come back at most once more, where a person naturally would (a real ` +
+    `apology, a goodbye). ` +
     // Owner, 2026-09-24: "never ever respond by calling the user's name —
     // always Sir or Ma'am; know their name but don't use it unless it is
     // necessary." ("No Hariraj ji, …" was heard by a client.)
     (first ? `You KNOW their name (${first}) but NEVER say it — not "${first}", not "${first} ji", ` +
-      `not "Mr ${first}" — only "${title}". Use the name only if they ask what it is or a form ` +
+      `not "Mr ${first}". Use the name only if they ask what it is or a form ` +
       `needs it. ` : "") +
-    "In Hindi, Kannada or any Indian language keep calling them " +
-    `"${title}" and use the respectful forms (aap, neevu) — never "ji" ` +
-    "after their name. Always in a greeting; after that naturally — in " +
-    "confirmations and apologies, not in every sentence. Never 'hey', " +
-    "'buddy' or 'dude'."
+    "In Hindi, Kannada or any Indian language the same holds, with the " +
+    "respectful forms (aap, neevu) throughout — never \"ji\" after their " +
+    "name. Never 'hey', 'buddy' or 'dude'."
   );
 }
 

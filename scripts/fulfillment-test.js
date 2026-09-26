@@ -599,34 +599,44 @@ test("the app actually handles the voice-change action it is sent", () => {
     "and must actually rebuild the session");
 });
 
-test("barge-in is GONE: nothing goes upstream while she is speaking", () => {
+test("talking over her: only on a measured check, only where the server offers it", () => {
   const fs = require("fs");
   const live = fs.readFileSync(
     APP_ROOT + "/lib/services/live_service.dart",
     "utf8"
   );
-  // REVERSED ON PURPOSE, 2026-09-20: "remove the interruption or barge-in
-  // completely… it fails on a Samsung S24". On that phone the hardware
-  // echo canceller left enough of her own voice in the mic that Google
-  // heard it as the user and cut her off mid-sentence. Google can only
-  // decide an interruption happened about audio it RECEIVES, so the fix
-  // is to send none. This test used to assert the opposite; it is kept,
-  // inverted, so the old behaviour cannot creep back in unnoticed.
-  // (Typing gates it too since 2026-09-24 — a typed request must not pick
-  // up the room.)
+  // 2026-09-20: "remove the interruption or barge-in completely… it fails
+  // on a Samsung S24" — that phone's echo canceller let her own voice back
+  // in and Google cut her off with it. 2026-09-26: "interrupt should be
+  // there… a strong valid one interrupt… how we talk with a human". So it
+  // is back, but never the way it failed: not a fixed multiple of the
+  // room's noise (bargeFloor, _bargeInFactor), and never by streaming
+  // everything while she speaks. Playback still shuts the microphone; the
+  // one way through is barge_in.dart, which measures how much of her voice
+  // this phone leaks back and waits for sustained speech well above it.
   assert.match(live, /if \(playing \|\| remoteSpeaking(?: \|\| typingMute)?\) \{/,
     "playback must still gate the microphone");
   assert.doesNotMatch(live, /bargeFloor/,
-    "the barge-in threshold must be gone, not merely raised");
+    "the old noise-multiple barge-in threshold must stay gone");
   assert.doesNotMatch(live, /_bargeInFactor/,
     "and so must its tuning constant");
   assert.match(live, /_micOpenAt = DateTime\.now\(\)\.add\(_speakerTail\)/,
     "the speaker tail must stay shut out, or her last word reopens the mic");
+  assert.match(live, /bool get _mayBargeIn =>\s*bargeInOffered &&\s*playing &&\s*!remoteSpeaking/,
+    "only when the server offered it, and only for her voice on this phone");
+  assert.match(live, /_barge\.feed\(/, "through the measured check, nothing else");
+  const check = fs.readFileSync(APP_ROOT + "/lib/services/barge_in.dart", "utf8");
+  assert.match(check, /double get coupling/, "the leak is measured, not guessed");
+  assert.match(check, /this\.holdMs = 380/, "a word, not a cough");
 
-  // The server half of the same decision.
+  // The server half: half-duplex builds keep NO_INTERRUPTION as their
+  // second lock; only a build with the check is offered barge-in.
+  const turns = fs.readFileSync(__dirname + "/../src/live/turnTaking.js", "utf8");
+  assert.match(turns, /NO_INTERRUPTION/,
+    "a half-duplex session must tell Google not to interrupt either");
+  assert.match(turns, /const DUPLEX_BUILD = 113;/);
   const proxy = fs.readFileSync(__dirname + "/../src/live/proxy.js", "utf8");
-  assert.match(proxy, /NO_INTERRUPTION/,
-    "the live session must tell Google not to interrupt either");
+  assert.match(proxy, /realtimeInputConfig: turns\.realtimeInputConfig/);
 });
 
 test("neither surface may hand the task back to the user", () => {
