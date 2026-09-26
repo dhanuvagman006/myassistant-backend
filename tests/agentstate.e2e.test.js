@@ -1238,13 +1238,19 @@ console.log("\nexecution record");
        ON CONFLICT (user_id, phone) DO UPDATE SET name = $2`,
       [USER_A, "Alan Test", "+919000000099", Date.now()]
     );
+    const ctx = {
+      userId: USER_A, appBuild: 26, inputQuality: { quality: "clear" },
+      deviceCaps: { build: 26, granted: [], denied: ["sms"] },
+      userText: "tell Alan Test I will be late today",
+    };
+    const args = { contact_name: "Alan Test", message: "I will be late today" };
+    // Read back first (2026-09-26); the SMS rung comes after the yes.
+    const asked = await registry.execute("send_agent_message", args, ctx);
+    assert.strictEqual(asked.needs_confirmation, true, "a message went out unread");
     const res = await registry.execute(
       "send_agent_message",
-      { contact_name: "Alan Test", message: "I will be late today" },
-      {
-        userId: USER_A, appBuild: 26, inputQuality: { quality: "clear" },
-        deviceCaps: { build: 26, granted: [], denied: ["sms"] },
-      }
+      { ...args, confirmed: true },
+      { ...ctx, userText: "yes" }
     );
     assert.strictEqual(res.ok, false, "it still promised a text it cannot send");
     assert.strictEqual(res.error, "sms_permission_denied");

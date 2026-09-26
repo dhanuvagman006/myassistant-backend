@@ -2386,6 +2386,16 @@ function registerBuiltins() {
       "Any other call — including a plain 'call amma' — is via='phone'. " +
       "Never swap one for the other: they ring differently and a WhatsApp " +
       "call uses the other person's data. " +
+      "READ IT BACK FIRST: a call that delivers a `message` to someone " +
+      "else goes out only after you have read that message back to the " +
+      "user word for word and they said yes. The first call returns " +
+      "needs_confirmation — ask in ONE short question, e.g. 'Shall I call " +
+      "Ravi and say: I will be late by ten minutes?', and when they agree " +
+      "call again with the SAME name and message plus confirmed:true. If " +
+      "they change anything, read the new words back instead. " +
+      "LANGUAGE: when they want the message said in a language " +
+      "('leave a message in Malayalam'), write `message` IN that language " +
+      "and its own script, and set `language`. " +
       "DUPLICATE CONTACTS: if the phone reports that the name matches " +
       "several saved contacts (e.g. 'Ravi 1', 'Ravi 2', 'Ravi 3'), NO " +
       "call was placed — ask which one in one short question, saying the " +
@@ -2413,6 +2423,20 @@ function registerBuiltins() {
           type: "string",
           description:
             "The message to deliver or question to ask on the call, when the user asked you to pass one on",
+        },
+        language: {
+          type: "string",
+          description:
+            "The language the message is to be SPOKEN in on the call, when " +
+            "the user named one or gave the message in one — 'Malayalam', " +
+            "'Kannada', 'Hindi', 'Tamil', 'Telugu'. Write `message` itself " +
+            "in that language and its own script.",
+        },
+        confirmed: {
+          type: "boolean",
+          description:
+            "true ONLY after you read the message back to the user and they " +
+            "clearly said yes to it. Never on the first call.",
         },
         tone: {
           type: "string",
@@ -2562,6 +2586,45 @@ function registerBuiltins() {
         }
       }
 
+      // READ IT BACK FIRST (2026-09-26; agents/readBack.js). Only a call
+      // that DELIVERS WORDS for the user: a plain "call Ravi" still just
+      // dials (his rule), and on a direct dial the user speaks for
+      // themself. The language goes with it (agents/callLanguage.js).
+      const language = require("../agents/callLanguage").resolve({
+        requested: args.language, message: args.message, userText: ctx?.userText,
+      });
+      if (args.message && agentConfigured && !agentCall.relayDown()) {
+        const go = require("../agents/readBack").mayGo({
+          userId: ctx?.userId,
+          kind: "call",
+          parts: [args.name, args.message],
+          confirmed: args.confirmed === true || args.confirmed === "true",
+          userText: ctx?.userText ?? null,
+          unattended: Boolean(ctx?.background),
+        });
+        if (!go) {
+          const said = language && language.code !== "en" ? ` (in ${language.name})` : "";
+          return {
+            ok: false,
+            needs_confirmation: true,
+            data: {
+              read_back: String(args.message),
+              to: args.name,
+              language: language ? language.name : null,
+            },
+            note:
+              "NOTHING HAS BEEN DIALLED. Read the message back to the user " +
+              `word for word${said} and ask in ONE short question whether ` +
+              `to call ${args.name} and say it — e.g. "Shall I call ${args.name} ` +
+              "and say: <the message>?\". Phrase it as a question, never as " +
+              "'I am calling'. When they clearly say yes, call place_phone_call " +
+              "again with the SAME name and message and confirmed:true. If they " +
+              "change anything, use their new words and read those back instead.",
+          };
+        }
+        require("../agents/callLanguage").remember(ctx?.userId, args.message, language);
+      }
+
       // THE CALLING SERVICE REJECTED US A MOMENT AGO. A relayed message
       // would fail the same way, and the phone would then dial the contact
       // itself with nothing said about why (2026-09-24, all day). So skip
@@ -2592,6 +2655,9 @@ function registerBuiltins() {
           type: "resolve_and_call",
           name: args.name,
           message: args.message || null,
+          // Build 112 posts it back with the task; older apps are covered
+          // by callLanguage.remember above.
+          language: language ? language.code : null,
           agent_available: agentAvailable,
           via,
           retry_times: Number(args.retry_times) || 0,
@@ -6096,18 +6162,56 @@ function registerBuiltins() {
       "recipient uses this app the message goes through their assistant; " +
       "if not, the phone sends it as a normal SMS text by itself — either " +
       "way nothing needs a tap. Use send_whatsapp_message ONLY when the " +
-      "user explicitly says WhatsApp.",
+      "user explicitly says WhatsApp. " +
+      "READ IT BACK FIRST: the first call returns needs_confirmation and " +
+      "sends nothing — read the message back word for word and ask in ONE " +
+      "short question, e.g. 'Shall I send Ravi: I will be late?'; when they " +
+      "say yes, call again with the SAME contact and message plus " +
+      "confirmed:true.",
     risk: "medium",
     inputSchema: {
       type: "object",
       properties: {
         contact_name: { type: "string", description: "Who to send it to (e.g. mom, wife)" },
-        message: { type: "string", description: "The message to deliver" }
+        message: { type: "string", description: "The message to deliver" },
+        confirmed: {
+          type: "boolean",
+          description:
+            "true ONLY after you read the message back to the user and they " +
+            "clearly said yes to it. Never on the first call.",
+        },
       },
       required: ["contact_name", "message"]
     },
     async execute(args, ctx) {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
+
+      // READ IT BACK FIRST (2026-09-26; agents/readBack.js). The client:
+      // "the calls or messages if my assistant conveys wrong then people
+      // will not like it". Nothing goes to another person until the user
+      // has heard the exact words and said yes.
+      const go = require("../agents/readBack").mayGo({
+        userId: ctx.userId,
+        kind: "message",
+        parts: [args.contact_name, args.message],
+        confirmed: args.confirmed === true || args.confirmed === "true",
+        userText: ctx.userText ?? null,
+        unattended: Boolean(ctx.background),
+      });
+      if (!go) {
+        return {
+          ok: false,
+          needs_confirmation: true,
+          data: { read_back: String(args.message || ""), to: args.contact_name },
+          note:
+            "NOTHING HAS BEEN SENT. Read the message back to the user word " +
+            "for word and ask in ONE short question whether to send it — " +
+            `e.g. "Shall I send ${args.contact_name}: <the message>?". ` +
+            "Never say it is sent. When they clearly say yes, call " +
+            "send_agent_message again with the SAME contact and message and " +
+            "confirmed:true. If they change anything, read the new words back.",
+        };
+      }
       
       // db exports run/one/query — `exec` does not exist, and calling it
       // threw exactly on the success path (recipient IS an app user).

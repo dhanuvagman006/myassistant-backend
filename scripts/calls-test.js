@@ -292,8 +292,13 @@ async function agentCallFailures() {
       const r = await relay();
       assert.strictEqual(r.status, 202);
       assert.strictEqual(agent.relayDown(), false);
-      const res = await registry.get("place_phone_call").execute(
-        { name: "Ravi", message: "tell him I'll be late" }, { userId: UID });
+      // Read back first (2026-09-26), then the yes sends it.
+      const tool = registry.get("place_phone_call");
+      const args = { name: "Ravi", message: "tell him I'll be late" };
+      const asked = await tool.execute(args, { userId: UID, userText: "call Ravi, tell him I'll be late" });
+      assert.strictEqual(asked.needs_confirmation, true);
+      assert.strictEqual(asked.deviceAction, undefined, "nothing dials before the yes");
+      const res = await tool.execute({ ...args, confirmed: true }, { userId: UID, userText: "yes" });
       assert.strictEqual(res.deviceAction.agent_available, true);
       assert.match(res.speak, /Let me find Ravi and call them/);
     });

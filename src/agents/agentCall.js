@@ -259,7 +259,12 @@ async function bolnaPlaceCall({ to, rec }) {
       recipient_phone_number: to,
       from_phone_number: c.bolnaFrom,
       user_data: {
-        task: rec.task || "",
+        // A call in another language is told so, and given the words as
+        // written (callLanguage.taskFor; 2026-09-26, the client's
+        // Malayalam message that came out "in a different Chinese
+        // language").
+        task: require("./callLanguage").taskFor(rec.task || "", rec.language),
+        language: rec.language ? rec.language.name : "",
         // See addressFor(): never the owner's own name on a self-call.
         contact_name: who.contact_name,
         user_name: who.user_name,
@@ -494,6 +499,8 @@ function handleNoAnswer(rec) {
       contactName: rec.contactName,
       task: rec.task,
       lang: rec.lang,
+      // The retry speaks the same language as the first attempt.
+      language: rec.language || null,
       mode: rec.mode,
       tone: rec.tone || "",
       selfCall: rec.selfCall,
@@ -535,6 +542,7 @@ async function retryFromJob(payload = {}) {
       contactName: payload.contactName,
       task: payload.task || "",
       lang: payload.lang || "en",
+      language: payload.language && payload.language.name ? payload.language : null,
       userName: payload.userName || null,
       mode: payload.mode || "inform",
       // A retry must sound like the call it is retrying — a pod restart
@@ -759,6 +767,10 @@ async function start({ userId, userName, toNumber, contactName, task, lang, self
     contactName,
     task,
     lang: lang || "en",
+    // Which language the call speaks: the one chosen when it was
+    // confirmed, else named, else the message's own script.
+    language: require("./callLanguage").recall(userId, task) ||
+      require("./callLanguage").resolve({ requested: lang, message: task }),
     userName: userName || null,
     mode: detectMode(task),
     // Only when the user asked for one ("be firm", "it's her birthday").
