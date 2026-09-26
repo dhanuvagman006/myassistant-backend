@@ -106,6 +106,7 @@ app.use(
       ["^/reminders/\\d+", "/reminders/#id"],
       ["^/agent-call/[a-f0-9]{16,}", "/agent-call/#id"],
       ["^/admin-panel/api/recordings/\\d+.*", "/admin-panel/api/recordings/#id"],
+      ["^/admin-panel/api/video-notes/\\d+.*", "/admin-panel/api/video-notes/#id"],
     ],
   })
 );
@@ -321,6 +322,12 @@ app.use("/vision", appAuth, perUserLimit, require("./routes/vision"));
 // them and pulls them back up from a voice request (see routes/docs.js).
 app.use("/docs", appAuth, require("./routes/docs"));
 
+// SEND MESSAGES AS YOU (2026-09-26) — consent, the 30-second identity
+// video recorded in the app, and the switch; the video notes made from
+// it are delivered from the admin panel. Its own hourly upload cap sits
+// inside the router, on top of the per-user minute limit here.
+app.use("/avatar-profile", appAuth, perUserLimit, require("./routes/avatarProfile"));
+
 // STYLE STUDIO — "show me how I'd look": outfit and hairstyle try-on on
 // the user's own photo, professional headshots, spec-correct passport
 // photos, old-photo restoration. Paid image models sit behind this, so it
@@ -533,10 +540,16 @@ require("./db")
     // Call recordings are pruned after every session, but a server that
     // sat idle over a weekend still holds expired ones. Sweep at boot and
     // once a day, so nothing depends on someone making a call.
+    // The same daily pass drops video-note clips kept past their 30 days
+    // (videonotes/service.js sweep); the recipient's copy stays.
     {
       const rec = require("./live/recorder");
-      const sweep = () => rec.prune().catch((e) =>
-        console.warn("recordings: prune failed —", e.message));
+      const sweep = () => Promise.all([
+        rec.prune().catch((e) =>
+          console.warn("recordings: prune failed —", e.message)),
+        require("./videonotes/service").sweep().catch((e) =>
+          console.warn("video notes: sweep failed —", e.message)),
+      ]);
       setTimeout(sweep, 30_000).unref?.();
       setInterval(sweep, 24 * 3600_000).unref?.();
       console.log(

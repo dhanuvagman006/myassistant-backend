@@ -44,6 +44,34 @@ async function api(path, opts = {}) {
   return data;
 }
 
+/**
+ * A FILE UPLOAD. api() JSON-encodes every body, so a file needs its own
+ * path: multipart FormData over XHR, because fetch cannot report upload
+ * progress and a 300 MB clip on hotel wi-fi needs a moving number.
+ * The browser sets the multipart boundary; no Content-Type here.
+ */
+function upload(path, form, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", API + path);
+    xhr.withCredentials = true;
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total);
+    };
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText || "{}"); } catch (_) {}
+      if (xhr.status === 401) { showLogin(); return reject(new Error("signed out")); }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        return reject(new Error(data.error || `HTTP ${xhr.status}`));
+      }
+      resolve(data);
+    };
+    xhr.onerror = () => reject(new Error("the upload was cut off — check the connection and try again"));
+    xhr.send(form);
+  });
+}
+
 const fmtDate = (ms) => {
   const t = parseInt(ms, 10);
   if (!Number.isFinite(t) || !t) return "—";
@@ -214,6 +242,7 @@ const NAV = [
   ["#/analytics", "Analytics"],
   ["#/conversations", "Conversations"],
   ["#/recordings", "Recordings"],
+  ["#/video-notes", "Video notes"],
   ["#/documents", "Documents"],
   ["#/activity", "Activity"],
   ["#/feedback", "Feedback"],
@@ -267,6 +296,7 @@ async function render() {
     if (hash.startsWith("#/analytics")) return await viewAnalytics();
     if (hash.startsWith("#/conversations")) return await viewConversations();
     if (hash.startsWith("#/recordings")) return await viewRecordings();
+    if (hash.startsWith("#/video-notes")) return await viewVideoNotes();
     if (hash.startsWith("#/documents")) return await viewDocuments();
     if (hash.startsWith("#/activity")) return await viewActivity();
     if (hash.startsWith("#/feedback")) return await viewFeedback();
@@ -1362,7 +1392,8 @@ function erasedSummary(id, r) {
     `User #${id} deleted.`,
     "",
     `${r.totalRows || 0} database rows removed from ${rows.length} tables.`,
-    `${r.totalFiles || 0} files removed (${files.recordings || 0} recording, ${files.documents || 0} document).`,
+    `${r.totalFiles || 0} files removed (${files.recordings || 0} recording, ${files.documents || 0} document, ` +
+      `${files.media || 0} video-note).`,
     `Google access: ${(r.revoked && r.revoked.google) || "—"}.`,
   ];
   if (r.revoked && r.revoked.liveSessions > 0) {
@@ -1396,7 +1427,8 @@ function leftoversCard() {
     const f = d.files || {};
     const rows = Object.entries(d.tables || {}).sort((a, b) => b[1] - a[1]);
     const recFiles = (f.recordingFiles || 0) + (f.strayRecordingFiles || 0);
-    const anything = d.totalRows > 0 || d.totalFiles > 0 || f.documentFolders > 0;
+    const anything = d.totalRows > 0 || d.totalFiles > 0 || f.documentFolders > 0 ||
+      f.mediaFolders > 0;
 
     const btn = h("button", {
       class: "btn danger", disabled: !anything, onclick: async () => {
@@ -1404,7 +1436,8 @@ function leftoversCard() {
           "Remove everything left behind by deleted accounts?\n\n" +
           `${d.totalRows} database rows in ${rows.length} tables\n` +
           `${recFiles} call recording files\n` +
-          `${f.documentFiles || 0} document files in ${f.documentFolders || 0} folders\n\n` +
+          `${f.documentFiles || 0} document files in ${f.documentFolders || 0} folders\n` +
+          `${f.mediaFiles || 0} video-note files in ${f.mediaFolders || 0} folders\n\n` +
           "None of it belongs to an account that still exists. This cannot be undone.";
         if (!confirm(msg)) return;
         btn.disabled = true;
@@ -1425,6 +1458,8 @@ function leftoversCard() {
       ...rows.map(([t, n]) => line(t, n)),
       anything ? line("call recording files", recFiles) : null,
       anything ? line("document files", `${f.documentFiles || 0} in ${f.documentFolders || 0} folders`) : null,
+      // Identity videos and kept clips (storage/media.js), 2026-09-26.
+      anything ? line("video-note files", `${f.mediaFiles || 0} in ${f.mediaFolders || 0} folders`) : null,
       h("div", { style: "margin-top:12px;" }, btn),
     ].filter(Boolean));
   }
@@ -1584,6 +1619,255 @@ async function viewRecordings() {
           h("th", {}, "When"), h("th", {}, "User"), h("th", {}, "Length"),
           h("th", {}, "Turns"), h("th", {}, "Size"), h("th", {}, "Listen"),
           h("th", {}, ""))),
+        body),
+      moreBtn)));
+  await load(false);
+}
+
+/* ------------------------------------------------------------------ */
+/* Video notes — made by hand in Colab, delivered from here             */
+/* ------------------------------------------------------------------ */
+//
+// Owner, 2026-09-26: the sender's 30-second video + the script → the
+// talking clip in Colab → upload it here, and it reaches the recipient.
+// Uploading IS delivering: there is no second button to forget.
+
+const NOTE_STATUS = {
+  pending: ["Waiting", "warn"],
+  generated: ["Made — not delivered", "danger"],
+  delivered: ["Delivered", "good"],
+  failed: ["Failed", "danger"],
+  cancelled: ["Cancelled", "neutral"],
+};
+
+async function viewVideoNotes() {
+  shell("#/video-notes", loading());
+  let status = "pending", offset = 0;
+  const body = h("tbody", {});
+  const moreBtn = h("button", { class: "btn", style: "margin:12px;" }, "Load more");
+  const tabs = h("div", { style: "display:flex; gap:8px; flex-wrap:wrap;" });
+
+  function drawTabs(c) {
+    const tab = (value, label) => h("button", {
+      class: "btn sm" + (status === value ? " primary" : ""),
+      onclick: () => { status = value; offset = 0; load(false).catch((e) => toast(e.message, true)); },
+    }, label);
+    tabs.replaceChildren(
+      tab("pending", `Waiting (${c.pending})`),
+      tab("generated", `Made (${c.generated})`),
+      tab("delivered", `Delivered (${c.delivered})`),
+      tab("failed", `Failed (${c.failed})`),
+      tab("cancelled", `Cancelled (${c.cancelled})`),
+      tab("", "All"));
+  }
+
+  const reload = () => { offset = 0; return load(false).catch((e) => toast(e.message, true)); };
+
+  function actions(r) {
+    const box = h("div", { style: "display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;" });
+    // Waiting or failed AND the sender consents right now (the server
+    // refuses the rest anyway): nothing here uses a face they took back.
+    const open = r.workable;
+    if (open && r.hasSource) {
+      box.append(h("a", {
+        class: "btn sm", href: `/admin-panel/api/video-notes/${r.id}/source?download=1`,
+        download: `note-${r.id}-sender.mp4`,
+      }, "Download video"));
+    }
+    box.append(h("button", {
+      class: "btn sm",
+      onclick: async () => {
+        try {
+          await navigator.clipboard.writeText(r.script);
+          toast("Script copied.");
+        } catch (_) {
+          prompt("Copy the script:", r.script);
+        }
+      },
+    }, "Copy script"));
+    if (open && r.hasSource && !r.identityChecked) {
+      // THE CHECKPOINT. The server cannot tell a live take from any MP4 a
+      // client posts; the person watching it can. Nothing can be uploaded
+      // for this note until this is confirmed.
+      box.append(h("button", {
+        class: "btn sm",
+        onclick: async (e) => {
+          const who = r.sender.name || "the sender";
+          const said = r.teleprompter
+            ? `“${r.teleprompter.consent}”`
+            : `the consent sentence the app showed (script v${r.scriptVersion})`;
+          if (!confirm(
+            `Watch the video first.\n\nI watched it: the person in it is ${who}, the account ` +
+            `holder, and they read the consent sentence out loud:\n\n${said}\n\nConfirm?`)) return;
+          e.target.disabled = true;
+          try {
+            await api(`/video-notes/${r.id}/verify`, { method: "POST", body: { confirm: true } });
+            toast("Checked — you can upload the clip now.");
+            await reload();
+          } catch (err) { e.target.disabled = false; toast(err.message, true); }
+        },
+      }, "It's them"));
+    }
+    if (open) {
+      const file = h("input", { type: "file", accept: "video/mp4,video/quicktime,.mp4,.mov", style: "display:none;" });
+      const btn = h("button", {
+        class: "btn sm primary",
+        disabled: r.identityChecked ? null : "disabled",
+        title: r.identityChecked ? null : "Watch the sender's video and confirm it's them first",
+      }, "Upload result");
+      btn.addEventListener("click", () => file.click());
+      file.addEventListener("change", async () => {
+        const f = file.files && file.files[0];
+        if (!f) return;
+        const who = r.recipient.onApp ? r.recipient.name : `${r.sender.name || "the sender"} (to share)`;
+        if (!confirm(`Deliver "${f.name}" (${fmtBytes(f.size)}) to ${who} now?`)) { file.value = ""; return; }
+        const form = new FormData();
+        form.append("file", f);
+        btn.disabled = true;
+        try {
+          const d = await upload(`/video-notes/${r.id}/result`, form, (sent, total) => {
+            btn.textContent = `Uploading ${Math.round((sent / total) * 100)}%`;
+          });
+          toast(d.deliveredTo === "recipient" ? "Delivered to their app." : "Saved for the sender to share.");
+          await reload();
+        } catch (e) {
+          btn.disabled = false;
+          btn.textContent = "Upload result";
+          file.value = "";
+          toast(e.message, true);
+        }
+      });
+      box.append(btn, file);
+    }
+    if (r.status === "generated" && r.sender.consent === "ok") {
+      box.append(h("button", {
+        class: "btn sm primary",
+        onclick: async (e) => {
+          e.target.disabled = true;
+          try {
+            await api(`/video-notes/${r.id}/deliver`, { method: "POST" });
+            toast("Delivered.");
+            await reload();
+          } catch (err) { e.target.disabled = false; toast(err.message, true); }
+        },
+      }, "Retry delivery"));
+    }
+    if (r.status === "pending" || r.status === "generated") {
+      box.append(h("button", {
+        class: "btn sm danger",
+        onclick: async () => {
+          const reason = prompt("Why couldn't it be made? The sender is told it couldn't be made.", "");
+          if (reason === null) return;
+          try {
+            await api(`/video-notes/${r.id}/fail`, { method: "POST", body: { reason } });
+            toast("Marked failed.");
+            await reload();
+          } catch (e) { toast(e.message, true); }
+        },
+      }, "Mark failed"));
+    }
+    return box;
+  }
+
+  const CONSENT_BADGE = {
+    withdrawn: ["withdrew consent", "danger"],
+    off: ["switched video notes off", "warn"],
+  };
+
+  /**
+   * What the owner checks before making anything: the sender's own video,
+   * played here, beside the words the app asked them to read — the first
+   * of which is the consent sentence.
+   */
+  function sourceCheck(r) {
+    if (!r.workable || !r.hasSource) return null;
+    const tp = r.teleprompter;
+    return h("div", { style: "margin-top:8px; max-width:260px;" },
+      h("video", {
+        controls: "controls", preload: "none", style: "width:220px; max-height:160px;",
+        src: `/admin-panel/api/video-notes/${r.id}/source`,
+      }),
+      tp
+        ? h("div", { class: "sub", style: "margin-top:4px;" },
+            "Should open with: ", h("strong", {}, `“${tp.consent}”`))
+        : h("div", { class: "sub", style: "margin-top:4px; color:var(--danger);" },
+            `Script v${r.scriptVersion} is not one this server knows — check the consent sentence by ear.`),
+      tp
+        ? h("details", {}, h("summary", { class: "sub" }, `Everything they were asked to read (v${r.scriptVersion})`),
+            h("div", { class: "sub" }, tp.text))
+        : null,
+      h("span", { class: "badge " + (r.identityChecked ? "good" : "warn"), style: "margin-top:4px;" },
+        r.identityChecked ? `checked it's them ${timeAgo(r.identityCheckedAt)}` : "not checked yet"));
+  }
+
+  function row(r) {
+    const [label, tone] = NOTE_STATUS[r.status] || [r.status, "neutral"];
+    const player = r.hasOutput
+      // preload="none": a page of notes must not pull down every clip.
+      ? h("video", {
+          controls: "controls", preload: "none", style: "width:180px; max-height:120px; margin-top:6px;",
+          src: `/admin-panel/api/video-notes/${r.id}/output`,
+        })
+      : null;
+    const consent = CONSENT_BADGE[r.sender.consent];
+    return h("tr", {},
+      h("td", { class: "sub", style: "white-space:nowrap;" },
+        h("div", {}, fmtDate(r.createdAt)),
+        h("div", { class: "faint" }, timeAgo(r.createdAt))),
+      h("td", {},
+        r.sender.id
+          ? h("a", { href: "#/user/" + r.sender.id }, r.sender.name || "#" + r.sender.id)
+          : h("span", { class: "faint" }, "—"),
+        h("div", { class: "sub" }, r.sender.phone || ""),
+        r.hasSource ? h("div", { class: "sub" }, "video " + fmtBytes(r.sourceBytes))
+          : h("div", { class: "sub" }, "no video on file"),
+        consent ? h("span", { class: "badge " + consent[1] }, consent[0]) : null,
+        sourceCheck(r)),
+      h("td", {},
+        h("div", {}, r.recipient.name || "—"),
+        h("div", { class: "sub" }, r.recipient.phone || ""),
+        h("span", { class: "badge " + (r.recipient.onApp ? "accent" : "neutral") },
+          r.recipient.onApp ? "on the app" : "not on the app")),
+      h("td", { style: "max-width:360px;" },
+        h("div", {}, r.script),
+        r.language ? h("div", { class: "sub" }, r.language) : null),
+      h("td", {},
+        h("span", { class: "badge " + tone }, label),
+        r.note ? h("div", { class: "sub", style: "margin-top:4px;" }, r.note) : null,
+        r.error ? h("div", { class: "sub", style: "margin-top:4px; color:var(--danger);" }, r.error) : null,
+        player),
+      h("td", {}, actions(r)));
+  }
+
+  async function load(append) {
+    const d = await api(`/video-notes?status=${status}&offset=${offset}&limit=50`);
+    drawTabs(d.counts);
+    if (!append) body.replaceChildren();
+    const rows = d.renders.map(row);
+    if (rows.length) body.append(...rows);
+    else if (!append) {
+      body.append(h("tr", {}, h("td", { colspan: 6, class: "chart-empty" },
+        status === "pending" ? "No video notes waiting." : "Nothing here.")));
+    }
+    moreBtn.disabled = d.renders.length < 50;
+  }
+  moreBtn.addEventListener("click", () => { offset += 50; load(true).catch((e) => toast(e.message, true)); });
+
+  shell("#/video-notes", h("div", {},
+    h("div", { class: "page-head" },
+      h("div", {},
+        h("div", { class: "page-title" }, "Video notes"),
+        h("div", { class: "page-sub" },
+          "Watch the sender's video first: it must be the account holder reading the consent " +
+          "sentence shown beside it. Confirm that, download the video and copy the script, make " +
+          "the clip, then upload it — it is delivered the moment the upload finishes. Clips are " +
+          "labelled as AI-made for the recipient.")),
+      tabs),
+    h("div", { class: "card table-card" },
+      h("table", {},
+        h("thead", {}, h("tr", {},
+          h("th", {}, "Asked"), h("th", {}, "From"), h("th", {}, "To"),
+          h("th", {}, "Script"), h("th", {}, "Status"), h("th", {}, ""))),
         body),
       moreBtn)));
   await load(false);

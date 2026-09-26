@@ -54,6 +54,7 @@ const { query, one, tx, findById } = require("../db");
 const gtokens = require("../google/tokens");
 const recorder = require("../live/recorder");
 const firebase = require("../services/firebase");
+const media = require("../storage/media");
 
 const router = express.Router();
 
@@ -112,7 +113,10 @@ const USER_TABLES = [
   ["inbound_numbers", "user_id"],
   ["inbound_settings", "user_id"],
   ["app_usage_daily", "user_id"],
-  ["avatar_profiles", "user_id"], // future: consented face/voice identity
+  // "Send messages as you" (2026-09-26): consent and the identity video's
+  // key, and every video note they asked for. The files go after commit:
+  // identity/<uid>/ and renders/<id>/ in storage/media.js.
+  ["avatar_profiles", "user_id"],
   ["avatar_renders", "user_id"],
 
   // Added 2026-09-25. All of these were in the schema and missing here,
@@ -301,6 +305,23 @@ function removeUserDir(uid) {
   return n;
 }
 
+/**
+ * Their identity video, photo and voice sample (identity/<uid>/), and the
+ * clips kept for the video notes they sent (renders/<id>/). A note they
+ * RECEIVED is a document in files/<uid>, which removeUserDir takes.
+ * Returns how many files went.
+ */
+async function removeUserMedia(uid, renderIds) {
+  if (!/^[1-9][0-9]*$/.test(String(uid))) return 0;
+  let n = await media.deletePrefix(`identity/${uid}/`).catch(() => 0);
+  for (const id of renderIds) {
+    if (/^[1-9][0-9]*$/.test(String(id))) {
+      n += await media.deletePrefix(`renders/${id}/`).catch(() => 0);
+    }
+  }
+  return n;
+}
+
 /* ------------------------------------------------------------------ *
  * Revocation outside the database
  * ------------------------------------------------------------------ */
@@ -382,7 +403,7 @@ async function deleteUserEverywhere(userId, { reason = "" } = {}) {
     revoked: {},
     rows: {},
     totalRows: 0,
-    files: { recordings: 0, documents: 0 },
+    files: { recordings: 0, documents: 0, media: 0 },
     totalFiles: 0,
   };
   const count = (name, n) => {
@@ -407,6 +428,8 @@ async function deleteUserEverywhere(userId, { reason = "" } = {}) {
 
   // 2) Every row, one transaction.
   let recordingFiles = [];
+  let renderIds = [];
+  let deliveredCopies = [];
   await tx(async (client) => {
     const groups = cols.has("chat_group_members.user_id")
       ? (await client.query(
@@ -424,6 +447,35 @@ async function deleteUserEverywhere(userId, { reason = "" } = {}) {
           `DELETE FROM live_recordings WHERE user_id = $1 RETURNING file`, [uid]);
         recordingFiles = r.rows.map((x) => x.file);
         count(table, r.rowCount);
+        continue;
+      }
+      if (table === "avatar_renders") {
+        // Same idea: the kept clips removed after commit are exactly the
+        // clips of the notes this transaction removed.
+        const r = await client.query(
+          `DELETE FROM avatar_renders WHERE user_id = $1
+           RETURNING id, document_id, delivered_to`, [uid]);
+        renderIds = r.rows.map((x) => x.id);
+        count(table, r.rowCount);
+        // THEIR FACE IN OTHER PEOPLE'S DOCUMENTS. A delivered video note
+        // is a copy in the recipient's documents — an AI clip of this
+        // user's face and voice, on our disk, under their name. The notice
+        // says "delete your account and everything goes with it", and
+        // these rows are the only link from the account to those copies,
+        // so they go in this same transaction (review, 2026-09-26; the
+        // owner may still decide received notes should stay — then say so
+        // in the consent card and the privacy notice instead).
+        // "Delete everything" in the app keeps them, and says so.
+        const given = r.rows
+          .filter((x) => x.delivered_to === "recipient" && x.document_id)
+          .map((x) => String(x.document_id));
+        if (given.length && cols.has("documents.user_id")) {
+          const d = await client.query(
+            `DELETE FROM documents WHERE id = ANY($1::bigint[]) AND user_id <> $2 RETURNING path`,
+            [given, uid]);
+          deliveredCopies = d.rows.map((x) => x.path);
+          count("delivered_video_notes", d.rowCount);
+        }
         continue;
       }
       const r = await client.query(`DELETE FROM ${q(table)} WHERE ${q(col)} = $1`, [String(uid)]);
@@ -484,6 +536,17 @@ async function deleteUserEverywhere(userId, { reason = "" } = {}) {
   } catch (e) {
     console.warn("file cleanup during account delete:", e.message);
   }
+  try {
+    report.files.media = await removeUserMedia(uid, renderIds);
+  } catch (e) {
+    console.warn("media cleanup during account delete:", e.message);
+  }
+  // The delivered copies whose rows went above; only ever inside files/.
+  for (const p of deliveredCopies) {
+    const f = inside(filesRoot, p);
+    if (!f) continue;
+    try { await fsp.unlink(f); report.files.media++; } catch (_) { /* already gone */ }
+  }
   // After commit rather than before: it needs nothing from our rows, and a
   // failed transaction must not leave a live account whose number Firebase
   // has already forgotten.
@@ -494,7 +557,7 @@ async function deleteUserEverywhere(userId, { reason = "" } = {}) {
   }
 
   report.totalRows = Object.values(report.rows).reduce((a, b) => a + b, 0);
-  report.totalFiles = report.files.recordings + report.files.documents;
+  report.totalFiles = report.files.recordings + report.files.documents + report.files.media;
   // Ids and counts only — never names, numbers or content.
   console.log(
     `account erased: #${uid}${reason ? ` (${reason})` : ""} — ` +
@@ -581,6 +644,54 @@ async function orphanDocumentDirs() {
     .map((id) => ({ id, dir: path.join(filesRoot, id), files: countFiles(path.join(filesRoot, id)) }));
 }
 
+/**
+ * Media left behind: identity/<uid>/ of a user who no longer exists, and
+ * renders/<id>/ whose note is gone or belongs to a deleted user. FAILS
+ * CLOSED like strayRecordingFiles: if the rows cannot be read, nothing is
+ * a leftover this time.
+ * @returns [{ prefix, files }]
+ */
+async function orphanMedia() {
+  const out = [];
+  const idOk = (n) => /^[1-9][0-9]{0,17}$/.test(n);
+  const ids = (await media.children("identity/").catch(() => [])).filter(idOk);
+  if (ids.length) {
+    let alive;
+    try {
+      alive = new Set((await query(
+        `SELECT id::text AS id FROM users WHERE id::text = ANY($1::text[])`, [ids]
+      )).map((r) => r.id));
+    } catch (e) {
+      console.warn("leftovers: users unavailable, identity media left alone:", e.message);
+      alive = new Set(ids);
+    }
+    for (const id of ids) {
+      if (alive.has(id)) continue;
+      const prefix = `identity/${id}/`;
+      out.push({ prefix, files: await media.countPrefix(prefix).catch(() => 0) });
+    }
+  }
+  const renders = (await media.children("renders/").catch(() => [])).filter(idOk);
+  if (renders.length) {
+    let alive;
+    try {
+      alive = new Set((await query(
+        `SELECT r.id::text AS id FROM avatar_renders r JOIN users u ON u.id = r.user_id
+          WHERE r.id::text = ANY($1::text[])`, [renders]
+      )).map((r) => r.id));
+    } catch (e) {
+      console.warn("leftovers: video notes unavailable, kept clips left alone:", e.message);
+      alive = new Set(renders);
+    }
+    for (const id of renders) {
+      if (alive.has(id)) continue;
+      const prefix = `renders/${id}/`;
+      out.push({ prefix, files: await media.countPrefix(prefix).catch(() => 0) });
+    }
+  }
+  return out;
+}
+
 /** How many existing recording files the given .m4a paths account for. */
 async function filesOnDisk(list) {
   let n = 0;
@@ -641,17 +752,21 @@ async function findOrphans() {
     ? await query(`SELECT file FROM live_recordings x WHERE ${orphanWhere("user_id")}`)
     : [];
   const dirs = await orphanDocumentDirs();
+  const left = await orphanMedia();
   const files = {
     recordingFiles: await filesOnDisk(recRows.map((r) => r.file)),
     strayRecordingFiles: (await strayRecordingFiles()).length,
     documentFolders: dirs.length,
     documentFiles: dirs.reduce((a, d) => a + d.files, 0),
+    mediaFolders: left.length,
+    mediaFiles: left.reduce((a, d) => a + d.files, 0),
   };
   return {
     tables,
     files,
     totalRows: Object.values(tables).reduce((a, b) => a + b, 0),
-    totalFiles: files.recordingFiles + files.strayRecordingFiles + files.documentFiles,
+    totalFiles: files.recordingFiles + files.strayRecordingFiles + files.documentFiles +
+      files.mediaFiles,
   };
 }
 
@@ -700,7 +815,10 @@ async function purgeOrphans() {
   });
 
   // After commit: never throws.
-  const files = { recordingFiles: 0, strayRecordingFiles: 0, documentFolders: 0, documentFiles: 0 };
+  const files = {
+    recordingFiles: 0, strayRecordingFiles: 0, documentFolders: 0, documentFiles: 0,
+    mediaFolders: 0, mediaFiles: 0,
+  };
   for (const f of recordingFiles) files.recordingFiles += await unlinkRecording(f).catch(() => 0);
   for (const f of await strayRecordingFiles().catch(() => [])) {
     if (inside(recorder.ROOT, f)) {
@@ -718,13 +836,22 @@ async function purgeOrphans() {
       console.warn("leftover document folder:", e.message);
     }
   }
+  // After the rows: a note deleted above now has no row, so its kept
+  // clip is found here, exactly as findOrphans counted it.
+  for (const d of await orphanMedia().catch(() => [])) {
+    const n = await media.deletePrefix(d.prefix).catch(() => -1);
+    if (n < 0) continue;
+    files.mediaFolders++;
+    files.mediaFiles += n;
+  }
 
   const out = {
     ok: true,
     tables,
     files,
     totalRows: Object.values(tables).reduce((a, b) => a + b, 0),
-    totalFiles: files.recordingFiles + files.strayRecordingFiles + files.documentFiles,
+    totalFiles: files.recordingFiles + files.strayRecordingFiles + files.documentFiles +
+      files.mediaFiles,
   };
   console.log(`leftovers purged: ${out.totalRows} rows, ${out.totalFiles} files`);
   return out;

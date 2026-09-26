@@ -216,6 +216,100 @@ const people = require("../clients/store");
 
 let registered = false;
 
+/**
+ * VIDEO NOTES (2026-09-26). The recorder screen — and the app's
+ * open_app_screen case for it — arrive in build 118; a script is one
+ * breath of speech, which is all the owner's Colab clip is made for.
+ */
+const VIDEO_NOTE_MIN_BUILD = 118;
+const VIDEO_NOTE_MAX_WORDS = 60;
+
+/**
+ * WHO IS "X"? The recipient resolution send_agent_message has always
+ * used, lifted out on 2026-09-26 so send_video_note resolves a spoken
+ * name to exactly the person a text message would have reached.
+ *
+ * @returns {{ambiguous: string}}  more than one registered user matches
+ *   | {{contactPhone: null}}      nobody found
+ *   | {{contactPhone, toPhone, appUser, name}} — appUser {id, fcm_token}
+ *     is null when the number has no verified app account behind it.
+ */
+async function resolveRecipient(userId, spokenName) {
+  const { one } = require("../db");
+  // "Inform Hemalatha's agent" names the PERSON, not a contact called
+  // "Hemalatha's agent" — strip the agent suffix before resolving.
+  const contactLower = String(spokenName)
+    .toLowerCase()
+    .replace(/['’]?s?\s+(agent|assistant)\s*$/i, "")
+    .trim();
+
+  // 1. Resolve the name to a number — through the SHARED resolver,
+  // which ranks exact > whole-name nickname ("Ammmmaaa" for amma) >
+  // prefix > substring. The old inline LIKE query here picked the
+  // SHORTEST substring hit, which sent "message amma" to "Dammayathi".
+  const { resolveContact } = require("../users/resolve");
+  const { query } = require("../db");
+  const { match, candidates } = await resolveContact(
+    userId,
+    contactLower
+  );
+
+  let contactPhone = match?.phone || null;
+  if (!contactPhone && candidates.length) {
+    // Ambiguous by name — but THIS tool can only deliver to registered
+    // app users. If exactly one candidate is registered, they are the
+    // only possible recipient; more than one means genuinely ask.
+    const phones = candidates
+      .map((c) => normalizePhone(c.phone))
+      .filter(Boolean);
+    const regd = await query(
+      `SELECT phone_number FROM users
+        WHERE phone_number = ANY($1) AND phone_verified_at IS NOT NULL`,
+      [phones]
+    ).catch(() => []);
+    if (regd.length === 1) contactPhone = regd[0].phone_number;
+    else if (regd.length > 1) {
+      return { ambiguous: candidates.map((c) => c.name).slice(0, 4).join(", ") };
+    }
+  }
+  if (!contactPhone) {
+    // Not in the address book — but the recipient may simply BE a
+    // registered user whose name the user spoke ("Hemalatha"), saved
+    // in contacts under something else entirely ("Ammmmaaa"). A single
+    // unambiguous verified-user name match is safe to deliver to.
+    const users = await query(
+      `SELECT phone_number FROM users
+        WHERE phone_verified_at IS NOT NULL AND phone_number IS NOT NULL
+          AND (lower(name) = $1 OR lower(name) LIKE $1 || ' %')`,
+      [contactLower]
+    ).catch(() => []);
+    if (users.length === 1) contactPhone = users[0].phone_number;
+  }
+  if (!contactPhone) return { contactPhone: null };
+
+  // 2. Check if that phone number belongs to a registered user of the app.
+  //
+  // Normalise first. This is an exact-string match, and the same person
+  // is "+91 98765 43210" in one address book and "9876543210" in
+  // another. Comparing raw text made real registered users look absent,
+  // and the failure was silent — the assistant simply said they were
+  // not on the app. Both sides go through E.164 so they meet.
+  //
+  // Only a VERIFIED number counts: phone_verified_at NULL means nobody
+  // proved they own it, so delivering there could hand this message to
+  // whoever typed it.
+  const toPhone = normalizePhone(contactPhone);
+  const appUser = toPhone
+    ? await one(
+        `SELECT id, fcm_token FROM users
+          WHERE phone_number = $1 AND phone_verified_at IS NOT NULL
+          LIMIT 1`,
+        [toPhone]
+      )
+    : null;
+  return { contactPhone, toPhone, appUser, name: match?.name || null };
+}
+
 function registerBuiltins() {
   if (registered) return; // idempotent: tests and boot both call this
   registered = true;
@@ -4776,14 +4870,16 @@ function registerBuiltins() {
             "settings", "home", "hub", "chat",
             "documents", "clients", "finance", "stocks",
             "diagnostics", "mcp", "meetings", "reminders", "call_notes",
-            "news", "momentum", "focus",
+            "news", "momentum", "focus", "avatar_identity",
           ],
           description:
             "settings = the assistant's own settings (voice, name, theme). " +
             "home/hub/chat are the main tabs. momentum = streak, today's 3, " +
             "habits and the week; focus = the focus timer. " +
             "news = the News screen, only when they ask to OPEN it — for " +
-            "'what's the news' use show_news. The rest are feature screens.",
+            "'what's the news' use show_news. avatar_identity = Send " +
+            "messages as you (their recorded video for video notes). The " +
+            "rest are feature screens.",
         },
       },
       required: ["screen"],
@@ -4793,7 +4889,7 @@ function registerBuiltins() {
       const ALLOWED = [
         "settings", "home", "hub", "chat", "documents", "clients",
         "finance", "stocks", "diagnostics", "mcp", "meetings", "reminders",
-        "call_notes", "news", "momentum", "focus",
+        "call_notes", "news", "momentum", "focus", "avatar_identity",
       ];
       if (!ALLOWED.includes(screen)) {
         return { ok: false, error: `I don't have a screen called "${args.screen}"` };
@@ -4803,6 +4899,10 @@ function registerBuiltins() {
       const build = Number(ctx.appBuild) || 0;
       if ((screen === "momentum" || screen === "focus") && build && build < 111) {
         return { ok: false, error: "that screen needs the latest app update — say so, and offer momentum_status instead" };
+      }
+      // The video recorder for "Send messages as you" arrives in build 118.
+      if (screen === "avatar_identity" && build < VIDEO_NOTE_MIN_BUILD) {
+        return { ok: false, error: "that screen needs the latest app update — say so" };
       }
       // The News screen arrives in build 111. An older app would report
       // "that screen is not available", so it gets the voice deck — the
@@ -4833,6 +4933,7 @@ function registerBuiltins() {
         meetings: "your meetings", reminders: "your reminders",
         call_notes: "your call notes", news: "the news",
         momentum: "your Momentum page", focus: "the focus timer",
+        avatar_identity: "Send messages as you",
       };
       return {
         ok: true,
@@ -6221,88 +6322,25 @@ function registerBuiltins() {
       // threw exactly on the success path (recipient IS an app user).
       const { run, one } = require("../db");
       const push = require("../services/push");
-      // "Inform Hemalatha's agent" names the PERSON, not a contact called
-      // "Hemalatha's agent" — strip the agent suffix before resolving.
-      const contactLower = String(args.contact_name)
-        .toLowerCase()
-        .replace(/['’]?s?\s+(agent|assistant)\s*$/i, "")
-        .trim();
-
-      // 1. Resolve the name to a number — through the SHARED resolver,
-      // which ranks exact > whole-name nickname ("Ammmmaaa" for amma) >
-      // prefix > substring. The old inline LIKE query here picked the
-      // SHORTEST substring hit, which sent "message amma" to "Dammayathi".
-      const { resolveContact } = require("../users/resolve");
-      const { query } = require("../db");
-      const { match, candidates } = await resolveContact(
-        ctx.userId,
-        contactLower
-      );
-
-      let contactPhone = match?.phone || null;
-      if (!contactPhone && candidates.length) {
-        // Ambiguous by name — but THIS tool can only deliver to registered
-        // app users. If exactly one candidate is registered, they are the
-        // only possible recipient; more than one means genuinely ask.
-        const phones = candidates
-          .map((c) => normalizePhone(c.phone))
-          .filter(Boolean);
-        const regd = await query(
-          `SELECT phone_number FROM users
-            WHERE phone_number = ANY($1) AND phone_verified_at IS NOT NULL`,
-          [phones]
-        ).catch(() => []);
-        if (regd.length === 1) contactPhone = regd[0].phone_number;
-        else if (regd.length > 1) {
-          const names = candidates.map((c) => c.name).slice(0, 4).join(", ");
-          return {
-            ok: false,
-            data: `Ambiguous contact: ${names}`,
-            speak: `I found more than one match — ${names}. Who should get it?`,
-          };
-        }
+      // 1-2. The number, and whether its owner is on the app —
+      // resolveRecipient() above, shared with send_video_note so one
+      // spoken name always reaches the same person (2026-09-26).
+      const who = await resolveRecipient(ctx.userId, args.contact_name);
+      if (who.ambiguous) {
+        return {
+          ok: false,
+          data: `Ambiguous contact: ${who.ambiguous}`,
+          speak: `I found more than one match — ${who.ambiguous}. Who should get it?`,
+        };
       }
-      if (!contactPhone) {
-        // Not in the address book — but the recipient may simply BE a
-        // registered user whose name the user spoke ("Hemalatha"), saved
-        // in contacts under something else entirely ("Ammmmaaa"). A single
-        // unambiguous verified-user name match is safe to deliver to.
-        const users = await query(
-          `SELECT phone_number FROM users
-            WHERE phone_verified_at IS NOT NULL AND phone_number IS NOT NULL
-              AND (lower(name) = $1 OR lower(name) LIKE $1 || ' %')`,
-          [contactLower]
-        ).catch(() => []);
-        if (users.length === 1) contactPhone = users[0].phone_number;
-      }
-      if (!contactPhone) {
+      if (!who.contactPhone) {
         return {
           ok: false,
           data: "Contact not found in address book.",
           speak: `I couldn't find a phone number for ${args.contact_name} in your synced contacts.`
         };
       }
-
-      // 2. Check if that phone number belongs to a registered user of the app.
-      //
-      // Normalise first. This is an exact-string match, and the same person
-      // is "+91 98765 43210" in one address book and "9876543210" in
-      // another. Comparing raw text made real registered users look absent,
-      // and the failure was silent — the assistant simply said they were
-      // not on the app. Both sides go through E.164 so they meet.
-      //
-      // Only a VERIFIED number counts: phone_verified_at NULL means nobody
-      // proved they own it, so delivering there could hand this message to
-      // whoever typed it.
-      const toPhone = normalizePhone(contactPhone);
-      const appUser = toPhone
-        ? await one(
-            `SELECT id, fcm_token FROM users
-              WHERE phone_number = $1 AND phone_verified_at IS NOT NULL
-              LIMIT 1`,
-            [toPhone]
-          )
-        : null;
+      const { contactPhone, toPhone, appUser } = who;
 
       if (!appUser) {
         // CAPABILITY GATE. Automatic SMS shipped in app build 13; an older
@@ -6629,6 +6667,205 @@ function registerBuiltins() {
         ok: true,
         data: { sent: docName, to: appUser.name },
         speak: `Sent — ${appUser.name} now has your ${docName} and will be told it arrived.`,
+      };
+    },
+  });
+
+  // ---------------- SEND MESSAGES AS YOU: VIDEO NOTES ----------------
+  //
+  // The owner, 2026-09-26: "send a video note for Danush saying he should
+  // meet me at twelve PM". The assistant writes the script; the clip is
+  // made later — by hand, in Colab, from the 30-second video the user
+  // recorded in You → Send messages as you — and the admin panel's upload
+  // delivers it (videonotes/service.js). So this tool QUEUES a note and
+  // says so; it never claims anything went.
+  registry.register({
+    name: "send_video_note",
+    description:
+      "Send a VIDEO NOTE / video message in the user's OWN face and voice " +
+      "to a person — 'send a video note to Danush saying meet me at 12', " +
+      "'video message amma that I'll be late'. YOU write `script`: what the " +
+      "user would say to them, in the user's first person, one breath (60 " +
+      "words at most), in the language the user spoke. The clip is made " +
+      "later from the 30-second video the user recorded in the app and is " +
+      "labelled as AI-made for the recipient, so it is NOT sent now — never " +
+      "say it was sent. READ IT BACK FIRST: the first call returns " +
+      "needs_confirmation — read the script back word for word and ask in " +
+      "ONE short question; when they say yes, call again with the SAME `to` " +
+      "and `script` plus confirmed:true. Not for making a video of a scene " +
+      "(generate_video) or a plain text message (send_agent_message).",
+    risk: "medium",
+    inputSchema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "Who gets it — the name the user said (e.g. Danush, amma)" },
+        script: {
+          type: "string",
+          description:
+            "What the user says in the clip, written by you: their first person, " +
+            "one breath (60 words at most), in the language they spoke",
+        },
+        language: { type: "string", description: "The script's language, e.g. English, Malayalam, Hindi" },
+        confirmed: {
+          type: "boolean",
+          description:
+            "true ONLY after you read the script back to the user and they " +
+            "clearly said yes to it. Never on the first call.",
+        },
+      },
+      required: ["to", "script"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      // The registry already refuses this in scheduled runs; this is the
+      // belt: words in the user's own face need the user there to hear
+      // them read back, and readBack waves unattended runs through.
+      if (ctx.background) {
+        return {
+          ok: false,
+          error: "a video note needs the user there to approve the words — it cannot be sent from a scheduled task",
+        };
+      }
+      const to = String(args.to || "").trim();
+      const script = String(args.script || "").replace(/\s+/g, " ").trim();
+      if (!to) return { ok: false, error: "who should get it? ask the user" };
+      if (!script) {
+        return { ok: false, error: "write the script first: what the user would say, in their first person" };
+      }
+      const words = script.split(" ").length;
+      if (words > VIDEO_NOTE_MAX_WORDS) {
+        return {
+          ok: false,
+          error:
+            `the script is ${words} words — shorten it to one breath ` +
+            `(${VIDEO_NOTE_MAX_WORDS} words at most) and call again`,
+        };
+      }
+
+      // 1. Their identity video, with consent on record. Each "not yet"
+      // is one line and, from build 118 (the recorder screen), the screen
+      // itself — an older app would hear "opening" and find nothing.
+      const vn = require("../videonotes/store");
+      const profile = await vn.getProfile(ctx.userId);
+      const canOpen = Number(ctx.appBuild) >= VIDEO_NOTE_MIN_BUILD;
+      const openIt = canOpen ? { deviceAction: { type: "open_app_screen", screen: "avatar_identity" } } : {};
+      if (!profile || !profile.video_key) {
+        return {
+          ok: false,
+          error: "no_identity_video",
+          speak: canOpen
+            ? "First record your 30-second video in You, Send messages as you — then I can make video notes in your face and voice."
+            : "Video notes need the latest app update. Once it's in, record your 30-second video in You, Send messages as you.",
+          ...openIt,
+        };
+      }
+      if (Number(profile.consented) !== 1) {
+        // They withdrew it; the video is still there, so re-recording
+        // would be the wrong thing to ask for.
+        return {
+          ok: false,
+          error: "consent_required",
+          speak: "Video notes need your OK first — agree again in You, Send messages as you.",
+          ...openIt,
+        };
+      }
+      if (Number(profile.enabled) !== 1) {
+        return {
+          ok: false,
+          error: "video_notes_off",
+          speak: "Video notes are switched off. Turn on Send as you in You, Send messages as you, then ask me again.",
+          ...openIt,
+        };
+      }
+
+      // 2. Who — exactly the person a text message would reach.
+      const who = await resolveRecipient(ctx.userId, to);
+      if (who.ambiguous) {
+        return {
+          ok: false,
+          data: `Ambiguous contact: ${who.ambiguous}`,
+          speak: `I found more than one match — ${who.ambiguous}. Who should get it?`,
+        };
+      }
+      if (!who.contactPhone || !who.toPhone) {
+        return {
+          ok: false,
+          data: "Contact not found in address book.",
+          speak: `I couldn't find a phone number for ${to} in your synced contacts.`,
+        };
+      }
+
+      // 3. READ IT BACK (agents/readBack.js) — its own slot, so a text
+      // message waiting for its yes is never approved by this one's.
+      const go = require("../agents/readBack").mayGo({
+        userId: ctx.userId,
+        kind: "video_note",
+        parts: [to, script],
+        confirmed: args.confirmed === true || args.confirmed === "true",
+        userText: ctx.userText ?? null,
+        unattended: false,
+      });
+      if (!go) {
+        return {
+          ok: false,
+          needs_confirmation: true,
+          data: { read_back: script, to },
+          note:
+            "NOTHING HAS BEEN MADE OR SENT. Read the script back to the user " +
+            "word for word and ask in ONE short question — e.g. \"Shall I " +
+            `make a video note for ${to} saying: <the script>?". When they ` +
+            "clearly say yes, call send_video_note again with the SAME to and " +
+            "script and confirmed:true. If they change anything, read the new " +
+            "words back.",
+        };
+      }
+
+      // 4. Queue it for the owner. The waiting is a row, not a job — made
+      // from the profile as it is at THIS moment, under lock: a withdrawal
+      // or "Delete everything" since step 1 means no note.
+      const render = await vn.createRenderFromProfile({
+        userId: ctx.userId,
+        recipientName: who.name || to,
+        recipientPhone: who.toPhone,
+        recipientUserId: who.appUser ? who.appUser.id : null,
+        script,
+        language: args.language,
+      });
+      if (!render) {
+        return {
+          ok: false,
+          error: "consent_required",
+          speak: "Video notes aren't on for you any more, so I didn't make it. Check You, Send messages as you.",
+          ...openIt,
+        };
+      }
+      // One record for "did my video note go?" — moved on by the admin
+      // upload (completed), a failure, or a cancel.
+      require("../outcomes/store")
+        .create(ctx.userId, {
+          kind: "message",
+          target: to,
+          status: "requested",
+          path: "video_note",
+          externalId: `video_note:${render.id}`,
+          detail: "a video note in your face and voice, being made",
+        })
+        .catch((e) => console.warn("video note outcome write failed:", e.message));
+      require("../audit/log")
+        .record(ctx.userId, "video_note.requested", `video note #${render.id} for ${who.name || to}`)
+        .catch(() => {});
+
+      const onApp = Boolean(who.appUser);
+      return {
+        ok: true,
+        data: { status: "pending", video_note_id: Number(render.id), to, on_app: onApp },
+        speak: onApp
+          ? `Your video note for ${to} is being made — it will reach them as soon as it's ready.`
+          : `Your video note for ${to} is being made. ${to} isn't on the app, so when it's ready ` +
+            `I'll put it in your documents for you to share.`,
+        note:
+          "The note is QUEUED, not sent. Say it is being made and will reach " +
+          "them when it's ready. Never say it was sent or delivered.",
       };
     },
   });

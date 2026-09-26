@@ -588,6 +588,12 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "reminder or note. Mentioning someone's agent/assistant always means " +
     "send_agent_message. Relationship words (mom, amma, dad, appa) are " +
     "contact names — try them with the tool before asking who the person is. " +
+    // Owner, 2026-09-26: "send a video note for Danush saying he should
+    // meet me at twelve PM" — my face and voice, not generate_video.
+    "'Send a video note / video message to X saying…' means send_video_note: " +
+    "write the script yourself in MY first person, one breath (60 words at " +
+    "most), in the language I spoke — never generate_video or " +
+    "send_agent_message for it, and never say it was sent. " +
     "You can CREATE IMAGES: 'draw/make/design/generate a picture, poster, " +
     "logo, card of X' means call generate_image now with a rich visual " +
     "prompt — never say you can't make images. For video requests use " +
@@ -862,11 +868,16 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       // Only a verified number has an inbox; unverified accounts are NULL
       // here, so this simply does not run for them.
       if (p?.user?.phone_number) {
+        // A VIDEO NOTE IS NOT READ OUT. Its row is what the app's video
+        // popup looks for on the notification tap; speaking the script here
+        // and retiring the row at setupComplete would leave the popup
+        // nothing to play (2026-09-26).
         unreadMessages = await db.query(
           `SELECT m.id, m.message, m.auto, u.name AS from_name
              FROM agent_messages m
              LEFT JOIN users u ON u.id = m.from_user_id
             WHERE m.status = 'unread' AND m.to_phone_number = $1
+              AND m.media = ''
             ORDER BY m.created_at ASC`,
           [p.user.phone_number]
         );

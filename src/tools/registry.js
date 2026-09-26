@@ -311,6 +311,8 @@ const SEED_WORLD = new Set([
   "scan_business_card", "record_meeting",
   // Momentum (2026-09-25): the user's own list, habits and focus timer.
   "plan_my_day", "complete_priority", "add_habit", "check_habit", "start_focus",
+  // 2026-09-26: a clip in the user's own face and voice, to another person.
+  "send_video_note",
 ]);
 
 function isWorldAction(name) {
@@ -365,6 +367,8 @@ const SEED_REPEAT = new Set([
   // Two runs in one breath would drive the same app twice at once.
   "do_task_in_app",
   "uninstall_app",
+  // One stutter would queue two clips of the owner's manual work.
+  "send_video_note",
 ]);
 
 /**
@@ -387,6 +391,7 @@ const SEED_DURABLE = new Set([
   "send_agent_message", "send_whatsapp_message", "send_document",
   "send_patient_document", "order_food", "book_ride", "book_movie_tickets",
   "collect_payment", "email_reply", "pay_by_upi",
+  "send_video_note",
 ]);
 
 const SEED_UNATTENDED = new Set([
@@ -401,6 +406,9 @@ const SEED_UNATTENDED = new Set([
     // The phone's call log is read only with the owner there to hear it —
     // never by a scheduled task with nobody holding the phone (2026-09-24).
     "phone_calls",
+    // Words said in the user's own face and voice need the user there
+    // to hear them read back (2026-09-26); readBack skips unattended runs.
+    "send_video_note",
   ]);
 
 /**
@@ -432,6 +440,8 @@ const TAINT_SENSITIVE = new Set([
   "email_reply", "pay_by_upi", "save_upi_id",
   // A web page must not start driving the owner's apps — or removing them.
   "do_task_in_app", "uninstall_app",
+  // Nor put words in the user's own mouth, on video.
+  "send_video_note",
 ]);
 
 const isUntrustedSource = (tool) =>

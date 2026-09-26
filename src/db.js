@@ -450,6 +450,10 @@ async function init() {
   // Momentum: Today's 3, habits, focus sessions and the streak they feed.
   await require("./momentum/service").migrate((sql) => pool.query(sql));
 
+  // "Send messages as you": consent + identity video, and the video notes
+  // the owner makes from it by hand (2026-09-26).
+  await require("./videonotes/store").migrate((sql) => pool.query(sql));
+
   // Live avatar persistence: per-user personas (the brain hookup),
   // session records, and the rolling recent-conversation window.
 

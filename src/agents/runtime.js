@@ -491,6 +491,12 @@ function systemPrompt(extra = "", { appBuild } = {}) {
     "the user's mother must actually receive the message. " +
     "Relationship words (mom, amma, dad, appa) are contact names — try them " +
     "with the tool; only ask for the person's name if resolution fails.\n" +
+    // Owner, 2026-09-26: "send a video note for Danush saying he should
+    // meet me at twelve PM" — the user's own face and voice, made later.
+    "- 'Send a video note / video message to X saying…' → send_video_note: " +
+    "write the script in the user's first person, one breath (60 words at " +
+    "most), in the language they spoke. Never generate_video or " +
+    "send_agent_message for it, and never say it was sent.\n" +
     "- You can CREATE IMAGES: 'draw/make/design/generate a picture, poster, " +
     "logo, card of X' → call generate_image with a rich visual prompt. " +
     "Never claim you can't make images. For video requests use " +
@@ -597,8 +603,10 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
     const claimCheck = require("./claimCheck");
     for (const item of held) {
       let line = item.text;
-      if (item.family && !claimCheck.satisfied(item.family, executed)) {
-        line = claimCheck.honestFor(item.family, item.text);
+      // The sentence and what ran go in too: a queued video note backs
+      // "it's being made" but never "I've sent it" (2026-09-26).
+      if (item.family && !claimCheck.satisfied(item.family, executed, item.text)) {
+        line = claimCheck.honestFor(item.family, item.text, executed);
       }
       onEvent("sentence", { text: line });
     }

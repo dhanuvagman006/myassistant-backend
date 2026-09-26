@@ -166,6 +166,10 @@ async function migrate(exec) {
     -- triggers so two assistants can never chat in a loop, and phrased
     -- differently when spoken ("their assistant replied" vs "X said").
     ALTER TABLE agent_messages ADD COLUMN IF NOT EXISTS auto INTEGER NOT NULL DEFAULT 0;
+    -- 'video' = an AI video note (videonotes/service.js): document_id is
+    -- the clip, the app plays it in its popup instead of speaking the text,
+    -- and the live prompt leaves it for that popup (2026-09-26).
+    ALTER TABLE agent_messages ADD COLUMN IF NOT EXISTS media TEXT NOT NULL DEFAULT '';
 
     -- ──────────────────────────────────────────────────────────────
     --  GROUPS, 2026-09-22.

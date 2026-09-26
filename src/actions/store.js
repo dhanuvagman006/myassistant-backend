@@ -438,6 +438,7 @@ function describe(r) {
   const verbs = {
     place_phone_call: "called",
     send_agent_message: "sent a message to",
+    send_video_note: "asked for a video note to",
     send_whatsapp_message: "prepared a WhatsApp message for",
     open_app: "opened",
     open_webpage: "opened a web page for",

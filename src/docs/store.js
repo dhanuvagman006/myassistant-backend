@@ -60,6 +60,10 @@ const MIME_EXT = {
   "text/html": ".html",
   "application/rtf": ".rtf",
   "text/rtf": ".rtf",
+  // Video notes (2026-09-26) land here as documents; without these a clip
+  // whose filename lost its extension was saved as .jpg.
+  "video/mp4": ".mp4",
+  "video/quicktime": ".mov",
 };
 
 function extOf(mime, filename) {
@@ -101,6 +105,36 @@ async function createDocument(userId, { buffer, filename, mime, note = "" }) {
   const filePath = path.join(userDir(userId), id + extOf(mime, filename));
   fs.writeFileSync(filePath, buffer);
   await run("UPDATE documents SET path = $1 WHERE id = $2", [filePath, id]);
+  return getDocument(userId, id);
+}
+
+/**
+ * createDocument for bytes too big to hold in memory — a video note is up
+ * to 300 MB and the pod has 512Mi (2026-09-26). The stream is written
+ * straight to the file; a failed write leaves neither a row nor a file.
+ */
+async function createDocumentFromStream(userId, { stream, filename, mime, note = "" }) {
+  if ((await countDocuments(userId)) >= MAX_PER_USER) {
+    stream?.destroy?.();
+    throw new DocumentLimitError();
+  }
+  const row = await one(
+    `INSERT INTO documents (user_id, filename, mime, size, path, note, category, created_at)
+     VALUES ($1, $2, $3, 0, '', $4, $5, $6) RETURNING id`,
+    [userId, String(filename || "document").slice(0, 120), mime,
+     String(note || "").trim().slice(0, 2000), guessCategory(note), Date.now()]
+  );
+  const id = row.id;
+  const filePath = path.join(userDir(userId), id + extOf(mime, filename));
+  try {
+    await require("stream/promises").pipeline(stream, fs.createWriteStream(filePath));
+    const size = (await fs.promises.stat(filePath)).size;
+    await run("UPDATE documents SET path = $1, size = $2 WHERE id = $3", [filePath, size, id]);
+  } catch (e) {
+    await run("DELETE FROM documents WHERE id = $1 AND user_id = $2", [id, userId]).catch(() => {});
+    await fs.promises.rm(filePath, { force: true }).catch(() => {});
+    throw e;
+  }
   return getDocument(userId, id);
 }
 
@@ -278,6 +312,7 @@ async function countDocuments(userId) {
 module.exports = {
   countDocuments,
   createDocument,
+  createDocumentFromStream,
   guessCategory,
   setMetadata,
   setNote,

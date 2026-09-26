@@ -12,7 +12,9 @@
  * Powers: full user management (search, detail, edit profile fields,
  * attach+verify phone, pause/resume, clear device, test push, delete
  * through the same routine as /privacy/account, and a "Leftovers" sweep
- * for what older deletes left behind), analytics series,
+ * for what older deletes left behind), the video-note queue ("send
+ * messages as you": download the sender's video, upload the clip made in
+ * Colab, and it is delivered), analytics series,
  * audit-trail explorer, live feature-flag overrides (kv-backed, read by
  * /config), push broadcast, and a debug page with DB/integration probes.
  *
@@ -529,6 +531,246 @@ router.delete("/api/recordings/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
+/* ------------------------------------------------------------------ */
+/* Video notes — "send messages as you", made by hand (2026-09-26)      */
+/* ------------------------------------------------------------------ */
+//
+// The owner: "send a video note for Danush saying he should meet me at
+// twelve PM" — with no GPU yet, HE makes the talking clip in Google Colab
+// from the sender's 30-second video and the script, and uploads it here.
+// The upload delivers it at once (videonotes/service.js): to the
+// recipient's app when they have one, otherwise to the sender to share.
+
+const videoNotes = () => require("../videonotes/store");
+const videoNoteService = () => require("../videonotes/service");
+
+function renderRow(r, sources) {
+  const n = (v) => (v === null || v === undefined ? null : Number(v));
+  // The sender's consent NOW ('ok' | 'off' | 'withdrawn'). Without it the
+  // page offers nothing that uses their face: no download, no upload.
+  const consent = videoNotes().senderGate(
+    r.sender_consented === null || r.sender_consented === undefined
+      ? null
+      : { consented: r.sender_consented, enabled: r.sender_enabled });
+  const workable = (r.status === "pending" || r.status === "failed") && consent === "ok";
+  const tp = videoNotes().teleprompter(r.script_version);
+  return {
+    id: Number(r.id),
+    status: r.status,
+    sender: {
+      id: n(r.user_id), name: r.sender_name || null, phone: r.sender_phone || null, consent,
+    },
+    // THE OWNER'S CHECKPOINT: what the person in the video should be
+    // saying, word for word, and whether he has confirmed it is them.
+    scriptVersion: Number(r.script_version) || 0,
+    consentVersion: r.consent_version || "",
+    teleprompter: tp ? { consent: tp.consent, text: tp.text } : null,
+    identityChecked: Boolean(r.identity_checked_at) &&
+      Boolean(r.source_video_key) && r.identity_checked_key === r.source_video_key,
+    identityCheckedAt: n(r.identity_checked_at),
+    workable,
+    recipient: {
+      name: r.recipient_name,
+      phone: r.recipient_phone,
+      onApp: Boolean(r.recipient_now_id) &&
+        (!r.recipient_user_id || Number(r.recipient_now_id) === Number(r.recipient_user_id)),
+    },
+    script: r.script,
+    language: r.language || "",
+    createdAt: n(r.created_at),
+    updatedAt: n(r.updated_at),
+    deliveredAt: n(r.delivered_at),
+    deliveredTo: r.delivered_to || "",
+    note: r.note || "",
+    error: r.error || "",
+    hasSource: Boolean(sources.get(Number(r.id))),
+    sourceBytes: sources.get(Number(r.id)) || 0,
+    hasOutput: Boolean(r.output_key),
+    outputBytes: Number(r.output_bytes) || 0,
+  };
+}
+
+router.get("/api/video-notes", async (req, res) => {
+  const media = require("../storage/media");
+  const status = String(req.query.status || "");
+  const [rows, counts] = await Promise.all([
+    videoNotes().listRenders({
+      status,
+      limit: parseInt(req.query.limit, 10) || 50,
+      offset: parseInt(req.query.offset, 10) || 0,
+    }),
+    videoNotes().countByStatus(),
+  ]);
+  // Whether the sender's video is still there to download (it goes with
+  // "Delete everything" and with the account).
+  const sources = new Map();
+  await Promise.all(rows.map(async (r) => {
+    if (!r.source_video_key || !media.isKey(r.source_video_key)) return;
+    const st = await media.stat(r.source_video_key).catch(() => null);
+    if (st) sources.set(Number(r.id), st.bytes);
+  }));
+  res.json({ renders: rows.map((r) => renderRow(r, sources)), counts });
+});
+
+/**
+ * The sender's identity video, for the owner's check and the Colab run.
+ * Range-capable, so it plays and seeks in the page; ?download=1 saves it.
+ *
+ * Only while the note can still be made (waiting or failed) AND the
+ * sender consents right now: a cancelled note, or one whose sender
+ * withdrew, served their face to anyone with the panel open (review,
+ * 2026-09-26).
+ */
+router.get("/api/video-notes/:id/source", async (req, res) => {
+  const media = require("../storage/media");
+  const r = await videoNotes().getRender(req.params.id);
+  if (!r) return res.status(404).json({ error: "no such video note" });
+  if (r.status !== "pending" && r.status !== "failed") {
+    return res.status(410).json({ error: `this video note is ${r.status} — the sender's video is not needed` });
+  }
+  const gate = videoNotes().senderGate(await videoNotes().getProfile(r.user_id));
+  if (gate !== "ok") {
+    return res.status(410).json({
+      error: gate === "off"
+        ? "the sender has switched video notes off"
+        : "the sender withdrew consent — their video can't be used",
+    });
+  }
+  if (!r.source_video_key || !media.isKey(r.source_video_key)) {
+    return res.status(410).json({ error: "the sender's video is gone (deleted by them)" });
+  }
+  const ext = /\.mov$/i.test(r.source_video_key) ? "mov" : "mp4";
+  const sent = await media.send(req, res, r.source_video_key, {
+    type: ext === "mov" ? "video/quicktime" : "video/mp4",
+    filename: `note-${r.id}-sender-${r.user_id}.${ext}`,
+    download: Boolean(req.query.download),
+  });
+  if (!sent) res.status(410).json({ error: "the sender's video is gone (deleted by them)" });
+});
+
+/** The clip that was uploaded, while it is kept (30 days after delivery). */
+router.get("/api/video-notes/:id/output", async (req, res) => {
+  const media = require("../storage/media");
+  const r = await videoNotes().getRender(req.params.id);
+  if (!r) return res.status(404).json({ error: "no such video note" });
+  const sent = r.output_key && media.isKey(r.output_key)
+    ? await media.send(req, res, r.output_key, {
+        filename: `note-${r.id}.mp4`,
+        download: Boolean(req.query.download),
+      })
+    : false;
+  if (!sent) res.status(410).json({ error: "no clip is kept for this note" });
+});
+
+// The finished clip, spooled to disk — never RAM (the pod has 512Mi). The
+// panel is the only upload path, so the key never goes into a notebook.
+const clipUpload = (() => {
+  const multer = require("multer");
+  const os = require("os");
+  const up = multer({
+    storage: multer.diskStorage({
+      destination: os.tmpdir(),
+      filename: (_req, _file, cb) =>
+        cb(null, `note-${Date.now()}-${Math.random().toString(36).slice(2)}.upload`),
+    }),
+    limits: { fileSize: 300 * 1024 * 1024, files: 1, fields: 5 },
+  });
+  return (req, res, next) =>
+    up.single("file")(req, res, (err) => {
+      if (!err) return next();
+      if (req.file?.path) require("fs").rm(req.file.path, { force: true }, () => {});
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res.status(413).json({ error: "that clip is too large (the limit is 300 MB)" });
+      }
+      return res.status(400).json({ error: "bad upload" });
+    });
+})();
+
+/**
+ * "I watched it: it is the account holder, reading the consent sentence."
+ * Required before a clip can be uploaded for this note, and recorded in
+ * the sender's own activity log. The server cannot tell a live take from
+ * any MP4 a client posts; the owner, who watches every one, can.
+ */
+router.post("/api/video-notes/:id/verify", async (req, res) => {
+  if (req.body?.confirm !== true) {
+    return res.status(400).json({ error: "confirm that you watched the video and it is them" });
+  }
+  try {
+    const r = await videoNoteService().confirmIdentity(req.params.id);
+    console.log(`admin: video note #${r.id} — sender's video checked`);
+    res.json({ ok: true, identityCheckedAt: Number(r.identity_checked_at) });
+  } catch (e) {
+    res.status(e.http || 500).json({ error: e.message });
+  }
+});
+
+/**
+ * Refused before the clip is read, not after 300 MB has crossed the wire:
+ * a note that is out, cancelled, unchecked, or whose sender withdrew.
+ * storeOutput checks all of it again, under lock, once the file is here.
+ */
+async function clipAllowed(req, res, next) {
+  try {
+    await videoNoteService().canStore(req.params.id);
+    next();
+  } catch (e) {
+    res.status(e.http || 500).json({ error: e.message });
+  }
+}
+
+/** Upload the made clip → stored → delivered, in one step. */
+router.post("/api/video-notes/:id/result", clipAllowed, clipUpload, async (req, res) => {
+  const fs = require("fs");
+  const f = req.file;
+  try {
+    if (!f) return res.status(400).json({ error: "choose the MP4 you made first" });
+    const mime = String(f.mimetype || "").toLowerCase();
+    if (!["video/mp4", "video/quicktime", "application/octet-stream"].includes(mime) &&
+        !/\.(mp4|mov|m4v)$/i.test(f.originalname || "")) {
+      return res.status(400).json({ error: "the clip must be an MP4" });
+    }
+    // An MP4 starts with an ISO-BMFF box; a mislabelled file is refused
+    // rather than delivered to someone's phone as a "video".
+    const head = Buffer.alloc(12);
+    const fh = await fs.promises.open(f.path, "r");
+    try { await fh.read(head, 0, 12, 0); } finally { await fh.close(); }
+    if (!["ftyp", "moov", "mdat", "wide", "free", "skip"].includes(head.toString("latin1", 4, 8))) {
+      return res.status(400).json({ error: "that file is not an MP4 video" });
+    }
+    await videoNoteService().storeOutput(req.params.id, f.path);
+    const r = await videoNoteService().deliver(req.params.id);
+    console.log(`admin: video note #${r.id} uploaded and delivered (${r.delivered_to})`);
+    res.json({ ok: true, status: r.status, deliveredTo: r.delivered_to, note: r.note });
+  } catch (e) {
+    if (e.http) return res.status(e.http).json({ error: e.message });
+    console.error("admin video note upload:", e.stack || e.message);
+    res.status(500).json({ error: "the clip could not be stored" });
+  } finally {
+    if (f?.path) fs.promises.rm(f.path, { force: true }).catch(() => {});
+  }
+});
+
+/** A stored clip whose delivery failed: try again, no new upload. */
+router.post("/api/video-notes/:id/deliver", async (req, res) => {
+  try {
+    const r = await videoNoteService().deliver(req.params.id);
+    res.json({ ok: true, status: r.status, deliveredTo: r.delivered_to, note: r.note });
+  } catch (e) {
+    res.status(e.http || 500).json({ error: e.message });
+  }
+});
+
+/** Could not be made: the sender is told, and it leaves the queue. */
+router.post("/api/video-notes/:id/fail", async (req, res) => {
+  try {
+    const r = await videoNoteService().fail(req.params.id, req.body?.reason);
+    res.json({ ok: true, status: r.status });
+  } catch (e) {
+    res.status(e.http || 500).json({ error: e.message });
+  }
+});
+
 /**
  * CSV of the Conversations view — same rows, same filters, as a
  * spreadsheet: every question, the answer, how long it took, which tools
@@ -842,6 +1084,8 @@ router.get("/api/documents/:docId/file", async (req, res) => {
   // uploaded text/html rendered inline would run script as the admin.
   const PREVIEWABLE = new Set([
     "image/jpeg", "image/png", "image/webp", "image/gif", "application/pdf", "text/plain",
+    // Passive, like the images: a delivered video note plays in place.
+    "video/mp4",
   ]);
   const mime = String(row.mime || "").toLowerCase();
   const inline = !req.query.download && PREVIEWABLE.has(mime);
@@ -1128,7 +1372,8 @@ router.post("/api/broadcast", async (req, res) => {
 const TABLES = ["users", "actions_log", "reminders", "commitments", "documents",
   "agent_memories", "agent_messages", "clients", "client_notes", "contacts",
   "finance_items", "meetings", "payment_requests", "fulfillment_tasks",
-  "fare_watches", "conversations", "messages", "mcp_servers"];
+  "fare_watches", "conversations", "messages", "mcp_servers",
+  "avatar_profiles", "avatar_renders"];
 
 router.get("/api/debug", async (req, res) => {
   const t0 = Date.now();

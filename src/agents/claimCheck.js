@@ -27,9 +27,47 @@
  * language beats a false one in the right language.
  */
 
+/*
+ * VIDEO NOTES (the `videonote` family below). A sentence is about one when
+ * it names a video note / video message and says something happened to
+ * it, or pairs the queued wording the tool itself speaks ("being made",
+ * "once it's made") with reaching a person. The second half is scoped to
+ * a person on purpose: "your video is being made, I'll show it when it's
+ * ready" belongs to generate_video, and must not be read as a video note.
+ */
+const VIDEO_NOTE = /\bvideo\s+(?:note|message)s?\b/i;
+const VIDEO_NOTE_ACT =
+  /\b(sent|sending|deliver(?:ed|ing)?|on its way|went out|gone out|reach(?:ed|es)?|being made|made|ready|queued)\b/i;
+const QUEUED = /\b(being made|once it'?s (?:made|ready)|as soon as it'?s (?:made|ready))\b/i;
+const TO_A_PERSON = /\b(reach(?:es)?|delivered to (?!you\b|your\b)|send it to (?!you\b|your\b)|get it to)\b/i;
+function isVideoNoteClaim(s) {
+  return (VIDEO_NOTE.test(s) && VIDEO_NOTE_ACT.test(s)) || (QUEUED.test(s) && TO_A_PERSON.test(s));
+}
+// Said as DONE. "It will be delivered", "it'll be sent", "once it's sent"
+// are the future a queued note may promise; "I've sent", "has been
+// delivered", "sending it now", "on its way" are not.
+const WENT = /\b(sent|sending|delivered|on its way|went out|gone out|reached)\b/gi;
+const FUTURE_BEFORE = /\b(will|'ll|shall|going to|be|once|when|until|before|as soon as)\b[^.,;!?]{0,12}$/i;
+function saysVideoNoteWent(s) {
+  const t = String(s || "");
+  for (const m of t.matchAll(WENT)) {
+    if (!FUTURE_BEFORE.test(t.slice(0, m.index))) return true;
+  }
+  return false;
+}
+const VIDEO_NOTE_QUEUED =
+  "Your video note hasn't gone yet — it's being made, and you'll get a notification when it's ready.";
+const NO_VIDEO_NOTE = "I haven't queued a video note — nothing is being made or sent.";
+
 /**
  * Families of action, each with the tools that satisfy it and the
  * phrases that claim it. Order matters only for the message we produce.
+ *
+ * A family may carry `matches(s)` in place of the English `claim`
+ * pattern, and `overclaims(s)`: a sentence the family's tool can NEVER
+ * back, whatever ran (a queued video note described as sent). `honest`
+ * gets the set of tools that ran, so the correction can say what did
+ * happen instead of denying everything.
  */
 const FAMILIES = [
   {
@@ -109,6 +147,23 @@ const FAMILIES = [
     honest: () => "I couldn't open that on your phone.",
   },
   {
+    // VIDEO NOTES ARE QUEUED, NEVER SENT (2026-09-26). send_video_note
+    // only puts a note in the owner's queue — he makes the clip by hand in
+    // Colab, which can take hours or fail — so "it's being made, it will
+    // reach Danush when it's ready" is the one true thing to say. Filed
+    // under `message` at first, the queued note also backed "Done, I've
+    // sent Danush your video note", the exact claim the tool forbids
+    // (review, 2026-09-26). Here it backs only the queued wording; a
+    // "sent" or "delivered" said of a video note is never backed by it.
+    // Ahead of `message` so that "it will be delivered once it's made" is
+    // read as the queued claim it is.
+    id: "videonote",
+    tools: ["send_video_note"],
+    matches: (s) => isVideoNoteClaim(s),
+    overclaims: (s) => saysVideoNoteWent(s),
+    honest: (_s, ranOk) => (ranOk && ranOk.has("send_video_note") ? VIDEO_NOTE_QUEUED : NO_VIDEO_NOTE),
+  },
+  {
     id: "message",
     tools: ["send_agent_message", "send_whatsapp_message", "send_document", "send_patient_document",
             "send_developer_feedback", // "I've passed that on to the developer"
@@ -118,7 +173,11 @@ const FAMILIES = [
     claim: /\b(sent|sending|i'?ve sent|message is on its way|passed (it|that) on|delivered)\b/i,
     // भेज दिया/रहा…, ಕಳುಹಿಸ…, அனுப்ப…, పంప…, അയച്ചു…
     claimIntl: /(भेज\s*(दिया|रहा|रही)|मैसेज\s*कर|ಕಳುಹಿಸ|ಮೆಸೇಜ್\s*ಮಾಡ|ಸೆಂಡ್\s*ಮಾಡ|அனுப்ப|பதிவிட|పంపా|పంపుతు|അയച്ചു|അയക്കുന്നു)/,
-    honest: () => "I haven't sent anything — that didn't go through.",
+    // "Sent!" (or भेज दिया) when only a video note was QUEUED is still
+    // false, but "I haven't sent anything" would be too: something is on
+    // its way to being made. Say that instead.
+    honest: (_s, ranOk) =>
+      ranOk && ranOk.has("send_video_note") ? VIDEO_NOTE_QUEUED : "I haven't sent anything — that didn't go through.",
   },
   {
     id: "remind",
@@ -296,7 +355,7 @@ function isOnlyCallHistory(sentence) {
 
 /** Does this sentence claim this family's action, in any script? */
 function claims(family, sentence) {
-  const english = family.claim.test(sentence) &&
+  const english = (family.matches ? family.matches(sentence) : family.claim.test(sentence)) &&
     !(family.onlyHistory && family.onlyHistory(sentence));
   return english ||
     (family.claimIntl ? family.claimIntl.test(sentence) : false);
@@ -325,20 +384,33 @@ function classify(sentence) {
   return family ? family.id : null;
 }
 
-/** The honest replacement for a sentence of this family. */
-function honestFor(familyId, sentence) {
-  const f = FAMILIES.find((x) => x.id === familyId);
-  return f ? f.honest(sentence) : sentence;
+const ranOkOf = (executed) =>
+  new Set((executed || []).filter((e) => e && e.ok !== false).map((e) => e.tool));
+
+/** Does what ran back this family's claim — and is it one it CAN back? */
+function backs(family, sentence, ranOk) {
+  if (family.overclaims && family.overclaims(String(sentence || ""))) return false;
+  return family.tools.some((t) => ranOk.has(t));
 }
 
-/** Did a tool of this family run (successfully) in the given list? */
-function satisfied(familyId, executed = []) {
+/**
+ * The honest replacement for a sentence of this family. `executed` lets
+ * it say what did happen (a video note queued, not sent).
+ */
+function honestFor(familyId, sentence, executed = []) {
+  const f = FAMILIES.find((x) => x.id === familyId);
+  return f ? f.honest(sentence, ranOkOf(executed)) : sentence;
+}
+
+/**
+ * Did a tool of this family run (successfully) in the given list? With
+ * the sentence, a claim the family's tools can never back (overclaims)
+ * is not satisfied either.
+ */
+function satisfied(familyId, executed = [], sentence = "") {
   const f = FAMILIES.find((x) => x.id === familyId);
   if (!f) return true;
-  const ranOk = new Set(
-    (executed || []).filter((e) => e && e.ok !== false).map((e) => e.tool)
-  );
-  return f.tools.some((t) => ranOk.has(t));
+  return backs(f, sentence, ranOkOf(executed));
 }
 
 /**
@@ -351,9 +423,7 @@ function check(replyText, executed = []) {
   const text = String(replyText || "");
   if (!text.trim()) return { ok: true, text, violations: [] };
 
-  const ranOk = new Set(
-    (executed || []).filter((e) => e && e.ok !== false).map((e) => e.tool)
-  );
+  const ranOk = ranOkOf(executed);
   const violations = [];
   const out = [];
   let corrupted = false; // a claim in this reply has already been corrected
@@ -369,15 +439,14 @@ function check(replyText, executed = []) {
       out.push(s);
       continue;
     }
-    const satisfied = family.tools.some((t) => ranOk.has(t));
-    if (satisfied) {
+    if (backs(family, s, ranOk)) {
       out.push(s);
       continue;
     }
     // An unsupported claim. Replace that sentence with the truth rather
     // than appending a contradiction after it.
     violations.push(`${family.id}: "${s.slice(0, 80)}"`);
-    out.push(family.honest(s));
+    out.push(family.honest(s, ranOk));
     corrupted = true;
   }
 

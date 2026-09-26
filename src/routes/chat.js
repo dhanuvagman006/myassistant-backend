@@ -127,7 +127,7 @@ router.get("/thread/:phone", async (req, res) => {
 
   const [out, inc] = await Promise.all([
     query(
-      `SELECT id, message, created_at, status, auto, deleted, document_id, from_document_id
+      `SELECT id, message, created_at, status, auto, deleted, document_id, from_document_id, media
          FROM agent_messages
         WHERE from_user_id = $1 AND to_phone_number = $2
         ORDER BY id ASC LIMIT 500`,
@@ -136,7 +136,7 @@ router.get("/thread/:phone", async (req, res) => {
     mine
       ? query(
           `SELECT m.id, m.message, m.created_at, m.status, m.auto, m.deleted,
-                  m.document_id, m.from_document_id
+                  m.document_id, m.from_document_id, m.media
              FROM agent_messages m
              JOIN users u ON u.id = m.from_user_id
             WHERE m.to_phone_number = $1 AND u.phone_number = $2
@@ -184,6 +184,9 @@ router.get("/thread/:phone", async (req, res) => {
       auto: m.auto === 1,
       // Each side references the copy it OWNS (auth on /docs/:id/file).
       documentId: m.from_document_id ? Number(m.from_document_id) : null,
+      // 'video' for an AI video note, so the bubble can play the document
+      // instead of drawing it as a photo (2026-09-26). null otherwise.
+      media: m.media || null,
     })),
     ...inc.filter(visible).map((m) => ({
       id: Number(m.id),
@@ -193,6 +196,7 @@ router.get("/thread/:phone", async (req, res) => {
       at: Number(m.created_at),
       auto: m.auto === 1,
       documentId: m.document_id ? Number(m.document_id) : null,
+      media: m.media || null,
     })),
   ].sort((a, b) => a.at - b.at || a.id - b.id);
 
