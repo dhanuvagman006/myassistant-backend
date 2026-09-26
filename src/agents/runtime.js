@@ -497,6 +497,9 @@ function systemPrompt(extra = "", { appBuild } = {}) {
     "write the script in the user's first person, one breath (60 words at " +
     "most), in the language they spoke. Never generate_video or " +
     "send_agent_message for it, and never say it was sent.\n" +
+    // Photo cards (2026-09-26): a card with a real photo, his words or
+    // his signature — BEFORE the image rule, or that rule wins. Build 119+.
+    require("../posters/tools").posterRule(appBuild) +
     "- You can CREATE IMAGES: 'draw/make/design/generate a picture, poster, " +
     "logo, card of X' → call generate_image with a rich visual prompt. " +
     "Never claim you can't make images. For video requests use " +
@@ -630,16 +633,22 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
     surface: ctx.source || (ctx.background ? "background" : "voice"),
     appBuild: ctx.appBuild,
   }) : null;
+  // A number, a name or one offered word is an ANSWER when the assistant
+  // has just asked for it ("How old is she turning?" → "25"): read from
+  // its last line (inputQuality.expectationsFrom, 2026-09-26).
+  const lastLine = state && state.turns.slice(-1)[0];
   const quality = inputQuality.assess(userText, {
-    // A number is an answer when the assistant has just asked for one.
-    expectsNumber: Boolean(
-      state && state.turns.slice(-1)[0] &&
-      /\b(number|digits|phone)\b/i.test(state.turns.slice(-1)[0].text || "")
-    ),
+    ...inputQuality.expectationsFrom(lastLine && lastLine.role === "assistant" ? lastLine.text : ""),
     languages: ctx.languages || [],
   });
   quality.heard = String(userText || "").slice(0, 120);
   if (state) sessionState.beginTurn(state, { turnId, text: userText, quality: quality.quality });
+  // The phone's own card lines ("[SYSTEM] Signature saved…; it is on the
+  // card now") run no tool, yet what they report is true: filed for the
+  // claim check, so "Done, it's on the card" is not rewritten (2026-09-26).
+  if (state) {
+    for (const tool of claimCheck.appNoteVouches(userText)) sessionState.noteVouched(state, { turnId, tool });
+  }
   ctx = { ...ctx, session: state, turnId, sessionId: sid, inputQuality: quality };
 
   // ── GARBLED IN, CLARIFICATION OUT ─────────────────────────────────

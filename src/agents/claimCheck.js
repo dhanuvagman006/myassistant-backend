@@ -58,6 +58,7 @@ function saysVideoNoteWent(s) {
 const VIDEO_NOTE_QUEUED =
   "Your video note hasn't gone yet — it's being made, and you'll get a notification when it's ready.";
 const NO_VIDEO_NOTE = "I haven't queued a video note — nothing is being made or sent.";
+const CARD_SHARE_OPEN = "The card is open to share — pick the person and press Send.";
 
 /**
  * Families of action, each with the tools that satisfy it and the
@@ -140,6 +141,8 @@ const FAMILIES = [
       "show_schedule", "show_news",
       // "Bringing up the second story" — its card comes to the front.
       "read_news_story",
+      // "Opening WhatsApp with the card" (photo cards, 2026-09-26).
+      "share_poster",
     ],
     claim: /\b(opening|opened|launching|launched|pulling up|bringing up)\b/i,
     // खोल…, ओपन कर…, ತೆರೆ…/ಓಪನ್ ಮಾಡ…, திறக்க…, తెరుస్…, തുറക്ക…
@@ -176,8 +179,13 @@ const FAMILIES = [
     // "Sent!" (or भेज दिया) when only a video note was QUEUED is still
     // false, but "I haven't sent anything" would be too: something is on
     // its way to being made. Say that instead.
+    // A shared card is the same shape (2026-09-26): WhatsApp opened with
+    // it, and the user presses Send — "sent" is false, "nothing went
+    // through" would be too.
     honest: (_s, ranOk) =>
-      ranOk && ranOk.has("send_video_note") ? VIDEO_NOTE_QUEUED : "I haven't sent anything — that didn't go through.",
+      ranOk && ranOk.has("send_video_note") ? VIDEO_NOTE_QUEUED
+        : ranOk && ranOk.has("share_poster") ? CARD_SHARE_OPEN
+          : "I haven't sent anything — that didn't go through.",
   },
   {
     id: "remind",
@@ -238,9 +246,21 @@ const FAMILIES = [
     // classifies first must find the tool that ran.
     id: "create",
     tools: ["create_document", "save_web_document", "present_text",
-            "generate_image", "generate_video", "capture_document"],
+            "generate_image", "generate_video", "capture_document",
+            // Photo cards (2026-09-26): "I've made your card", "the photo is
+            // done". Their follow-up [SYSTEM] turns run no tool; the app's
+            // own lines vouch for them instead (appNoteVouches below).
+            "make_greeting_poster", "change_poster", "improve_old_photo",
+            // Sharing saves the finished card to his documents first, so
+            // "the card is saved in your documents, WhatsApp is open" is
+            // true after it — and was being rewritten into "nothing was
+            // saved" (review, 2026-09-26).
+            "share_poster"],
+    // A "card" is a greeting card here, never a business, ID or bank
+    // card: "done, the business card is in your contacts" belongs to the
+    // scanner, and must not be read as a claim to have made something.
     claim:
-      /\b(created|made|prepared|generated|built|drafted|put together|written up|drawn up|ready|done)\b[^.]{0,40}\b(pdf|document|report|letter|deck|presentation|slides?|powerpoint|word file|spreadsheet|sheet|excel|workbook|invoice|proposal|resume|cv|file|image|picture|poster|photo|video)\b|\b(your|the)\b\s+\b(pdf|deck|presentation|slides?|powerpoint|spreadsheet|report|document|file|image|video)\b[^.]{0,20}\b(is|'s)\s+(ready|done|saved|in your documents)\b/i,
+      /\b(created|made|prepared|generated|built|drafted|put together|written up|drawn up|ready|done)\b[^.]{0,40}\b(pdf|document|report|letter|deck|presentation|slides?|powerpoint|word file|spreadsheet|sheet|excel|workbook|invoice|proposal|resume|cv|file|image|picture|poster|(?<!\b(?:business|visiting|id|identity|credit|debit|atm|aadhaar|aadhar|pan|ration|voter|sim|sd|memory|news|report|smart|contact)\s)card|photo|video)\b|\b(your|the)\b\s+\b(pdf|deck|presentation|slides?|powerpoint|spreadsheet|report|document|file|image|video|poster|card)\b[^.]{0,20}\b(is|'s)\s+(ready|done|saved|in your documents)\b/i,
     // बना दिया…, ತಯಾರಿಸ…/ಮಾಡಿದೆ…, உருவாக்க…, తయారు చేస…, ഉണ്ടാക്കി…
     claimIntl: /(बना\s*(दिया|दी|लिया)|तैयार\s*(कर|है)|ತಯಾರಿಸ|ಮಾಡಿ\s*(ದೆ|ಕೊಟ್ಟ)|ಸಿದ್ಧ|உருவாக்க|தயாரித்த|తయారు\s*చేస|సిద్ధం|ഉണ്ടാക്കി|തയ്യാറാക്കി)/,
     honest: () => "I couldn't create that file — nothing was saved.",
@@ -252,7 +272,11 @@ const FAMILIES = [
             "associate_document", "save_web_document", "send_developer_feedback",
             "save_upi_id",
             // "Logged your water", "noted it down", "I've saved today's list".
-            "plan_my_day", "complete_priority", "add_habit", "check_habit"],
+            "plan_my_day", "complete_priority", "add_habit", "check_habit",
+            // "I've saved the clearer photo to your documents" — the keep
+            // step of improve_old_photo (2026-09-26); and the card a share
+            // saved first.
+            "improve_old_photo", "share_poster"],
     claim: /\b(logged|recorded|noted it down|saved (it |that )?(to|in) your|filed under|i'?ve (written|saved)|written that down)\b/i,
     // सहेज/सेव/नोट कर…, ಉಳಿಸ/ಸೇವ್ ಮಾಡ…, சேமிக்க…, సేవ్ చేస…, സേവ് ചെയ്…
     claimIntl: /(सहेज|सेव\s*कर|नोट\s*कर|लिख\s*दिया|ಉಳಿಸ|ಸೇವ್\s*ಮಾಡ|ಬರೆದಿ|சேமிக்க|குறித்து|సేవ్\s*చేస|రాశా|സേവ്\s*ചെയ്|എഴുതി)/,
@@ -471,6 +495,32 @@ function familiesAskedAbout(question) {
 }
 
 /**
+ * WHAT THE APP'S OWN [SYSTEM] LINES VOUCH FOR (photo cards, 2026-09-26).
+ * The card screen reports back with lines like "[SYSTEM] Signature saved
+ * on this phone; it is on the card now." — a turn in which no tool runs,
+ * so "Done, your signature is on the card now" had nothing behind it and
+ * was rewritten into "I couldn't create that file — nothing was saved",
+ * straight after it was saved. The line itself is the evidence: the phone
+ * only sends it once the thing is on the card. Returns the tools such a
+ * line stands for (runtime and live proxy file them for the reply), or [].
+ * Only the lines that say something landed: "the picker was closed…
+ * Nothing was made" vouches for nothing, and neither does any
+ * "[SYSTEM] ERROR:" line — the app's own failure reports, some of which
+ * name the card ("the photo on the card has not arrived on this phone
+ * yet, so nothing was sent"; integration check, 2026-09-26).
+ */
+function appNoteVouches(text) {
+  const t = String(text || "");
+  if (!/^\s*\[SYSTEM\]/.test(t) || /^\s*\[SYSTEM\]\s*ERROR\b/i.test(t) ||
+      /\bnothing was (made|cut|changed|saved|sent)\b/i.test(t)) return [];
+  const out = [];
+  if (/\b(on the card|card is on the screen)\b/i.test(t)) out.push("change_poster");
+  if (/\bcleaned-up photo is on the screen\b/i.test(t)) out.push("improve_old_photo");
+  if (/\bopen with the card\b/i.test(t)) out.push("share_poster");
+  return out;
+}
+
+/**
  * Every tool any family relies on.
  *
  * The registry needs this: it only files WORLD ACTIONS into the session's
@@ -483,6 +533,6 @@ function familiesAskedAbout(question) {
 const FAMILY_TOOLS = new Set(FAMILIES.flatMap((f) => f.tools));
 
 module.exports = {
-  check, classify, claims, honestFor, satisfied, familiesAskedAbout,
+  check, classify, claims, honestFor, satisfied, familiesAskedAbout, appNoteVouches,
   FAMILIES, FAMILY_TOOLS,
 };

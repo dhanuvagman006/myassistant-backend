@@ -106,13 +106,62 @@ function contentRatio(t) {
 }
 
 /**
+ * ONE-WORD ANSWERS TO THE QUESTION JUST ASKED (photo cards, 2026-09-26).
+ * The card flow asks one thing at a time — "How old is she turning?",
+ * "What's her name, as it should be written?", "Pink, gold or blue?" —
+ * and the answer is one word. Judged alone, "25" was garbled ("mostly
+ * non-letters"), "Riya" and "pink" were garbled ("single short
+ * fragment"), so the turn ended in "sorry, I didn't catch that" to a
+ * perfectly clear answer. What the assistant just said is the context
+ * that makes them answers; read from its last line:
+ *   expectsNumber — it asked for a number, a phone, an age ("how old");
+ *   expectsName   — it asked a question about a name;
+ *   offered       — the words of the question it asked, plus, when it was
+ *                   talking about the card, the card's own words (colours,
+ *                   designs), so "pink" after "What would you like to
+ *                   change?" is an answer too.
+ * An answer found this way is 'weak', never 'clear': enough to talk and to
+ * edit the draft on screen (registry draftEdit), never enough to act on
+ * the world.
+ */
+const CARD_TALK = /\b(card|poster|design|colou?r|letters|heading|wishes)\b/i;
+const CARD_WORDS =
+  "pink gold blue green white purple red rose maroon peach golden yellow orange cream saffron " +
+  "navy violet lavender classic ivory silver sky teal mint leaf flowers flower floral roses " +
+  "peony blush celebration stars balloons balloon confetti party playful mandala rangoli royal " +
+  "marigold indian festive garden leaves leafy wreath simple elegant plain bigger smaller larger " +
+  "tall sepia undo";
+const NOT_AN_ANSWER = new Set(("the and you your for with are was not but can its our has have had " +
+  "she her his him they them this that there then than what which would like shall should will").split(" "));
+
+function expectationsFrom(lastAssistantLine) {
+  const t = String(lastAssistantLine || "");
+  const asked = t.includes("?");
+  return {
+    expectsNumber: /\b(number|digits|phone|old|age)\b/i.test(t),
+    expectsName: asked && /\bnames?\b/i.test(t),
+    offered: (asked ? t : "") + (CARD_TALK.test(t) ? ` ${CARD_WORDS}` : ""),
+  };
+}
+
+function offeredWords(text) {
+  return new Set(
+    String(text || "").normalize("NFC").toLowerCase()
+      .split(/[^\p{L}\p{M}\p{N}]+/u)
+      .filter((w) => [...w].length >= 3 && !NOT_AN_ANSWER.has(w))
+  );
+}
+
+/**
  * @param text        what the recogniser produced
  * @param opts.expectsNumber  true when the conversation just asked for a
  *                            number (then bare digits are an ANSWER, not noise)
+ * @param opts.expectsName    true when the conversation just asked for a name
+ * @param opts.offered        words the assistant just offered (see above)
  * @param opts.languages      languages this user actually speaks
  * @returns {{quality:'clear'|'weak'|'garbled', reason:string, digitsOnly:boolean}}
  */
-function assess(text, { expectsNumber = false, languages = [] } = {}) {
+function assess(text, { expectsNumber = false, expectsName = false, offered = "", languages = [] } = {}) {
   const raw = String(text || "").trim();
   if (!raw) return { quality: "garbled", reason: "empty", digitsOnly: false };
 
@@ -127,6 +176,10 @@ function assess(text, { expectsNumber = false, languages = [] } = {}) {
     return expectsNumber
       ? { quality: "clear", reason: "number in answer to a question", digitsOnly: true }
       : { quality: "weak", reason: "bare digits with nothing asking for a number", digitsOnly: true };
+  }
+  // A short number ("25", "60th") only ever as the answer to "how old?".
+  if (expectsNumber && /^\d{1,3}(st|nd|rd|th)?\.?$/i.test(raw)) {
+    return { quality: "clear", reason: "number in answer to a question", digitsOnly: /^\d+$/.test(raw) };
   }
 
   // Wrong-script output for a user who does not speak that script.
@@ -155,6 +208,13 @@ function assess(text, { expectsNumber = false, languages = [] } = {}) {
     // every one-word Indian-language answer was refused as noise.
     const w = lower.replace(/[^\p{L}\p{M}\p{N}]/gu, "").normalize("NFC");
     if (SHORT_OK.has(w)) return { quality: "clear", reason: "short but unambiguous", digitsOnly: false };
+    // The answer to the question just asked (see expectationsFrom).
+    if (offered && offeredWords(offered).has(w)) {
+      return { quality: "weak", reason: "one of the words just offered", digitsOnly: false };
+    }
+    if (expectsName && [...w].length >= 2 && /^[\p{L}\p{M}]+$/u.test(w)) {
+      return { quality: "weak", reason: "a name in answer to a question", digitsOnly: false };
+    }
     // A single word in an Indian script is a real word the recogniser
     // heard, not the "con"/"flow" crumbs a mis-set English recogniser
     // makes of noise: understandable, just too thin to act on alone.
@@ -213,4 +273,4 @@ function mayAct(assessment) {
   return !assessment || assessment.quality === "clear";
 }
 
-module.exports = { assess, clarificationFor, mayAct };
+module.exports = { assess, clarificationFor, mayAct, expectationsFrom };

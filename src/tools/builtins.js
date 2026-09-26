@@ -322,6 +322,10 @@ function registerBuiltins() {
   // Momentum: Today's 3, habits, focus and "how am I doing?" (2026-09-25).
   require("../momentum/tools").registerMomentumTools(registry);
 
+  // Photo cards (2026-09-26): a gift card with his words, a real photo and
+  // his signature, drawn on the phone — no AI. App build 119+.
+  require("../posters/tools").registerPosterTools(registry);
+
   // ---------------- INFORMATION (low risk) ----------------
 
   registry.register({
@@ -4168,7 +4172,15 @@ function registerBuiltins() {
       "for it, then save_web_document with the image or PDF URL from the " +
       "results (that is what 'download' means), or open_webpage so they can " +
       "see the official one. Generation is for pictures that did not exist " +
-      "until they asked for them.",
+      "until they asked for them.\n" +
+      // Photo cards (2026-09-26). Conditional on purpose: an app older
+      // than build 119 is not offered make_greeting_poster, and keeps
+      // today's behaviour here for a plain picture card.
+      "NOT FOR A GREETING CARD CARRYING A REAL PERSON: a birthday, " +
+      "anniversary or wedding card with a name, their own dictated wishes, " +
+      "a signature or a real person's photo goes to make_greeting_poster " +
+      "whenever that tool is offered — this tool would invent a stranger's " +
+      "face and misspell the names.",
     risk: "low",
     deviceAction: true,
     inputSchema: {
@@ -4351,8 +4363,14 @@ function registerBuiltins() {
       "SHOW THE USER HOW THEY WOULD LOOK — on their own photo. 'how would " +
       "I look in a navy suit', 'show me with short hair', 'what about a " +
       "beard', 'make me a LinkedIn photo', 'I need a passport photo', " +
-      "'restore this old photo of my father', 'put me in front of an " +
-      "office background', 'dress me for my cousin's wedding'.\n" +
+      "'put me in front of an office background', 'dress me for my " +
+      "cousin's wedding'.\n" +
+      // 2026-09-26: "restore this old photo of my father" used to land
+      // here and edit the user's OWN saved selfie — never the old photo.
+      "AN OLD PHOTO, OR ANYONE ELSE'S PHOTO ('make my father's old photo " +
+      "clear', 'make this old picture nice') goes to improve_old_photo " +
+      "whenever that tool is offered: this tool can only edit the user's " +
+      "own saved Style Studio photo.\n" +
       "It uses the photo they saved in Style Studio, edits it, and the " +
       "result appears full-screen on their phone and is saved to their " +
       "files. Takes ten to sixty seconds — say you're on it, then let the " +
@@ -4461,6 +4479,17 @@ function registerBuiltins() {
                        "colourise", "fit", "length"]) {
         const v = String(args[k] || "").trim();
         if (v) params[k] = v;
+      }
+      // An old photo is never restored by editing the user's own selfie
+      // (2026-09-26): from build 119 the photo is picked on the phone and
+      // cleaned up there. Older builds keep today's behaviour.
+      if (recipe === "restore" &&
+          Number(ctx.appBuild) >= require("../posters/tools").POSTER_MIN_BUILD) {
+        return {
+          ok: false,
+          error: "use_improve_old_photo",
+          note: "Call improve_old_photo instead — it lets the user pick the photo. Nothing was made.",
+        };
       }
       // The occasion recipe reads `occasion`; an outfit description handed
       // to it belongs in its notes rather than being dropped.

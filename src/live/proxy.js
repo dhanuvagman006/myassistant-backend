@@ -594,6 +594,9 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "write the script yourself in MY first person, one breath (60 words at " +
     "most), in the language I spoke — never generate_video or " +
     "send_agent_message for it, and never say it was sent. " +
+    // Photo cards (2026-09-26): a card with a real photo, my words or my
+    // signature — BEFORE the image rule, or that rule wins. Build 119+.
+    require("../posters/tools").posterRule(appBuild, { voice: "me" }) +
     "You can CREATE IMAGES: 'draw/make/design/generate a picture, poster, " +
     "logo, card of X' means call generate_image now with a rich visual " +
     "prompt — never say you can't make images. For video requests use " +
@@ -1011,7 +1014,10 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       // must not be completed from the previous request — the gate lives in
       // the tool registry, this is where the verdict is made.
       turnQuality = inputQuality.assess(t, {
-        expectsNumber: /\b(number|digits|phone)\b/i.test(lastModelLine),
+        // "25" after "How old is she turning?", "Riya" after "What's her
+        // name?", "pink" after a question about the card: answers, read
+        // from what the model last said (2026-09-26).
+        ...inputQuality.expectationsFrom(lastModelLine),
         // STILL THE STORED VALUE, DELIBERATELY. This list answers a
         // different question from "which language to reply in": it is
         // the set this user may legitimately be HEARD in, and it is what
@@ -2043,6 +2049,13 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         const fromOwner = m.typed === true || (m.typed !== false && !intent.isAppNote(typed));
         heardSeq++;
         if (!fromOwner) {
+          // The card screen's report ("it is on the card now") is evidence
+          // for the reply it prompts — no tool runs for it (2026-09-26).
+          if (liveState) {
+            for (const tool of claimCheck.appNoteVouches(typed)) {
+              sessionState.noteVouched(liveState, { turnId: currentTurnId, tool });
+            }
+          }
           upstream.send(JSON.stringify({
             clientContent: { turns: [{ role: "user", parts: [{ text: m.text }] }], turnComplete: true },
           }));

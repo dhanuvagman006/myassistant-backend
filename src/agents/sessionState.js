@@ -213,6 +213,27 @@ function noteSuppressed(state, { turnId, tool, args }) {
   return entry;
 }
 
+/**
+ * What the app's own [SYSTEM] line says just happened on the phone
+ * (claimCheck.appNoteVouches): "the signature is on the card now". The
+ * claim checker may count it for the reply to that line. Session only,
+ * never the durable ledger — nothing ran on the server.
+ */
+function noteVouched(state, { turnId, tool }) {
+  if (!state || !tool) return null;
+  const entry = {
+    turnId: turnId || (state.turn && state.turn.id) || "",
+    tool,
+    target: "",
+    ok: true,
+    vouched: true,
+    at: Date.now(),
+  };
+  state.executed.push(entry);
+  if (state.executed.length > 60) state.executed.shift();
+  return entry;
+}
+
 /** Record an execution both in the session and durably. */
 function recordExecution(state, { turnId, tool, args, ok, detail, result, ms }) {
   const entry = {
@@ -288,7 +309,7 @@ module.exports = {
   begin, get, end,
   beginTurn, recordReply,
   setEntity, clearEntity, activeEntity,
-  setPending, takePending, clearPending, noteSuppressed,
+  setPending, takePending, clearPending, noteSuppressed, noteVouched,
   recordExecution, executedThisTurn, executedThisSession, executedRecently,
   PENDING_TTL_MS, ENTITY_TTL_MS,
 };

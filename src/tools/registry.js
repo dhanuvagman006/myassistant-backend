@@ -313,10 +313,31 @@ const SEED_WORLD = new Set([
   "plan_my_day", "complete_priority", "add_habit", "check_habit", "start_focus",
   // 2026-09-26: a clip in the user's own face and voice, to another person.
   "send_video_note",
+  // 2026-09-26: photo cards — a new card and its picker, a share, a photo
+  // cleaned or kept. NOT change_poster: it only edits the undoable draft on
+  // his screen (and is read back), so one-word answers — "bigger", "pink",
+  // "flowers" — must reach it; it stays in a claim family, which is what
+  // files it for the claim checker. make_greeting_poster continuing a card
+  // is let through GATE 1 by its draftEdit flag instead.
+  "make_greeting_poster", "share_poster", "improve_old_photo",
 ]);
 
 function isWorldAction(name) {
   return EFFECTIVE.world.has(name);
+}
+
+/**
+ * Does this call only edit an undoable draft on the user's own screen?
+ * A tool says so with `draftEdit: true`, or a function of the call's
+ * arguments (make_greeting_poster continuing a card, not starting one).
+ */
+function isDraftEdit(tool, args) {
+  const d = tool && tool.draftEdit;
+  try {
+    return typeof d === "function" ? !!d(args || {}) : d === true;
+  } catch (_) {
+    return false;
+  }
 }
 
 /**
@@ -369,6 +390,10 @@ const SEED_REPEAT = new Set([
   "uninstall_app",
   // One stutter would queue two clips of the owner's manual work.
   "send_video_note",
+  // Photo cards (2026-09-26): a stutter must not start two cards or open
+  // WhatsApp twice. change_poster is NOT here — "bigger" said twice is
+  // two steps up, and both are meant.
+  "make_greeting_poster", "share_poster", "improve_old_photo",
 ]);
 
 /**
@@ -685,7 +710,15 @@ async function execute(name, rawArgs, ctx = {}) {
   // garbled turn is refused outright, and the model is told to ask.
   if (isWorldAction(name) && ctx.inputQuality && ctx.inputQuality.quality !== "clear") {
     const quality = ctx.inputQuality.quality;
-    if (quality === "garbled" || !ctx.approved) {
+    // A DRAFT EDIT IS NOT AN ACT ON THE WORLD (photo cards, 2026-09-26).
+    // The card flow asks one question at a time, and the answer is often
+    // one word — "Ananya", "അനന്യ" — which reads as 'weak'. Refusing it
+    // looped him: asked her name, he said it, was asked to say it again.
+    // A tool marked draftEdit only changes an undoable draft on his own
+    // screen that is read back to him, so a weak (never a garbled) turn
+    // may drive it.
+    const draftOk = quality === "weak" && isDraftEdit(tool, rawArgs);
+    if (!draftOk && (quality === "garbled" || !ctx.approved)) {
       // OBSERVABLE REFUSAL. Declining to act used to leave no trace at
       // all — no row, no audit line, not even a log entry — so "it
       // ignored me", "it asked me to repeat myself" and "it said it was
@@ -878,8 +911,12 @@ async function execute(name, rawArgs, ctx = {}) {
       }
 
       // The remaining tiers are about a REQUEST repeating. An approved
-      // replay is the same request continuing, so it passes through.
-      if (!ctx.approved && EFFECTIVE.repeatGuarded.has(name)) {
+      // replay is the same request continuing, so it passes through — and
+      // so does a draft edit: "make it without a photo" for the card just
+      // started is its next step, not a stutter of the call that started
+      // it (photo cards, 2026-09-26), and applying the same edit twice
+      // changes nothing the second time.
+      if (!ctx.approved && EFFECTIVE.repeatGuarded.has(name) && !isDraftEdit(tool, rawArgs)) {
         // TIER 2 — SAME BREATH, SAME SOCKET. The session's own list is in
         // memory and therefore instantaneous; the durable record below is
         // written fire-and-forget and would not yet exist for two calls
@@ -1179,6 +1216,7 @@ module.exports = {
   limitsFor,
   limitsBlock,
   isWorldAction,
+  isDraftEdit,
   WORLD_ACTIONS: SEED_WORLD,
   seal,
   contractReport,

@@ -37,5 +37,21 @@ check("", "garbled");
 check("응. Remind me that", "garbled");
 check("16366895760", "weak");
 check("16366895760", "clear", { expectsNumber: true });
+// ONE-WORD ANSWERS TO THE QUESTION JUST ASKED (photo cards, 2026-09-26):
+// the card asks one thing at a time, and the answers were refused.
+const { expectationsFrom } = require("../src/agents/inputQuality");
+const after = (line) => expectationsFrom(line);
+check("25", "clear", after("How old is she turning?"));
+check("60th", "clear", after("And her age?"));
+check("25", "garbled");
+check("Riya", "weak", after("What's her name, as it should be written?"));
+check("Riya", "garbled");
+check("pink", "weak", after("Which colour would you like — pink, gold or blue?"));
+check("pink", "weak", after("What would you like to change on the card?"));
+check("pink", "garbled");
+check("Dadi", "garbled", after("Shall I read the news?"));
+check("con", "garbled", after("Shall I call or message?"));
+check("the", "garbled", after("Which one — the flowers or the balloons?"));
+check("149", "clear", { expectsNumber: true });
 console.log(fail ? `\n${fail} FAILURES` : "\nall pass");
 process.exit(fail ? 1 : 0);

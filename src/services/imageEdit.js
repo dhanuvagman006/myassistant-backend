@@ -31,16 +31,72 @@ const { execFile } = require("child_process");
 /* ffmpeg — already in the runtime image for video generation           */
 /* ------------------------------------------------------------------ */
 
+// A SUCCESS is remembered for the life of the process; a FAILURE only for
+// a minute (review, 2026-09-26). One `ffmpeg -version` that timed out while
+// the pod sat at its CPU limit used to switch ffmpeg off until the next
+// restart — and the photo cards' "no ffmpeg" path keeps a photo as it was
+// uploaded, so a transient probe failure must not become a lasting one.
+const FFMPEG_RETRY_MS = 60_000;
 let ffmpegOk = null;
+let ffmpegFailedAt = 0;
 function haveFfmpeg() {
-  if (ffmpegOk !== null) return Promise.resolve(ffmpegOk);
+  if (ffmpegOk === true) return Promise.resolve(true);
+  if (ffmpegOk === false && Date.now() - ffmpegFailedAt < FFMPEG_RETRY_MS) return Promise.resolve(false);
   return new Promise((resolve) => {
     execFile("ffmpeg", ["-version"], { timeout: 8000 }, (err) => {
       ffmpegOk = !err;
-      if (err) console.warn("imageEdit: ffmpeg unavailable —", err.message);
+      if (err) {
+        ffmpegFailedAt = Date.now();
+        console.warn("imageEdit: ffmpeg unavailable —", err.message);
+      }
       resolve(ffmpegOk);
     });
   });
+}
+
+/* ------------------------------------------------------------------ */
+/* HOW MUCH A PICTURE COSTS TO OPEN                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The most pixels ffmpeg is ever asked to DECODE in one go. The byte
+ * limit alone did not bound this (review, 2026-09-26): a 746 KB PNG of
+ * zeros that says 16000x16000 in its header made ffmpeg reach about 1 GB
+ * and be killed in a 512 MiB pod — the pod every live voice session runs
+ * in. Decoding costs roughly 4-5 bytes a pixel, so 24 MP is ~120 MB, and
+ * two at once (the photo cards' MAX_JOBS) still fit beside Node.
+ */
+const MAX_DECODE_PIXELS = 24_000_000;
+
+/** 'jpeg' | 'png' | 'webp' from the bytes themselves, or null. */
+function imageKind(buf) {
+  if (!buf || buf.length < 12) return null;
+  if (buf[0] === 0xff && buf[1] === 0xd8) return "jpeg";
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return "png";
+  if (buf.slice(0, 4).toString("latin1") === "RIFF" && buf.slice(8, 12).toString("latin1") === "WEBP") return "webp";
+  return null;
+}
+
+/**
+ * How to open this picture within MAX_DECODE_PIXELS: {lowres, pixels}
+ * or null when it cannot be. A JPEG can be decoded at 1/2, 1/4 or 1/8 of
+ * its size straight from the file (the decoder's `-lowres`, placed before
+ * `-i`), so a 108 MP phone photo opens as 27 or 7 MP — never smaller than
+ * `minEdge` on its long side, the size it will be stored at anyway. PNG
+ * and WebP have no such shortcut: over the budget they are refused.
+ */
+function decodePlan(buf, { minEdge = 2048 } = {}) {
+  const size = imageSize(buf);
+  if (!size || !size.width || !size.height) return null;
+  let lowres = 0;
+  if (imageKind(buf) === "jpeg") {
+    const long = Math.max(size.width, size.height);
+    while (lowres < 3 && Math.ceil(long / 2 ** (lowres + 1)) >= minEdge) lowres++;
+  }
+  const w = Math.ceil(size.width / 2 ** lowres);
+  const h = Math.ceil(size.height / 2 ** lowres);
+  if (w * h > MAX_DECODE_PIXELS) return null;
+  return { lowres, width: w, height: h, pixels: w * h, size };
 }
 
 function ff(args, timeout = 30_000) {
@@ -68,6 +124,14 @@ function imageSize(buf) {
       const kind = buf.slice(12, 16).toString("latin1");
       if (kind === "VP8X") return { width: 1 + buf.readUIntLE(24, 3), height: 1 + buf.readUIntLE(27, 3) };
       if (kind === "VP8 ") return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff };
+      // Lossless (VP8L) was named above and never read, so a lossless
+      // WebP from the gallery was refused as "not a photo" (review,
+      // 2026-09-26): signature 0x2f, then 14 bits of width-1 and 14 of
+      // height-1, little-endian.
+      if (kind === "VP8L" && buf.length >= 25 && buf[20] === 0x2f) {
+        const bits = buf.readUInt32LE(21);
+        return { width: 1 + (bits & 0x3fff), height: 1 + ((bits >>> 14) & 0x3fff) };
+      }
     }
   } catch (_) {}
   return null;
@@ -75,14 +139,15 @@ function imageSize(buf) {
 
 /** Run one ffmpeg filter over a buffer. Returns null rather than throwing —
  *  every caller has a usable "keep the original" path. */
-async function transform(buffer, vf, { quality = 2, ext = "jpg", timeout = 30_000 } = {}) {
+async function transform(buffer, vf, { quality = 2, ext = "jpg", timeout = 30_000, lowres = 0 } = {}) {
   if (!(await haveFfmpeg())) return null;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hari-edit-"));
   const inFile = path.join(dir, `in.${ext === "png" ? "png" : "jpg"}`);
   const outFile = path.join(dir, `out.${ext}`);
   try {
     fs.writeFileSync(inFile, buffer);
-    const args = ["-y", "-v", "error", "-i", inFile, "-vf", vf];
+    // -lowres is a decoder option: it must come before the -i it applies to.
+    const args = ["-y", "-v", "error", ...(lowres > 0 ? ["-lowres", String(lowres)] : []), "-i", inFile, "-vf", vf];
     if (ext !== "png") args.push("-q:v", String(quality));
     args.push(outFile);
     await ff(args, timeout);
@@ -105,14 +170,23 @@ async function transform(buffer, vf, { quality = 2, ext = "jpg", timeout = 30_00
  */
 async function normalizeInput(buffer, mime, { maxEdge = 1536 } = {}) {
   const size = imageSize(buffer);
-  const long = size ? Math.max(size.width, size.height) : 0;
+  // The same decode budget as the photo cards (review, 2026-09-26): a
+  // picture that would take more than MAX_DECODE_PIXELS to open is never
+  // handed to ffmpeg in this pod. It goes on as it came; the provider
+  // decides what to do with it.
+  const plan = size ? decodePlan(buffer, { minEdge: maxEdge }) : { lowres: 0, width: 0, height: 0 };
+  if (!plan) {
+    console.warn(`imageEdit: ${size.width}x${size.height} is too many pixels to open here — sent as it is`);
+    return { buffer, mime: mime || "image/jpeg" };
+  }
+  const long = Math.max(plan.width, plan.height);
   const needsScale = long > maxEdge;
   // `-autorotate` is on by default for input; the transpose comes free
   // with a re-encode, so any re-encode fixes orientation.
   const vf = needsScale
     ? `scale='if(gt(iw,ih),${maxEdge},-2)':'if(gt(iw,ih),-2,${maxEdge})':flags=lanczos`
     : "null";
-  const out = await transform(buffer, vf, { quality: 2 });
+  const out = await transform(buffer, vf, { quality: 2, lowres: plan.lowres });
   if (out) return { buffer: out, mime: "image/jpeg" };
   return { buffer, mime: mime || "image/jpeg" };
 }
@@ -487,6 +561,7 @@ function configured() {
 module.exports = {
   editImage, configured, register,
   normalizeInput, fitExact, resampleTo, transform, imageSize, haveFfmpeg,
+  imageKind, decodePlan, MAX_DECODE_PIXELS,
   NoProviderError,
   // Exported for the regression tests: the response shape these two walk
   // is the one fact about this integration the documentation would not

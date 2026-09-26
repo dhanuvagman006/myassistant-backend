@@ -1,0 +1,925 @@
+{
+  "contract": "photo-cards",
+  "version": 2,
+  "minAppBuild": 119,
+  "notes": [
+    "Photo cards v1 (2026-09-26): NO AI anywhere. The photo is cleaned up on the server with ffmpeg (EXIF rotate, per-channel auto levels / colour-cast and fade correction, gentle denoise, unsharp, slight saturation lift); the card is drawn on the phone from the spec with bundled fonts and vector designs.",
+    "REST JSON is camelCase; tool arguments are snake_case; a deviceAction's top-level keys are snake_case and the poster/photo objects inside it use the REST shape.",
+    "Errors are {error: code, message} plus extra fields named per error (need, poster).",
+    "Text is never truncated, re-cased, translated or corrected: over a limit the server answers 422 {error:'need'} and the app asks to shorten.",
+    "words(spec) — examples.words — is exactly what the card prints, top to bottom; the 'from' line is printed as given (the app may add a decorative dash, never words).",
+    "Non-English cards keep the heading from the table and show the age as a numeral beside it (examples.words_ml has it as its own line).",
+    "A photo's status is always 'ready' in v1 and variants are ['original','enhanced'] (just ['original'] when the server has no ffmpeg). reason is 'off' (AI repair not switched on) or 'not_requested' (ai=false).",
+    "POST /posters/photos/:id/restore always answers 503 {error:'off', message:'Photo repair is not switched on yet.'} in v1.",
+    "The signature never reaches the server: spec.signature is only on/off; the strokes stay in the phone's secure storage under 'poster.signature.v1'.",
+    "spec.photoColour ('keep'|'bw'|'sepia', default 'keep') is the colour of the CARD's photo: change it with PATCH {change:{photoColour}} — a versioned edit in the undo history. Draw the card from GET /posters/photos/:id/file?v=enhanced&colour=<spec.photoColour> (each colour is its own URL). POST /posters/photos/:id/colour is only for a photo shown on its own (the improve-old-photo screen); it no longer changes any card.",
+    "A photo arriving on a card (upload with posterId, create with photoId, PATCH change.photoId) brings its own colour (photo.colour) into spec.photoColour unless the change names one.",
+    "DELETE /posters/photos/:id removes one working photo for good: it is taken off every card that shows it (spec.photoUse 'none', the words stay) and out of their undo history; the answer lists the cards that changed (posterIds) — refetch them. DELETE /posters/consent does that for every working photo and answers {accepted:false, photosRemoved}.",
+    "Uploads: 413 too_large is either over 18 MB or too many pixels to open (over 24 MP after a JPEG's reduced decode); 415 unsupported_type is bytes that are not a JPEG/PNG/WebP or that do not decode. The type is read from the bytes, not the declared mime.",
+    "photo_shown carries the photo's id ({photo_id}) so the model can keep it (improve_old_photo {photo_id, keep}) or put it on a card (make_greeting_poster {photo_id})."
+  ],
+  "limits": {
+    "headline": 60,
+    "name": 60,
+    "message": 300,
+    "from": 80,
+    "date": 40,
+    "forWhom": 40,
+    "messageMaxNewlines": 4,
+    "age": {
+      "min": 1,
+      "max": 120
+    }
+  },
+  "textScale": {
+    "min": 0.8,
+    "max": 1.6,
+    "step": 0.15,
+    "default": 1
+  },
+  "historyMax": 20,
+  "enums": {
+    "occasion": [
+      "birthday",
+      "anniversary",
+      "wedding",
+      "festival",
+      "other"
+    ],
+    "language": [
+      "en",
+      "ml",
+      "hi",
+      "kn",
+      "ta",
+      "te"
+    ],
+    "colour": [
+      "gold",
+      "pink",
+      "blue",
+      "green",
+      "white",
+      "purple"
+    ],
+    "design": [
+      "floral_blush",
+      "golden_celebration",
+      "balloons_confetti",
+      "royal_mandala",
+      "garden_green",
+      "classic_ivory"
+    ],
+    "format": [
+      "portrait",
+      "story"
+    ],
+    "photoUse": [
+      "enhanced",
+      "original",
+      "none"
+    ],
+    "photoColour": [
+      "keep",
+      "bw",
+      "sepia"
+    ],
+    "photoSource": [
+      "gallery",
+      "camera",
+      "share",
+      "document"
+    ],
+    "photoVariant": [
+      "original",
+      "enhanced"
+    ],
+    "photoStatus": [
+      "ready"
+    ],
+    "photoReason": [
+      null,
+      "off",
+      "not_requested"
+    ],
+    "textSize": [
+      "bigger",
+      "smaller",
+      "reset"
+    ],
+    "shareApp": [
+      "whatsapp",
+      "any"
+    ],
+    "pickPurpose": [
+      "poster",
+      "photo"
+    ],
+    "pickSource": [
+      "ask",
+      "gallery",
+      "camera"
+    ],
+    "showMode": [
+      "poster",
+      "photo"
+    ]
+  },
+  "designs": [
+    {
+      "id": "floral_blush",
+      "label": "Floral Blush",
+      "defaultColour": "pink"
+    },
+    {
+      "id": "golden_celebration",
+      "label": "Golden Celebration",
+      "defaultColour": "gold"
+    },
+    {
+      "id": "balloons_confetti",
+      "label": "Balloons & Confetti",
+      "defaultColour": "blue"
+    },
+    {
+      "id": "royal_mandala",
+      "label": "Royal Mandala",
+      "defaultColour": "purple"
+    },
+    {
+      "id": "garden_green",
+      "label": "Garden Green",
+      "defaultColour": "green"
+    },
+    {
+      "id": "classic_ivory",
+      "label": "Classic Ivory",
+      "defaultColour": "white"
+    }
+  ],
+  "defaultDesign": {
+    "birthday": "floral_blush",
+    "anniversary": "golden_celebration",
+    "wedding": "royal_mandala",
+    "festival": "royal_mandala",
+    "other": "classic_ivory"
+  },
+  "formats": {
+    "portrait": {
+      "width": 1080,
+      "height": 1350,
+      "aspect": "4:5"
+    },
+    "story": {
+      "width": 1080,
+      "height": 1920,
+      "aspect": "9:16"
+    }
+  },
+  "headlines": {
+    "en": {
+      "birthday": "Happy Birthday",
+      "anniversary": "Happy Anniversary",
+      "wedding": "Happy Wedding Day",
+      "festival": "Warm Festive Wishes",
+      "other": "Best Wishes"
+    },
+    "ml": {
+      "birthday": "ജന്മദിനാശംസകൾ",
+      "anniversary": "വിവാഹ വാർഷിക ആശംസകൾ",
+      "wedding": "വിവാഹ ആശംസകൾ",
+      "festival": "ഉത്സവ ആശംസകൾ",
+      "other": "ആശംസകൾ"
+    },
+    "hi": {
+      "birthday": "जन्मदिन की शुभकामनाएँ",
+      "anniversary": "सालगिरह की शुभकामनाएँ",
+      "wedding": "विवाह की शुभकामनाएँ",
+      "festival": "त्योहार की शुभकामनाएँ",
+      "other": "शुभकामनाएँ"
+    },
+    "kn": {
+      "birthday": "ಹುಟ್ಟುಹಬ್ಬದ ಶುಭಾಶಯಗಳು",
+      "anniversary": "ವಿವಾಹ ವಾರ್ಷಿಕೋತ್ಸವದ ಶುಭಾಶಯಗಳು",
+      "wedding": "ವಿವಾಹದ ಶುಭಾಶಯಗಳು",
+      "festival": "ಹಬ್ಬದ ಶುಭಾಶಯಗಳು",
+      "other": "ಶುಭಾಶಯಗಳು"
+    },
+    "ta": {
+      "birthday": "பிறந்தநாள் வாழ்த்துகள்",
+      "anniversary": "திருமண நாள் வாழ்த்துகள்",
+      "wedding": "திருமண வாழ்த்துகள்",
+      "festival": "பண்டிகை வாழ்த்துகள்",
+      "other": "வாழ்த்துகள்"
+    },
+    "te": {
+      "birthday": "పుట్టినరోజు శుభాకాంక్షలు",
+      "anniversary": "పెళ్లి రోజు శుభాకాంక్షలు",
+      "wedding": "వివాహ శుభాకాంక్షలు",
+      "festival": "పండుగ శుభాకాంక్షలు",
+      "other": "శుభాకాంక్షలు"
+    }
+  },
+  "headlineRule": "English birthday/anniversary with an age: 'Happy <ordinal> Birthday' / 'Happy <ordinal> Anniversary' (1st 2nd 3rd 4th 11th 12th 13th 21st 22nd 101st 111th). Every other heading is the table entry as written.",
+  "colourAliases": {
+    "red": "pink",
+    "rose": "pink",
+    "orange": "gold",
+    "yellow": "gold",
+    "cream": "gold",
+    "navy": "purple",
+    "dark": "purple",
+    "night": "purple",
+    "classic": "white"
+  },
+  "examples": {
+    "spec": {
+      "v": 1,
+      "occasion": "birthday",
+      "language": "en",
+      "languageCustom": false,
+      "forWhom": "my daughter",
+      "headline": "Happy 25th Birthday",
+      "headlineCustom": false,
+      "name": "Ananya",
+      "age": 25,
+      "message": "Wishing you a year full of joy and laughter.\nWe are so proud of you.",
+      "from": "Appa",
+      "date": "",
+      "design": "floral_blush",
+      "colour": "pink",
+      "colourCustom": false,
+      "format": "portrait",
+      "textScale": 1,
+      "photoUse": "enhanced",
+      "photoColour": "keep",
+      "photoFocus": {
+        "x": 0.5,
+        "y": 0.5,
+        "zoom": 1
+      },
+      "signature": true
+    },
+    "spec_ml": {
+      "v": 1,
+      "occasion": "birthday",
+      "language": "ml",
+      "languageCustom": false,
+      "forWhom": "എന്റെ മകൾ",
+      "headline": "ജന്മദിനാശംസകൾ",
+      "headlineCustom": false,
+      "name": "അഞ്ജലി",
+      "age": 25,
+      "message": "എല്ലാ സന്തോഷങ്ങളും നേരുന്നു",
+      "from": "അച്ഛൻ",
+      "date": "",
+      "design": "floral_blush",
+      "colour": "pink",
+      "colourCustom": false,
+      "format": "portrait",
+      "textScale": 1,
+      "photoUse": "enhanced",
+      "photoColour": "keep",
+      "photoFocus": {
+        "x": 0.5,
+        "y": 0.5,
+        "zoom": 1
+      },
+      "signature": false
+    },
+    "words": [
+      "Happy 25th Birthday",
+      "Ananya",
+      "Wishing you a year full of joy and laughter.",
+      "We are so proud of you.",
+      "Appa"
+    ],
+    "words_ml": [
+      "ജന്മദിനാശംസകൾ",
+      "25",
+      "അഞ്ജലി",
+      "എല്ലാ സന്തോഷങ്ങളും നേരുന്നു",
+      "അച്ഛൻ"
+    ],
+    "spell": "A-N-A-N-Y-A",
+    "photo": {
+      "id": 41,
+      "source": "gallery",
+      "width": 1536,
+      "height": 2048,
+      "colour": "keep",
+      "status": "ready",
+      "reason": "off",
+      "message": null,
+      "variants": [
+        "original",
+        "enhanced"
+      ],
+      "updatedAt": 1790000000000
+    },
+    "poster": {
+      "id": 12,
+      "occasion": "birthday",
+      "version": 3,
+      "spec": {
+        "v": 1,
+        "occasion": "birthday",
+        "language": "en",
+        "languageCustom": false,
+        "forWhom": "my daughter",
+        "headline": "Happy 25th Birthday",
+        "headlineCustom": false,
+        "name": "Ananya",
+        "age": 25,
+        "message": "Wishing you a year full of joy and laughter.\nWe are so proud of you.",
+        "from": "Appa",
+        "date": "",
+        "design": "floral_blush",
+        "colour": "pink",
+        "colourCustom": false,
+        "format": "portrait",
+        "textScale": 1,
+        "photoUse": "enhanced",
+        "photoColour": "keep",
+        "photoFocus": {
+          "x": 0.5,
+          "y": 0.5,
+          "zoom": 1
+        },
+        "signature": true
+      },
+      "photo": {
+        "id": 41,
+        "source": "gallery",
+        "width": 1536,
+        "height": 2048,
+        "colour": "keep",
+        "status": "ready",
+        "reason": "off",
+        "message": null,
+        "variants": [
+          "original",
+          "enhanced"
+        ],
+        "updatedAt": 1790000000000
+      },
+      "finalDocumentId": null,
+      "canUndo": true,
+      "updatedAt": 1790000000500
+    },
+    "poster_ml": {
+      "id": 13,
+      "occasion": "birthday",
+      "version": 2,
+      "spec": {
+        "v": 1,
+        "occasion": "birthday",
+        "language": "ml",
+        "languageCustom": false,
+        "forWhom": "എന്റെ മകൾ",
+        "headline": "ജന്മദിനാശംസകൾ",
+        "headlineCustom": false,
+        "name": "അഞ്ജലി",
+        "age": 25,
+        "message": "എല്ലാ സന്തോഷങ്ങളും നേരുന്നു",
+        "from": "അച്ഛൻ",
+        "date": "",
+        "design": "floral_blush",
+        "colour": "pink",
+        "colourCustom": false,
+        "format": "portrait",
+        "textScale": 1,
+        "photoUse": "enhanced",
+        "photoColour": "keep",
+        "photoFocus": {
+          "x": 0.5,
+          "y": 0.5,
+          "zoom": 1
+        },
+        "signature": false
+      },
+      "photo": {
+        "id": 41,
+        "source": "gallery",
+        "width": 1536,
+        "height": 2048,
+        "colour": "keep",
+        "status": "ready",
+        "reason": "off",
+        "message": null,
+        "variants": [
+          "original",
+          "enhanced"
+        ],
+        "updatedAt": 1790000000000
+      },
+      "finalDocumentId": null,
+      "canUndo": true,
+      "updatedAt": 1790000000500
+    },
+    "poster_no_photo": {
+      "id": 14,
+      "occasion": "anniversary",
+      "version": 1,
+      "spec": {
+        "v": 1,
+        "occasion": "anniversary",
+        "language": "en",
+        "languageCustom": false,
+        "forWhom": "",
+        "headline": "Happy 40th Anniversary",
+        "headlineCustom": false,
+        "name": "Amma and Appa",
+        "age": 40,
+        "message": "With all our love",
+        "from": "Your children",
+        "date": "",
+        "design": "golden_celebration",
+        "colour": "gold",
+        "colourCustom": false,
+        "format": "story",
+        "textScale": 1,
+        "photoUse": "none",
+        "photoColour": "keep",
+        "photoFocus": {
+          "x": 0.5,
+          "y": 0.5,
+          "zoom": 1
+        },
+        "signature": false
+      },
+      "photo": null,
+      "finalDocumentId": 901,
+      "canUndo": false,
+      "updatedAt": 1790000000900
+    },
+    "consent": {
+      "accepted": false,
+      "version": "family-photo-v1",
+      "text": "To make the card, the photo is kept privately in your account and gently cleaned up — brighter, clearer colours. Nothing is changed by AI. Please use photos of your own family. You can delete it any time.",
+      "aiRestore": false
+    },
+    "create_request": {
+      "occasion": "birthday",
+      "spec": {
+        "name": "Ananya",
+        "age": 25,
+        "forWhom": "my daughter"
+      },
+      "photoId": 41
+    },
+    "patch_request": {
+      "version": 3,
+      "change": {
+        "set": {
+          "message": "Happy birthday, my dear!"
+        },
+        "textSize": "bigger",
+        "colour": "pink",
+        "design": "next",
+        "format": "story",
+        "photoUse": "enhanced",
+        "photoFocus": {
+          "x": 0.5,
+          "y": 0.35,
+          "zoom": 1.2
+        },
+        "signature": true
+      }
+    },
+    "patch_undo": {
+      "version": 4,
+      "change": {
+        "undo": true
+      }
+    },
+    "patch_photo_colour": {
+      "version": 4,
+      "change": {
+        "photoColour": "bw",
+        "photoUse": "enhanced"
+      }
+    },
+    "consent_withdrawn": {
+      "accepted": false,
+      "photosRemoved": 2
+    },
+    "delete_photo_response": {
+      "ok": true,
+      "posterIds": [
+        12
+      ]
+    },
+    "error_too_many_pixels": {
+      "error": "too_large",
+      "message": "That photo is too big to use — please pick a smaller copy of it."
+    },
+    "error_undecodable": {
+      "error": "unsupported_type",
+      "message": "That photo doesn't open — please pick another one."
+    },
+    "error_need": {
+      "error": "need",
+      "message": "That's a little long for the card — can the wishes be shorter? (up to 300 letters)",
+      "need": [
+        {
+          "field": "message",
+          "reason": "too_long",
+          "max": 300,
+          "length": 342
+        }
+      ]
+    },
+    "error_version_conflict": {
+      "error": "version_conflict",
+      "message": "The card was changed somewhere else — here is the latest one.",
+      "poster": {
+        "id": 12,
+        "occasion": "birthday",
+        "version": 3,
+        "spec": {
+          "v": 1,
+          "occasion": "birthday",
+          "language": "en",
+          "languageCustom": false,
+          "forWhom": "my daughter",
+          "headline": "Happy 25th Birthday",
+          "headlineCustom": false,
+          "name": "Ananya",
+          "age": 25,
+          "message": "Wishing you a year full of joy and laughter.\nWe are so proud of you.",
+          "from": "Appa",
+          "date": "",
+          "design": "floral_blush",
+          "colour": "pink",
+          "colourCustom": false,
+          "format": "portrait",
+          "textScale": 1,
+          "photoUse": "enhanced",
+          "photoColour": "keep",
+          "photoFocus": {
+            "x": 0.5,
+            "y": 0.5,
+            "zoom": 1
+          },
+          "signature": true
+        },
+        "photo": {
+          "id": 41,
+          "source": "gallery",
+          "width": 1536,
+          "height": 2048,
+          "colour": "keep",
+          "status": "ready",
+          "reason": "off",
+          "message": null,
+          "variants": [
+            "original",
+            "enhanced"
+          ],
+          "updatedAt": 1790000000000
+        },
+        "finalDocumentId": null,
+        "canUndo": true,
+        "updatedAt": 1790000000500
+      }
+    },
+    "error_nothing_to_undo": {
+      "error": "nothing_to_undo",
+      "message": "There's nothing to undo — this is how the card started.",
+      "poster": {
+        "id": 12,
+        "occasion": "birthday",
+        "version": 1,
+        "spec": {
+          "v": 1,
+          "occasion": "birthday",
+          "language": "en",
+          "languageCustom": false,
+          "forWhom": "my daughter",
+          "headline": "Happy 25th Birthday",
+          "headlineCustom": false,
+          "name": "Ananya",
+          "age": 25,
+          "message": "Wishing you a year full of joy and laughter.\nWe are so proud of you.",
+          "from": "Appa",
+          "date": "",
+          "design": "floral_blush",
+          "colour": "pink",
+          "colourCustom": false,
+          "format": "portrait",
+          "textScale": 1,
+          "photoUse": "enhanced",
+          "photoColour": "keep",
+          "photoFocus": {
+            "x": 0.5,
+            "y": 0.5,
+            "zoom": 1
+          },
+          "signature": true
+        },
+        "photo": {
+          "id": 41,
+          "source": "gallery",
+          "width": 1536,
+          "height": 2048,
+          "colour": "keep",
+          "status": "ready",
+          "reason": "off",
+          "message": null,
+          "variants": [
+            "original",
+            "enhanced"
+          ],
+          "updatedAt": 1790000000000
+        },
+        "finalDocumentId": null,
+        "canUndo": false,
+        "updatedAt": 1790000000500
+      }
+    },
+    "error_restore_off": {
+      "error": "off",
+      "message": "Photo repair is not switched on yet."
+    },
+    "upload_response": {
+      "photo": {
+        "id": 41,
+        "source": "gallery",
+        "width": 1536,
+        "height": 2048,
+        "colour": "keep",
+        "status": "ready",
+        "reason": "off",
+        "message": null,
+        "variants": [
+          "original",
+          "enhanced"
+        ],
+        "updatedAt": 1790000000000
+      },
+      "poster": {
+        "id": 12,
+        "occasion": "birthday",
+        "version": 3,
+        "spec": {
+          "v": 1,
+          "occasion": "birthday",
+          "language": "en",
+          "languageCustom": false,
+          "forWhom": "my daughter",
+          "headline": "Happy 25th Birthday",
+          "headlineCustom": false,
+          "name": "Ananya",
+          "age": 25,
+          "message": "Wishing you a year full of joy and laughter.\nWe are so proud of you.",
+          "from": "Appa",
+          "date": "",
+          "design": "floral_blush",
+          "colour": "pink",
+          "colourCustom": false,
+          "format": "portrait",
+          "textScale": 1,
+          "photoUse": "enhanced",
+          "photoColour": "keep",
+          "photoFocus": {
+            "x": 0.5,
+            "y": 0.5,
+            "zoom": 1
+          },
+          "signature": true
+        },
+        "photo": {
+          "id": 41,
+          "source": "gallery",
+          "width": 1536,
+          "height": 2048,
+          "colour": "keep",
+          "status": "ready",
+          "reason": "off",
+          "message": null,
+          "variants": [
+            "original",
+            "enhanced"
+          ],
+          "updatedAt": 1790000000000
+        },
+        "finalDocumentId": null,
+        "canUndo": true,
+        "updatedAt": 1790000000500
+      }
+    },
+    "final_response": {
+      "document": {
+        "id": 901,
+        "filename": "card-12-1790000001000.png",
+        "mime": "image/png",
+        "size": 845213,
+        "title": "Birthday card - Ananya",
+        "category": "other",
+        "docDate": "2026-09-26",
+        "expiresOn": null,
+        "summary": "A birthday card made in the app — Floral Blush design, a photo gently cleaned up in the app (no AI), signed.",
+        "note": "birthday card",
+        "tags": "poster, birthday",
+        "clientId": null,
+        "createdAt": 1790000001000
+      },
+      "poster": {
+        "id": 12,
+        "occasion": "birthday",
+        "version": 3,
+        "spec": {
+          "v": 1,
+          "occasion": "birthday",
+          "language": "en",
+          "languageCustom": false,
+          "forWhom": "my daughter",
+          "headline": "Happy 25th Birthday",
+          "headlineCustom": false,
+          "name": "Ananya",
+          "age": 25,
+          "message": "Wishing you a year full of joy and laughter.\nWe are so proud of you.",
+          "from": "Appa",
+          "date": "",
+          "design": "floral_blush",
+          "colour": "pink",
+          "colourCustom": false,
+          "format": "portrait",
+          "textScale": 1,
+          "photoUse": "enhanced",
+          "photoColour": "keep",
+          "photoFocus": {
+            "x": 0.5,
+            "y": 0.5,
+            "zoom": 1
+          },
+          "signature": true
+        },
+        "photo": {
+          "id": 41,
+          "source": "gallery",
+          "width": 1536,
+          "height": 2048,
+          "colour": "keep",
+          "status": "ready",
+          "reason": "off",
+          "message": null,
+          "variants": [
+            "original",
+            "enhanced"
+          ],
+          "updatedAt": 1790000000000
+        },
+        "finalDocumentId": 901,
+        "canUndo": true,
+        "updatedAt": 1790000000500
+      }
+    },
+    "keep_response": {
+      "document": {
+        "id": 902,
+        "filename": "photo-enhanced-1790000002000.jpg",
+        "mime": "image/jpeg",
+        "size": 845213,
+        "title": "Photo made clearer - 26 Sep 2026",
+        "category": "other",
+        "docDate": "2026-09-26",
+        "expiresOn": null,
+        "summary": "An old photo, gently cleaned up in the app (brightness, contrast, its own colours). No AI was used.",
+        "note": "old photo, cleaned up",
+        "tags": "old-photo, cleaned-up",
+        "clientId": null,
+        "createdAt": 1790000001000
+      }
+    }
+  },
+  "deviceActions": {
+    "poster_pick_photo": {
+      "type": "poster_pick_photo",
+      "purpose": "poster",
+      "poster_id": 12,
+      "source": "ask",
+      "colour": "keep"
+    },
+    "poster_pick_photo_for_photo": {
+      "type": "poster_pick_photo",
+      "purpose": "photo",
+      "poster_id": null,
+      "source": "camera",
+      "colour": "keep"
+    },
+    "poster_show": {
+      "type": "poster_show",
+      "mode": "poster",
+      "poster": {
+        "id": 12,
+        "occasion": "birthday",
+        "version": 3,
+        "spec": {
+          "v": 1,
+          "occasion": "birthday",
+          "language": "en",
+          "languageCustom": false,
+          "forWhom": "my daughter",
+          "headline": "Happy 25th Birthday",
+          "headlineCustom": false,
+          "name": "Ananya",
+          "age": 25,
+          "message": "Wishing you a year full of joy and laughter.\nWe are so proud of you.",
+          "from": "Appa",
+          "date": "",
+          "design": "floral_blush",
+          "colour": "pink",
+          "colourCustom": false,
+          "format": "portrait",
+          "textScale": 1,
+          "photoUse": "enhanced",
+          "photoColour": "keep",
+          "photoFocus": {
+            "x": 0.5,
+            "y": 0.5,
+            "zoom": 1
+          },
+          "signature": true
+        },
+        "photo": {
+          "id": 41,
+          "source": "gallery",
+          "width": 1536,
+          "height": 2048,
+          "colour": "keep",
+          "status": "ready",
+          "reason": "off",
+          "message": null,
+          "variants": [
+            "original",
+            "enhanced"
+          ],
+          "updatedAt": 1790000000000
+        },
+        "finalDocumentId": null,
+        "canUndo": true,
+        "updatedAt": 1790000000500
+      }
+    },
+    "poster_show_photo": {
+      "type": "poster_show",
+      "mode": "photo",
+      "photo": {
+        "id": 41,
+        "source": "gallery",
+        "width": 1536,
+        "height": 2048,
+        "colour": "keep",
+        "status": "ready",
+        "reason": "off",
+        "message": null,
+        "variants": [
+          "original",
+          "enhanced"
+        ],
+        "updatedAt": 1790000000000
+      }
+    },
+    "poster_share": {
+      "type": "poster_share",
+      "poster_id": 12,
+      "app": "whatsapp",
+      "save_to_photos": false
+    },
+    "poster_sign": {
+      "type": "poster_sign",
+      "poster_id": 12
+    }
+  },
+  "systemLines": {
+    "photo_added_missing": "[SYSTEM] The photo is on the card now (poster {poster_id}). Still needed: {missing}. Ask ONE short question for them. Do not say the card is made or ready.",
+    "photo_added_complete": "[SYSTEM] The photo is on the card now and the card is on the screen (poster {poster_id}). Read the words back exactly as written, spell the name letter by letter, and ask if it is right. Do not say it is made or ready.",
+    "picker_closed": "[SYSTEM] The photo picker was closed without choosing a photo. Nothing was made. Ask briefly whether to try again or make the card without a photo.",
+    "photo_shown": "[SYSTEM] The cleaned-up photo is on the screen next to the original (photo {photo_id}). Ask ONE question: keep the clearer one, or make a card with it? Never call it repaired or restored.",
+    "too_long_on_card": "[SYSTEM] {field_words} does not fit on the card even at the smallest size. Nothing was cut. Ask for a shorter {field_words}.",
+    "signature_saved": "[SYSTEM] Signature saved on this phone; it is on the card now.",
+    "shared": "[SYSTEM] WhatsApp is open with the card. The user picks the person and presses Send.",
+    "share_fallback": "[SYSTEM] The share menu is open with the card. The user picks where it goes and presses Send."
+  },
+  "routes": [
+    "GET /posters/consent",
+    "POST /posters/consent",
+    "DELETE /posters/consent (removes every working photo)",
+    "POST /posters/photos (multipart: photo, source?, posterId?, colour?, ai?)",
+    "POST /posters/photos/from-document {documentId, posterId?, colour?}",
+    "GET /posters/photos/:id",
+    "DELETE /posters/photos/:id",
+    "GET /posters/photos/:id/file?v=original|enhanced&colour=keep|bw|sepia",
+    "POST /posters/photos/:id/colour {colour} (a photo on its own)",
+    "POST /posters/photos/:id/restore (503 off in v1)",
+    "POST /posters/photos/:id/keep {v}",
+    "POST /posters {occasion?, spec?, photoId?}",
+    "GET /posters/latest",
+    "GET /posters/:id",
+    "PATCH /posters/:id {version, change}",
+    "POST /posters/:id/final (multipart: image png, version)",
+    "DELETE /posters/:id"
+  ]
+}

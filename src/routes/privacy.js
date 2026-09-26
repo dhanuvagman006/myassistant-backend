@@ -148,6 +148,12 @@ const USER_TABLES = [
   ["momentum_habits", "user_id"],
   ["momentum_habit_checks", "user_id"],
   ["momentum_focus", "user_id"],
+  // Photo cards (2026-09-26): the cards, the family photos picked for
+  // them and the consent. The photo files live in files/<uid>/posters/,
+  // which removeUserDir takes with the rest of files/<uid>.
+  ["posters", "user_id"],
+  ["poster_photos", "user_id"],
+  ["poster_consent", "user_id"],
 
   // Legacy tables, taken out of init() on 2026-08-10 but never DROPped, so
   // a database created before that date may still hold them.

@@ -107,6 +107,8 @@ app.use(
       ["^/agent-call/[a-f0-9]{16,}", "/agent-call/#id"],
       ["^/admin-panel/api/recordings/\\d+.*", "/admin-panel/api/recordings/#id"],
       ["^/admin-panel/api/video-notes/\\d+.*", "/admin-panel/api/video-notes/#id"],
+      ["^/posters/photos/\\d+.*", "/posters/photos/#id"],
+      ["^/posters/\\d+.*", "/posters/#id"],
     ],
   })
 );
@@ -155,6 +157,17 @@ app.use(
 const perUserLimit = rateLimit({
   windowMs: 60_000,
   max: 30,
+  standardHeaders: true,
+  keyGenerator: (req) => String(req.user?.sub || req.ip),
+});
+
+// PHOTO CARDS get their OWN per-user bucket (2026-09-26). perUserLimit is
+// one 30/min bucket shared by /assistant, /stt, /tts, /vision and /studio,
+// so a card screen fetching photos and saving edits would starve the
+// voice turns talking about that very card.
+const posterLimit = rateLimit({
+  windowMs: 60_000,
+  max: 120,
   standardHeaders: true,
   keyGenerator: (req) => String(req.user?.sub || req.ip),
 });
@@ -333,6 +346,12 @@ app.use("/avatar-profile", appAuth, perUserLimit, require("./routes/avatarProfil
 // photos, old-photo restoration. Paid image models sit behind this, so it
 // carries its own per-user daily cap and its own consent record.
 app.use("/studio", appAuth, perUserLimit, require("./routes/studio"));
+
+// PHOTO CARDS (2026-09-26) — "make a birthday card for my daughter… with
+// my signature": his exact words, a real photo cleaned up without AI, the
+// card drawn on the phone. Working photos stay out of /docs; only the
+// finished card (and a photo he keeps) becomes a document.
+app.use("/posters", appAuth, posterLimit, require("./routes/posters"));
 
 // PROFESSIONAL MODE — per-client/patient case files (doctor, lawyer…):
 // profile + dated notes + linked documents, recalled by voice
@@ -541,7 +560,9 @@ require("./db")
     // sat idle over a weekend still holds expired ones. Sweep at boot and
     // once a day, so nothing depends on someone making a call.
     // The same daily pass drops video-note clips kept past their 30 days
-    // (videonotes/service.js sweep); the recipient's copy stays.
+    // (videonotes/service.js sweep); the recipient's copy stays. And the
+    // photo cards' working photos and drafts untouched for 30 days
+    // (posters/service.js sweep): the finished card is in his documents.
     {
       const rec = require("./live/recorder");
       const sweep = () => Promise.all([
@@ -549,6 +570,8 @@ require("./db")
           console.warn("recordings: prune failed —", e.message)),
         require("./videonotes/service").sweep().catch((e) =>
           console.warn("video notes: sweep failed —", e.message)),
+        require("./posters/service").sweep().catch((e) =>
+          console.warn("posters: sweep failed —", e.message)),
       ]);
       setTimeout(sweep, 30_000).unref?.();
       setInterval(sweep, 24 * 3600_000).unref?.();
