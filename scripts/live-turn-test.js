@@ -184,5 +184,12 @@ test("natural speech is asked for, the announcer register is not", () => {
   assert.match(p, /polite register \(ನೀವು \/ आप\)/, "respect stays");
 });
 
+test("a task installs its own app — said only to a phone that does (build 117)", () => {
+  const rule = /never ask 'shall I install it\?' for a task/;
+  assert.match(_liveSystemPrompt("Hari", [], "", 330, "", "", 117), rule);
+  assert.doesNotMatch(_liveSystemPrompt("Hari", [], "", 330, "", "", 116), rule,
+    "an older phone still asks through its own note");
+});
+
 console.log(`\n${passed} passed${process.exitCode ? ", some FAILED" : ""}`);
 process.exit(process.exitCode || 0);

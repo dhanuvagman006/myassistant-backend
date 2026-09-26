@@ -312,6 +312,9 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.deepStrictEqual(d.allowed, [SW]);
     assert.strictEqual(d.any, true, "the run may use other apps when the task needs them");
     assert.match(s.run.app_reason, /prefer Swiggy/);
+    // Build 117: only an app the owner named is installed for a task.
+    assert.strictEqual(d.named, false, "a preference, not their words");
+    assert.strictEqual(d.no_install, false);
     const id = s.run.id;
 
     script = [
@@ -363,6 +366,18 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.match(prompts[0], /chosen because you told me you prefer Swiggy/);
     const task = await db.one(`SELECT provider, status FROM fulfillment_tasks WHERE user_id=$1 ORDER BY id DESC LIMIT 1`, [UID]);
     assert.deepStrictEqual({ ...task }, { provider: "swiggy", status: "handed_off" }, "next pick can say 'you used Swiggy last time'");
+  });
+
+  await atest("a named app may be installed for its task; a money app never (build 117)", async () => {
+    const s = await svc.start(UID, { goal: "Order a masala dosa", app: "swiggy" });
+    assert.strictEqual(s.directive.named, true);
+    assert.strictEqual(s.directive.no_install, false);
+    const pay = await svc.start(UID, { goal: "Pay the electricity bill", app: "PhonePe" });
+    assert.strictEqual(pay.directive.named, true);
+    assert.strictEqual(pay.directive.no_install, true, "money apps are the owner's to install");
+    // Gone again: the tests after this one read the owner's latest run.
+    await require("../src/db").run("DELETE FROM automation_runs WHERE id = ANY($1)",
+      [[s.run.id, pay.run.id]]).catch(() => {});
   });
 
   await atest("text on the screen cannot talk it into paying", async () => {
@@ -511,6 +526,9 @@ const swiggyCart = { pkg: SW, nodes: [
     // The rule is in the tool's own description, for every model.
     assert.match(tool.description, /GOVERNMENT AND OFFICIAL SERVICES/);
     assert.match(tool.description, /never ask whether to open the portal/i);
+    // A task's missing app is installed and the task goes on (2026-09-26).
+    assert.match(tool.description, /HANDLED BY THE PHONE/);
+    assert.match(tool.description, /never ask whether to install it/);
     } finally {
       await require("../src/db").run("DELETE FROM automation_runs WHERE user_id=$1", [ME]).catch(() => {});
     }

@@ -7064,7 +7064,10 @@ function registerBuiltins() {
       "paying, placing a paid order, moving money, typing passwords, OTPs, " +
       "Aadhaar or bank numbers, ticking declarations / 'I agree', " +
       "CAPTCHAs, uploads, sending a message, deleting anything, security " +
-      "settings or permission pop-ups — the user does that one step. Call it AT ONCE " +
+      "settings or permission pop-ups — the user does that one step. An app the " +
+      "task needs that is not on the phone is HANDLED BY THE PHONE (it installs " +
+      "it, or tells you exactly what to say) — never ask whether to install it " +
+      "before calling. Call it AT ONCE " +
       "with the whole request as the goal; do not ask which app first. Say " +
       "you're on it and will report back — never claim it is ordered or " +
       "done. When the task asked the user a question, call it again with " +

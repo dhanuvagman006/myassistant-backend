@@ -207,10 +207,15 @@ function directive(r, { resume = false } = {}) {
     goal: r.goal,
     app: r.app_label || r.app_name,
     app_name: r.app_name,
-    // Build 115: when the named app is not on the phone, the phone looks
-    // for one it does have in the same kind (food: Swiggy for Zomato) and
-    // offers it, together with installing the one asked for.
+    // Build 117: when the app is not on the phone, the phone installs it
+    // and carries on — if the owner NAMED it. The usual pick for the kind
+    // of task is not installed when the phone has another app of that
+    // kind (category): the task starts again in that one. A money app is
+    // never installed for a task.
     category: r.category || "",
+    named: /^you asked/.test(r.app_reason || ""),
+    no_install: guard.PAYMENT_PKGS.has(r.app_pkg || "") ||
+      guard.MONEY_APP_NAME.test(`${r.app_label || ""} ${r.app_name || ""}`),
     pkg: r.app_pkg,
     start_url: resume ? "" : r.start_url,
     web: r.web,

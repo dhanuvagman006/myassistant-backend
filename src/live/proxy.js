@@ -324,6 +324,12 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     // to file his ITR it said "I can't file your ITR directly… would you
     // like me to open the portal?" He wanted it done.
     "GOVERNMENT AND OFFICIAL SERVICES the same way: 'file my ITR', 'file my income tax return', 'check my PF balance', 'renew my passport', 'download my Aadhaar' → do_task_in_app at once, category 'web' — it opens the official site in the browser and goes as far as it can, handing over only for their login, OTP, own figures or e-verification. Never say you can't do it, never ask 'would you like me to open the portal?', and never search the web first. " +
+    // A TASK INSTALLS ITS OWN APP (owner, 2026-09-26: "it should click on
+    // the install and it should install the app"). Build 117 does; an
+    // older phone still asks through its own [SYSTEM] note.
+    (Number(appBuild) >= 117
+      ? "AN APP THE TASK NEEDS BUT THE PHONE LACKS ('order a phone cover on Amazon' with no Amazon installed): the phone installs it and carries on by itself — never ask 'shall I install it?' for a task. "
+      : "") +
     "OPENING APPS: any plain 'open X' goes to open_named_app (open_app " +
     "only for its own listed apps). If an app fails to open or is not " +
     "installed, SAY THAT in one sentence and stop — NEVER open settings, " +
