@@ -7049,9 +7049,17 @@ function registerBuiltins() {
       "'follow <person> on Instagram', 'play <song> on Spotify', " +
       "'find my last order', 'check cab prices to the airport'. Forms are " +
       "filled from everything remembered about the user; a missing answer " +
-      "is asked once and remembered. For a website task without a link, " +
-      "find the OFFICIAL page with web_search first and pass it as url " +
-      "(government portals end in .gov.in / .nic.in). Picks the user's " +
+      "is asked once and remembered. GOVERNMENT AND OFFICIAL SERVICES — " +
+      "'file my ITR / income tax return', 'check my PF balance', 'renew my " +
+      "passport', 'download my Aadhaar', 'pay my GST', 'renew my driving " +
+      "licence': call it AT ONCE with the whole request as the goal and " +
+      "category 'web'; the official site is opened for them. Never say you " +
+      "can't do it and never ask whether to open the portal: opening it IS " +
+      "the start of doing it, and the run hands over only where they must " +
+      "sign in, enter an OTP, check their own figures or e-verify. For any " +
+      "other website task without a link, find the OFFICIAL page with " +
+      "web_search first and pass it as url (government portals end in " +
+      ".gov.in / .nic.in). Picks the user's " +
       "preferred app from memory when they don't name one. It STOPS before " +
       "paying, placing a paid order, moving money, typing passwords, OTPs, " +
       "Aadhaar or bank numbers, ticking declarations / 'I agree', " +
@@ -7119,8 +7127,20 @@ function registerBuiltins() {
       const app = named || args.app;
       const goal = named && !new RegExp(`\\b${named}\\b`, "i").test(String(args.goal || ""))
         ? `${args.goal} (in ${named})` : args.goal;
+      // A GOVERNMENT TASK STARTS ON THE OFFICIAL SITE (2026-09-26, "file my
+      // ITR"): with no app and no link from the model, the known official
+      // address is opened in the browser rather than a search or a refusal.
+      let url = args.url;
+      let site = null;
+      // Only a task that is not for an app of another kind: "book a flight,
+      // my passport is ready" must never open Passport Seva.
+      const kind = String(args.category || "").toLowerCase();
+      if (!app && !/^https?:\/\//i.test(String(url || "")) && (!kind || kind === "web" || kind === "other")) {
+        site = require("../automation/officialSites").siteFor(`${goal || ""} ${ctx.userText || ""}`);
+        if (site) url = site.url;
+      }
       const out = await svc.start(ctx.userId, {
-        goal, category: args.category, app, url: args.url, query: args.query,
+        goal, category: site ? "web" : args.category, app, url, query: args.query,
       });
       if (!out.ok) return out;
       const r = out.run;
@@ -7129,7 +7149,9 @@ function registerBuiltins() {
         ok: true,
         data: { run_id: r.id, app: r.app_label, why: r.app_reason, working: true },
         deviceAction: out.directive,
-        speak: r.web
+        speak: site
+          ? `On it — opening ${site.label}. I'll take it as far as I can and stop where you need to sign in yourself.`
+          : r.web
           ? "On it — I'm filling that in now and I'll tell you when it's done."
           : !r.app_name
             ? "On it — doing that on your phone now, and I'll tell you when it's done."

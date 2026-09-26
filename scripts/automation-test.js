@@ -484,6 +484,38 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.match(t.speak, /on your phone/);
   });
 
+  await atest("'file my ITR' starts on the official site in the browser, never a refusal", async () => {
+    // Owner's test, 2026-09-26: "I can't file your ITR directly… would you
+    // like me to open the portal?" — he wanted it started.
+    // Its own user: these runs must not crowd the shared user's recent
+    // tasks, which a later test reads back.
+    const ME = UID + 9;
+    const tool = registry().get("do_task_in_app");
+    try {
+    const t = await tool.execute({ goal: "File my income tax return" },
+      { userId: ME, platform: "android", userText: "file my ITR" });
+    assert.strictEqual(t.ok, true);
+    assert.ok(t.deviceAction.web, "a browser task");
+    assert.strictEqual(t.deviceAction.start_url, "https://www.incometax.gov.in/iec/foportal/");
+    assert.match(t.speak, /opening the income tax e-filing site/);
+    assert.match(t.speak, /sign in yourself/);
+    // A link the model found itself is kept.
+    const own = await tool.execute({ goal: "file my ITR", url: "https://eportal.incometax.gov.in/iec/foservices/#/login" },
+      { userId: ME, platform: "android", userText: "file my ITR" });
+    assert.strictEqual(own.deviceAction.start_url, "https://eportal.incometax.gov.in/iec/foservices/#/login");
+    // Another kind of task never lands on a government site.
+    const trip = await tool.execute({ goal: "book a flight to Delhi, my passport is ready", category: "travel" },
+      { userId: ME, platform: "android", userText: "book a flight to Delhi, my passport is ready" });
+    assert.notStrictEqual(trip.deviceAction.start_url, "https://www.passportindia.gov.in/");
+    assert.ok(!trip.deviceAction.web);
+    // The rule is in the tool's own description, for every model.
+    assert.match(tool.description, /GOVERNMENT AND OFFICIAL SERVICES/);
+    assert.match(tool.description, /never ask whether to open the portal/i);
+    } finally {
+      await require("../src/db").run("DELETE FROM automation_runs WHERE user_id=$1", [ME]).catch(() => {});
+    }
+  });
+
   await atest("an app with no hints runs the same loop (app-agnostic)", async () => {
     prompts.length = 0;
     const s = await svc.start(UID, { goal: "Add a notebook to my cart", app: "Notebook Store" });
