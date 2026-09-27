@@ -50,11 +50,18 @@ function isTransient(e) {
   return e?.name === "TimeoutError" || /\b50[0234]\b/.test(m) || /timed out|timeout|aborted/i.test(m);
 }
 
-/** Did this job's own session run a world action (a call, a message, an order)? */
-function worldActionRan(userId, sessionId) {
+/**
+ * Did this job's run already DO anything? Then it never runs again.
+ * Every tool the turn started counts, not only world actions: email_send,
+ * start_task, deep_research and add_finance_item are not filed as world
+ * actions, and a second copy of any of them is the double effect this
+ * guards (review, 2026-09-27). A run that died before its first tool —
+ * on the model, where 2026-09-25's runs died — loses nothing going again.
+ */
+function actedAlready(userId, sessionId, started = []) {
+  if (started.length) return true;
   const state = require("../agents/sessionState").get(userId, sessionId);
-  const { isWorldAction } = require("../tools/registry");
-  return !!state && state.executed.some((x) => isWorldAction(x.tool));
+  return !!state && state.executed.length > 0;
 }
 
 /**
@@ -99,6 +106,7 @@ async function scheduledTask(payload, job) {
   let failed = false;
   let retryable = false;
   const jobSessionId = `job:${job.id || job.jobId || Date.now()}`;
+  const started = []; // every tool this run began (actedAlready)
   try {
     const res = await require("../agents/runtime").runAgentTurn(
       `[SCHEDULED TASK] It is now the scheduled time. Execute this task I ` +
@@ -132,7 +140,8 @@ async function scheduledTask(payload, job) {
         sessionId: jobSessionId,
         source: "background",
         intent: task,
-      }
+      },
+      (type, e) => { if (type === "tool_start") started.push(String(e?.name || "")); }
     );
     if (res?.needsConfirmation) {
       // Defensive: should be impossible with approved:true, but a lied
@@ -177,7 +186,7 @@ async function scheduledTask(payload, job) {
   } catch (e) {
     failed = true;
     outcome = `I couldn't complete it: ${String(e.message).slice(0, 160)}`;
-    retryable = isTransient(e) && !worldActionRan(userId, jobSessionId);
+    retryable = isTransient(e) && !actedAlready(userId, jobSessionId, started);
   }
   if (retryable) {
     // The retry carries the time this occurrence was DUE, so a daily
@@ -437,6 +446,15 @@ async function taskContinue(payload, job) {
   const task = await tasks.get(userId, taskId).catch(() => null);
   // Cancelled, finished or parked since it was queued: nothing to add.
   if (!task || task.status !== tasks.STATUS.RUNNING) return;
+  // Picked up long after it was queued (the server was down): the rest of
+  // a plan asked for an hour ago is not done now, unasked — the rule a
+  // scheduled task keeps (STALE_AFTER_MS). Stopped, and said.
+  if (Date.now() - Number(job.run_after) > STALE_AFTER_MS) {
+    const stopped = await tasks.cancel(userId, taskId, "too late to carry on").catch(() => null);
+    await notify(userId, `Stopped: ${short(task.goal)}`,
+      `${driver.summarise(stopped || task)} The rest was due long ago, so I did not run it.`, "task");
+    return;
+  }
 
   // ITS OWN SESSION, as a scheduled task has — carrying the taint of what
   // the plan has already read. A step that fetched a web page or an email

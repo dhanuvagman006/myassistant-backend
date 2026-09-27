@@ -553,6 +553,27 @@ async function turns(calls, n, ms = 3000) {
       }
     });
 
+    // Review, 2026-09-27: only world actions stopped the retry, and
+    // email_send and start_task are not filed as world actions — a busy
+    // model after the mail went out would have sent it again a minute later.
+    for (const tool of ["email_send", "start_task"]) {
+      await atest(`a run that already began ${tool} is never run again either`, async () => {
+        const rt = stubRuntime("", async (_text, _ctx, onEvent) => {
+          onEvent("tool_start", { name: tool, args: {} });
+          onEvent("tool_done", { name: tool, ok: true });
+          throw busyErr();
+        });
+        try {
+          const before = pushesTo().length;
+          await runJob(await queue("scheduled_task", { task: "Mail Ravi that the meeting moved", tzOffsetMin: 330 }));
+          assert.strictEqual((await pending("scheduled_task")).length, 0, `${tool} could run twice`);
+          assert.strictEqual(pushesTo().slice(before)[0].title, "Scheduled task failed");
+        } finally {
+          rt.restore();
+        }
+      });
+    }
+
     await atest("a refusal or a spent quota is reported at once, not retried", async () => {
       const rt = stubRuntime("", async () => {
         throw Object.assign(new Error("gemini tools 429 [model=gemini-flash-lite-latest] quota exceeded"), { status: 429 });

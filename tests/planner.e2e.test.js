@@ -516,6 +516,26 @@ function stubPlan(steps, decline) {
       assert.strictEqual(pushed().length, before, "nothing to report on a plan the user stopped");
     });
 
+    // Review, 2026-09-27: a durable crank outlives a server that is down
+    // for hours, and the rest of the plan must not run that late, unasked.
+    await atest("a crank picked up long after it was queued stops the plan rather than running it late", async () => {
+      CALLS.length = 0;
+      const t = await tasks.create(OWNER, "search and write it down, late", [
+        { tool: "p_search", args: { q: "a" } },
+        { tool: "p_write", args: { text: "b" }, dependsOn: [0] },
+      ]);
+      await driver.runWithin(OWNER, t.id, {}, { budgetMs: -1 });
+      const [row] = await queued(t.id);
+      const before = pushed().length;
+      await crank({ ...row, run_after: Date.now() - 2 * 3600_000 });
+      assert.strictEqual(CALLS.length, 0, "a step ran two hours late");
+      assert.strictEqual((await tasks.get(OWNER, t.id)).status, tasks.STATUS.CANCELLED);
+      const p = pushed().slice(before);
+      assert.strictEqual(p.length, 1, JSON.stringify(p));
+      assert.match(p[0].title, /^Stopped:/);
+      assert.match(p[0].body, /due long ago, so I did not run it/, p[0].body);
+    });
+
     await atest("out of cranks, the plan is stopped and said to be — never left RUNNING", async () => {
       const t = await tasks.create(OWNER, "never enough time", [
         { tool: "p_search", args: { q: "a" } },
