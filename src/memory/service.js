@@ -294,38 +294,98 @@ function attributeKey(fact) {
   return keys.find((k) => f.includes(k)) || null;
 }
 
+// Words that say nothing about WHICH fact is meant. Facts are stored as
+// "User's …" and requests arrive as "my …"; matching on these (or on any
+// 3-letter piece of a word) made "forget my sister's name" forget the
+// user's own name too, and "the gym timing" forget "mother lives in
+// Mysuru" (audit, 2026-09-27).
+const FORGET_STOP = new Set((
+  "a an the and or of to in on at for with from by about as is am are was " +
+  "were be been it its this that these those what which who my me i mine " +
+  "our we you your his her their them he she they user please forget " +
+  "remember everything anything all any some thing things stuff info " +
+  "information detail details"
+).split(" "));
+
+/** Whole words, lower-cased, possessive and plural endings folded, so
+ *  "sister's", "sisters" and "sister" are one word. Marks (\p{M}) stay
+ *  inside a word, or every Devanagari vowel sign would split one. */
+function forgetWords(text, { dropStop = false } = {}) {
+  const words = String(text || "").toLowerCase()
+    .replace(/['’]s(?![\p{L}\p{N}])/gu, "")
+    .split(/[^\p{L}\p{M}\p{N}]+/u)
+    .filter((w) => w && !(dropStop && FORGET_STOP.has(w)));
+  return [...new Set(words.map((w) => (w.length > 3 && /[^s]s$/.test(w) ? w.slice(0, -1) : w)))];
+}
+
 /**
- * Invalidates memories (§10). Soft delete keeps an audit trail while
- * removing the fact from every retrieval path. Returns how many.
+ * Forgets what the user asked to forget (§10) — and ONLY that.
+ *
+ * A fact is a candidate only when it contains EVERY significant word of
+ * `match` as a whole word. Candidates are ranked by how much of the fact
+ * those words account for ("my name" is "User's name is Dhanush" before
+ * "User's sister's name is Kavya"); the best one is forgotten. When
+ * different facts tie, nothing is forgotten and they come back as
+ * `choices` so the model can ask which one. No significant words and no
+ * subject means nothing is forgotten — never a broad match.
+ *
+ * A HARD delete: the fact, its embedding and all. The privacy policy says
+ * a deleted memory "is removed immediately", and a hidden (valid=0) row
+ * kept the words and came back in the data export. The valid=0 supersede
+ * in remember() stays for automatic corrections.
+ *
+ * @returns {{count:number, forgotten:string[], choices:string[], others:string[],
+ *   specific:boolean}} `others`: facts that also matched every word but
+ *   ranked lower (kept). `specific`: `match` had words to match on.
  */
 async function forget(userId, { subjectType = "", subjectId = null, match = "" }) {
   const uid = assertUser(userId);
-  const m = String(match || "").trim();
   const rows = await query(
     `SELECT id, fact FROM agent_memories
       WHERE user_id=$1 AND valid=1
         AND ($2='' OR subject_type=$2)
-        AND ($3::bigint IS NULL OR subject_id=$3)`,
+        AND ($3::bigint IS NULL OR subject_id=$3)
+      ORDER BY id`,
     [uid, subjectType, subjectId]
   );
-  const hits = m
-    ? rows.filter((r) => {
-        const f = r.fact.toLowerCase();
-        return m
-          .toLowerCase()
-          .split(/\s+/)
-          .filter((w) => w.length > 2)
-          .some((w) => f.includes(w));
+  const want = forgetWords(match, { dropStop: true });
+  let hits = [];
+  let choices = [];
+  let others = [];
+  if (!want.length) {
+    // "Forget everything about Ravi": the whole subject, and only when a
+    // subject was resolved.
+    if (subjectType && subjectId) hits = rows;
+  } else {
+    const ranked = rows
+      .map((r) => {
+        const words = forgetWords(r.fact);
+        if (!want.every((w) => words.includes(w))) return null;
+        const own = forgetWords(r.fact, { dropStop: true }).length || 1;
+        return { ...r, score: want.length / own };
       })
-    : rows;
-  for (const h of hits) {
-    await run(
-      `UPDATE agent_memories SET valid=0, invalidated_at=$3, updated_at=$3
-        WHERE user_id=$1 AND id=$2`,
-      [uid, h.id, now()]
-    );
+      .filter(Boolean)
+      .sort((a, b) => b.score - a.score);
+    const top = ranked.filter((r) => r.score === (ranked[0] && ranked[0].score));
+    const norm = (f) => forgetWords(f).join(" ");
+    if (new Set(top.map((r) => norm(r.fact))).size > 1) {
+      choices = top.map((r) => r.fact);
+    } else {
+      hits = top; // the same fact stored twice goes as one
+    }
+    others = ranked.filter((r) => !top.includes(r)).map((r) => r.fact);
   }
-  return hits.length;
+  if (hits.length) {
+    await run(`DELETE FROM agent_memories WHERE user_id=$1 AND id = ANY($2::bigint[])`,
+      [uid, hits.map((h) => h.id)]);
+  }
+  return {
+    count: hits.length,
+    forgotten: hits.map((h) => h.fact),
+    choices: choices.slice(0, 5),
+    others: choices.length ? [] : others.slice(0, 5),
+    specific: want.length > 0,
+  };
 }
 
 /* ------------------------------------------------------------------ */

@@ -254,6 +254,12 @@ async function seedUser(uid, { phone }) {
     if (table === "live_recordings" || table === "chat_group_members") continue; // real ones below
     await seedRow(table, col, uid);
   }
+  // Search text and links belong to one of their own documents: those of
+  // a document that is gone are a leftover of their own (see Leftovers).
+  const doc = await db.one(`SELECT id FROM documents WHERE user_id = $1 ORDER BY id LIMIT 1`, [uid]);
+  for (const t of ["document_chunks", "document_links"]) {
+    await db.run(`UPDATE ${t} SET document_id = $2 WHERE user_id = $1`, [uid, doc.id]);
+  }
   // A finished recording: the row, its merged audio, and both raw halves.
   const stem = recStem(uid);
   await db.run(
@@ -429,6 +435,9 @@ const tell = (from, toPhone, message) => db.one(
   app.use("/admin-panel", require("../src/routes/admin_web"));
   app.use("/privacy", (req, _res, next) => { req.user = { sub: String(req.get("x-test-user")) }; next(); },
     privacy);
+  app.use(express.json());
+  app.use("/profile", (req, _res, next) => { req.user = { sub: String(req.get("x-test-user")) }; next(); },
+    require("../src/routes/profile"));
   const server = await new Promise((r) => { const s = app.listen(0, "127.0.0.1", () => r(s)); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const login = await fetch(`${base}/admin-panel/api/login`, {
@@ -582,6 +591,33 @@ const tell = (from, toPhone, message) => db.one(
     assert.strictEqual(d.avatar_personas[0].api_key, "[stored — redacted]");
     assert.match(d.avatar_personas[0].persona_id, /^seed-/);
     assert.strictEqual(d.voice_profiles.length, 1);
+    // What B wrote in a group (SHARED_TABLES, so not in the table loop).
+    const said = d.chat_group_messages_written;
+    assert.ok(said.some((m) => m.body === "B in the family group"), "B's group messages are not exported");
+    assert.ok(said.every((m) => Number(m.from_user_id) === B), "someone else's group message is in B's export");
+  });
+
+  await atest("a standing rule deleted in Settings or by voice is removed, not kept inactive", async () => {
+    // "Delete an item … and it is removed immediately" (the privacy policy).
+    const as = { "x-test-user": String(B), "content-type": "application/json" };
+    const rule = `never call after 9 pm ${stamp}`;
+    const made = await (await fetch(`${base}/profile/instructions`, {
+      method: "POST", headers: as, body: JSON.stringify({ instruction: rule }) })).json();
+    assert.ok(made.instruction && made.instruction.id);
+    const del = await fetch(`${base}/profile/instructions/${made.instruction.id}`, { method: "DELETE", headers: as });
+    assert.strictEqual(del.status, 200);
+    assert.strictEqual(await db.one(`SELECT 1 AS x FROM user_instructions WHERE id = $1`, [made.instruction.id]), null,
+      "the deleted rule is still stored");
+    // "You don't need to ask before reminders anymore" (remove_standing_instruction).
+    const spoken = `always ask before reminders ${stamp}`;
+    await (await fetch(`${base}/profile/instructions`, {
+      method: "POST", headers: as, body: JSON.stringify({ instruction: spoken }) })).json();
+    assert.strictEqual(await require("../src/users/context").removeInstruction(B, `reminders ${stamp}`), 1);
+    assert.deepStrictEqual(await db.query(`SELECT id FROM user_instructions WHERE instruction = $1`, [spoken]), [],
+      "the rule removed by voice is still stored");
+    const d = await (await fetch(`${base}/privacy/export`, { headers: as })).text();
+    assert.ok(!d.includes(rule), "the deleted rule is still in the export");
+    assert.ok(!d.includes(spoken), "the rule removed by voice is still in the export");
   });
 
   /* ================================================================ *
@@ -614,6 +650,12 @@ const tell = (from, toPhone, message) => db.one(
      VALUES (0, 'alert', $1, $2) RETURNING id`, [`erase-test alert ${stamp}`, Date.now()]);
   const systemJob = await seedRow("jobs", "user_id", 0, { user_id: null });
   const systemJobs = (await db.one(`SELECT count(*)::int AS n FROM jobs WHERE user_id IS NULL`)).n;
+  // The search text and a link of a document B deleted before a delete
+  // took them too (audit, 2026-09-27). B is still here; these are not.
+  const goneDoc = 9_000_000_000 + (Date.now() % 100_000);
+  const goneChunk = await seedRow("document_chunks", "user_id", B,
+    { document_id: goneDoc, text: `deleted report ${stamp}` });
+  await seedRow("document_links", "user_id", B, { document_id: goneDoc });
 
   let found;
   await atest("the Recordings page labels a deleted account's call as such", async () => {
@@ -636,6 +678,8 @@ const tell = (from, toPhone, message) => db.one(
     assert.ok(found.tables["chat_groups (nobody left)"] >= 1);
     assert.ok(found.tables["chat_group_messages"] >= 1, "G3's message goes with G3");
     assert.ok(found.tables["kv (their keys)"] >= 4);
+    assert.ok(found.tables["document_chunks (document deleted)"] >= 1, "a deleted document's text is not counted");
+    assert.ok(found.tables["document_links (document deleted)"] >= 1);
     assert.ok(found.files.recordingFiles >= 3);
     assert.ok(found.files.strayRecordingFiles >= 1);
     assert.ok(found.files.documentFolders >= 1);
@@ -667,6 +711,9 @@ const tell = (from, toPhone, message) => db.one(
     assert.strictEqual(await db.one(`SELECT 1 AS x FROM chat_groups WHERE id = $1`, [G3]), null);
     const m = await db.one(`SELECT body, deleted FROM chat_group_messages WHERE id = $1`, [ghostMsg]);
     assert.deepStrictEqual({ body: m.body, deleted: Number(m.deleted) }, { body: "", deleted: 1 });
+    assert.strictEqual(await db.one(`SELECT 1 AS x FROM document_chunks WHERE id = $1`, [goneChunk.id]), null,
+      "a deleted document's text outlived the purge");
+    assert.strictEqual(await db.one(`SELECT 1 AS x FROM document_links WHERE document_id = $1`, [goneDoc]), null);
   });
 
   await atest("and nothing that still belongs to someone was touched", async () => {

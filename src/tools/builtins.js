@@ -550,7 +550,10 @@ function registerBuiltins() {
         lng: ctx.lng,
         tzOffsetMin: ctx.tzOffsetMin,
       });
-      return { ok: true, data: b, speak: speakBrief(b) };
+      // Unread messages are other people's words, read out verbatim: the
+      // same prompt-injection gate as an email (registry.js).
+      return { ok: true, data: b, speak: speakBrief(b),
+        ...(b.messages && b.messages.length ? { untrusted: true } : {}) };
     },
   });
 
@@ -1012,13 +1015,34 @@ function registerBuiltins() {
     async execute(args, ctx) {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
       let subjectType = "", subjectId = null;
+      let match = String(args.what || "");
       if (args.about) {
         const p = await mem.findPerson(ctx.userId, args.about);
         if (p) { subjectType = "person"; subjectId = p.id; }
+        // Not a saved person: their name narrows the words instead, so
+        // "Ravi's hearing date" never takes Meena's.
+        else match = `${args.about} ${match}`;
       }
-      const n = await mem.forget(ctx.userId, { subjectType, subjectId, match: args.what });
-      if (!n) return { ok: false, error: "nothing matching was stored" };
-      return { ok: true, data: { forgotten: n }, speak: "Forgotten." };
+      let r = await mem.forget(ctx.userId, { subjectType, subjectId, match });
+      if (!r.count && !r.choices.length && subjectId && r.specific) {
+        // A saved person, but the fact was stored plainly ("Ravi's
+        // hearing is on the 14th"): look again with the name as a word.
+        r = await mem.forget(ctx.userId, { match: `${args.about} ${match}` });
+      }
+      if (r.choices.length) {
+        return { ok: false, error: "several memories match — nothing was forgotten. " +
+          "Ask the user which one they mean, then call again with its words.",
+          data: { choices: r.choices } };
+      }
+      if (!r.count) return { ok: false, error: "nothing matching was stored" };
+      return {
+        ok: true,
+        data: { forgotten: r.count, facts: r.forgotten,
+          ...(r.others.length ? { also_stored: r.others } : {}) },
+        speak: "Forgotten.",
+        ...(r.others.length ? { note: "Only the closest match was forgotten. The facts in " +
+          "also_stored matched too and are KEPT — mention them and ask whether those should go as well." } : {}),
+      };
     },
   });
 
@@ -8080,6 +8104,9 @@ function registerBuiltins() {
         ok: true,
         data: calls,
         speak: `${calls.length === 1 ? "One call" : `${calls.length} calls`}. ` + lines.join(". "),
+        // What a stranger said on the phone: data, never an instruction
+        // (the prompt-injection gate in registry.js).
+        untrusted: true,
       };
     },
   });

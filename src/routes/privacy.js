@@ -594,6 +594,17 @@ const EMPTY_GROUP = `g.created_at < $1
                    WHERE m.group_id = g.id)`;
 const GROUP_GRACE_MS = 3600_000;
 
+// Search chunks (a document's whole extracted text) and person/case links
+// of a document that is gone, its owner still here. Deleting a document
+// used to remove only its row (audit, 2026-09-27). Disjoint from the
+// user-orphan rule, which takes these rows once their owner is gone.
+const DOC_PARTS = ["document_chunks", "document_links"];
+const DOC_GONE = `EXISTS (SELECT 1 FROM users u WHERE u.id::text = x.user_id::text)
+  AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.id = x.document_id)`;
+const docPartsIn = (cols) => (cols.has("documents.id")
+  ? DOC_PARTS.filter((t) => cols.has(`${t}.document_id`) && cols.has(`${t}.user_id`))
+  : []);
+
 /** Recording files on disk that no row points at, old enough to be dead. */
 async function strayRecordingFiles() {
   const root = recorder.ROOT;
@@ -725,6 +736,10 @@ async function findOrphans() {
     const r = await one(`SELECT count(*)::int AS n FROM ${q(table)} x WHERE ${orphanWhere(col)}`);
     put(table, r?.n);
   }
+  for (const t of docPartsIn(cols)) {
+    const r = await one(`SELECT count(*)::int AS n FROM ${q(t)} x WHERE ${DOC_GONE}`);
+    put(`${t} (document deleted)`, r?.n);
+  }
   // Same labels and the same order of rules as purgeOrphans(), so the
   // numbers the panel shows before are the numbers it reports after:
   // messages in a group with nobody left are deleted with the group, and
@@ -798,6 +813,10 @@ async function purgeOrphans() {
       }
       const r = await client.query(`DELETE FROM ${q(table)} x WHERE ${orphanWhere(col)}`);
       put(table, r.rowCount);
+    }
+    for (const t of docPartsIn(cols)) {
+      const r = await client.query(`DELETE FROM ${q(t)} x WHERE ${DOC_GONE}`);
+      put(`${t} (document deleted)`, r.rowCount);
     }
     if (cols.has("chat_groups.created_at") && cols.has("chat_group_messages.group_id")) {
       const cutoff = Date.now() - GROUP_GRACE_MS;
@@ -876,7 +895,8 @@ router.get("/export", async (req, res) => {
       google: !!(await gtokens.isConnected?.(uid)),
     },
   };
-  for (const [table, col] of await existingUserTables()) {
+  const cols = await columnSet();
+  for (const [table, col] of await existingUserTables(cols)) {
     if (table === "google_tokens" || table === "swiggy_tokens") continue; // covered above
     try {
       // table/col come from OUR whitelist above (never user input) and were
@@ -886,6 +906,33 @@ router.get("/export", async (req, res) => {
       ).map(redactRow);
     } catch (e) {
       data[table] = { error: "could not read: " + e.message };
+    }
+  }
+  // THEIR INBOX. Messages other people's assistants sent TO them are keyed
+  // by number, not by id, so the loop above never saw them — yet the
+  // account delete erases them as theirs (audit, 2026-09-27). Only a
+  // verified number has an inbox (routes/messages.js). The sender appears
+  // by name, as in the app, not by their account or document ids.
+  const phone = user && user.phone_verified_at ? user.phone_number : null;
+  if (phone && cols.has("agent_messages.to_phone_number")) {
+    try {
+      data.agent_messages_received = (await query(
+        `SELECT m.*, u.name AS from_name FROM agent_messages m
+           LEFT JOIN users u ON u.id = m.from_user_id
+          WHERE m.to_phone_number = $1 ORDER BY m.id`, [phone]
+      )).map(({ from_user_id: _a, from_document_id: _b, ...row }) => redactRow(row));
+    } catch (e) {
+      data.agent_messages_received = { error: "could not read: " + e.message };
+    }
+  }
+  // What they wrote in group chats: SHARED_TABLES, so not in the loop.
+  if (cols.has("chat_group_messages.from_user_id")) {
+    try {
+      data.chat_group_messages_written = (await query(
+        `SELECT * FROM chat_group_messages WHERE from_user_id = $1 ORDER BY id`, [uid]
+      )).map(redactRow);
+    } catch (e) {
+      data.chat_group_messages_written = { error: "could not read: " + e.message };
     }
   }
   res.setHeader(

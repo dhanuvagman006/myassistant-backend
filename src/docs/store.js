@@ -17,7 +17,7 @@
  */
 const fs = require("fs");
 const path = require("path");
-const { query, one, run } = require("../db");
+const { query, one, run, tx } = require("../db");
 
 // Hard cap per account. NEVER silently evicts: a user's saved document is
 // only ever removed by an explicit delete (theirs) — a full account gets a
@@ -195,7 +195,16 @@ async function listDocuments(userId, limit = 200, scope = "all") {
 async function deleteDocument(userId, id) {
   const row = await getDocument(userId, id);
   if (!row) return false;
-  await run("DELETE FROM documents WHERE id = $1 AND user_id = $2", [id, userId]);
+  // Its search chunks are the document's whole extracted text, and its
+  // links tie it to a person or case: all three go together, or a deleted
+  // medical report's text stayed on the server and in the data export
+  // (audit, 2026-09-27). Every delete path (clients, studio, posters,
+  // video notes) comes through here.
+  await tx(async (c) => {
+    await c.query("DELETE FROM document_chunks WHERE user_id = $1 AND document_id = $2", [userId, id]);
+    await c.query("DELETE FROM document_links WHERE user_id = $1 AND document_id = $2", [userId, id]);
+    await c.query("DELETE FROM documents WHERE id = $1 AND user_id = $2", [id, userId]);
+  });
   try { fs.unlinkSync(row.path); } catch (_) {}
   return true;
 }

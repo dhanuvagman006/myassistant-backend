@@ -946,7 +946,10 @@ async function seedRow(table, userCol, uid, over = {}) {
       const done = await registry.execute("forget_memory", { what: `hearing ${stamp}` }, { userId: A.id, approved: true });
       assert.strictEqual(done.ok, true, JSON.stringify(done));
       const recalled = await registry.execute("recall_memory", {}, { userId: A.id });
-      assert.ok(!JSON.stringify(recalled.data).includes(stamp + ""), "a forgotten fact is still recalled");
+      // The fact itself, not the stamp: A's "likes filter coffee <stamp>"
+      // (export test) shares only the stamp and must NOT be forgotten
+      // with it (the g1 forget_memory defect, fixed 2026-09-27).
+      assert.ok(!JSON.stringify(recalled.data).includes(fact), "a forgotten fact is still recalled");
       const bRecalled = await registry.execute("recall_memory", {}, { userId: B.id });
       assert.ok(JSON.stringify(bRecalled.data).includes(`hearing date is 14 October ${stamp}`), "A's forget removed B's fact");
       assert.ok((await db.query(`SELECT 1 FROM actions_log WHERE user_id=$1 AND action='tool.forget_memory'`, [A.id])).length);
