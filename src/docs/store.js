@@ -253,7 +253,10 @@ async function searchDocuments(userId, message, limit = 3) {
   }
   let askedKind = false; // the words name a KIND of document (medical, bill, ID)
   if (rows.length === 0 && /\b(hospital|doctor|clinic|medical|prescri|report|test|lab|health)\w*/i.test(message)) {
-    askedKind = true;
+    // "report" or "test" alone names no kind: "show me the report you
+    // made" is the sales report the assistant wrote, and it must still
+    // stand in below. Only a medical word asks for a medical document.
+    askedKind = /\b(hospital|doctor|clinic|medical|prescri|lab|health)\w*/i.test(message);
     rows = await recentByCat("medical", "prescription");
   }
   if (rows.length === 0 && /\b(receipt|bill|invoice|paid|payment)\w*/i.test(message)) {

@@ -285,6 +285,10 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
         assert.ok(s.hits.some((h) => h.id === saved[0]), "a save whose kind is unknown still stands in");
         const any = await docsStore.searchDocuments(UID, "show me the document I saved");
         assert.ok(any.hits.some((h) => h.id === report.id), "no kind asked: recent saves as before");
+        // "report" alone is no kind: the report the assistant just wrote
+        // must still come up for "show me the report you made".
+        const made = await docsStore.searchDocuments(UID, "show me the report you made");
+        assert.ok(made.hits.some((h) => h.id === report.id), "a plain 'report' still offers the sales report");
       });
     } finally {
       for (const [k, v] of Object.entries(keys)) if (v !== undefined) process.env[k] = v;
