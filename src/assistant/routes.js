@@ -1195,10 +1195,15 @@ async function startAgentCall(s, contact, task, req) {
       id = out.id;
     } catch (e) {
       if (uidNum) {
-        outcomes.create(uidNum, {
-          kind: "agent_call", target: name, detail: task, status: "failed", path: "relay",
-          sessionId: s.sid || "",
-        }).then((r) => r && outcomes.update(uidNum, r.id, { status: "failed", reason: e?.code === "quota" ? "daily relay-call limit reached" : "the calling service could not place the call" })).catch(() => {});
+        // A "failed" start already left its row (agentCall.start files one
+        // before dialling and settles it); only the refusals that come
+        // before that — quota, bad number, not configured — need one here.
+        if (e?.code !== "failed") {
+          outcomes.create(uidNum, {
+            kind: "agent_call", target: name, detail: task, status: "failed", path: "relay",
+            sessionId: s.sid || "",
+          }).then((r) => r && outcomes.update(uidNum, r.id, { status: "failed", reason: e?.code === "quota" ? "daily relay-call limit reached" : "the calling service could not place the call" })).catch(() => {});
+        }
         audit.record(uidNum, "call.failed", `${name}: relay call could not start (${e?.code || "error"})`);
       }
       if (e?.code === "quota") {
@@ -1226,13 +1231,10 @@ async function startAgentCall(s, contact, task, req) {
 
     emit(s, { type: "call_status", status: "dialing", contact_name: name });
     state(s, "in_call");
-    let outcomeRow = null;
-    if (uidNum) {
-      outcomeRow = await outcomes.create(uidNum, {
-        kind: "agent_call", target: name, detail: task, status: "dialing", path: "relay",
-        externalId: id, sessionId: s.sid || "",
-      }).catch(() => null);
-    }
+    // The Calls row is agentCall.start()'s (one per call, by external id).
+    // A second one made here was never settled — the webhook updates only
+    // the newest — so Hub > Calls showed the call twice, one copy
+    // "in progress" for ever.
 
     // Poll the in-process call store until it reaches a terminal state.
     const deadline = Date.now() + 3 * 60 * 1000;
@@ -1252,9 +1254,9 @@ async function startAgentCall(s, contact, task, req) {
     }
 
     emit(s, { type: "call_status", status: terminal || "ended", contact_name: name });
-    if (uidNum && outcomeRow) {
+    if (uidNum) {
       const finalStatus = terminal || "failed";
-      outcomes.update(uidNum, outcomeRow.id, {
+      outcomes.updateByExternalId(id, {
         status: finalStatus,
         reason: terminal ? "" : lostRecord ? "call record lost (server restarted mid-call)" : "no result within 3 minutes",
         detail: result ? String(result).slice(0, 400) : task,

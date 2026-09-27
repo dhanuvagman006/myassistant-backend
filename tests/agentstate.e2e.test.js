@@ -964,6 +964,48 @@ console.log("\nexecution record");
       "the reason must name the missing connection, or the user cannot act on it");
   });
 
+  await atest("a calendar time without an offset is the user's own clock, for a new event and a move", async () => {
+    // Date.parse read "16:00" in the SERVER's zone (UTC in the container),
+    // so an IST user's 4 pm was booked at 9:30 pm. The user here sits 90
+    // minutes off this machine's zone, so the old reading fails wherever
+    // the suite runs. Google is stubbed at the module; nothing leaves.
+    const tokens = require("../src/google/tokens");
+    const gapi = require("../src/google/api");
+    const real = { accessToken: tokens.accessToken, upcomingEvents: gapi.upcomingEvents,
+      createEvent: gapi.createEvent, updateEvent: gapi.updateEvent };
+    const created = [];
+    const patched = [];
+    tokens.accessToken = async () => "stub-token";
+    gapi.createEvent = async (_uid, ev) => { created.push(ev); return { id: "ev-new" }; };
+    gapi.updateEvent = async (_uid, id, patch) => { patched.push({ id, patch }); return { id }; };
+    gapi.upcomingEvents = async () => [{ id: "ev-1", title: "Dentist",
+      start: "2026-10-02T10:30:00.000Z", end: "2026-10-02T11:00:00.000Z" }];
+    try {
+      const tz = -new Date(Date.UTC(2026, 9, 2)).getTimezoneOffset() + 90;
+      const at = (hh) => Date.UTC(2026, 9, 2, hh) - tz * 60_000;
+      const ctx = { userId: USER_A, tzOffsetMin: tz };
+      const c = await registry.get("create_calendar_event").execute(
+        { title: "Lunch with Asha", start: "2026-10-02T13:00:00" }, ctx);
+      assert.strictEqual(c.ok, true, JSON.stringify(c));
+      assert.strictEqual(created[0].startMs, at(13), "a new event was booked at the server's 1 pm");
+      assert.strictEqual(created[0].endMs, at(14));
+      const u = await registry.get("update_calendar_event").execute(
+        { title: "Dentist", new_start: "2026-10-02T17:00:00" }, ctx);
+      assert.strictEqual(u.ok, true, JSON.stringify(u));
+      assert.strictEqual(patched[0].patch.start.dateTime, new Date(at(17)).toISOString(),
+        "a moved event landed at the server's 5 pm");
+      // An unreadable time is refused, never silently dropped.
+      const bad = await registry.get("update_calendar_event").execute(
+        { title: "Dentist", new_start: "five-ish" }, ctx);
+      assert.strictEqual(bad.ok, false);
+      assert.strictEqual(patched.length, 1);
+    } finally {
+      Object.assign(tokens, { accessToken: real.accessToken });
+      Object.assign(gapi, { upcomingEvents: real.upcomingEvents,
+        createEvent: real.createEvent, updateEvent: real.updateEvent });
+    }
+  });
+
   await atest("deep_research starts a job and claims nothing yet", async () => {
     const tool = registry.get("deep_research");
     if (!tool || (tool.available && tool.available() === false)) {

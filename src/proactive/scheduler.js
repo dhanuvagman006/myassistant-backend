@@ -471,7 +471,7 @@ async function sweepPatientRecalls() {
       const task =
         `Remind them about their upcoming ${r.note ? `appointment for ${r.note}` : "appointment"} ` +
         `with ${firstName || "the doctor"} on ${whenTxt}. Ask nothing; just remind them warmly.`;
-      const { id } = await agentCall.start({
+      await agentCall.start({
         userId: r.user_id,
         userName: firstName,
         toNumber: r.client_phone,
@@ -479,19 +479,19 @@ async function sweepPatientRecalls() {
         task,
         lang: null,
       });
-      outcomes.create(r.user_id, {
-        kind: "agent_call", target: r.client_name,
-        detail: `recall reminder: ${r.note || "appointment"}`,
-        status: "dialing", path: "relay", externalId: id,
-      }).catch(() => {});
+      // The Calls row is agentCall.start()'s; a second one here was never
+      // settled and stayed "in progress" beside it.
       console.log(`recall: calling ${r.client_name} for user ${r.user_id} (recall ${r.id})`);
     } catch (e) {
-      outcomes.create(r.user_id, {
-        kind: "agent_call", target: r.client_name,
-        detail: `recall reminder: ${r.note || "appointment"}`, status: "failed", path: "relay",
-      }).then((row) => row && outcomes.update(r.user_id, row.id, {
-        status: "failed", reason: String(e?.message || e?.code || "could not start the call"),
-      })).catch(() => {});
+      // A "failed" start already left (and settled) its own row.
+      if (e?.code !== "failed") {
+        outcomes.create(r.user_id, {
+          kind: "agent_call", target: r.client_name,
+          detail: `recall reminder: ${r.note || "appointment"}`, status: "failed", path: "relay",
+        }).then((row) => row && outcomes.update(r.user_id, row.id, {
+          status: "failed", reason: String(e?.message || e?.code || "could not start the call"),
+        })).catch(() => {});
+      }
       console.error(`recall call to ${r.client_name} failed to start:`, e?.message || e?.code);
     }
   }
@@ -512,6 +512,11 @@ async function sweepMomentum() {
 }
 
 async function sweep() {
+  // Calls whose result never came back (agentCall.closeStale): closed as
+  // failed and the user told. On its own line — a failure here must not
+  // cost the other sweeps.
+  await require("../agents/agentCall").closeStale()
+    .catch((e) => console.error("stale call sweep failed:", e.message));
   const results = await Promise.allSettled([
     sweepCommitments(),
     sweepPatientRecalls(),

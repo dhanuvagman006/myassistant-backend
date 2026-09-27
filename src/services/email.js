@@ -257,12 +257,14 @@ async function connectAccount(userId, { address, password, imapHost, smtpHost })
      ON CONFLICT (user_id) DO UPDATE SET address=$2, imap_host=$3, smtp_host=$4, secrets_enc=$5`,
     [userId, addr, hosts.imap, hosts.smtp, encryptSecrets({ password: pass })]
   );
+  clearInboxCache(userId); // a different mailbox from now on
   return { address: addr };
 }
 
 async function disconnectAccount(userId) {
   await ensureTable();
   await query("DELETE FROM email_accounts WHERE user_id=$1", [userId]);
+  clearInboxCache(userId);
 }
 
 function cleanErr(e) {
@@ -638,11 +640,22 @@ async function listImportant(userId, { limit = 12, force = false } = {}) {
   return items.slice(0, limit);
 }
 
+/**
+ * Forget the triaged inbox. Called whenever the mailbox in use changes —
+ * linking or unlinking either kind — or "read my mails" went on reading
+ * the unlinked (or previous) mailbox for the rest of the three minutes.
+ */
+function clearInboxCache(userId) {
+  _impCache.delete(Number(userId));
+  _impCache.delete(String(userId));
+}
+
 module.exports = {
   // For the erase suite's schema guard, which must see every table.
   migrate: () => Promise.all([ensureTable(), ensureSentTable()]),
   getAccount,
   listImportant,
+  clearInboxCache,
   listSent,
   recentRecipients,
   resolveRecipient,

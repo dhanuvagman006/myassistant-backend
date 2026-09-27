@@ -342,12 +342,19 @@ async function meetingPrep(userId) {
   const j = await gget(
     userId,
     "https://www.googleapis.com/calendar/v3/calendars/primary/events" +
-      "?singleEvents=true&orderBy=startTime&maxResults=5" +
+      // Room for today's all-day and running events ahead of the next one.
+      "?singleEvents=true&orderBy=startTime&maxResults=10" +
       `&timeMin=${encodeURIComponent(now.toISOString())}` +
       `&timeMax=${encodeURIComponent(new Date(now.getTime() + 2 * 864e5).toISOString())}`
   );
   if (j === null) return null;
-  const ev = (j.items || []).find((e) => e.start?.dateTime); // skip all-day
+  // The NEXT meeting is the next one to START. Google applies timeMin to
+  // an event's END, so a meeting already running comes back first — and
+  // taking it meant the proactive sweep saw "already started" and skipped
+  // the user, so back-to-back meetings got no brief at all.
+  const ev = (j.items || []).find(
+    (e) => e.start?.dateTime && Date.parse(e.start.dateTime) > now.getTime()
+  ); // all-day events carry no dateTime and are skipped too
   if (!ev) return { event: null, emails: [] };
 
   const attendees = (ev.attendees || [])

@@ -217,6 +217,23 @@ async function setDone(userId, id, done, { tzOffsetMin = 330 } = {}) {
         )) > 0;
       }
     }
+  } else {
+    // UN-TICKING PUTS THE CALL BACK. "Moved back to your list" shows the
+    // call badge again, so the phone must ring at its time again too —
+    // ticking it off cancelled the job, and flipping the flag alone left
+    // a reminder that says it calls and never does.
+    const cur = await one(
+      "SELECT * FROM reminders WHERE user_id = $1 AND id = $2",
+      [userId, id]
+    );
+    if (cur && cur.done && cur.deliver === "call") {
+      await cancelCall(cur.call_job_id);
+      const jobId = await queueCall(userId, id, cur.text, Number(cur.due_at));
+      return (await run(
+        "UPDATE reminders SET done = 0, call_job_id = $3 WHERE user_id = $1 AND id = $2",
+        [userId, id, jobId]
+      )) > 0;
+    }
   }
   return (await run(
     "UPDATE reminders SET done = $1 WHERE user_id = $2 AND id = $3",

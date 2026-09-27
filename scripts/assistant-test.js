@@ -465,6 +465,12 @@ async function turns(calls, n, ms = 3000) {
       }
       const toRamesh = dialled.filter((d) => Number(d.userId) === Number(doc.id));
       assert.strictEqual(toRamesh.length, 1, `the patient was phoned ${toRamesh.length} times`);
+      // The Calls row is agentCall.start()'s (stubbed here): a second one
+      // filed by the sweep was never settled and stayed "in progress".
+      await new Promise((r) => setTimeout(r, 200));
+      await require("../src/outcomes/store").migrate();
+      const rows = await db.query(`SELECT id FROM task_outcomes WHERE user_id=$1`, [doc.id]);
+      assert.strictEqual(rows.length, 0, "the recall sweep filed a Calls row of its own");
     } finally {
       agent.enabled = realAgent.enabled;
       agent.start = realAgent.start;
