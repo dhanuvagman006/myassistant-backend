@@ -7,7 +7,7 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test:manifest": "node scripts/check-test-manifest.js",
-    "test:all": "npm run test:manifest && npm run test && npm run test:fulfillment && npm run test:input && npm run test:news && npm run test:legal && npm run test:knowledge && npm run test:professional && npm run test:integrations && npm run test:state && npm run test:studio && npm run test:contract && npm run test:tasks && npm run test:planner && npm run test:phone && npm run test:security && npm run test:assistant && npm run test:calls && npm run test:readback && npm run test:live && npm run test:feedback && npm run test:features && npm run test:automation && npm run test:momentum && npm run test:videonotes && npm run test:posters && npm run test:erase",
+    "test:all": "npm run test:manifest && npm run test && npm run test:fulfillment && npm run test:input && npm run test:news && npm run test:legal && npm run test:knowledge && npm run test:professional && npm run test:integrations && npm run test:state && npm run test:studio && npm run test:contract && npm run test:tasks && npm run test:planner && npm run test:phone && npm run test:security && npm run test:assistant && npm run test:calls && npm run test:readback && npm run test:live && npm run test:feedback && npm run test:features && npm run test:automation && npm run test:momentum && npm run test:videonotes && npm run test:posters && npm run test:e2e-g1 && npm run test:e2e-g2 && npm run test:e2e-g3 && npm run test:e2e-g4 && npm run test:e2e-g5 && npm run test:erase",
     "test": "node scripts/smoke-test.js",
     "test:security": "node scripts/security-test.js",
     "test:assistant": "node scripts/assistant-test.js",
@@ -33,7 +33,12 @@
     "test:erase": "node scripts/erase-test.js",
     "test:input": "node test/inputQuality.test.js",
     "test:readback": "node scripts/readback-test.js",
-    "test:live": "node scripts/live-turn-test.js"
+    "test:live": "node scripts/live-turn-test.js",
+    "test:e2e-g1": "node scripts/e2e-g1-conversation-test.js",
+    "test:e2e-g2": "node scripts/e2e-g2-documents-visual-test.js",
+    "test:e2e-g3": "node scripts/e2e-g3-phone-automation-shopping-test.js",
+    "test:e2e-g4": "node scripts/e2e-g4-productivity-calls-test.js",
+    "test:e2e-g5": "node scripts/e2e-g5-security-privacy-test.js"
   },
   "engines": {
     "node": ">=22"
