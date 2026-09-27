@@ -49,6 +49,13 @@ const MIME_EXT = {
   "application/pdf": ".pdf",
   "image/png": ".png",
   "image/webp": ".webp",
+  "image/heic": ".heic",
+  "image/heif": ".heif",
+  "image/gif": ".gif",
+  // Kept but not read (routes/docs.js STORE_ONLY) — still opened by type.
+  "application/msword": ".doc",
+  "application/vnd.ms-excel": ".xls",
+  "application/vnd.ms-powerpoint": ".ppt",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
@@ -244,22 +251,32 @@ async function searchDocuments(userId, message, limit = 3) {
       );
     } catch (_) {}
   }
+  let askedKind = false; // the words name a KIND of document (medical, bill, ID)
   if (rows.length === 0 && /\b(hospital|doctor|clinic|medical|prescri|report|test|lab|health)\w*/i.test(message)) {
+    askedKind = true;
     rows = await recentByCat("medical", "prescription");
   }
   if (rows.length === 0 && /\b(receipt|bill|invoice|paid|payment)\w*/i.test(message)) {
+    askedKind = true;
     rows = await recentByCat("receipt", "bill");
   }
   if (rows.length === 0 &&
       /\ba+dh?a+r\b|aadhaar|\bpan\b|passport|licen[cs]e|driving|voter|ration|\bid\b|identity|ಆಧಾರ್|आधार|ஆதார்|ఆధార్|ആധാർ/i.test(message)) {
     // "show my Aadhaar / PAN / passport" — surface saved ID documents.
+    askedKind = true;
     rows = await recentByCat("id", "id");
   }
   if (rows.length) return { hits: rows, exact: true };
 
   // LAST RESORT: the user is clearly asking about a saved document —
-  // showing their most recent saves beats a flat "nothing found".
-  return { hits: (await listDocuments(userId)).slice(0, limit), exact: false };
+  // showing their most recent saves beats a flat "nothing found". But when
+  // they asked for a KIND ("my last hospital report") and none is filed
+  // under it, only saves whose kind is still unknown (analysis never
+  // landed, so no title) may stand in: a document already filed as
+  // something else — a sales report the assistant wrote — is not a
+  // maybe-hospital-report, and popping it up full screen says it is.
+  const recent = (await listDocuments(userId)).filter((d) => !askedKind || !d.title);
+  return { hits: recent.slice(0, limit), exact: false };
 }
 
 /** Human title when AI analysis hasn't landed (or failed): guess the kind
@@ -274,9 +291,11 @@ function fallbackTitle(d) {
       ? "Receipt" // STT mishearing — in a save-note it's virtually always a receipt
       : word
         ? word[0].toUpperCase() + word.slice(1)
-        : d.mime === "application/pdf"
-          ? "Document"
-          : "Photo";
+        : String(d.mime || "").startsWith("image/")
+          ? "Photo"
+          : String(d.mime || "").startsWith("video/")
+            ? "Video"
+            : "Document"; // a PDF, and a shared .xls is no "Photo" either
   const date = new Date(Number(d.created_at)).toLocaleDateString("en-IN", {
     day: "numeric",
     month: "short",

@@ -658,6 +658,18 @@ const tmpUploads = () => filesIn(os.tmpdir()).filter((f) => /^(avatar|note)-\d+-
     assert.match(proxy, /send_video_note/, "the live prompt never routes video notes to the tool");
   });
 
+  await atest("the chat thread says what an attachment IS (type, title), so a clip or PDF is not opened as a photo", async () => {
+    const d = await (await call(R, `/chat/thread/${encodeURIComponent(PHONE.S)}`)).json();
+    const item = d.items.find((x) => x.id === Number(delivered.message_id));
+    const doc = await db.one(`SELECT user_id, mime, title FROM documents WHERE id = $1`, [item.documentId]);
+    assert.strictEqual(doc.user_id, R, "the recipient's own copy");
+    assert.strictEqual(item.documentMime, "video/mp4");
+    assert.strictEqual(item.documentMime, doc.mime);
+    assert.strictEqual(item.documentTitle, doc.title || null);
+    const plain = d.items.find((x) => !x.documentId);
+    if (plain) assert.strictEqual(plain.documentMime, null);
+  });
+
   await atest("a delivered note cannot be delivered twice", async () => {
     const res = await uploadResult(noteR.id, CLIP);
     assert.strictEqual(res.status, 409);

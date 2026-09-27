@@ -69,8 +69,8 @@ router.post("/", receiveFile, async (req, res) => {
     if (!OK_MIME.has(f.mimetype)) {
       return res.status(415).json({ error: `unsupported type ${f.mimetype}` });
     }
-    const key = process.env.GEMINI_API_KEY;
-    if (!key) {
+    const keys = require("../services/ai/keys");
+    if (!keys.pool().length) {
       // Vision needs Gemini specifically — make the
       // misconfiguration loud in the logs so it isn't mistaken for a
       // client-side network problem.
@@ -110,7 +110,13 @@ router.post("/", receiveFile, async (req, res) => {
     // Unset, the alias Google keeps current: the old default,
     // gemini-2.5-flash, answers new users 404 (2026-09-25).
     const model = process.env.GEMINI_VISION_MODEL || "gemini-flash-latest";
-    const r = await fetch(
+    // THE KEY POOL, LIKE THE DOCUMENT ANALYSER (services/ai/keys.js): a
+    // primary key out of quota used to make every camera question and
+    // screenshot answer "AI is busy" while documents kept being read on
+    // the fallback key. Only a spent (429) or rejected (401/403) key moves
+    // on to the next one; any other answer comes back as it is — a 404
+    // here would set the key aside for this model for every caller.
+    const call = (key) => fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
       {
         method: "POST",
@@ -150,17 +156,35 @@ router.post("/", receiveFile, async (req, res) => {
         }),
       }
     );
-    if (!r.ok) {
-      // Gemini's body says WHY (invalid key, unknown model, quota…) — the
-      // status alone (400/403/429) is not enough to fix anything.
-      const detail = (await r.text().catch(() => "")).slice(0, 500);
-      console.error("vision gemini", r.status, detail);
-      if (r.status === 429) {
+    // Gemini's body says WHY (invalid key, unknown model, quota…) — the
+    // status alone (400/403/429) is not enough to fix anything.
+    const failed = (status, detail) => {
+      console.error("vision gemini", status, detail);
+      if (status === 429) {
         return res
           .status(429)
           .json({ error: "AI is busy right now — try again in a moment" });
       }
       return res.status(502).json({ error: "vision failed" });
+    };
+    let r;
+    try {
+      r = await keys.withKeyRotation(model, async (key) => {
+        const out = await call(key);
+        if ([429, 401, 403].includes(out.status)) {
+          const body = (await out.text().catch(() => "")).slice(0, 500);
+          throw Object.assign(new Error(`vision ${out.status}`), { status: out.status, body });
+        }
+        return out;
+      });
+    } catch (e) {
+      // Every key spent or rejected (or none reaches the model): the last
+      // answer stands. A network error or timeout is the 500 below.
+      if (!e.status) throw e;
+      return failed(e.status, String(e.body || e.message).slice(0, 500));
+    }
+    if (!r.ok) {
+      return failed(r.status, (await r.text().catch(() => "")).slice(0, 500));
     }
     const data = await r.json();
     const text =

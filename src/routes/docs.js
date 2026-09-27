@@ -2,6 +2,7 @@
  * DOCUMENT ROUTES (all behind appAuth) — "save it so Hari remembers".
  *
  *   POST   /docs            multipart {file, note?} → analyzed + stored
+ *                            (STORE_ONLY types: stored, readable:false)
  *   GET    /docs            → { documents: [...] }
  *   GET    /docs/:id/file   → the original bytes (image/PDF), auth required
  *   PATCH  /docs/:id        { note } → update the user's spoken note
@@ -37,9 +38,28 @@ const upload = multer({
 // as an unreadable blob.
 const { EXTRACTABLE } = require("../docs/extract");
 const OK_MIME = new Set([
-  "image/jpeg", "image/png", "image/webp", "application/pdf",
+  // HEIC/HEIF are what many phone cameras save; the analyser reads them
+  // natively (docs/analyze.js), so refusing them was only ever a gap here.
+  "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif",
+  "application/pdf",
   ...EXTRACTABLE,
 ]);
+// KEPT, NOT READ. The share sheet offers these (2026-09-27: a shared .xls
+// was refused with 415 and the app blamed the connection). Nothing here
+// can read inside them — no decoder for the pre-2007 Office formats, and
+// the model takes no GIF — so the file is saved, opens and shares like
+// any other, and the reply says plainly that it cannot be asked about.
+const STORE_ONLY = new Map([
+  ["application/msword", "old Word"],
+  ["application/vnd.ms-excel", "old Excel"],
+  ["application/vnd.ms-powerpoint", "old PowerPoint"],
+  ["image/gif", "GIF"],
+]);
+const storeOnlyNotice = (mime) =>
+  mime === "image/gif"
+    ? "Saved. I can't read what's in a GIF, so I can't answer questions about it — share it as a photo if you want me to read it."
+    : `Saved. I can't read inside ${STORE_ONLY.get(mime)} files, so I can't answer questions about it — ` +
+      "a PDF or a .docx, .xlsx or .pptx copy I can read.";
 
 function uid(req, res) {
   let sub = req.user?.sub;
@@ -207,7 +227,14 @@ router.post(
   if (id === null) return;
   const f = req.file;
   if (!f || !f.buffer?.length) return res.status(400).json({ error: "file required" });
-  if (!OK_MIME.has(f.mimetype)) return res.status(415).json({ error: `unsupported type ${f.mimetype}` });
+  const readable = OK_MIME.has(f.mimetype);
+  if (!readable && !STORE_ONLY.has(f.mimetype)) {
+    // Worded for the person: the app shows this sentence as it is.
+    return res.status(415).json({
+      error: `That kind of file can't be saved here (unsupported type ${f.mimetype}). ` +
+        "Photos, PDFs, and Word, Excel, PowerPoint or text files can.",
+    });
+  }
 
   // PROFESSIONAL MODE: WHERE does this document belong? Decided BEFORE the
   // file is written so a document can never land in the wrong area:
@@ -302,6 +329,10 @@ router.post(
     client: linkedClient ? { id: linkedClient.id, name: linkedClient.name } : null,
     clientCandidates,
     person: linkedPerson,
+    // false for a file kept but not read (STORE_ONLY) — with the sentence
+    // the app shows instead of "reading it now".
+    readable,
+    notice: readable ? null : storeOnlyNotice(f.mimetype),
   });
   outcomes.create(id, {
     kind: "document",
@@ -317,7 +348,7 @@ router.post(
   );
 
   healAttempted.add(row.id);
-  await analyzeInBackground(id, row, f.buffer, f.mimetype, f.originalname);
+  if (readable) await analyzeInBackground(id, row, f.buffer, f.mimetype, f.originalname);
 });
 
 // GET /docs?scope=personal|clients|all — the app's "My Documents" screen
@@ -335,7 +366,7 @@ router.get("/", async (req, res) => {
   // extraction existed get another background attempt now.
   if (!process.env.GEMINI_API_KEY) return;
   for (const row of rows) {
-    if ((row.title && row.full_text) || healAttempted.has(row.id)) continue;
+    if ((row.title && row.full_text) || healAttempted.has(row.id) || STORE_ONLY.has(row.mime)) continue;
     healAttempted.add(row.id);
     fs.promises
       .readFile(row.path)

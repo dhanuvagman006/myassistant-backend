@@ -126,22 +126,30 @@ router.get("/thread/:phone", async (req, res) => {
   const mine = await myPhone(uid);
 
   const [out, inc] = await Promise.all([
+    // The attached document's type and title ride along (d.*, the copy
+    // this side OWNS): the thread opened every attachment as a JPEG, so a
+    // PDF sent by a contact showed "Couldn't load this document".
     query(
-      `SELECT id, message, created_at, status, auto, deleted, document_id, from_document_id, media
-         FROM agent_messages
-        WHERE from_user_id = $1 AND to_phone_number = $2
-        ORDER BY id ASC LIMIT 500`,
+      `SELECT m.id, m.message, m.created_at, m.status, m.auto, m.deleted,
+              m.document_id, m.from_document_id, m.media,
+              d.mime AS doc_mime, d.title AS doc_title
+         FROM agent_messages m
+         LEFT JOIN documents d ON d.id = m.from_document_id AND d.user_id = $1
+        WHERE m.from_user_id = $1 AND m.to_phone_number = $2
+        ORDER BY m.id ASC LIMIT 500`,
       [uid, them]
     ),
     mine
       ? query(
           `SELECT m.id, m.message, m.created_at, m.status, m.auto, m.deleted,
-                  m.document_id, m.from_document_id, m.media
+                  m.document_id, m.from_document_id, m.media,
+                  d.mime AS doc_mime, d.title AS doc_title
              FROM agent_messages m
              JOIN users u ON u.id = m.from_user_id
+             LEFT JOIN documents d ON d.id = m.document_id AND d.user_id = $3
             WHERE m.to_phone_number = $1 AND u.phone_number = $2
             ORDER BY m.id ASC LIMIT 500`,
-          [mine, them]
+          [mine, them, uid]
         )
       : [],
   ]);
@@ -187,6 +195,8 @@ router.get("/thread/:phone", async (req, res) => {
       // 'video' for an AI video note, so the bubble can play the document
       // instead of drawing it as a photo (2026-09-26). null otherwise.
       media: m.media || null,
+      documentMime: m.doc_mime || null,
+      documentTitle: m.doc_title || null,
     })),
     ...inc.filter(visible).map((m) => ({
       id: Number(m.id),
@@ -197,6 +207,8 @@ router.get("/thread/:phone", async (req, res) => {
       auto: m.auto === 1,
       documentId: m.document_id ? Number(m.document_id) : null,
       media: m.media || null,
+      documentMime: m.doc_mime || null,
+      documentTitle: m.doc_title || null,
     })),
   ].sort((a, b) => a.at - b.at || a.id - b.id);
 

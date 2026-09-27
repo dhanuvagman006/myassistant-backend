@@ -1189,7 +1189,9 @@ function registerBuiltins() {
       }
       const out = { ok: true, data: r.documents };
       if (args.show !== false) {
-        out.deviceAction = { type: "documents", documents: r.documents };
+        // The cards, not the ranked rows: the gallery picks PDF / video /
+        // image from each document's mime.
+        out.deviceAction = { type: "documents", documents: r.cards || r.documents };
       }
       return out;
     },
@@ -4108,7 +4110,11 @@ function registerBuiltins() {
         // know exactly what is in it.
         await docsStore.setMetadata(ctx.userId, row.id, {
           title: made.title,
-          category: row.category || "other",
+          // Never the category guessed from the title: that guess reads a
+          // user's save-note, and a "Q3 Sales Report" or a "Test plan"
+          // matched /report|test/ and was filed as MEDICAL — then came up
+          // for "my last hospital report".
+          category: "other",
           docDate: "",
           summary: `${made.label} created by MYASSISTANT — ${made.summary}.`,
           tags: "",
@@ -4116,6 +4122,15 @@ function registerBuiltins() {
         });
       } catch (e) {
         return { ok: false, error: `couldn't save it: ${String(e.message).slice(0, 140)}` };
+      }
+      // Chunked for content search like an upload (routes/docs.js), so
+      // "the proposal that mentions the subsidy" finds it by its body.
+      // Queued: a long report must not hold up the reply.
+      if (made.text) {
+        await require("../infra/jobs")
+          .enqueue("document.index", { userId: ctx.userId, documentId: row.id, text: made.text },
+            { userId: ctx.userId })
+          .catch((e) => console.error("create_document index enqueue failed (document kept):", e.message));
       }
 
       let filedUnder = null;

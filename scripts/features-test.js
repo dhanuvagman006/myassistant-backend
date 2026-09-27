@@ -232,6 +232,66 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
       server.close();
     }
 
+    console.log("\ndocuments shared in, and what recall shows (2026-09-27)");
+    const dapp = express();
+    dapp.use((req, _res, next) => { req.user = { sub: String(UID) }; next(); });
+    dapp.use("/docs", require("../src/routes/docs"));
+    const dserver = await new Promise((r) => { const s = dapp.listen(0, "127.0.0.1", () => r(s)); });
+    const dbase = `http://127.0.0.1:${dserver.address().port}/docs`;
+    const upload = (mime, name) => {
+      const fd = new FormData();
+      fd.append("file", new Blob([Buffer.alloc(2048, 7)], { type: mime }), name);
+      return fetch(dbase, { method: "POST", body: fd });
+    };
+    // No key: nothing uploaded here may reach a real model.
+    const keys = { GEMINI_API_KEY: process.env.GEMINI_API_KEY, GEMINI_FALLBACK_KEYS: process.env.GEMINI_FALLBACK_KEYS };
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_FALLBACK_KEYS;
+    const saved = [];
+    try {
+      await atest("an old .xls is kept, not read — and the reply says so in words", async () => {
+        const r = await upload("application/vnd.ms-excel", "Accounts 2019.xls");
+        assert.strictEqual(r.status, 200);
+        const j = await r.json();
+        saved.push(j.document.id);
+        assert.strictEqual(j.readable, false);
+        assert.match(j.notice, /can't read inside old Excel files/);
+        assert.match(j.document.title, /^Document · /, "a spreadsheet is not called a Photo");
+        const row = await db.one(`SELECT path FROM documents WHERE id=$1`, [j.document.id]);
+        assert.match(row.path, /\.xls$/, "saved with the extension a viewer opens");
+      });
+
+      await atest("a HEIC photo is read like any photo; a zip is refused in a sentence the app shows", async () => {
+        const h = await upload("image/heic", "IMG_2041.heic");
+        assert.strictEqual(h.status, 200);
+        const j = await h.json();
+        saved.push(j.document.id);
+        assert.strictEqual(j.readable, true);
+        assert.strictEqual(j.notice, null);
+        const z = await upload("application/zip", "x.zip");
+        assert.strictEqual(z.status, 415);
+        assert.match((await z.json()).error, /^That kind of file can't be saved here .*Photos, PDFs/);
+      });
+
+      await atest("'my last hospital report' with none saved: an unread scan may stand in, a filed report may not", async () => {
+        const docsStore = require("../src/docs/store");
+        const report = await docsStore.createDocument(UID, {
+          buffer: Buffer.from("x"), filename: "Q3 Sales Report.pdf", mime: "application/pdf", note: "" });
+        await docsStore.setMetadata(UID, report.id, { title: "Q3 Sales Report", category: "other" });
+        saved.push(report.id);
+        const s = await docsStore.searchDocuments(UID, "show me my last hospital report");
+        assert.strictEqual(s.exact, false);
+        assert.ok(!s.hits.some((h) => h.id === report.id), "a filed sales report is not a hospital report");
+        assert.ok(s.hits.some((h) => h.id === saved[0]), "a save whose kind is unknown still stands in");
+        const any = await docsStore.searchDocuments(UID, "show me the document I saved");
+        assert.ok(any.hits.some((h) => h.id === report.id), "no kind asked: recent saves as before");
+      });
+    } finally {
+      for (const [k, v] of Object.entries(keys)) if (v !== undefined) process.env[k] = v;
+      for (const id of saved) await fetch(`${dbase}/${id}`, { method: "DELETE" }).catch(() => {});
+      dserver.close();
+    }
+
     console.log("\nbusiness card scanner");
     const card = require("../src/people/card");
 
