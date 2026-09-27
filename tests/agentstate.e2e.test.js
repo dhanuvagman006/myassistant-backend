@@ -1620,6 +1620,51 @@ console.log("\nexecution record");
     sessionState.end(USER_A, "s-memok2");
   });
 
+  await atest("'forget …' removes the one fact meant: closest match, ask on a tie, never a stray word", async () => {
+    // Audit 2026-09-27: any 3-letter word of `what` was a substring match,
+    // so "my sister's name" also forgot the user's own name, and a hidden
+    // (valid=0) row kept the words for the data export.
+    const U = 99084;
+    const mem = require("../src/memory/service");
+    const facts = async () => (await db.query(
+      "SELECT fact FROM agent_memories WHERE user_id = $1 ORDER BY id", [U])).map((r) => r.fact);
+    await db.run("DELETE FROM agent_memories WHERE user_id = $1", [U]);
+    try {
+      for (const f of ["User's name is Dhanush", "User's sister's name is Kavya",
+        "Meena hearing date is 3 September", "Ravi hearing date is 14 October"]) {
+        await mem.remember(U, { fact: f, embedding: [1] });
+      }
+      // A tie: nothing goes, and both come back for the model to ask about.
+      const tie = await registry.execute("forget_memory", { what: "hearing date" }, { userId: U, approved: true });
+      assert.strictEqual(tie.ok, false);
+      assert.deepStrictEqual(tie.data.choices.sort(),
+        ["Meena hearing date is 3 September", "Ravi hearing date is 14 October"]);
+      assert.strictEqual((await facts()).length, 4, "a tie forgot something");
+      // The person's name, given as `about`, picks one.
+      const one = await registry.execute("forget_memory", { about: "Ravi", what: "hearing date" }, { userId: U, approved: true });
+      assert.strictEqual(one.ok, true, JSON.stringify(one));
+      assert.deepStrictEqual(one.data.facts, ["Ravi hearing date is 14 October"]);
+      // "My name": the user's own, not the sister's, which is kept and mentioned.
+      const r = await mem.forget(U, { match: "my name" });
+      assert.deepStrictEqual(r.forgotten, ["User's name is Dhanush"]);
+      assert.deepStrictEqual(r.others, ["User's sister's name is Kavya"]);
+      // Only stop words: never a broad match.
+      assert.strictEqual((await mem.forget(U, { match: "the thing about my" })).count, 0);
+      // Some of the words, not all: nothing goes, and the closest comes
+      // back to ask about — never "nothing is stored" while it is.
+      const near = await registry.execute("forget_memory", { what: "Meena's hearing time" }, { userId: U, approved: true });
+      assert.strictEqual(near.ok, false);
+      assert.match(near.error, /no memory holds all of those words/);
+      assert.deepStrictEqual(near.data.choices, ["Meena hearing date is 3 September"]);
+      assert.match((await registry.execute("forget_memory", { what: "gym timing" }, { userId: U, approved: true })).error,
+        /nothing matching was stored/);
+      // Gone, not hidden: no row keeps the words.
+      assert.deepStrictEqual(await facts(), ["User's sister's name is Kavya", "Meena hearing date is 3 September"]);
+    } finally {
+      await db.run("DELETE FROM agent_memories WHERE user_id = $1", [U]).catch(() => {});
+    }
+  });
+
   test("an encyclopedia fallback is never passed off as a live answer", () => {
     // Asked for flight times and prices, the Wikipedia fallback returned
     // five Delhi Metro articles. Handed over as plain numbered results

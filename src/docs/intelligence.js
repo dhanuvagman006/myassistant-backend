@@ -18,7 +18,7 @@
  * Embeddings are optional throughout: with no provider configured, chunks
  * are still stored and retrieval ranks lexically (§17).
  */
-const { query, one, run } = require("../db");
+const { query, one, tx } = require("../db");
 const embeddings = require("../memory/embeddings");
 const mem = require("../memory/service");
 
@@ -102,21 +102,32 @@ function chunkText(text) {
 async function indexDocument(userId, documentId, fullText) {
   const uid = mem.assertUser(userId);
   const chunks = chunkText(fullText);
-  await run(`DELETE FROM document_chunks WHERE user_id=$1 AND document_id=$2`, [
-    uid, documentId,
-  ]);
-  if (!chunks.length) return { chunks: 0, embedded: false };
 
   // One batch call for the whole document; null when unconfigured.
-  const vecs = await embeddings.embed(chunks);
+  const vecs = chunks.length ? await embeddings.embed(chunks) : null;
   const t = Date.now();
-  for (let i = 0; i < chunks.length; i++) {
-    await run(
-      `INSERT INTO document_chunks (user_id,document_id,chunk_index,text,embedding,created_at)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
-      [uid, documentId, i, chunks[i], vecs?.[i] ? JSON.stringify(vecs[i]) : null, t]
-    );
-  }
+  // ONLY FOR A DOCUMENT THAT STILL EXISTS. Deleted while this job waited
+  // or embedded (a wrong upload, removed at once), its text was written
+  // back after the delete and outlived it (audit, 2026-09-27). The row is
+  // held until the chunks are in; store.deleteDocument removes the row
+  // first, so one of the two always waits for the other.
+  const stored = await tx(async (c) => {
+    const live = await c.query(
+      `SELECT 1 FROM documents WHERE id=$1 AND user_id=$2 FOR KEY SHARE`, [documentId, uid]);
+    if (!live.rowCount) return false;
+    await c.query(`DELETE FROM document_chunks WHERE user_id=$1 AND document_id=$2`, [
+      uid, documentId,
+    ]);
+    for (let i = 0; i < chunks.length; i++) {
+      await c.query(
+        `INSERT INTO document_chunks (user_id,document_id,chunk_index,text,embedding,created_at)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [uid, documentId, i, chunks[i], vecs?.[i] ? JSON.stringify(vecs[i]) : null, t]
+      );
+    }
+    return true;
+  });
+  if (!stored || !chunks.length) return { chunks: 0, embedded: false };
   return { chunks: chunks.length, embedded: Boolean(vecs) };
 }
 

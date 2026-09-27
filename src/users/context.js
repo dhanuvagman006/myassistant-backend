@@ -272,7 +272,9 @@ async function listInstructions(userId) {
   );
 }
 
-/** Soft-deactivates rules matching the text (audit preserved, §19). */
+/** Removes rules matching the text (§19). Removed, not kept inactive: the
+ *  privacy policy says a deleted item "is removed immediately", and an
+ *  inactive row kept the words for the data export (audit, 2026-09-27). */
 async function removeInstruction(userId, match) {
   if (!uidOk(userId)) throw new Error("authenticated userId required");
   const words = String(match || "").toLowerCase().split(/\s+/).filter((w) => w.length > 2);
@@ -282,11 +284,7 @@ async function removeInstruction(userId, match) {
   for (const r of rows) {
     const low = r.instruction.toLowerCase();
     if (words.some((w) => low.includes(w))) {
-      await run(
-        `UPDATE user_instructions SET active=0, deactivated_at=$3
-          WHERE user_id=$1 AND id=$2`,
-        [userId, r.id, Date.now()]
-      );
+      await run(`DELETE FROM user_instructions WHERE user_id=$1 AND id=$2`, [userId, r.id]);
       n++;
     }
   }

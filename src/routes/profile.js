@@ -165,10 +165,12 @@ router.post("/instructions", async (req, res) => {
 router.delete("/instructions/:id", async (req, res) => {
   const uid = uidOf2(req);
   if (!uid) return res.status(401).json({ error: "sign in" });
+  // Settings' Delete removes the rule, as the privacy policy says a
+  // deleted item is "removed immediately" — not kept inactive, in the
+  // database and the data export (audit, 2026-09-27).
   await require("../db").run(
-    `UPDATE user_instructions SET active=0, deactivated_at=$3
-      WHERE user_id=$1 AND id=$2`,
-    [uid, Number(req.params.id), Date.now()]
+    `DELETE FROM user_instructions WHERE user_id=$1 AND id=$2`,
+    [uid, Number(req.params.id)]
   );
   res.json({ ok: true });
 });
