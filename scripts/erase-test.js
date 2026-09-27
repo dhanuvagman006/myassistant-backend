@@ -975,6 +975,36 @@ const tell = (from, toPhone, message) => db.one(
     }
   });
 
+  await atest("Bills by email: addresses, received mail, raw files and email documents all go", async () => {
+    process.env.MAILIN_ENABLED = "1";
+    process.env.MAILIN_DOMAIN = "mailin.test";
+    const address = require("../src/mailin/address");
+    const ingest = require("../src/mailin/ingest");
+    const M = (await db.createUser({ email: `erase-m-${stamp}@example.test`, name: "Erase m" })).id;
+    try {
+      await address.turnOn(M);
+      await address.rotate(M); // one retired, one active
+      await address.trust(M, "me@example.test");
+      const live = address.toClient(await address.getForUser(M)).address;
+      const raw = Buffer.from(`From: me@example.test\r\nMessage-ID: <erase-${stamp}@example.test>\r\n\r\nqueued, never processed\r\n`);
+      const q = await ingest.ingestInbound(raw, live, { transport: "test" });
+      assert.ok(q.ok);
+      const rawPath = (await db.one(`SELECT raw_path FROM mail_inbound WHERE id=$1`, [q.id])).raw_path;
+      assert.ok(exists(rawPath));
+      await require("../src/docs/store").createDocument(M, { buffer: Buffer.from("%PDF-1.4 bill"), filename: "bill.pdf",
+        mime: "application/pdf", source: { kind: "email", ref: `${q.id}:0`, label: "bescom.test", verified: true } });
+      await privacy.deleteUserEverywhere(M, { reason: "test" });
+      for (const t of ["mail_addresses", "mail_inbound", "documents"]) {
+        assert.strictEqual((await db.one(`SELECT count(*)::int AS n FROM ${t} WHERE user_id = $1`, [M])).n, 0, t);
+      }
+      assert.ok(!exists(path.join(FILES, String(M))), "files/<uid> and its mailin/ folder are gone");
+      assert.strictEqual((await ingest.ingestInbound(raw, live, {})).code, "unknown");
+    } finally {
+      delete process.env.MAILIN_ENABLED;
+      delete process.env.MAILIN_DOMAIN;
+    }
+  });
+
   // Tidy up after ourselves.
   server.close();
   await privacy.deleteUserEverywhere(D, { reason: "test cleanup" }).catch(() => {});

@@ -99,15 +99,27 @@ function guessCategory(note) {
   return "other";
 }
 
-/** Save the file bytes + a metadata row. Returns the new row. */
-async function createDocument(userId, { buffer, filename, mime, note = "" }) {
+/** Save the file bytes + a metadata row. Returns the new row.
+ *  `source` = {kind:'email', ref, label, verified} marks a document that
+ *  came from outside (Bills by email); without it the INSERT is as before. */
+async function createDocument(userId, { buffer, filename, mime, note = "", source = null }) {
   if ((await countDocuments(userId)) >= MAX_PER_USER) throw new DocumentLimitError();
-  const row = await one(
-    `INSERT INTO documents (user_id, filename, mime, size, path, note, category, created_at)
-     VALUES ($1, $2, $3, $4, '', $5, $6, $7) RETURNING id`,
-    [userId, String(filename || "document").slice(0, 120), mime, buffer.length,
-     String(note || "").trim().slice(0, 2000), guessCategory(note), Date.now()]
-  );
+  const row = source && source.kind === "email"
+    ? await one(
+      `INSERT INTO documents (user_id, filename, mime, size, path, note, category, created_at,
+          source, source_ref, source_label, source_verified)
+       VALUES ($1, $2, $3, $4, '', $5, $6, $7, 'email', $8, $9, $10) RETURNING id`,
+      [userId, String(filename || "document").slice(0, 120), mime, buffer.length,
+       String(note || "").trim().slice(0, 2000), guessCategory(note), Date.now(),
+       String(source.ref || "").slice(0, 80), String(source.label || "").slice(0, 120),
+       source.verified ? 1 : 0]
+    )
+    : await one(
+      `INSERT INTO documents (user_id, filename, mime, size, path, note, category, created_at)
+       VALUES ($1, $2, $3, $4, '', $5, $6, $7) RETURNING id`,
+      [userId, String(filename || "document").slice(0, 120), mime, buffer.length,
+       String(note || "").trim().slice(0, 2000), guessCategory(note), Date.now()]
+    );
   const id = row.id;
   const filePath = path.join(userDir(userId), id + extOf(mime, filename));
   fs.writeFileSync(filePath, buffer);
@@ -338,7 +350,25 @@ function toClient(d) {
     tags: d.tags,
     clientId: d.client_id || null, // professional mode: which case file it's in
     createdAt: d.created_at,
+    // Bills by email: where it came from. The label is the sending DOMAIN,
+    // never a name the sender chose. Old apps ignore these keys.
+    source: d.source || "",
+    sourceLabel: d.source_label || "",
+    sourceVerified: Boolean(d.source_verified),
   };
+}
+
+/**
+ * The newest document's id, for "this / it / the one I just saved".
+ * Email documents are left out unless asked for: a bill arriving by email
+ * a second after a scan must never become "the photo I just scanned" —
+ * or be filed into a patient's case file by "file this under Ramesh".
+ */
+async function latestDocumentId(userId, { includeEmail = false } = {}) {
+  const r = await one(
+    `SELECT id FROM documents WHERE user_id = $1${includeEmail ? "" : " AND source <> 'email'"}
+      ORDER BY created_at DESC, id DESC LIMIT 1`, [userId]);
+  return r ? r.id : null;
 }
 
 /** How many documents a user has saved (plan-cap checks). */
@@ -350,6 +380,7 @@ module.exports = {
   countDocuments,
   createDocument,
   createDocumentFromStream,
+  latestDocumentId,
   guessCategory,
   setMetadata,
   setNote,

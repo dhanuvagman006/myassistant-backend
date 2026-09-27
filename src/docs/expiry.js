@@ -81,7 +81,7 @@ async function onExpiry(userId, docId, expiresOn, now = Date.now()) {
 /** Documents with a known expiry, soonest first; `withinDays` narrows. */
 async function listExpiring(userId, { withinDays = null, now = Date.now() } = {}) {
   const rows = await db.query(
-    `SELECT id, title, category, expires_on FROM documents
+    `SELECT id, title, category, expires_on, source FROM documents
       WHERE user_id=$1 AND expires_on <> ''
       ORDER BY expires_on ASC LIMIT 50`,
     [userId]
@@ -92,7 +92,7 @@ async function listExpiring(userId, { withinDays = null, now = Date.now() } = {}
       const days = Math.round(
         (Date.parse(r.expires_on + "T00:00:00Z") - Date.parse(today + "T00:00:00Z")) / DAY);
       return { id: r.id, title: r.title, category: r.category,
-        expiresOn: r.expires_on, daysLeft: days, expired: days < 0 };
+        expiresOn: r.expires_on, daysLeft: days, expired: days < 0, source: r.source || "" };
     })
     .filter((r) => withinDays == null || r.daysLeft <= withinDays);
 }

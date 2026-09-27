@@ -325,6 +325,7 @@ function registerBuiltins() {
   // Photo cards (2026-09-26): a gift card with his words, a real photo and
   // his signature, drawn on the phone — no AI. App build 119+.
   require("../posters/tools").registerPosterTools(registry);
+  require("../mailin/tools").registerMailinTools(registry);
 
   // ---------------- INFORMATION (low risk) ----------------
 
@@ -1250,14 +1251,24 @@ function registerBuiltins() {
       "summary and full extracted text — and show it on their screen. Use " +
       "whenever they ask about 'the image/photo/document I just scanned', " +
       "'what does it say', 'tell me about that picture I saved'. Answer " +
-      "their questions FROM the returned text.",
+      "their questions FROM the returned text. A document that arrived by " +
+      "email is left out unless from_email is true — 'the bill I just " +
+      "forwarded', 'the email that came in'.",
     risk: "low",
-    inputSchema: { type: "object", properties: {} },
-    async execute(_args, ctx) {
+    inputSchema: {
+      type: "object",
+      properties: {
+        from_email: { type: "boolean", description: "True for the newest document that arrived by email (a forwarded bill or ticket)." },
+      },
+    },
+    async execute(args, ctx) {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
       const { one } = require("../db");
+      // "The photo I just scanned" must never be a bill that happened to
+      // arrive by email a second later: email documents only when asked.
       const d = await one(
-        `SELECT * FROM documents WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,
+        `SELECT * FROM documents WHERE user_id=$1 AND source ${args && args.from_email === true ? "=" : "<>"} 'email'
+          ORDER BY created_at DESC LIMIT 1`,
         [ctx.userId]
       );
       if (!d) return { ok: false, error: "no documents saved yet" };
@@ -1304,12 +1315,9 @@ function registerBuiltins() {
       const { one } = require("../db");
       let id = args.document_id;
       if (!id) {
-        const latest = await one(
-          `SELECT id FROM documents WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,
-          [ctx.userId]
-        );
-        if (!latest) return { ok: false, error: "no documents saved yet" };
-        id = latest.id;
+        // Never an email document by default (docs/store latestDocumentId).
+        id = await docs.latestDocumentId(ctx.userId);
+        if (!id) return { ok: false, error: "no documents saved yet" };
       }
       // If the named person is one of the user's REAL clients/patients the
       // document belongs in that case file — same path as
@@ -1431,12 +1439,9 @@ function registerBuiltins() {
       // 2. Which document — explicit id, else the newest one.
       let docId = args.document_id;
       if (!docId) {
-        const latest = await one(
-          `SELECT id FROM documents WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,
-          [ctx.userId]
-        );
-        if (!latest) return { ok: false, error: "no documents saved yet — capture or upload one first" };
-        docId = latest.id;
+        // Never a stranger's emailed document into a patient's case file.
+        docId = await docs.latestDocumentId(ctx.userId);
+        if (!docId) return { ok: false, error: "no documents saved yet — capture or upload one first" };
       }
       return fileUnderClient(ctx.userId, docId, client);
     },
@@ -5010,7 +5015,7 @@ function registerBuiltins() {
             "settings", "home", "hub", "chat",
             "documents", "clients", "finance", "stocks",
             "diagnostics", "mcp", "meetings", "reminders", "call_notes",
-            "news", "momentum", "focus", "avatar_identity",
+            "news", "momentum", "focus", "avatar_identity", "bills_email",
           ],
           description:
             "settings = the assistant's own settings (voice, name, theme). " +
@@ -5018,7 +5023,9 @@ function registerBuiltins() {
             "habits and the week; focus = the focus timer. " +
             "news = the News screen, only when they ask to OPEN it — for " +
             "'what's the news' use show_news. avatar_identity = Send " +
-            "messages as you (their recorded video for video notes). The " +
+            "messages as you (their recorded video for video notes). " +
+            "bills_email = Bills by email (their private address for " +
+            "forwarding bills). The " +
             "rest are feature screens.",
         },
       },
@@ -5029,7 +5036,7 @@ function registerBuiltins() {
       const ALLOWED = [
         "settings", "home", "hub", "chat", "documents", "clients",
         "finance", "stocks", "diagnostics", "mcp", "meetings", "reminders",
-        "call_notes", "news", "momentum", "focus", "avatar_identity",
+        "call_notes", "news", "momentum", "focus", "avatar_identity", "bills_email",
       ];
       if (!ALLOWED.includes(screen)) {
         return { ok: false, error: `I don't have a screen called "${args.screen}"` };
@@ -5042,6 +5049,10 @@ function registerBuiltins() {
       }
       // The video recorder for "Send messages as you" arrives in build 118.
       if (screen === "avatar_identity" && build < VIDEO_NOTE_MIN_BUILD) {
+        return { ok: false, error: "that screen needs the latest app update — say so" };
+      }
+      // Bills by email arrives in build 120; an unknown build counts as old.
+      if (screen === "bills_email" && build < require("../mailin/tools").MAILIN_MIN_BUILD) {
         return { ok: false, error: "that screen needs the latest app update — say so" };
       }
       // The News screen arrives in build 111. An older app would report
@@ -5074,6 +5085,7 @@ function registerBuiltins() {
         call_notes: "your call notes", news: "the news",
         momentum: "your Momentum page", focus: "the focus timer",
         avatar_identity: "Send messages as you",
+        bills_email: "Bills by email",
       };
       return {
         ok: true,
@@ -6770,6 +6782,11 @@ function registerBuiltins() {
         filename: d.filename,
         mime: d.mime,
         note: `sent by ${ctx.userName || "a contact"}`,
+        // A document that came by email stays marked as outside content in
+        // the recipient's library too: forwarding must not launder it.
+        ...(d.source === "email"
+          ? { source: { kind: "email", ref: "", label: d.source_label, verified: !!d.source_verified } }
+          : {}),
       });
       await docs.setMetadata(appUser.id, copy.id, {
         title: d.title,

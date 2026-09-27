@@ -1,0 +1,31 @@
+# Bills by email — exposes the backend's SMTP receiver (container port
+# 2525, named "smtp") on the VPS's port 25.
+#
+# A NEW object, so it is safe to `kubectl apply` on its own — but only
+# after the deployment carries the smtp port and MAILIN_ENABLED=1, and
+# only in the order in docs/ASSISTANT_INBOX_SETUP.md (DNS last).
+#
+# k3s ServiceLB (klipper-lb) binds host port 25 and forwards it. It does
+# NOT reliably keep the sender's IP, so nothing in the receiver depends on
+# it. If this cluster has no ServiceLB (no svclb-myassistant-smtp pod in
+# kube-system after applying), delete this Service and use hostPort 25 on
+# the smtp container port instead — one or the other, never both.
+#
+# Rollback: kubectl delete -f 40-smtp-service.yaml closes port 25.
+apiVersion: v1
+kind: Service
+metadata:
+  name: myassistant-smtp
+  namespace: myassistant
+  labels:
+    app: myassistant-backend
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app: myassistant-backend
+  ports:
+    - name: smtp
+      port: 25
+      targetPort: smtp
+      protocol: TCP

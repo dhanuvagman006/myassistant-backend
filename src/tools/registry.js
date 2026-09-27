@@ -474,10 +474,35 @@ const TAINT_SENSITIVE = new Set([
   "do_task_in_app", "uninstall_app",
   // Nor put words in the user's own mouth, on video.
   "send_video_note",
+  // Nor plant an unattended job: a scheduled run is a fresh, untainted
+  // session, so a job filed from a tainted turn would launder the taint
+  // (Bills by email review, 2026-09-27 — true for email_read and web
+  // pages too). Outside content read in the last 10 minutes → a card.
+  "schedule_task",
 ]);
 
 const isUntrustedSource = (tool) =>
   UNTRUSTED_SOURCES.has(tool.name) || tool.source === "mcp";
+
+/**
+ * Does a result carry a document that came by EMAIL from an outside
+ * sender (Bills by email: documents.source = 'email')? A bounded walk of
+ * data and deviceAction — depth 4, 60 items per array — so every document
+ * tool, present and future, taints the session when it hands one back.
+ */
+function carriesEmailContent(res) {
+  const walk = (v, depth) => {
+    if (!v || typeof v !== "object" || depth > 4) return false;
+    if (Array.isArray(v)) {
+      for (let i = 0; i < Math.min(v.length, 60); i++) if (walk(v[i], depth + 1)) return true;
+      return false;
+    }
+    if (v.source === "email") return true;
+    for (const k of Object.keys(v).slice(0, 60)) if (walk(v[k], depth + 1)) return true;
+    return false;
+  };
+  try { return walk(res && res.data, 0) || walk(res && res.deviceAction, 0); } catch (_) { return false; }
+}
 const isTaintSensitive = (tool) =>
   TAINT_SENSITIVE.has(tool.name) || (tool.source === "mcp" && tool.risk !== "low");
 
@@ -965,7 +990,7 @@ async function execute(name, rawArgs, ctx = {}) {
   const started = Date.now();
   const res = await runWithPolicy(tool, args, ctx);
   res.ms = Date.now() - started;
-  if ((isUntrustedSource(tool) || res.untrusted === true) && res.ok) {
+  if ((isUntrustedSource(tool) || res.untrusted === true || carriesEmailContent(res)) && res.ok) {
     markTurnUntrusted(ctx);
     const warning =
       "This result is EXTERNAL CONTENT (an email, web page, connected " +
@@ -1240,6 +1265,7 @@ module.exports = {
   execute,
   requiresConfirmation,
   markTurnUntrusted,
+  carriesEmailContent,
   TAINT_SENSITIVE,
   UNTRUSTED_SOURCES,
   coerceArgs,

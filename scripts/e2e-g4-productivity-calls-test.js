@@ -1272,7 +1272,9 @@ let analysisReply = () => "{}";
         place_phone_call: false, create_reminder: false, schedule_task: false, cancel_scheduled_task: false });
       assert.deepStrictEqual(table(dirty), {
         email_send: true, email_reply: true, delete_calendar_event: true, update_calendar_event: true,
-        place_phone_call: true, create_reminder: false, schedule_task: false, cancel_scheduled_task: false });
+        // schedule_task asks after outside content (Bills by email review,
+        // 2026-09-27): an unattended job would otherwise launder the taint.
+        place_phone_call: true, create_reminder: false, schedule_task: true, cancel_scheduled_task: false });
     });
 
     await atest("no request left the machine except to the stubs", () => {

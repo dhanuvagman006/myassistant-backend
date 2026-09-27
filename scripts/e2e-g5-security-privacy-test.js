@@ -79,11 +79,11 @@ dns.promises.lookup = async (host, opts) => {
   }
   return realLookupP(host, opts);
 };
-const { ImapFlow } = require(path.join(BACKEND, "node_modules", "imapflow"));
+const { ImapFlow } = require("imapflow");
 const imapLogins = [];
 ImapFlow.prototype.connect = async function () { imapLogins.push(this.options && this.options.host); };
 ImapFlow.prototype.logout = async function () {};
-const nodemailer = require(path.join(BACKEND, "node_modules", "nodemailer"));
+const nodemailer = require("nodemailer");
 nodemailer.createTransport = () => ({ verify: async () => true, sendMail: async () => ({ messageId: "stub" }) });
 
 // The AI model: scripted where a test drives a turn, refused everywhere else.

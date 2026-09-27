@@ -241,6 +241,7 @@ async function findDocuments(userId, q, { person = null, limit = 5 } = {}) {
         title: d.title || d.filename,
         category: d.category,
         date: d.doc_date,
+        source: d.source || "", // 'email' marks an outside sender (registry taint)
         snippet: hit.snippet,
         score: Math.max(hit.score, metaScore * 0.9),
       };

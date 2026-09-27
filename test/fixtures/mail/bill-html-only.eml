@@ -1,0 +1,40 @@
+From: BESCOM Billing <billing@bescom.test>
+To: RCPT@mailin.test
+Subject: Water bill for October
+Message-ID: <water-oct@bescom.test>
+Date: Sat, 26 Sep 2026 09:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/related; type="text/html";
+ boundary="--_NmP-74b4adaf528422af-Part_1"
+
+----_NmP-74b4adaf528422af-Part_1
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+<p><img src=3D"cid:logo@bescom.test" alt=3D"logo"></p><p>Your water bill =
+for October is Rs 310, due on 15-10-2026.</p><p><a href=3D"https://pay.=
+example.test/x">Pay now</a></p><img src=3D"https://track.example.test/p.=
+gif" width=3D"1" height=3D"1">
+----_NmP-74b4adaf528422af-Part_1
+Content-Type: image/png; name=logo.png
+Content-ID: <logo@bescom.test>
+Content-Transfer-Encoding: base64
+Content-Disposition: inline; filename=logo.png
+
+iVBORw0KGgoAAAANSUhEUgAAACgAAAAoCAIAAAADnC86AAADIHRFWHTMJgugxYEHM5cjNuY3Hl+8
+N/kmIofCuvhX4R3I0dIRHpTDrDtcMycZkB9/0CxVXvz1HSLnAXfH9V0cJmLMol+aykKNtCqGq+6l
+KIAnBnGSiCg+1oI48OQzre9r6gN0IkEAqVV0+ccErhHW1/rbGV0Kx4lLESNEYc3aGySs6kOgHVo5
+y+OzsW6HCztebERUg19/BkZOPxNkUx1yA+tVYsPYlo1oCXh+5FoTq7F+CY7cBxQjy5/VvYIdRD4w
+jvSHeNLvTsiyXV8GCeyOq62djativ3v4Y1IeUkQxkKra6N+Dk81XpT1dFT8W4+KAvOSrVaWJ2eS+
+3DyTqGhdRqlj2D8OkzP7opW0zFFJV2+O3lTVU2PP7P558liSlCiw9T5hvzFVU8W1SbS0kmCCdL/z
+PCFWsCZJ1teKL2B+8wz7P29jsbGLetDXxyU7O1VmOBlT4baZ1YpLFtFJmC6Go4uyQG13/jFhhVf3
+ArsVSVgXnmyJwEDqLcZhQpQtRR0aoEcGDkOEsXg5aNo74NtzbAgP0cDzoRlwfmlaKjBnE6GP7xd9
+Is77BlWVyzVH6AeU7DY4dGqjMzaeRv2fL9Wv8fgqti9JgxRjlvrb3GbFtGXI2hb9eLVdz9AwAyZd
+1vbnxH+wYRIXykU/t5CIYzjdf3T+v9EXrRReDn/nVR4W6YVBWjoGx/2waTQjhKZEbSX8nn7BESgT
+SVwoJklZ/WvBl6vi6E5VlJpUEkvmVR46/3ArMFze2EqmGqzy4aK23qVGmENT79ntx0y2aJ3IK/8w
+jvS/nYuNdMBqMak1md2sV0JMh0NS/AfV5iXRiIN6l3lHZKZ0xG9EhOZYd8S5xb0YInoJZ3Z/9EKp
+UKRG2/5dWqpn38tdImPTdXI26Ci65gtIOTH+ZcRnDNEoe/1dchN7vS9sl6i5whXeOogHhNng64f8
+VyJiVpjjwqzgXuF4xDoPbyNPrl2bv6/xQdE3T2r9is1JIcAPHVyetSt+7pmvv9cLKlYK3WCSJgwP
++WFiyAEBfbTQSe5nKG0wPhSOLx9RCGcqZqeg9KNfJVCeH2YhTzbSsEIBnVo+gLYAAAAMSURBVHic
+Y2CgDAAAAEAAAbc0fO8AAAAASUVORK5CYII=
+----_NmP-74b4adaf528422af-Part_1--

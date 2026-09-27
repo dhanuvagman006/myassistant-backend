@@ -127,6 +127,8 @@ const FAMILIES = [
       "try_a_look", "present_text", "generate_image", "generate_video",
       // Screens inside this app. "Opening your settings" is the same claim.
       "open_app_screen", "set_app_theme",
+      // Bills by email opens its own screen ("Your address is on screen").
+      "bills_email",
       // Opens the phone clock app and says "Opening your alarms" — the
       // same words, so it belongs here or it denies what it just did.
       "show_alarms",

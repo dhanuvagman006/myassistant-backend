@@ -367,6 +367,10 @@ router.get("/", async (req, res) => {
   if (!process.env.GEMINI_API_KEY) return;
   for (const row of rows) {
     if ((row.title && row.full_text) || healAttempted.has(row.id) || STORE_ONLY.has(row.mime)) continue;
+    // Never an email document: analyzeInBackground writes a memory fact
+    // from its title and runs understandDocument, and an outside sender's
+    // words must reach neither (mailin/process.js files these itself).
+    if (row.source === "email") continue;
     healAttempted.add(row.id);
     fs.promises
       .readFile(row.path)
@@ -404,6 +408,12 @@ router.delete("/:id", async (req, res) => {
       await memory.deleteFactsContaining(id, `"${row.title}"`).catch(() => {});
     }
     audit.record(id, "document.deleted", `document #${docId} and its memory fact`);
+    // A document that came by email takes the reminders that email set
+    // with it once none of its documents remain, so deleting a fake bill
+    // deletes its reminders too. Ordinary deletes never load this.
+    if (row?.source === "email") {
+      await require("../mailin/service").onDocumentDeleted(id, docId).catch(() => {});
+    }
   }
   res.status(ok ? 200 : 404).json(ok ? { ok: true } : { error: "not found" });
 });

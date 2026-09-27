@@ -109,6 +109,7 @@ app.use(
       ["^/admin-panel/api/video-notes/\\d+.*", "/admin-panel/api/video-notes/#id"],
       ["^/posters/photos/\\d+.*", "/posters/photos/#id"],
       ["^/posters/\\d+.*", "/posters/#id"],
+      ["^/mailin/messages/\\d+.*", "/mailin/messages/#id"],
     ],
   })
 );
@@ -266,6 +267,8 @@ app.use("/news", appAuth, require("./routes/news"));
 // what it is waiting on, and the phone's receipts for dispatched steps.
 app.use("/tasks", appAuth, require("./routes/tasks"));
 app.use("/email", appAuth, require("./routes/email"));
+// Bills by email: the private address and what arrived (off unless MAILIN_ENABLED=1).
+app.use("/mailin", appAuth, require("./mailin/routes").router);
 
 // ADMIN — read-only ops stats behind a static key (set ADMIN_KEY).
 app.use("/admin", require("./routes/admin"));
@@ -503,6 +506,12 @@ require("./db")
       console.error("  job worker failed to start:", e.message);
     }
 
+    // Bills by email: the SMTP receiver and its worker, only when switched
+    // on. A failure is logged and never blocks HTTP; GET /mailin then says
+    // available:false and the app hides the feature.
+    require("./mailin/service").startReceiver().catch((e) =>
+      console.error("  mailin: receiver failed to start:", e.message));
+
     const server = app.listen(port, () => {
       console.log(`MYASSISTANT backend on :${port} (postgres ready)`);
       // A key defined TWICE in .env silently keeps the LAST value, which is
@@ -572,6 +581,8 @@ require("./db")
           console.warn("video notes: sweep failed —", e.message)),
         require("./posters/service").sweep().catch((e) =>
           console.warn("posters: sweep failed —", e.message)),
+        require("./mailin/service").sweep().catch((e) =>
+          console.warn("mailin: sweep failed —", e.message)),
       ]);
       setTimeout(sweep, 30_000).unref?.();
       setInterval(sweep, 24 * 3600_000).unref?.();
@@ -605,7 +616,10 @@ require("./db")
         // deploy. Bounded, because the exit timer below is not.
         try {
           await Promise.race([
-            require("./live/recorder").stopAll(),
+            Promise.all([
+              require("./live/recorder").stopAll(),
+              require("./mailin/service").stopReceiver().catch(() => {}),
+            ]),
             new Promise((r) => setTimeout(r, 4000).unref?.()),
           ]);
         } catch (_) {}
