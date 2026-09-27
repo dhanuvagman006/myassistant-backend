@@ -145,7 +145,9 @@ function nowLine(tzOffsetMin = 330) {
   const sign = tz < 0 ? "-" : "+";
   const abs = Math.abs(tz);
   const off = `${sign}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`;
-  const local = new Date(Date.now() + tz * 60_000).toISOString().replace("T", " ").slice(0, 16);
+  // To the second: cut to the minute, "in one minute" said at 10:00:55
+  // was written as 10:01:00, five seconds away (2026-09-27).
+  const local = new Date(Date.now() + tz * 60_000).toISOString().replace("T", " ").slice(0, 19);
   return (
     `Current date and time for the user: ${local} (UTC${off}). ` +
     `When passing any datetime to a tool, write the user's LOCAL time and ` +

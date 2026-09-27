@@ -568,7 +568,9 @@ let analysisReply = () => "{}";
       assert.strictEqual(daily.payload.repeat, "daily");
       assert.strictEqual(daily.payload.tzOffsetMin, 330);
       assert.ok(Math.abs(Number(daily.run_after) - at) < 1500);
-      const past = await registry.execute("schedule_task", { task: "x", when: isoLocal(Date.now() - 60e3) }, ctx());
+      // Past the 3-minute grace: a minute ago is "in one minute" written
+      // with a minute-old clock, and now runs a minute from now (2026-09-27).
+      const past = await registry.execute("schedule_task", { task: "x", when: isoLocal(Date.now() - 10 * 60e3) }, ctx());
       assert.strictEqual(past.ok, false);
     });
 

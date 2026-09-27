@@ -568,16 +568,32 @@ function registerBuiltins() {
       required: ["amount", "from", "to"],
     },
     async execute(args) {
-      const rate = await currency.getRate(
-        String(args.from).toUpperCase(),
-        String(args.to).toUpperCase()
-      );
-      if (!rate) return { ok: false, error: "rate unavailable" };
+      const from = currency.codeOf(args.from) || String(args.from || "").toUpperCase();
+      const to = currency.codeOf(args.to) || String(args.to || "").toUpperCase();
+      let rate = 0;
+      try {
+        rate = await currency.getRate(from, to);
+      } catch (e) {
+        // "fx 404" told the model nothing it could act on, and the turn
+        // just failed. Say it plainly, and point at the way that works.
+        console.warn("convert_currency:", e.message);
+      }
+      if (!rate) {
+        return {
+          ok: false,
+          error: `I can't get a live rate for ${from} to ${to} right now`,
+          data: {
+            hint:
+              "Tell the user plainly that you can't get a live rate for that " +
+              "currency, and offer to look it up on the web (web_search).",
+          },
+        };
+      }
       const value = args.amount * rate;
       return {
         ok: true,
         data: { rate, value },
-        speak: `${args.amount} ${args.from.toUpperCase()} is about ${value.toFixed(2)} ${args.to.toUpperCase()}.`,
+        speak: `${args.amount} ${from} is about ${value.toFixed(2)} ${to}.`,
       };
     },
   });
@@ -1711,11 +1727,27 @@ function registerBuiltins() {
     },
     async execute(args, ctx) {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
-      const at = parseUserTime(args.when, ctx.tzOffsetMin);
+      let at = parseUserTime(args.when, ctx.tzOffsetMin);
       if (!at) return { ok: false, error: "could not understand the time — ask which exact time" };
-      const delayMs = at - Date.now();
-      if (delayMs < 15_000) {
-        return { ok: false, error: "that time is in the past or seconds away — just do the task now instead" };
+      let delayMs = at - Date.now();
+      // "IN A MINUTE" ARRIVES AS A TIME THAT HAS JUST PASSED. The model
+      // knows the clock only to the minute, as of when the conversation
+      // began, so "call him in one minute" is written as the next whole
+      // minute — often seconds away or already behind us. Refusing those
+      // turned away 38 of 110 requests (2026-09-27), and the refusal's own
+      // words ("just do the task now") made the model do it at once, not
+      // at the time asked. A time from 3 minutes ago to 15 seconds ahead
+      // is "about a minute from now", and the reply says the real time.
+      if (delayMs < -180_000) {
+        return {
+          ok: false,
+          error: "that time has already passed — ask the user which time they meant",
+        };
+      }
+      const soon = delayMs < 15_000;
+      if (soon) {
+        at = Date.now() + 60_000;
+        delayMs = 60_000;
       }
       if (delayMs > 60 * 24 * 3600_000) {
         return { ok: false, error: "that is more than 60 days away — too far to schedule" };
@@ -1759,16 +1791,23 @@ function registerBuiltins() {
         isCall &&
         /\b(tell|inform|ask|say|remind|let\s+(him|her|them)\s+know|convey|check\s+with)\b/i.test(payload.task) &&
         require("../agents/agentCall").enabled();
+      // A moved time is said out loud, so nobody waits for the old one.
+      const local = new Date(at + tz * 60_000);
+      const hr = local.getUTCHours();
+      const clock = `${hr % 12 || 12}:${String(local.getUTCMinutes()).padStart(2, "0")} ${hr < 12 ? "am" : "pm"}`;
+      const atWhen = soon ? `at ${clock}, a minute from now` : "at that time";
       return {
         ok: true,
-        data: { id, runAt: new Date(at).toISOString(), repeat },
+        data: { id, runAt: new Date(at).toISOString(), repeat, ...(soon ? { movedTo: clock } : {}) },
         speak: delivers
-          ? `Done — I'll call them myself at that time${repeat ? `, ${repeat}` : ""}, and tell you what they say.`
+          ? `Done — I'll call them myself ${atWhen}${repeat ? `, ${repeat}` : ""}, and tell you what they say.`
           : isCall
-          ? `Done — at that time your phone will place the call itself${repeat ? `, ${repeat}` : ""}.`
+          ? `Done — ${atWhen}${soon ? "," : ""} your phone will place the call itself${repeat ? `, ${repeat}` : ""}.`
           : repeat
-            ? `Scheduled ${repeat} — I'll do it each time and send you the outcome.`
-            : "Scheduled — I'll do it then and send you the outcome.",
+            ? `Scheduled ${repeat}${soon ? `, from ${clock}` : ""} — I'll do it each time and send you the outcome.`
+            : soon
+              ? `Scheduled for ${clock}, a minute from now — I'll do it then and send you the outcome.`
+              : "Scheduled — I'll do it then and send you the outcome.",
       };
     },
   });

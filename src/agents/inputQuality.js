@@ -236,7 +236,11 @@ function assess(text, { expectsNumber = false, expectsName = false, offered = ""
     // request when it starts with a verb; only a verbless repeat is noise.
     const imperative = IMPERATIVE.test(norm[0] || "");
     const repeated = !imperative && new Set(norm).size < norm.length;
-    const alnumMix = norm.some((w) => /\d/.test(w) && /\p{L}/u.test(w));
+    // The same for a token with digits in it: "Call Ravi B2" is a contact
+    // saved with a letter+digit tag, as Indian address books often are,
+    // and refusing it sent one user round the same refusal 16 times
+    // (2026-09-18..24). Verbless, "that that Y2I tab" is still noise.
+    const alnumMix = !imperative && norm.some((w) => /\d/.test(w) && /\p{L}/u.test(w));
     // Nothing but crumbs: "o a", "a e i". contentRatio ignores whitespace
     // (so "4:30 a.m. alarm" passes), which also let a run of single
     // letters score as a full sentence — and live mode answered them

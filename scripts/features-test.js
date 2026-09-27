@@ -389,6 +389,160 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
       assert.doesNotMatch(s, /["'][A-Za-z0-9]{32,}["']/);
       assert.match(s, /process\.env\.ASTROLOGY_API_KEY \|\| ""/);
     });
+
+    console.log("\nvoice tools: what production turned away (2026-09-27)");
+    {
+      const vt = await db.createUser({
+        email: `features-vt-${Date.now()}@example.test`, name: "Voice Tools", gender: "male",
+      });
+      const VT = vt.id;
+      const vctx = { userId: VT, source: "text", tzOffsetMin: 330 };
+      const isoLocal = (ms) => new Date(ms + 330 * 60_000).toISOString().slice(0, 19) + "+05:30";
+      const clockOf = (ms) => {
+        const d = new Date(ms + 330 * 60_000);
+        const h = d.getUTCHours();
+        return `${h % 12 || 12}:${String(d.getUTCMinutes()).padStart(2, "0")} ${h < 12 ? "am" : "pm"}`;
+      };
+      // Nothing leaves this machine: the rate sources are scripted.
+      const realFetch = global.fetch;
+      const fetched = [];
+      let fx = () => { throw new Error("features-test: offline"); };
+      global.fetch = async (input, init) => {
+        const u = String(input && input.url ? input.url : input);
+        if (/^https?:\/\/(127\.0\.0\.1|localhost)[:/]/.test(u)) return realFetch(input, init);
+        fetched.push(u);
+        return fx(u);
+      };
+      const reply = (status, body) => ({ ok: status < 300, status, json: async () => body });
+      try {
+        await atest("schedule_task: 'in one minute' written as the minute just gone runs a minute from now, and says when", async () => {
+          const t0 = Date.now();
+          const r = await registry.get("schedule_task").execute(
+            { task: "Call Ravi and tell him the meeting moved", when: isoLocal(t0 - 34_000) }, vctx);
+          assert.strictEqual(r.ok, true, JSON.stringify(r));
+          const job = await db.one(`SELECT run_after FROM jobs WHERE id=$1`, [r.data.id]);
+          assert.ok(Math.abs(Number(job.run_after) - (t0 + 60_000)) < 3000,
+            `queued ${Number(job.run_after) - t0} ms ahead, not about a minute`);
+          assert.ok(r.speak.includes(`${clockOf(Date.parse(r.data.runAt))}, a minute from now`), r.speak);
+        });
+
+        await atest("schedule_task: a time seconds away is moved to a minute from now", async () => {
+          const t0 = Date.now();
+          const r = await registry.get("schedule_task").execute(
+            { task: "Check the gold rate and tell me", when: isoLocal(t0 + 5000) }, vctx);
+          assert.strictEqual(r.ok, true, JSON.stringify(r));
+          const job = await db.one(`SELECT run_after FROM jobs WHERE id=$1`, [r.data.id]);
+          assert.ok(Number(job.run_after) - t0 >= 55_000, "still seconds away");
+          assert.match(r.speak, /^Scheduled for \d{1,2}:\d{2} (am|pm), a minute from now/, r.speak);
+        });
+
+        await atest("schedule_task: a time long gone is refused, and the model is not told to do it now", async () => {
+          const r = await registry.get("schedule_task").execute(
+            { task: "Order biryani from Swiggy", when: isoLocal(Date.now() - 10 * 60_000) }, vctx);
+          assert.strictEqual(r.ok, false);
+          assert.match(r.error, /already passed/);
+          assert.doesNotMatch(r.error, /\bnow\b/i, "the old wording made the model do it at once");
+        });
+
+        await atest("schedule_task: a time well ahead is kept exactly as asked", async () => {
+          const at = Math.floor((Date.now() + 2 * 3600e3) / 1000) * 1000;
+          const r = await registry.get("schedule_task").execute(
+            { task: "Check the gold rate and tell me", when: isoLocal(at) }, vctx);
+          assert.strictEqual(r.ok, true, JSON.stringify(r));
+          const job = await db.one(`SELECT run_after FROM jobs WHERE id=$1`, [r.data.id]);
+          assert.ok(Math.abs(Number(job.run_after) - at) < 1500);
+          assert.strictEqual(r.speak, "Scheduled — I'll do it then and send you the outcome.");
+        });
+
+        await atest("the live prompt's clock carries seconds", () => {
+          const p = require("../src/live/proxy")._liveSystemPrompt("Hari", [], "", 330, "", "", 120);
+          const line = (p.match(/Current date and time for the user: [^(]*\(UTC\+05:30\)/) || [""])[0];
+          assert.match(line, /: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \(/, `cut to the minute: "${line}"`);
+        });
+
+        await atest("convert_currency: AED to INR, which the ECB does not publish, comes from the fallback", async () => {
+          fetched.length = 0;
+          fx = (u) => (/frankfurter/.test(u) ? reply(404, { message: "not found" })
+            : /jsdelivr/.test(u) ? reply(200, { date: "2026-09-27", aed: { inr: 22.75 } })
+              : reply(500, {}));
+          const r = await registry.get("convert_currency").execute({ amount: 100, from: "AED", to: "INR" }, vctx);
+          assert.strictEqual(r.ok, true, JSON.stringify(r));
+          assert.strictEqual(r.speak, "100 AED is about 2275.00 INR.");
+          assert.ok(/frankfurter/.test(fetched[0]) && /\/currencies\/aed\.json$/.test(fetched[1]), fetched.join(" "));
+          const said = await registry.get("convert_currency").execute({ amount: 2, from: "dirham", to: "rupees" }, vctx);
+          assert.strictEqual(said.speak, "2 AED is about 45.50 INR.", "a currency named in words");
+        });
+
+        await atest("convert_currency: INR to MAD comes from the second host when the first is down", async () => {
+          fx = (u) => (/frankfurter/.test(u) ? reply(404, {})
+            : /jsdelivr/.test(u) ? reply(503, {})
+              : /currency-api\.pages\.dev\/v1\/currencies\/inr\.json$/.test(u) ? reply(200, { inr: { mad: 0.1068 } })
+                : reply(500, {}));
+          const r = await registry.get("convert_currency").execute({ amount: 1000, from: "INR", to: "MAD" }, vctx);
+          assert.strictEqual(r.ok, true, JSON.stringify(r));
+          assert.strictEqual(r.speak, "1000 INR is about 106.80 MAD.");
+        });
+
+        await atest("convert_currency: with no source for the pair it says so plainly and offers the web", async () => {
+          fx = () => reply(404, {});
+          const r = await registry.get("convert_currency").execute({ amount: 50, from: "SAR", to: "INR" }, vctx);
+          assert.strictEqual(r.ok, false);
+          assert.match(r.error, /can't get a live rate for SAR to INR/);
+          assert.doesNotMatch(r.error, /fx \d{3}/);
+          assert.match(r.data.hint, /web_search/);
+        });
+
+        await atest("convert_currency: an ECB currency still comes straight from frankfurter", async () => {
+          fetched.length = 0;
+          fx = (u) => (/frankfurter/.test(u) ? reply(200, { rates: { INR: 83.1 } }) : reply(500, {}));
+          const r = await registry.get("convert_currency").execute({ amount: 2, from: "usd", to: "inr" }, vctx);
+          assert.strictEqual(r.speak, "2 USD is about 166.20 INR.");
+          assert.strictEqual(fetched.length, 1);
+        });
+
+        // THE CLAIM CHECK MUST NOT DENY A SAVE THAT HAPPENED. A saving tool
+        // no claim family names can never back its own words: "Saved — I'll
+        // remind you the day before Amma's birthday" was answered "that
+        // reminder wasn't saved", and a saved EMI was added a second time.
+        await atest("every tool that saves what the user said backs its own words, and the usual 'saved' ones", async () => {
+          const cc = require("../src/agents/claimCheck");
+          const SAMPLE = {
+            remember_fact: { fact: "User is vegetarian" },
+            update_my_profile: { profession: "civil engineer" },
+            remember_person: { name: "Ravi", relationship: "client" },
+            add_person_note: { name: "Ravi", note: "Owes me 15,000" },
+            add_standing_instruction: { instruction: "Always ask before sending messages" },
+            remember_case: { title: "Property dispute", person: "Ravi" },
+            remember_event: { title: "Ravi's hearing", when: "2026-10-03T11:00:00+05:30", person: "Ravi" },
+            remember_person_date: { person: "Amma", date: "03-14", label: "birthday" },
+            add_finance_item: { kind: "emi", name: "Bike EMI", amount: 3500, interest_rate: 11, due_day: 5 },
+            update_finance_item: { name: "Bike EMI", due_day: 3 },
+          };
+          const SAID = ["I've saved that.", "Done, I've written that down.", "Noted it down."];
+          const bad = [];
+          for (const name of [...registry.EFFECTIVE.memoryWrites, "add_finance_item", "update_finance_item"]) {
+            if (!SAMPLE[name]) { bad.push(`${name}: a new saving tool — give it sample arguments here`); continue; }
+            const res = await registry.get(name).execute(SAMPLE[name], vctx);
+            if (!res || res.ok === false) { bad.push(`${name} did not save: ${res && res.error}`); continue; }
+            for (const said of [res.speak, ...SAID].filter(Boolean)) {
+              const v = cc.check(said, [{ tool: name, ok: true }]);
+              if (!v.ok) bad.push(`${name}: "${said}" → ${v.violations.join("; ")}`);
+            }
+          }
+          assert.deepStrictEqual(bad, []);
+          for (const [said, tool] of [
+            ["Saved — I'll remind you the day before Amma's birthday.", "remember_person_date"],
+            ["I've saved your bike EMI of 3500 at 11 percent in your finance section.", "add_finance_item"],
+          ]) {
+            assert.strictEqual(cc.check(said, [{ tool, ok: true }]).ok, true, said);
+            assert.strictEqual(cc.check(said, []).ok, false, `"${said}" with nothing run must still be caught`);
+          }
+        });
+      } finally {
+        global.fetch = realFetch;
+        await require("../src/routes/privacy").deleteUserEverywhere(VT, { reason: "features-test voice tools" });
+      }
+    }
   } finally {
     await db.run(`DELETE FROM reminders WHERE user_id=$1`, [UID]);
     await db.run(`DELETE FROM documents WHERE user_id=$1`, [UID]);
