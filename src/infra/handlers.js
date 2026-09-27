@@ -233,12 +233,14 @@ async function scheduledTask(payload, job) {
  * exists per series and cancel_scheduled_task ends the whole thing.
  */
 async function reenqueueIfRecurring(job) {
-  // A retried occurrence (retryLater) rolls on from when it was DUE; the
-  // next occurrence starts with neither its retry count nor that time.
-  const { retry: _retry, dueAt, ...p } = job.payload || {};
+  // A retried occurrence (retryLater) rolls on from when it was DUE, and a
+  // first run moved to "a minute from now" (schedule_task) from the time
+  // the user asked for; the next occurrence carries neither.
+  const { retry: _retry, dueAt, repeatFrom, ...p } = job.payload || {};
   if (!["daily", "weekly", "monthly"].includes(p.repeat)) return;
   try {
-    let next = nextOccurrence(Number(dueAt) || Number(job.run_after), p.repeat, p);
+    let next = nextOccurrence(
+      Number(repeatFrom) || Number(dueAt) || Number(job.run_after), p.repeat, p);
     // Catch up past a long outage without queueing a backlog of stale runs.
     while (next <= Date.now()) next = nextOccurrence(next, p.repeat, p);
     await jobs.enqueue("scheduled_task", p, {

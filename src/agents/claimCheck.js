@@ -194,7 +194,12 @@ const FAMILIES = [
     tools: ["create_reminder", "update_reminder", "set_alarm", "set_timer", "schedule_task", "schedule_patient_recall", "set_morning_brief",
             // "I've set today's three", "I've set a 25-minute focus", "I've set
             // a daily reminder for water" — Momentum, 2026-09-25.
-            "plan_my_day", "start_focus", "add_habit"],
+            "plan_my_day", "start_focus", "add_habit",
+            // Its own confirmation is "Saved — I'll remind you the day
+            // before Amma's birthday.", and the yearly push is real. Missing
+            // here, a saved birthday was answered "that reminder wasn't
+            // saved" and the model was told to add it again (2026-09-27).
+            "remember_person_date"],
     claim: /\b(reminder (is )?(set|saved)|i'?ve set|alarm (is )?set|scheduled it|i'?ll remind you)\b/i,
     // रिमाइंडर/अलार्म सेट…, ರಿಮೈಂಡರ್/ಅಲಾರಂ ಇಟ್ಟ…, நினைவூட்ட…, గుర్తు చేస…, ഓർമ്മിപ്പിക്ക…
     claimIntl: /(रिमाइंडर\s*(सेट|लगा)|अलार्म\s*(सेट|लगा)|याद\s*दिला|ರಿಮೈಂಡರ್|ಅಲಾರಂ|ಅಲಾರಾಂ|ನೆನಪಿಸ|நினைவூட்ட|அலாரம்|గుర్తు\s*చేస|అలారం|ഓർമ്മിപ്പിക്ക|അലാറം)/,
@@ -276,7 +281,16 @@ const FAMILIES = [
             // "I've saved the clearer photo to your documents" — the keep
             // step of improve_old_photo (2026-09-26); and the card a share
             // saved first.
-            "improve_old_photo", "share_poster"],
+            "improve_old_photo", "share_poster",
+            // EVERY TOOL THAT SAVES WHAT THE USER TOLD IT (2026-09-27). "I've
+            // saved your bike EMI" after add_finance_item was rewritten into
+            // "that wasn't saved", and the live model was told to add it
+            // again — add_finance_item does not de-duplicate, so the EMI was
+            // recorded twice. A saving tool no family names can never back
+            // the words it is described with.
+            "remember_person_date", "add_finance_item", "update_finance_item",
+            "add_standing_instruction", "remember_event", "remember_case",
+            "update_my_profile"],
     claim: /\b(logged|recorded|noted it down|saved (it |that )?(to|in) your|filed under|i'?ve (written|saved)|written that down)\b/i,
     // सहेज/सेव/नोट कर…, ಉಳಿಸ/ಸೇವ್ ಮಾಡ…, சேமிக்க…, సేవ్ చేస…, സേവ് ചെയ്…
     claimIntl: /(सहेज|सेव\s*कर|नोट\s*कर|लिख\s*दिया|ಉಳಿಸ|ಸೇವ್\s*ಮಾಡ|ಬರೆದಿ|சேமிக்க|குறித்து|సేవ్\s*చేస|రాశా|സേവ്\s*ചെയ്|എഴുതി)/,

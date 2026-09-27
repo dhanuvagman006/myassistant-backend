@@ -17,6 +17,13 @@ check("चाय दिखाओ।", "clear");
 check("set timer 10 min", "clear");
 check("call mom", "clear");
 check("volume", "clear");
+// A contact saved with a letter+digit tag (2026-09-27: 22 call refusals
+// for one user, the same words refused again on every repeat).
+check("Call Ravi B2.", "clear");
+check("Call Ravi B2", "clear");
+check("Call K9T.", "clear");
+check("Call Ravi V2.", "clear");
+check("Call Ravi Kumar.", "clear");
 // One-word answers in Indian languages (2026-09-26: the client's
 // Malayalam "ശരി" was answered "sorry, I didn't catch that").
 for (const w of ["ശരി", "അതെ", "ഇല്ല", "ಸರಿ", "ಇಲ್ಲ", "ಹೌದು", "हाँ", "नहीं", "ठीक",
