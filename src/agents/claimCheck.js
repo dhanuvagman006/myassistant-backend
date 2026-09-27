@@ -167,6 +167,15 @@ const FAMILIES = [
     honest: (_s, ranOk) => (ranOk && ranOk.has("send_video_note") ? VIDEO_NOTE_QUEUED : NO_VIDEO_NOTE),
   },
   {
+    // "Added it to your Notion" (2026-09-27). Ahead of `message`, and so of
+    // `create`/`record`, whose "saved it to your…" would otherwise take
+    // "saved it to your Notion" (the first family that matches wins).
+    id: "notion",
+    tools: ["notion_add", "notion_create_page"],
+    claim: /\b(added|saved|put|created)\b[^.]{0,40}\bnotion\b/i,
+    honest: () => "I haven't changed anything in your Notion — that didn't go through.",
+  },
+  {
     id: "message",
     tools: ["send_agent_message", "send_whatsapp_message", "send_document", "send_patient_document",
             "send_developer_feedback", // "I've passed that on to the developer"

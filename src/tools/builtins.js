@@ -325,6 +325,8 @@ function registerBuiltins() {
   // Photo cards (2026-09-26): a gift card with his words, a real photo and
   // his signature, drawn on the phone — no AI. App build 119+.
   require("../posters/tools").registerPosterTools(registry);
+  // Connected apps (2026-09-27): Notion, for users who linked it on build 120+.
+  require("../connectors/notion/tools").registerNotionTools(registry);
 
   // ---------------- INFORMATION (low risk) ----------------
 
@@ -749,12 +751,33 @@ function registerBuiltins() {
           type: "string",
           description: "Their own words, if worth quoting. Optional.",
         },
+        user_asked: {
+          type: "boolean",
+          description:
+            "true ONLY when the user themselves asked you to tell the " +
+            "developer or send feedback. false when you are filing it on " +
+            "your own because they sounded unhappy.",
+        },
       },
       required: ["summary"],
     },
     async execute(args, ctx) {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
+      // "Help improve the assistant" is off: nothing is filed quietly. What
+      // they explicitly asked to pass on still goes (users/helpImprove.js).
+      const userAsked = args.user_asked === true;
+      if (!userAsked && !(await require("../users/helpImprove").effective(ctx.userId).catch(() => false))) {
+        return {
+          ok: false,
+          error: "help_improve_off",
+          note:
+            "Not filed: this person turned off Help improve. Say nothing about " +
+            "feedback unless they asked; if they want it passed on, ask and call " +
+            "again with user_asked true.",
+        };
+      }
       const r = await require("../feedback/store").add(ctx.userId, {
+        userAsked,
         kind: args.kind,
         summary: args.summary,
         details: args.details,
@@ -5010,7 +5033,7 @@ function registerBuiltins() {
             "settings", "home", "hub", "chat",
             "documents", "clients", "finance", "stocks",
             "diagnostics", "mcp", "meetings", "reminders", "call_notes",
-            "news", "momentum", "focus", "avatar_identity",
+            "news", "momentum", "focus", "avatar_identity", "connected_apps",
           ],
           description:
             "settings = the assistant's own settings (voice, name, theme). " +
@@ -5018,7 +5041,8 @@ function registerBuiltins() {
             "habits and the week; focus = the focus timer. " +
             "news = the News screen, only when they ask to OPEN it — for " +
             "'what's the news' use show_news. avatar_identity = Send " +
-            "messages as you (their recorded video for video notes). The " +
+            "messages as you (their recorded video for video notes). " +
+            "connected_apps = link or unlink Notion, mail and other apps. The " +
             "rest are feature screens.",
         },
       },
@@ -5029,7 +5053,7 @@ function registerBuiltins() {
       const ALLOWED = [
         "settings", "home", "hub", "chat", "documents", "clients",
         "finance", "stocks", "diagnostics", "mcp", "meetings", "reminders",
-        "call_notes", "news", "momentum", "focus", "avatar_identity",
+        "call_notes", "news", "momentum", "focus", "avatar_identity", "connected_apps",
       ];
       if (!ALLOWED.includes(screen)) {
         return { ok: false, error: `I don't have a screen called "${args.screen}"` };
@@ -5042,6 +5066,10 @@ function registerBuiltins() {
       }
       // The video recorder for "Send messages as you" arrives in build 118.
       if (screen === "avatar_identity" && build < VIDEO_NOTE_MIN_BUILD) {
+        return { ok: false, error: "that screen needs the latest app update — say so" };
+      }
+      // Connected apps arrives in build 120.
+      if (screen === "connected_apps" && build < require("../connectors/notion/tools").NOTION_MIN_BUILD) {
         return { ok: false, error: "that screen needs the latest app update — say so" };
       }
       // The News screen arrives in build 111. An older app would report
@@ -5074,6 +5102,7 @@ function registerBuiltins() {
         call_notes: "your call notes", news: "the news",
         momentum: "your Momentum page", focus: "the focus timer",
         avatar_identity: "Send messages as you",
+        connected_apps: "Connected apps",
       };
       return {
         ok: true,

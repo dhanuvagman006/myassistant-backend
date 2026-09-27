@@ -40,15 +40,30 @@ const key = (userId, serverId) => `${Number(userId)}:${Number(serverId)}`;
 const HIGH_RISK = /\b(delete|remove|destroy|drop|purge|wipe|erase|revoke|terminate|send|email|post|publish|transfer|pay|payment|charge|refund|merge|force[- ]?push|deploy|shutdown|restart|rotate|grant|invite)\b/i;
 const MEDIUM_RISK = /\b(create|add|update|edit|modify|write|upload|rename|move|comment|assign|close|reopen|set|put|patch)\b/i;
 
+/**
+ * MONEY IN MARKETS. The catalog's trading server offers place_order,
+ * modify_order, place_gtt_order… and none of the words above: "order",
+ * "buy" and "sell" were missing, so its first order ran as a medium-risk
+ * tool with NO confirmation (review, 2026-09-27). Anything that places,
+ * changes or cancels an order, or buys, sells or trades, is always high —
+ * checked before any annotation, because a server's own "read-only" hint
+ * cannot vouch for a tool that trades.
+ */
+const MONEY_RISK = /\b(orders?|buy|buying|sell|selling|trade|trading|gtt|invest|redeem|withdraw|withdrawal|sip)\b/i;
+
 function classifyRisk(tool) {
   const a = tool.annotations || {};
   // Trust an explicit read-only annotation; never trust a claim of safety
   // on something whose name says it destroys data.
   const text = `${tool.name} ${tool.description || ""}`;
-  if (HIGH_RISK.test(text)) return "high";
+  // "place_order" is one word to \b — the underscore is a word character —
+  // so names are also read with their separators as spaces.
+  const spaced = text.replace(/[_\-.]+/g, " ");
+  if (MONEY_RISK.test(spaced)) return "high";
+  if (HIGH_RISK.test(text) || HIGH_RISK.test(spaced)) return "high";
   if (a.destructiveHint === true) return "high";
   if (a.readOnlyHint === true) return "low";
-  if (MEDIUM_RISK.test(text)) return "medium";
+  if (MEDIUM_RISK.test(text) || MEDIUM_RISK.test(spaced)) return "medium";
   return "low";
 }
 

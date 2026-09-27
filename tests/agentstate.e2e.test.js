@@ -863,6 +863,12 @@ console.log("\nexecution record");
   });
 
   await atest("failures are findable across users, not one at a time", async () => {
+    // Rows are shown only for people who said yes to "Help improve the
+    // assistant" (users/helpImprove.js; pinned by test:improve).
+    await require("../src/users/helpImprove").migrate((sql) => db.query(sql));
+    await db.run(
+      `INSERT INTO privacy_prefs (user_id, help_improve, on_since, updated_at) VALUES ($1, 1, 0, $2)
+       ON CONFLICT (user_id) DO UPDATE SET help_improve = 1, on_since = 0`, [USER_A, Date.now()]);
     const before = await actions.failures({ sinceMs: Date.now() - 60_000, limit: 200 });
     assert.ok(Array.isArray(before.rows), "no failure listing");
     assert.ok(Array.isArray(before.groups), "no grouping by tool");

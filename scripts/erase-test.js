@@ -276,6 +276,17 @@ async function seedUser(uid, { phone }) {
     await db.run(`INSERT INTO kv (k, v) VALUES ($1, '1') ON CONFLICT (k) DO NOTHING`, [k]);
   }
   if (phone) await db.run(`UPDATE users SET phone_number = $1 WHERE id = $2`, [phone, uid]);
+  await optIn(uid);
+}
+
+/**
+ * "Help improve the assistant" is on for this tester: only then are their
+ * calls recorded and listed (users/helpImprove.js; test:improve pins it).
+ */
+async function optIn(uid) {
+  await db.run(
+    `INSERT INTO privacy_prefs (user_id, help_improve, on_since, updated_at) VALUES ($1, 1, 0, $2)
+     ON CONFLICT (user_id) DO UPDATE SET help_improve = 1, on_since = 0`, [uid, Date.now()]);
 }
 
 async function rowsOf(uid) {
@@ -876,6 +887,7 @@ const tell = (from, toPhone, message) => db.one(
   const today = path.join(RECS, new Date().toISOString().slice(0, 10));
   const liveFiles = () => (fs.existsSync(today) ? fs.readdirSync(today) : []).filter((f) => f.startsWith("live_"));
   const D = (await db.createUser({ email: `erase-d-${stamp}@example.test`, name: "Erase d" })).id;
+  await optIn(D);
   const turnsOfD = async () =>
     (await db.one(`SELECT count(*)::int AS n FROM conversation_turns WHERE user_id = $1`, [D])).n;
   const recsOfD = async () =>
@@ -933,6 +945,7 @@ const tell = (from, toPhone, message) => db.one(
     // looked for open recordings, so the delete cannot see it: the
     // recording has to notice by itself.
     const E = (await db.createUser({ email: `erase-e-${stamp}@example.test`, name: "Erase e" })).id;
+    await optIn(E);
     const session = `race-${E}-${stamp}`;
     let release;
     let locked = false;

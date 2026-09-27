@@ -101,6 +101,23 @@ function append(userId, role, text, meta = {}) {
   if (writeChains.size > 500) writeChains.clear(); // bounded; chains are short
 }
 
+/**
+ * "Help improve" is OFF: keep only what the assistant itself reads — the
+ * last `days` and at most `turns`. Called when the switch goes off and by
+ * the daily sweep, never per turn, so append() stays as fast as it was.
+ * Returns how many turns went.
+ */
+async function prunePrivate(userId, { days = 7, turns = 100 } = {}) {
+  const uid = Number(userId);
+  if (!Number.isInteger(uid) || uid <= 0) return 0;
+  await migrate();
+  return run(
+    `DELETE FROM conversation_turns WHERE user_id = $1 AND (created_at < $2 OR id NOT IN
+       (SELECT id FROM conversation_turns WHERE user_id = $1 ORDER BY id DESC LIMIT $3))`,
+    [uid, Date.now() - days * 86_400_000, turns]
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* ADMIN VIEWS — every turn, paired, with timings                      */
 /* ------------------------------------------------------------------ */
@@ -112,7 +129,11 @@ function append(userId, role, text, meta = {}) {
  */
 async function adminConversations({ q, userId, source, minLatency, limit = 50, offset = 0 } = {}) {
   await migrate();
-  const where = ["t.role = 'assistant'"];
+  // Only people who said yes to "Help improve", and only what they said
+  // after that (users/helpImprove.js). The question joined below belongs
+  // to the same turn, so it is covered by the answer's row.
+  const where = ["t.role = 'assistant'",
+    require("../users/helpImprove").reviewableSql("t.user_id", "t.created_at")];
   const params = [];
   if (q) {
     params.push(`%${q}%`);
@@ -328,4 +349,4 @@ async function turns(userId, { sessionId, sinceMs, role, match, limit = 20 } = {
 
 // migrate is exported for the erase suite's schema guard, which has to see
 // every table before it can say none was forgotten.
-module.exports = { migrate, append, recentBlock, turns, adminConversations, adminStats, withoutTitle };
+module.exports = { migrate, append, recentBlock, turns, adminConversations, adminStats, withoutTitle, prunePrivate };

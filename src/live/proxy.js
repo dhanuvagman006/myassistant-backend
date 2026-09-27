@@ -796,8 +796,11 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
       // declarations are built (once per process, at most 3 s).
       const mcpReady = require("../mcp/routes").ensureConnectedWithin(uid)
         .catch(() => {});
+      // Whether to offer the Notion tools: one primary-key read, and none
+      // at all until Notion is configured on this server.
+      const notionReady = require("../connectors/notion/store").prime(uid).catch(() => {});
       const p = await require("../users/context").getProfile(uid);
-      await mcpReady;
+      await Promise.all([mcpReady, notionReady]);
       if (p?.assistant?.name) assistantName = p.assistant.name;
       if (p?.user?.name) userName = String(p.user.name).split(" ")[0];
       if (p?.user?.preferred_language) {
@@ -1384,7 +1387,10 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
               // explained rather than attempted and apologised for.
               (require("../tools/registry").limitsBlock(deviceCtx.caps)
                 ? "\n\n" + require("../tools/registry").limitsBlock(deviceCtx.caps)
-                : ""),
+                : "") +
+              // Notion, when this user could connect it and has not.
+              ((h) => (h ? "\n\n" + h : ""))(require("../connectors/notion/tools")
+                .notionHintFor(Number(user?.sub), deviceCtx.build)),
             }],
           },
           // GOOGLE SEARCH — only on models that accept it.

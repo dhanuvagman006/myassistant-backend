@@ -117,14 +117,22 @@ async function adminList({ q, status, kind, userId, limit = 50, offset = 0, sinc
   await migrate();
   const where = [];
   const params = [];
-  if (q) { params.push(`%${q}%`); where.push(`(t.target ILIKE $${params.length} OR t.detail ILIKE $${params.length} OR t.reason ILIKE $${params.length})`); }
+  // "Help improve" off: status and kind stay, the words go — and a search
+  // only looks inside rows the team may read, so it cannot confirm them.
+  const rv = require("../users/helpImprove").reviewableSql("t.user_id", "t.created_at");
+  if (q) { params.push(`%${q}%`); where.push(`(${rv} AND (t.target ILIKE $${params.length} OR t.detail ILIKE $${params.length} OR t.reason ILIKE $${params.length}))`); }
   if (status && STATUSES.has(status)) { params.push(status); where.push(`t.status = $${params.length}`); }
   if (kind && KINDS.has(kind)) { params.push(kind); where.push(`t.kind = $${params.length}`); }
   if (Number.isFinite(userId)) { params.push(userId); where.push(`t.user_id = $${params.length}`); }
   if (sinceMs) { params.push(sinceMs); where.push(`t.created_at >= $${params.length}`); }
   const w = where.length ? "WHERE " + where.join(" AND ") : "";
   const rows = await query(
-    `SELECT t.*, u.name AS user_name FROM task_outcomes t LEFT JOIN users u ON u.id = t.user_id
+    `SELECT t.*,
+            CASE WHEN ${rv} THEN t.transcript ELSE '' END AS transcript,
+            CASE WHEN ${rv} THEN t.detail ELSE '' END AS detail,
+            CASE WHEN ${rv} THEN t.reason ELSE '' END AS reason,
+            CASE WHEN ${rv} THEN t.target ELSE '' END AS target,
+            u.name AS user_name FROM task_outcomes t LEFT JOIN users u ON u.id = t.user_id
      ${w} ORDER BY t.id DESC LIMIT ${Math.min(Number(limit) || 50, 200)} OFFSET ${Math.max(Number(offset) || 0, 0)}`,
     params
   );

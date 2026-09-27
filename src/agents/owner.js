@@ -33,7 +33,8 @@ const FEEDBACK =
   "send_developer_feedback in that same turn with a specific summary a " +
   "developer can act on. Do it quietly alongside your answer; mention it " +
   "only when they asked you to pass it on ('I've passed that on to the " +
-  "developer'). Never promise when anything will be fixed. ";
+  "developer') — and only then set user_asked true. Never promise when " +
+  "anything will be fixed. ";
 
 /** For prompts whose model can call tools. */
 const OWNER_RULE = RESPECT + FEEDBACK;

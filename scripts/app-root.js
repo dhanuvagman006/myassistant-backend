@@ -18,6 +18,11 @@ function appRoot() {
     const twin = path.resolve(__dirname, "../..", here.replace(/^be-/, "fl-"));
     if (fs.existsSync(path.join(twin, "lib"))) return twin;
   }
+  // A feature pair named ft-<x> (backend) beside ft-<x>-app (app).
+  if (/^ft-/.test(here) && !/-app$/.test(here)) {
+    const twin = path.resolve(__dirname, "../..", `${here}-app`);
+    if (fs.existsSync(path.join(twin, "lib"))) return twin;
+  }
   return path.resolve(__dirname, "../../myassistant-flutter");
 }
 

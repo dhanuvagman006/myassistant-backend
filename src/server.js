@@ -230,6 +230,16 @@ app.use("/privacy", appAuth, require("./routes/privacy"));
 // Google account link: Gmail + Calendar (read-only).
 app.use("/google", appAuth, require("./google/routes"));
 
+// CONNECTED APPS — Notion. The OAuth callback is public (Notion sends the
+// browser there; the single-use state names the user) and rate-limited;
+// the rest is behind the app's auth. Inert until NOTION_CLIENT_ID/SECRET.
+{
+  const notion = require("./connectors/notion/routes");
+  app.use("/connect/notion",
+    rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true }), notion.publicRouter);
+  app.use("/connections", appAuth, notion.appRouter);
+}
+
 
 // PAYMENTS — collection requests. Razorpay's webhook is PUBLIC (it cannot
 // carry our app key) and is verified by HMAC over the raw body instead, so
@@ -572,6 +582,12 @@ require("./db")
           console.warn("video notes: sweep failed —", e.message)),
         require("./posters/service").sweep().catch((e) =>
           console.warn("posters: sweep failed —", e.message)),
+        // "Help improve" off: no stray recording survives a day, and their
+        // turns stay within the private window (users/helpImprove.js).
+        require("./users/helpImprove").sweep().catch((e) =>
+          console.warn("help improve: sweep failed —", e.message)),
+        require("./connectors/notion/store").sweepStates().catch((e) =>
+          console.warn("notion: state sweep failed —", e.message)),
       ]);
       setTimeout(sweep, 30_000).unref?.();
       setInterval(sweep, 24 * 3600_000).unref?.();

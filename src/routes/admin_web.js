@@ -32,6 +32,19 @@ const appUpdate = require("./appUpdate");
 const push = require("../services/push");
 const remoteConfig = require("../config/remoteConfig");
 const privacy = require("./privacy");
+const helpImprove = require("../users/helpImprove");
+
+/**
+ * "Help improve the assistant" (users/helpImprove.js): what the team may
+ * see of a user's words. The SQL side is hari_reviewable(); these are the
+ * JS helpers for the routes that need one answer per user.
+ */
+const HELP_COLS = `,
+  (SELECT pp.help_improve FROM privacy_prefs pp WHERE pp.user_id = users.id) AS help_improve,
+  (SELECT pp.on_since FROM privacy_prefs pp WHERE pp.user_id = users.id) AS on_since,
+  (SELECT pp.decided_at FROM privacy_prefs pp WHERE pp.user_id = users.id) AS decided_at`;
+const helpLabel = (v) => (v === null || v === undefined ? "not_asked" : Number(v) === 1 ? "on" : "off");
+const RV = (u, t) => helpImprove.reviewableSql(u, t);
 
 router.use(express.json());
 
@@ -248,7 +261,7 @@ router.get("/api/users", async (req, res) => {
     params = [`%${q}%`, q];
   }
   const rows = await sq(
-    `SELECT ${USER_COLS} FROM users ${where}
+    `SELECT ${USER_COLS}${HELP_COLS} FROM users ${where}
       ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`,
     params
   );
@@ -258,8 +271,9 @@ router.get("/api/users", async (req, res) => {
 
 router.get("/api/users/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const rows = await sq(`SELECT ${USER_COLS} FROM users WHERE id=$1`, [id]);
+  const rows = await sq(`SELECT ${USER_COLS}${HELP_COLS} FROM users WHERE id=$1`, [id]);
   if (!rows.length) return res.status(404).json({ error: "no such user" });
+  const reviewable = await helpImprove.effective(id).catch(() => false);
 
   const [assistant, instructions, google, counts, recent] = await Promise.all([
     sq("SELECT name, gender, voice, style, avatar_id FROM assistant_profiles WHERE user_id=$1", [id]),
@@ -277,7 +291,9 @@ router.get("/api/users/:id", async (req, res) => {
       cnt("SELECT COUNT(*) AS count FROM agent_messages WHERE to_user_id=$1 OR from_user_id=$1", [id]),
       cnt("SELECT COUNT(*) AS count FROM actions_log WHERE user_id=$1", [id]),
     ]),
-    sq(`SELECT action, detail, created_at FROM actions_log
+    sq(`SELECT action,
+               CASE WHEN ${RV("user_id", "created_at")} THEN detail ELSE '(hidden)' END AS detail,
+               created_at FROM actions_log
          WHERE user_id=$1 ORDER BY created_at DESC LIMIT 20`, [id]),
   ]);
   // What this user actually said and what the assistant answered, with
@@ -290,8 +306,11 @@ router.get("/api/users/:id", async (req, res) => {
          finance, contacts, msgs, actionsTotal] = counts;
   res.json({
     user: rows[0],
+    helpImprove: helpLabel(rows[0].help_improve),
     assistant: assistant[0] || null,
-    instructions,
+    // Their standing rules are their own words: shown only with a yes.
+    instructions: reviewable ? instructions : [],
+    instructionsHidden: !reviewable,
     googleLinked: google.length > 0,
     counts: { remindersAll, remindersOpen, commitsOpen, docs, memories,
               clients, finance, contacts, msgs, actionsTotal },
@@ -893,9 +912,26 @@ router.get("/api/failures", async (req, res) => {
 /* action claimed that never ran.                                       */
 /* ------------------------------------------------------------------ */
 
+/**
+ * The moment from which this user's ledger may be read, or null when it
+ * may not be read at all ("Help improve" off, or never said yes).
+ */
+async function reviewSince(uid) {
+  if (!(await helpImprove.effective(uid).catch(() => false))) return null;
+  const s = await helpImprove.state(uid).catch(() => ({ helpImprove: null, onSince: 0 }));
+  return s.helpImprove === true ? s.onSince : 0;
+}
+function onlySince(turns, since) {
+  return turns
+    .map((t) => ({ ...t, steps: (t.steps || []).filter((st) => Number(st.at) >= since) }))
+    .filter((t) => t.steps.length);
+}
+
 router.get("/api/users/:id/ledger", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isFinite(id)) return res.status(400).json({ error: "bad user id" });
+  const since = await reviewSince(id);
+  if (since === null) return res.json({ hidden: true, reason: "help_improve_off", turns: [], total: 0 });
   const turns = await require("../actions/store")
     .ledger(id, {
       limit: Math.min(parseInt(req.query.limit, 10) || 60, 200),
@@ -906,15 +942,17 @@ router.get("/api/users/:id/ledger", async (req, res) => {
       console.warn("ledger read failed:", e.message);
       return [];
     });
-  res.json({ turns, total: turns.length });
+  const shown = onlySince(turns, since);
+  res.json({ turns: shown, total: shown.length });
 });
 
 /** The ledger as a spreadsheet — one row per tool step. */
 router.get("/api/users/:id/ledger.csv", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isFinite(id)) return res.status(400).json({ error: "bad user id" });
-  const turns = await require("../actions/store")
-    .ledger(id, { limit: 500 }).catch(() => []);
+  const since = await reviewSince(id);
+  const turns = since === null ? [] : onlySince(await require("../actions/store")
+    .ledger(id, { limit: 500 }).catch(() => []), since);
   const cell = (v) => {
     let t = v === null || v === undefined ? "" : String(v);
     if (/^[=+\-@]/.test(t)) t = "'" + t;
@@ -984,7 +1022,9 @@ function docRow(r) {
 /** Shared filter for the per-user list, the global list and the CSV. */
 function docFilters(q) {
   const params = [];
-  const where = [];
+  // Saved documents are the user's own files: listed only for people who
+  // said yes to "Help improve", and only those saved after it.
+  const where = [RV("d.user_id", "d.created_at")];
   const uid = parseInt(q.user_id, 10);
   if (Number.isFinite(uid)) { params.push(uid); where.push(`d.user_id = $${params.length}`); }
   const cat = String(q.category || "").trim();
@@ -1027,7 +1067,8 @@ router.get("/api/users/:id/documents", async (req, res) => {
   );
   const byCategory = await sq(
     `SELECT category, COUNT(*)::int AS n, COALESCE(SUM(size),0)::bigint AS bytes
-       FROM documents WHERE user_id = $1 GROUP BY category ORDER BY n DESC`,
+       FROM documents d WHERE user_id = $1 AND ${RV("d.user_id", "d.created_at")}
+      GROUP BY category ORDER BY n DESC`,
     [id]
   );
   const cats = byCategory.map((r) => ({ category: r.category, n: r.n, bytes: Number(r.bytes) }));
@@ -1070,10 +1111,15 @@ router.get("/api/documents/:docId/file", async (req, res) => {
   const docId = parseInt(req.params.docId, 10);
   if (!Number.isFinite(docId)) return res.status(400).json({ error: "bad document id" });
   const rows = await sq(
-    "SELECT id, user_id, filename, mime, path, title FROM documents WHERE id = $1", [docId]
+    `SELECT id, user_id, filename, mime, path, title,
+            ${RV("user_id", "created_at")} AS reviewable
+       FROM documents WHERE id = $1`, [docId]
   );
   const row = rows[0];
   if (!row) return res.status(404).json({ error: "no such document" });
+  if (!row.reviewable) {
+    return res.status(403).json({ error: "hidden: the user turned off Help improve" });
+  }
   if (!row.path || !fs.existsSync(row.path)) {
     return res.status(404).json({ error: "the file is no longer on disk" });
   }
@@ -1214,16 +1260,20 @@ router.get("/api/activity", async (req, res) => {
   const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
   const where = [];
   const params = [];
+  const rv = RV("a.user_id", "a.created_at");
   if (q) {
     params.push(`%${q}%`);
-    where.push(`(a.action ILIKE $${params.length} OR a.detail ILIKE $${params.length})`);
+    // A search only looks inside rows the team may read, or it would
+    // confirm which hidden rows hold a word.
+    where.push(`(a.action ILIKE $${params.length} OR (${rv} AND a.detail ILIKE $${params.length}))`);
   }
   if (Number.isFinite(userId)) {
     params.push(userId);
     where.push(`a.user_id = $${params.length}`);
   }
   const rows = await sq(
-    `SELECT a.action, a.detail, a.created_at, a.user_id, u.name
+    `SELECT a.action, CASE WHEN ${rv} THEN a.detail ELSE '(hidden)' END AS detail,
+            a.created_at, a.user_id, u.name
        FROM actions_log a LEFT JOIN users u ON u.id = a.user_id
       ${where.length ? "WHERE " + where.join(" AND ") : ""}
       ORDER BY a.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
@@ -1398,6 +1448,7 @@ router.get("/api/debug", async (req, res) => {
     razorpay_payments: env("RAZORPAY_KEY_ID"),
     google_places: env("GOOGLE_PLACES_API_KEY"),
     youtube: env("YOUTUBE_API_KEY"),
+    notion: env("NOTION_CLIENT_ID") && env("NOTION_CLIENT_SECRET"),
     google_signin: env("GOOGLE_WEB_CLIENT_ID"),
     dev_otp_bypass: String(process.env.ALLOW_DEV_PHONE_VERIFY) === "true",
   };

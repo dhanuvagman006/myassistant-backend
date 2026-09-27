@@ -419,6 +419,13 @@ async function init() {
   // encrypted at rest).
   await require("./mcp/schema").migrate((sql) => pool.query(sql));
 
+  // "Help improve the assistant": the choice, the consent record, and the
+  // hari_reviewable() function every admin view filters with.
+  await require("./users/helpImprove").migrate((sql) => pool.query(sql));
+
+  // Connected apps: Notion (tokens encrypted like the MCP secrets).
+  await require("./connectors/notion/store").migrate((sql) => pool.query(sql));
+
   // Document intelligence: chunk + embedding store for semantic retrieval.
   await require("./docs/intelligence").migrate((sql) => pool.query(sql));
 

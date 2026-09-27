@@ -81,6 +81,8 @@ const USER_TABLES = [
   ["document_chunks", "user_id"], // per-document search index
   ["document_links", "user_id"],
   ["google_tokens", "user_id"], // revoked at Google first
+  ["notion_connections", "user_id"], // revoked at Notion first
+  ["connector_oauth_states", "user_id"], // a "Connect Notion" still in flight
   ["swiggy_tokens", "user_id"],
   ["agent_memories", "user_id"], // everything the assistant remembers
   ["bookings", "user_id"], // the booking agent's ledger
@@ -154,6 +156,10 @@ const USER_TABLES = [
   ["posters", "user_id"],
   ["poster_photos", "user_id"],
   ["poster_consent", "user_id"],
+  // "Help improve the assistant" (2026-09-27): their choice, and the proof
+  // of notice and consent. With the account gone there is nothing to cover.
+  ["privacy_prefs", "user_id"],
+  ["consent_events", "user_id"],
 
   // Legacy tables, taken out of init() on 2026-08-10 but never DROPped, so
   // a database created before that date may still hold them.
@@ -277,19 +283,12 @@ function inside(root, p) {
   return full.startsWith(base + path.sep) ? full : null;
 }
 
-/** Unlinks a recording's .m4a and both raw halves. Returns files removed. */
-async function unlinkRecording(file) {
-  const f = inside(recorder.ROOT, file);
-  if (!f) return 0;
-  const all = /\.m4a$/.test(f)
-    ? [f, f.replace(/\.m4a$/, ".user.pcm"), f.replace(/\.m4a$/, ".agent.pcm")]
-    : [f];
-  let n = 0;
-  for (const p of all) {
-    try { await fsp.unlink(p); n++; } catch (_) { /* already gone */ }
-  }
-  return n;
-}
+/**
+ * Unlinks a recording's .m4a and both raw halves, only inside the
+ * recordings root. Returns files removed. Lives in the recorder since the
+ * "Help improve" switch-off needs it too.
+ */
+const unlinkRecording = (file) => recorder.unlinkAll(file);
 
 function countFiles(dir) {
   let n = 0;
@@ -341,6 +340,34 @@ async function revokeGoogle(uid) {
     console.warn("google revoke during account delete:", e.message);
     return "failed";
   }
+}
+
+/** Revokes their Notion grant (both tokens). Runs while the row still exists. */
+async function revokeNotion(uid) {
+  try {
+    const had = await require("../connectors/notion/routes").revokeStored(uid);
+    return had ? "revoked" : "not linked";
+  } catch (e) {
+    console.warn("notion revoke during account delete:", e.message);
+    return "failed";
+  }
+}
+
+/** Leftover Notion links of users who no longer exist: revoke before purging. */
+async function revokeOrphanNotion(cols) {
+  if (!cols.has("notion_connections.user_id")) return 0;
+  const rows = await query(
+    `SELECT n.user_id FROM notion_connections n
+      WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = n.user_id)`).catch(() => []);
+  let n = 0;
+  for (const r of rows) {
+    try {
+      if (await require("../connectors/notion/routes").revokeStored(r.user_id)) n++;
+    } catch (e) {
+      console.warn(`notion revoke for leftover ${r.user_id} failed`);
+    }
+  }
+  return n;
 }
 
 /** Closes their MCP connections so no client or tool outlives the rows. */
@@ -418,6 +445,7 @@ async function deleteUserEverywhere(userId, { reason = "" } = {}) {
 
   // 1) BEFORE the transaction: what needs the rows to still exist.
   report.revoked.google = await revokeGoogle(uid);
+  report.revoked.notion = await revokeNotion(uid);
   report.revoked.mcpConnections = await closeMcp(uid, cols);
   // A call still open on this pod would write audio after its row is gone.
   report.revoked.liveRecordings = await recorder.abortUser(uid).catch(() => 0);
@@ -808,6 +836,8 @@ async function purgeOrphans() {
   const tables = {};
   const put = (name, n) => { if (Number(n) > 0) tables[name] = (tables[name] || 0) + Number(n); };
   let recordingFiles = [];
+  // Before the rows go: the tokens are needed to revoke.
+  await revokeOrphanNotion(cols).catch(() => 0);
 
   await tx(async (client) => {
     for (const [table, col] of await existingUserTables(cols)) {
@@ -889,6 +919,16 @@ async function purgeOrphans() {
   return out;
 }
 
+async function notionStatus(uid) {
+  try {
+    const row = await one(
+      `SELECT status, workspace_name FROM notion_connections WHERE user_id = $1`, [Number(uid)]);
+    return { connected: Boolean(row && row.status === "connected"), workspace: row ? row.workspace_name : null };
+  } catch (_) {
+    return { connected: false, workspace: null };
+  }
+}
+
 // ---------- GET /privacy/export ----------
 router.get("/export", async (req, res) => {
   const uid = req.user.sub;
@@ -900,6 +940,7 @@ router.get("/export", async (req, res) => {
     // service link status instead of raw tokens
     connections: {
       google: !!(await gtokens.isConnected?.(uid)),
+      notion: await notionStatus(uid),
     },
   };
   const cols = await columnSet();
@@ -947,6 +988,72 @@ router.get("/export", async (req, res) => {
     'attachment; filename="myassistant-data.json"'
   );
   res.json(data);
+});
+
+// ---------- "Help improve the assistant" ----------
+const helpImprove = require("../users/helpImprove");
+
+/** Changes per user per minute; a loop must not spam consent events. */
+const prefChanges = new Map();
+function prefThrottled(uid) {
+  const now = Date.now();
+  if (prefChanges.size > 1000) prefChanges.clear();
+  const list = (prefChanges.get(uid) || []).filter((t) => now - t < 60_000);
+  prefChanges.set(uid, list);
+  if (list.length >= 10) return true;
+  list.push(now);
+  return false;
+}
+
+async function prefsBody(uid) {
+  const s = await helpImprove.state(uid);
+  const eff = s.helpImprove === null ? helpImprove.policy() === "on" : s.helpImprove;
+  return {
+    helpImprove: s.helpImprove,
+    effective: eff,
+    ask: helpImprove.policy() === "ask" && s.helpImprove === null,
+    decidedAt: s.decidedAt,
+    noticeVersion: helpImprove.NOTICE_VERSION,
+    keeps: helpImprove.keeps(),
+  };
+}
+
+router.get("/prefs", async (req, res) => {
+  const uid = Number(req.user.sub);
+  if (!(uid > 0)) return res.status(401).json({ error: "sign in" });
+  try {
+    res.json(await prefsBody(uid));
+  } catch (e) {
+    console.warn("privacy prefs read failed:", e.message);
+    res.status(500).json({ error: "could not read" });
+  }
+});
+
+router.put("/prefs", async (req, res) => {
+  const uid = Number(req.user.sub);
+  if (!(uid > 0)) return res.status(401).json({ error: "sign in" });
+  const b = req.body || {};
+  if (typeof b.helpImprove !== "boolean") {
+    return res.status(400).json({ error: "helpImprove must be true or false" });
+  }
+  const source = String(b.source || "");
+  if (!helpImprove.SOURCES.has(source)) return res.status(400).json({ error: "bad source" });
+  const noticeVersion = String(b.noticeVersion || "");
+  if (!helpImprove.NOTICE_VERSIONS.has(noticeVersion)) {
+    return res.status(400).json({ error: "unknown notice version" });
+  }
+  if (prefThrottled(uid)) return res.status(429).json({ error: "too many changes" });
+  try {
+    const appBuild = Number(req.get("x-app-build") || b.appBuild || 0) || 0;
+    const out = await helpImprove.set(uid, b.helpImprove, { source, noticeVersion, appBuild });
+    const body = await prefsBody(uid);
+    const reply = { helpImprove: body.helpImprove, effective: body.effective, decidedAt: body.decidedAt };
+    if (out.removed) reply.removed = out.removed;
+    res.json(reply);
+  } catch (e) {
+    console.error("privacy prefs write failed:", e.message);
+    res.status(500).json({ error: "could not save — try again" });
+  }
 });
 
 // ---------- DELETE /privacy/account ----------

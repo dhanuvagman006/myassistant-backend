@@ -810,7 +810,14 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   // reconnected — once per process, and never more than 3 s of this turn.
   if (ctx.userId) {
     await require("../mcp/routes").ensureConnectedWithin(ctx.userId).catch(() => {});
+    // Whether this user's Notion tools are offered (free until configured).
+    await require("../connectors/notion/store").prime(ctx.userId).catch(() => {});
   }
+  // "Add it to my Notion" from someone who has not connected it gets an
+  // honest line — only on the turns that mention Notion.
+  const notionLine = ctx.userId && /\bnotion\b/i.test(userText)
+    ? require("../connectors/notion/tools").notionHintFor(ctx.userId, ctx.appBuild) : "";
+  if (notionLine) ctx.extraSystem = [ctx.extraSystem || "", notionLine].filter(Boolean).join("\n");
   const only = ctx.background
     ? registry
         .list()

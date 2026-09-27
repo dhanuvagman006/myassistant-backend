@@ -320,6 +320,8 @@ const SEED_WORLD = new Set([
   // files it for the claim checker. make_greeting_poster continuing a card
   // is let through GATE 1 by its draftEdit flag instead.
   "make_greeting_poster", "share_poster", "improve_old_photo",
+  // 2026-09-27: writes into the user's Notion, which others may share.
+  "notion_add", "notion_create_page",
 ]);
 
 function isWorldAction(name) {
@@ -394,6 +396,8 @@ const SEED_REPEAT = new Set([
   // WhatsApp twice. change_poster is NOT here — "bigger" said twice is
   // two steps up, and both are meant.
   "make_greeting_poster", "share_poster", "improve_old_photo",
+  // A stutter must not add the same items to a Notion page twice.
+  "notion_add", "notion_create_page",
 ]);
 
 /**
@@ -417,6 +421,8 @@ const SEED_DURABLE = new Set([
   "send_patient_document", "order_food", "book_ride", "book_movie_tickets",
   "collect_payment", "email_reply", "pay_by_upi",
   "send_video_note",
+  // Once it is in Notion it has left the device (2026-09-27).
+  "notion_add", "notion_create_page",
 ]);
 
 const SEED_UNATTENDED = new Set([
@@ -434,6 +440,9 @@ const SEED_UNATTENDED = new Set([
     // Words said in the user's own face and voice need the user there
     // to hear them read back (2026-09-26); readBack skips unattended runs.
     "send_video_note",
+    // Writes into Notion need the user there to hear what goes where;
+    // reading may run in a scheduled task (2026-09-27).
+    "notion_add", "notion_create_page",
   ]);
 
 /**
@@ -461,7 +470,9 @@ const SEED_UNATTENDED = new Set([
  */
 const UNTRUSTED_SOURCES = new Set(["email_read", "read_webpage", "deep_research",
   // It hands back an article's text, exactly as read_webpage does.
-  "read_news_story"]);
+  "read_news_story",
+  // A Notion page is third-party text: shared workspaces have other authors.
+  "notion_search", "notion_read_page"]);
 const TAINT_SENSITIVE = new Set([
   "email_send", "send_agent_message", "send_whatsapp_message", "send_document",
   "send_patient_document", "place_phone_call", "delete_calendar_event",
@@ -474,6 +485,9 @@ const TAINT_SENSITIVE = new Set([
   "do_task_in_app", "uninstall_app",
   // Nor put words in the user's own mouth, on video.
   "send_video_note",
+  // A Notion page can be shared with other people: a write after reading
+  // an email or a web page gets the same warning as a send.
+  "notion_add", "notion_create_page",
 ]);
 
 const isUntrustedSource = (tool) =>
@@ -836,7 +850,11 @@ async function execute(name, rawArgs, ctx = {}) {
             needsConfirmation: true,
             tool: name,
             args: confirmArgs,
-            summary: prep.summary,
+            // The same warning as the plain branch below: a resolved card
+            // can still have been asked for by an email or a web page.
+            summary: untrusted
+              ? `${prep.summary} — this came up after reading an email or web page, or someone else's message, so check it is what you want`
+              : prep.summary,
           };
         }
       } catch (e) {
@@ -1240,6 +1258,7 @@ module.exports = {
   execute,
   requiresConfirmation,
   markTurnUntrusted,
+  turnIsUntrusted,
   TAINT_SENSITIVE,
   UNTRUSTED_SOURCES,
   coerceArgs,

@@ -41,10 +41,11 @@ async function add(userId, fb = {}) {
 
   const row = await db.one(
     `INSERT INTO developer_feedback
-       (user_id, kind, summary, details, user_words, source, app_build, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+       (user_id, kind, summary, details, user_words, source, app_build, created_at, user_asked)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
     [userId, kind, summary, clip(fb.details, 2000), clip(fb.userWords, 500),
-     clip(fb.source || "assistant", 20), Number(fb.appBuild) || 0, Date.now()]
+     clip(fb.source || "assistant", 20), Number(fb.appBuild) || 0, Date.now(),
+     fb.userAsked ? 1 : 0]
   );
   return { ok: true, id: row.id, duplicate: false };
 }
@@ -87,7 +88,11 @@ async function alert(summary, { details = "", windowMs = ALERT_WINDOW } = {}) {
 }
 
 async function list({ status = "", q = "", limit = 50, offset = 0 } = {}) {
-  const where = [];
+  // A row is shown when the user asked for it to be passed on, when it is
+  // an ops alert, or when they said yes to "Help improve" (it was filed
+  // quietly after that).
+  const where = [`(f.user_id = 0 OR f.user_asked = 1 OR ${
+    require("../users/helpImprove").reviewableSql("f.user_id", "f.created_at")})`];
   const params = [];
   if (STATUSES.has(status)) {
     params.push(status);

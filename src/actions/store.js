@@ -408,12 +408,16 @@ async function failures({ sinceMs, limit = 100, tool, includeRefusals = true } =
     (includeRefusals ? " OR decision <> 'ran'" : "") + ")";
   if (tool) { params.push(clean(tool, 60)); where += ` AND tool = $${params.length}`; }
   params.push(Math.min(Math.max(Number(limit) || 100, 1), 500));
-  const rows = await query(
-    `SELECT * FROM executed_actions WHERE ${where} ORDER BY id DESC LIMIT $${params.length}`,
+  // Counted from EVERY row (no words in a count); only rows of people who
+  // said yes to "Help improve" are shown, or used as a group's example.
+  const all = await query(
+    `SELECT *, ${require("../users/helpImprove").reviewableSql("user_id", "created_at")} AS reviewable
+       FROM executed_actions WHERE ${where} ORDER BY id DESC LIMIT $${params.length}`,
     params
   );
+  const rows = all.filter((r) => r.reviewable).map(({ reviewable: _r, ...r }) => r);
   const byTool = new Map();
-  for (const r of rows) {
+  for (const r of all) {
     const key = `${r.tool}|${r.decision || "ran"}`;
     if (!byTool.has(key)) {
       byTool.set(key, { tool: r.tool, decision: r.decision || "ran", n: 0, users: new Set(), last: 0, example: "" });
@@ -421,10 +425,8 @@ async function failures({ sinceMs, limit = 100, tool, includeRefusals = true } =
     const g = byTool.get(key);
     g.n++;
     g.users.add(r.user_id);
-    if (Number(r.created_at) > g.last) {
-      g.last = Number(r.created_at);
-      g.example = r.result || r.detail || "";
-    }
+    if (Number(r.created_at) > g.last) g.last = Number(r.created_at);
+    if (r.reviewable && !g.example) g.example = r.result || r.detail || "";
   }
   return {
     rows,

@@ -68,21 +68,9 @@ const CATALOG = [
     config: { url: "https://mcp.kite.trade/sse" },
     auth: { type: "none" },
   },
-  {
-    id: "notion",
-    name: "Notion workspace",
-    description:
-      "Read and update your Notion pages and databases — notes, trackers, " +
-      "client records. Needs one integration token from notion.so/my-integrations.",
-    category: "Productivity",
-    transport: "http",
-    config: { url: "https://mcp.notion.com/mcp" },
-    auth: {
-      type: "bearer",
-      label: "Notion integration token",
-      hint: "Create a free internal integration at notion.so/my-integrations and paste its secret.",
-    },
-  },
+  // No Notion entry (2026-09-27): Notion's hosted MCP server takes OAuth
+  // only, so a pasted token could never connect. Notion is a native
+  // connector now — src/connectors/notion, Connected apps in the app.
   {
     id: "github",
     name: "GitHub",

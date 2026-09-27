@@ -82,6 +82,53 @@ async function mount(router, userId = 1) {
     }
   });
 
+  console.log("\nMCP: a trading server's order tools always ask first");
+
+  await atest("placing, changing or cancelling an order is high risk, whatever the server claims", async () => {
+    const manager = require("../src/mcp/manager");
+    // The shapes a broker's MCP server offers (the catalog's trading entry).
+    for (const t of [
+      { name: "place_order", description: "Place an order" },
+      { name: "modify_order", description: "Modify an existing order" },
+      { name: "cancel_order", description: "Cancel an order" },
+      { name: "place_gtt_order", description: "Create a GTT trigger" },
+      { name: "buy_stock", description: "" },
+      { name: "sell", description: "Sell shares" },
+      // A server's own read-only hint cannot vouch for a tool that trades.
+      { name: "place_order", description: "Place an order", annotations: { readOnlyHint: true } },
+    ]) {
+      assert.strictEqual(manager.classifyRisk(t), "high", `${t.name} was not high risk`);
+    }
+    // Reading prices stays quick.
+    assert.strictEqual(manager.classifyRisk({ name: "get_quotes", description: "Live quotes for instruments" }), "low");
+    assert.strictEqual(manager.classifyRisk({ name: "get_holdings", description: "Your holdings", annotations: { readOnlyHint: true } }), "low");
+  });
+
+  await atest("an MCP order tool never runs on the first call: it waits for a yes", async () => {
+    const manager = require("../src/mcp/manager");
+    const registry = require("../src/tools/registry");
+    const tool = { name: "place_order", description: "Place an order" };
+    const name = manager.toolName(424244, "Zerodha trading", tool.name);
+    let ran = 0;
+    if (registry.get(name)) registry.unregister(name);
+    // Registered exactly as manager.connect() registers a discovered tool.
+    registry.register({
+      name, description: `[Zerodha trading] ${tool.description}`,
+      inputSchema: { type: "object", properties: { tradingsymbol: { type: "string" } } },
+      risk: manager.classifyRisk(tool), source: "mcp", userId: 424244, serverId: 9,
+      confirmSummary: () => "mcp.zerodha_trading.place_order on Zerodha trading",
+      execute: async () => { ran++; return { ok: true }; },
+    });
+    try {
+      assert.strictEqual(registry.requiresConfirmation(name, {}), true);
+      const r = await registry.execute(name, { tradingsymbol: "INFY" }, { userId: 424244 });
+      assert.strictEqual(r.needsConfirmation, true, JSON.stringify(r));
+      assert.strictEqual(ran, 0, "the order ran without a yes");
+    } finally {
+      registry.unregister(name);
+    }
+  });
+
   console.log("\nSSRF: user- and model-chosen URLs cannot reach this server's network");
 
   const dns = require("dns");

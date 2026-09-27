@@ -36,6 +36,13 @@ const { execFile } = require("child_process");
 const { query, run } = require("../db");
 
 const ENABLED = String(process.env.LIVE_RECORD ?? "1") !== "0";
+
+/**
+ * "Help improve the assistant" is off for this user (users/helpImprove.js):
+ * nothing is recorded. A sentinel, so begin() stays silent for it.
+ */
+const OPTED_OUT = new Error("help improve is off");
+const allowsReview = (uid) => require("../users/helpImprove").allowsReview(uid);
 const ROOT = process.env.LIVE_RECORD_DIR || "/app/data/recordings";
 
 /** The two ends of the call arrive at different rates. */
@@ -280,6 +287,9 @@ class Recording {
   }
 
   async start() {
+    // Only people who said yes to "Help improve" are recorded. Checked
+    // before anything touches the disk.
+    if (!(await allowsReview(this.userId))) throw OPTED_OUT;
     const day = new Date(this.startedAt).toISOString().slice(0, 10);
     this.dir = path.join(ROOT, day);
     await fsp.mkdir(this.dir, { recursive: true });
@@ -346,6 +356,14 @@ class Recording {
     const durationMs = Math.min(this.elapsed(), MAX_MINUTES * 60_000);
     await this.user.close(durationMs);
     await this.agent.close(durationMs);
+
+    // Switched off while this call was open (a start that was already in
+    // flight): discard BEFORE the merge, so no encode is spent on audio
+    // that has to be deleted.
+    if (!(await allowsReview(this.userId))) {
+      await this.discard();
+      return;
+    }
 
     // A socket that opened and closed with nobody speaking is not a
     // conversation; leaving those around buries the real ones.
@@ -527,6 +545,35 @@ async function remove(id, file) {
   await run(`DELETE FROM live_recordings WHERE id = $1`, [id]).catch(() => {});
 }
 
+/**
+ * The absolute path `p` if it lies strictly inside ROOT, else null: a
+ * stored path with "../" can never aim an unlink anywhere else.
+ */
+function insideRoot(p) {
+  if (!p) return null;
+  const base = path.resolve(String(ROOT));
+  const full = path.resolve(String(p));
+  return full.startsWith(base + path.sep) ? full : null;
+}
+
+/**
+ * Unlinks a recording's .m4a and both raw halves, only inside ROOT.
+ * Returns how many files went. Used by account erasure and by the
+ * "Help improve" switch-off.
+ */
+async function unlinkAll(file) {
+  const f = insideRoot(file);
+  if (!f) return 0;
+  const all = /\.m4a$/.test(f)
+    ? [f, f.replace(/\.m4a$/, ".user.pcm"), f.replace(/\.m4a$/, ".agent.pcm")]
+    : [f];
+  let n = 0;
+  for (const p of all) {
+    try { await fsp.unlink(p); n++; } catch (_) { /* already gone */ }
+  }
+  return n;
+}
+
 /** Day folders left behind once their recordings are gone. */
 async function sweepEmptyDays() {
   try {
@@ -545,7 +592,9 @@ async function sweepEmptyDays() {
 async function list({ userId, limit = 50, offset = 0 } = {}) {
   await migrate();
   const params = [];
-  let where = "r.state = 'ready'";
+  // Only recordings of people who said yes, made after they said it.
+  let where = "r.state = 'ready' AND " +
+    require("../users/helpImprove").reviewableSql("r.user_id", "r.started_at");
   if (Number.isFinite(userId) && userId > 0) {
     params.push(userId);
     where += ` AND r.user_id = $${params.length}`;
@@ -568,7 +617,9 @@ async function get(id) {
   await migrate();
   const rows = await query(
     `SELECT id, user_id, session_id, file, bytes, duration_ms, started_at
-       FROM live_recordings WHERE id = $1 AND state = 'ready'`, [Number(id) || 0]);
+       FROM live_recordings WHERE id = $1 AND state = 'ready'
+        AND ${require("../users/helpImprove").reviewableSql("user_id", "started_at")}`,
+    [Number(id) || 0]);
   return rows[0] || null;
 }
 
@@ -628,7 +679,7 @@ function begin(userId, sessionId) {
   if (!(Number(userId) > 0) || !sessionId) return null;
   const rec = new Recording(userId, sessionId);
   const ready = rec.start().catch((e) => {
-    console.warn("recorder: start failed —", e.message);
+    if (e !== OPTED_OUT) console.warn("recorder: start failed —", e.message);
     rec.stopped = true;
     live.delete(rec);
   });
@@ -668,9 +719,21 @@ async function stopAll() {
  * unlinked; the caller deletes the rows. Returns how many were dropped.
  */
 async function abortUser(userId) {
+  return closeOpen(userId, { markErased: true });
+}
+
+/**
+ * "Help improve" switched off mid-call: drop this user's open recordings
+ * the same way, without marking the account as erased.
+ */
+async function dropOpen(userId) {
+  return closeOpen(userId, { markErased: false });
+}
+
+async function closeOpen(userId, { markErased }) {
   const uid = Number(userId);
   // Marked before looking, in the same tick: see erasedUsers.
-  if (uid > 0) erasedUsers.add(uid);
+  if (markErased && uid > 0) erasedUsers.add(uid);
   const mine = [...live].filter((r) => r.userId === uid);
   for (const r of mine) {
     r.stopped = true;
@@ -694,4 +757,6 @@ module.exports = {
   // Account erasure (src/routes/privacy.js) finds the files through the
   // rows, checks every path is under ROOT, and tidies the day folders.
   migrate, abortUser, cancelErase, sweepEmptyDays, ROOT, MAX_MINUTES,
+  // "Help improve" switch-off (users/helpImprove.js).
+  dropOpen, unlinkAll, OPTED_OUT,
 };

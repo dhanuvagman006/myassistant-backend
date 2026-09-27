@@ -28,6 +28,11 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
 (async () => {
   await db.init();
   await db.run(`DELETE FROM developer_feedback WHERE user_id=$1`, [UID]);
+  // This tester said yes to "Help improve" (quiet filing needs it; the
+  // switch itself is pinned by test:improve).
+  await db.run(
+    `INSERT INTO privacy_prefs (user_id, help_improve, on_since, updated_at) VALUES ($1, 1, 0, $2)
+     ON CONFLICT (user_id) DO UPDATE SET help_improve = 1, on_since = 0`, [UID, Date.now()]);
   const registry = require("../src/tools/registry");
   require("../src/tools/builtins").registerBuiltins();
   const tool = registry.get("send_developer_feedback");

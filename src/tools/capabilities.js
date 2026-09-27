@@ -83,6 +83,33 @@ const INTEGRATIONS = {
     env: ["YOUTUBE_API_KEY"],
     why: "searching YouTube needs the Data API configured",
   },
+  // Notion (2026-09-27): the deployment has a public connection…
+  notion_app: {
+    label: "Notion connection",
+    env: ["NOTION_CLIENT_ID", "NOTION_CLIENT_SECRET"],
+    why: "Notion is not set up on this server",
+  },
+  // …and this user linked their workspace. readySync answers from the
+  // cache store.prime() fills before declarations: a miss is "no", so the
+  // tools are hidden rather than offered to everyone. Execution re-reads.
+  notion: {
+    label: "their Notion",
+    perUser: true,
+    readySync(userId) {
+      return require("../connectors/notion/store").isConnectedSync(userId);
+    },
+    async readyAsync(userId) {
+      if (!userId) return false;
+      try {
+        const c = await require("../connectors/notion/store").load(userId);
+        return Boolean(c && c.secrets && c.row.status === "connected");
+      } catch (_) {
+        return false;
+      }
+    },
+    why: "their Notion is not connected",
+    fix: "offer to open Connected apps",
+  },
   avatar: {
     label: "a talking-avatar provider",
     anyEnv: ["HEYGEN_API_KEY", "BEY_API_KEY", "SIMLI_FACE_ID", "TAVUS_API_KEY"],
@@ -113,10 +140,12 @@ function missingEnv(spec) {
  * Synchronous integration check. Returns null when the answer needs a
  * database round trip, so the caller knows to resolve it asynchronously.
  */
-function integrationReadySync(id) {
+function integrationReadySync(id, userId, { forDeclaration = false } = {}) {
   const spec = INTEGRATIONS[id];
   if (!spec) return true; // an unknown integration id never blocks a tool
-  if (spec.perUser) return null;
+  // A per-user link with a synchronous answer decides what is OFFERED; a
+  // call is always checked against the database (readyAsync).
+  if (spec.perUser) return spec.readySync && forDeclaration ? Boolean(spec.readySync(userId)) : null;
   return envReady(spec);
 }
 
@@ -140,7 +169,7 @@ async function integrationReady(id, userId) {
  * two must never be shown to the wrong one — telling a user to set an
  * environment variable is the kind of homework this product does not give.
  */
-function checkOne(req, { userId, deviceCaps, platform }) {
+function checkOne(req, { userId, deviceCaps, platform, forDeclaration = false }) {
   switch (req.kind) {
     case "auth":
       return userId ? null : {
@@ -201,7 +230,7 @@ function checkOne(req, { userId, deviceCaps, platform }) {
     }
 
     case "integration": {
-      const ready = integrationReadySync(req.id);
+      const ready = integrationReadySync(req.id, userId, { forDeclaration });
       if (ready === null) return { deferred: true, kind: "integration", id: req.id };
       if (ready) return null;
       const spec = INTEGRATIONS[req.id] || {};

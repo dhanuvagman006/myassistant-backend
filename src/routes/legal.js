@@ -11,7 +11,7 @@
  */
 const router = require("express").Router();
 
-const EFFECTIVE = "31 August 2026";
+const EFFECTIVE = "27 September 2026";
 const CONTACT = "myassistant658@gmail.com";
 const ENTITY = "Hari Assistant";
 
@@ -62,7 +62,7 @@ const PRIVACY = `
 <table>
 <tr><th>Data</th><th>Why we collect it</th></tr>
 <tr><td>Account details — name, email, sign-in provider, verified phone number</td><td>To create your account, secure it, and let other Hari users' assistants deliver messages to you by your number.</td></tr>
-<tr><td>Voice audio and transcripts</td><td>To understand and answer you. Audio is processed in real time and is not kept as recordings; transcripts of a session are used to run that conversation.</td></tr>
+<tr><td>Voice and conversations</td><td>To understand and answer you. Your words are kept for a short time so the assistant can follow the conversation. Only if you turn on "Help improve the assistant", we also keep recordings of your voice chats for up to 14 days and the text of your conversations, so our team can find and fix mistakes.</td></tr>
 <tr><td>Contacts you interact with</td><td>Contact search runs on your phone. A contact's name/number reaches our servers only when needed to complete an action you asked for (a call, a message, adding someone to your circle).</td></tr>
 <tr><td>Location (approximate, optional)</td><td>Weather, nearby places, cab pickups. Collected only after you grant the Android permission; deny it and these features simply ask you for a city.</td></tr>
 <tr><td>Documents and photos you save</td><td>Only files you explicitly ask Hari to save ("scan this", "remember this receipt") are stored, so you can recall and share them later.</td></tr>
@@ -77,8 +77,14 @@ const PRIVACY = `
 <li>We do not sell or rent your personal data to anyone.</li>
 <li>We do not show advertising and do not share data with advertisers or data brokers.</li>
 <li>We do not read your contacts, messages, files or location in the background — data flows only when a feature you invoked needs it.</li>
-<li>We do not store your voice as audio recordings.</li>
+<li>We do not use your conversations, recordings, documents or connected apps to train AI models. Our team reviews conversations and recordings only if you turn on "Help improve the assistant".</li>
 </ul>
+
+<h2>2a. Help improve the assistant (optional)</h2>
+<p>{{HELP_DEFAULT}} When it is on, our team may listen to recordings of your voice chats (kept up to 14 days) and read your conversations, only to find and fix mistakes. When it is off, voice recordings are not kept, your conversations are kept only as long as the assistant needs them (about a week) and nobody on our team reads them, and we still count things like how many requests were answered and how fast, without your words. Turn it off at any time in the app under You → Privacy &amp; security. Your recordings are then deleted straight away. The assistant works the same either way.</p>
+
+<h2>2b. Connected apps</h2>
+<p>If you connect Notion, the assistant can read and add to only the pages you choose to share, and only when you ask. It always asks you before changing anything. Disconnecting removes our access at Notion and deletes the link from our servers.</p>
 
 <h2>3. Processors we rely on</h2>
 <p>Hari uses a small number of service providers to function. They receive only what the feature requires, and only to provide the service to you:</p>
@@ -86,6 +92,7 @@ const PRIVACY = `
 <tr><th>Provider</th><th>Used for</th></tr>
 <tr><td>Google (Gemini AI, Firebase Authentication, Cloud Messaging)</td><td>Understanding and answering your requests; sign-in; push notifications. Voice/text sent for AI processing is handled under Google's API data-use terms.</td></tr>
 <tr><td>Telephony provider (Bolna AI)</td><td>Placing assistant-relayed phone calls you request.</td></tr>
+<tr><td>Notion (only if you connect it)</td><td>Reading and adding to the pages you share.</td></tr>
 <tr><td>Market/news/image services (Yahoo Finance, Google News, image-generation providers)</td><td>Live market data, headlines, and images you ask Hari to create. Only your query content is sent — never your identity.</td></tr>
 </table>
 
@@ -163,7 +170,12 @@ const TERMS = `
 router.get("/privacy", (_req, res) => {
   res.setHeader("Content-Security-Policy",
     "default-src 'self'; style-src 'unsafe-inline' https:; font-src https: data:;");
-  res.send(shell("Privacy Policy", PRIVACY));
+  // The first line of §2a follows the server's default for people who
+  // have not chosen yet (users/helpImprove.js).
+  const on = require("../users/helpImprove").policy() === "on";
+  res.send(shell("Privacy Policy", PRIVACY.replace("{{HELP_DEFAULT}}", on
+    ? "This setting is on unless you turn it off."
+    : "This setting is off unless you turn it on.")));
 });
 
 router.get("/terms", (_req, res) => {
