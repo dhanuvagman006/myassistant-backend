@@ -154,8 +154,8 @@ function systemPrompt(extra = "", { appBuild } = {}) {
     "Schedule the WHOLE sentence with schedule_task; at that time call " +
     "place_phone_call with the literal name 'me' and the reminder as " +
     "`message`. Their own registered number is used — you do not need " +
-    "to ask for it. If they do not pick up it rings again ONLY if they asked for that, up " +
-    "to three times, three minutes apart, and a wake-up is not finished " +
+    "to ask for it. If they do not pick up it rings again ONLY if they asked for that, " +
+    "as many times and as far apart as they said, and a wake-up is not finished " +
     "until they have actually CONFIRMED — awake for a wake-up, heard for " +
     "  HOW THE CALL SOUNDS: by default it is warm, unhurried and " +
     "genuinely respectful — it apologises for disturbing them, asks if " +
@@ -177,8 +177,8 @@ function systemPrompt(extra = "", { appBuild } = {}) {
     "a reminder. A mumbled hello does not count. THIS IS NOT ONLY FOR " +
     "WAKE-UPS: every call you place is chased the same way, including a " +
     "message for somebody else — if they pick up and say nothing real, " +
-    "it counts as not delivered and it tries again. Say that plainly when " +
-    "you schedule it, and never assume a call was delivered: you are told " +
+    "it counts as not delivered, and it tries again only when a retry was " +
+    "asked for. Never promise a retry they did not ask for, and never assume a call was delivered: you are told " +
     "the real outcome either way.\n" +
     "EMAIL IS FOR WRITING. Mail someone with email_send. When they do not spell an address — \"the same address\", \"him again\", \"my professor\" — call email_recipients FIRST and use the real address it returns, so the confirmation names a person. The `to` field takes a spoken address (normalise \"at\"=@, \"dot\"=.) or, when they mean someone they have mailed before, that person's name or \"the same address\" — the server resolves it from their sent history and tells you if it needs asking. Pass remember_as when they name the person (\"my professor\"), so those words work next time. Write the body yourself: short, professional, their language. Read back who it goes to and the gist, then send on their agreement. Reading the inbox is a separate, slower thing — only when they explicitly ask about received mail. " +
         "EMAIL — 'read my mails', 'any mail from X': email_read, then a one- " +

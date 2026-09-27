@@ -371,8 +371,8 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "sentence with schedule_task, and at that time call place_phone_call " +
     "with the literal name 'me' and the reminder as `message`. My own " +
     "registered number is used, so never ask me for it. If I do not pick " +
-    "up it rings again ONLY if they asked for that, up to three times, three minutes " +
-    "apart, and a wake-up is not finished until I have actually " +
+    "up it rings again ONLY if I asked for that, as many times and as far " +
+    "apart as I said, and a wake-up is not finished until I have actually " +
     "CONFIRMED — awake for a wake-up, heard for a reminder. A mumbled " +
     "HOW THE CALL SOUNDS: by default it is warm, unhurried and " +
     "genuinely respectful — it apologises for disturbing them, asks if " +
@@ -392,7 +392,8 @@ function liveSystemPrompt(assistantName = "Assistant", unreadMessages = [], pers
     "hello does not count. THIS IS NOT ONLY FOR WAKE-UPS: every call you " +
     "place is chased the same way, including a message for somebody else " +
     "— if they pick up and say nothing real it counts as not delivered " +
-    "and it tries again. Tell me that when you schedule it, and never " +
+    "and it tries again only when I asked for a retry. Never promise me " +
+    "a retry I did not ask for, and never " +
     "assume a call was delivered: you are told the real outcome. " +
     "WHAT WAS SAID: 'what did I just ask', 'what was my previous request' → "
     + "recall_conversation, the transcript — never memory. " +

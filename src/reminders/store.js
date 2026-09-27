@@ -222,17 +222,22 @@ async function setDone(userId, id, done, { tzOffsetMin = 330 } = {}) {
     // call badge again, so the phone must ring at its time again too —
     // ticking it off cancelled the job, and flipping the flag alone left
     // a reminder that says it calls and never does.
+    // The UPDATE is the claim: the app commits each toggle as its snackbar
+    // closes, without waiting for the last, so two un-ticks can arrive
+    // together — and a second queued job would ring the phone twice (the
+    // job checks only that the reminder is not done).
     const cur = await one(
-      "SELECT * FROM reminders WHERE user_id = $1 AND id = $2",
+      "UPDATE reminders SET done = 0 WHERE user_id = $1 AND id = $2 AND done <> 0 RETURNING *",
       [userId, id]
     );
-    if (cur && cur.done && cur.deliver === "call") {
+    if (cur && cur.deliver === "call") {
       await cancelCall(cur.call_job_id);
       const jobId = await queueCall(userId, id, cur.text, Number(cur.due_at));
-      return (await run(
-        "UPDATE reminders SET done = 0, call_job_id = $3 WHERE user_id = $1 AND id = $2",
+      await run(
+        "UPDATE reminders SET call_job_id = $3 WHERE user_id = $1 AND id = $2",
         [userId, id, jobId]
-      )) > 0;
+      );
+      return true;
     }
   }
   return (await run(
