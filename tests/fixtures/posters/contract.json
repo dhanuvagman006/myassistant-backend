@@ -723,6 +723,12 @@
         "note": "birthday card",
         "tags": "poster, birthday",
         "clientId": null,
+
+        "source": "",
+
+        "sourceLabel": "",
+
+        "sourceVerified": false,
         "createdAt": 1790000001000
       },
       "poster": {
@@ -790,6 +796,12 @@
         "note": "old photo, cleaned up",
         "tags": "old-photo, cleaned-up",
         "clientId": null,
+
+        "source": "",
+
+        "sourceLabel": "",
+
+        "sourceVerified": false,
         "createdAt": 1790000001000
       }
     }

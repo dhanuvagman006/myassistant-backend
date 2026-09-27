@@ -367,6 +367,16 @@ async function init() {
     -- database (new environment, disaster restore) failed to boot.
     ALTER TABLE documents ADD COLUMN IF NOT EXISTS
       understanding TEXT NOT NULL DEFAULT '';
+    -- Bills by email (mailin/): a document that came from an outside
+    -- sender. source 'email', source_ref '<mail_inbound.id>:<part>' (a
+    -- retry reuses its document), source_label the From DOMAIN, and
+    -- source_verified 1 when the sender's signature checked out.
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT '';
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_ref TEXT NOT NULL DEFAULT '';
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_label TEXT NOT NULL DEFAULT '';
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_verified INTEGER NOT NULL DEFAULT 0;
+    CREATE UNIQUE INDEX IF NOT EXISTS documents_source_ref
+      ON documents(user_id, source_ref) WHERE source_ref <> '';
 
     -- CLIENTS / PATIENTS (professional mode, Aug 2026): a doctor, lawyer,
     -- CA… keeps a per-person case file. Documents link to a client via
@@ -464,6 +474,9 @@ async function init() {
   // "Send messages as you": consent + identity video, and the video notes
   // the owner makes from it by hand (2026-09-26).
   await require("./videonotes/store").migrate((sql) => pool.query(sql));
+
+  // Bills by email: the private address and the emails it received.
+  await require("./mailin/store").migrate((sql) => pool.query(sql));
 
   // Live avatar persistence: per-user personas (the brain hookup),
   // session records, and the rolling recent-conversation window.

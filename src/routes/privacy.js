@@ -166,6 +166,11 @@ const USER_TABLES = [
   ["shortcut_names", "user_id"],
   ["shortcuts", "user_id"],
   ["shortcut_runs", "user_id"],
+  // Bills by email (2026-09-27): their private address (old ones and the
+  // sending addresses they marked "This was me"), and the emails received.
+  // Raw files live in files/<uid>/mailin/, which goes with files/<uid>.
+  ["mail_addresses", "user_id"],
+  ["mail_inbound", "user_id"],
 
   // Legacy tables, taken out of init() on 2026-08-10 but never DROPped, so
   // a database created before that date may still hold them.

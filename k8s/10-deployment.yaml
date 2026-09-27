@@ -54,6 +54,11 @@ spec:
           ports:
             - name: http
               containerPort: 3000
+            # Bills by email (only used when MAILIN_ENABLED=1). Exposed on
+            # host port 25 by 40-smtp-service.yaml. Production gets this
+            # by kubectl patch — see docs/ASSISTANT_INBOX_SETUP.md.
+            - name: smtp
+              containerPort: 2525
           envFrom:
             - configMapRef:
                 name: myassistant-config
@@ -67,6 +72,11 @@ spec:
             - name: firebase
               mountPath: /app/firebase-adminsdk.json
               subPath: firebase-adminsdk.json
+            # Bills by email: the SMTP receiver's own self-signed TLS key
+            # (optional — without it STARTTLS is simply not offered).
+            - name: mailin-tls
+              mountPath: /app/mailin-tls
+              readOnly: true
           resources:
             requests:
               cpu: 100m
@@ -94,6 +104,10 @@ spec:
         - name: firebase
           secret:
             secretName: firebase-adminsdk
+        - name: mailin-tls
+          secret:
+            secretName: mailin-tls
+            optional: true
 ---
 apiVersion: v1
 kind: Service

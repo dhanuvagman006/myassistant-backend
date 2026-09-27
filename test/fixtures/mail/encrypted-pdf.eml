@@ -1,0 +1,24 @@
+From: Card Services <statements@cardbank.test>
+To: RCPT@mailin.test
+Subject: Your credit card statement
+Message-ID: <stmt-1@cardbank.test>
+Date: Sat, 26 Sep 2026 09:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="--_NmP-ee832e125c6c00d0-Part_1"
+
+----_NmP-ee832e125c6c00d0-Part_1
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+Your statement is attached. Total amount due Rs 5,430.50. Payment due date =
+20-10-2026. The PDF is protected with your password.
+----_NmP-ee832e125c6c00d0-Part_1
+Content-Type: application/pdf; name=statement.pdf
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename=statement.pdf
+
+JVBERi0xLjQKMSAwIG9iaiA8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4gZW5kb2Jq
+CjIgMCBvYmogPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFtdIC9Db3VudCAwID4+IGVuZG9iago1IDAg
+b2JqIDw8IC9GaWx0ZXIgL1N0YW5kYXJkIC9WIDIgL1IgMyAvTyA8MDA+IC9VIDwwMD4gL1AgLTQg
+Pj4gZW5kb2JqCnRyYWlsZXIgPDwgL1Jvb3QgMSAwIFIgL0VuY3J5cHQgNSAwIFIgPj4KJSVFT0YK
+----_NmP-ee832e125c6c00d0-Part_1--
