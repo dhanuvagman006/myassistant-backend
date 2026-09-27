@@ -84,19 +84,21 @@ async function fromEcb(from, to) {
 
 async function fromFallback(from, to) {
   const f = from.toLowerCase();
-  let last = null;
-  for (const url of FALLBACK) {
-    try {
-      const r = await fetch(url(f), { signal: AbortSignal.timeout(6000) });
-      if (!r.ok) throw new Error(`fx fallback ${r.status}`);
-      const rate = Number((await r.json())?.[f]?.[to.toLowerCase()]);
-      if (rate > 0) return rate;
-      throw new Error("fx fallback: no rate");
-    } catch (e) {
-      last = e;
-    }
+  const ask = async (url) => {
+    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    if (!r.ok) throw new Error(`fx fallback ${r.status}`);
+    const rate = Number((await r.json())?.[f]?.[to.toLowerCase()]);
+    if (rate > 0) return rate;
+    throw new Error("fx fallback: no rate");
+  };
+  // Both hosts at once: one after the other, a host that hangs (an
+  // egress rule that drops, rather than refuses) cost the spoken answer
+  // two full timeouts on top of frankfurter's.
+  try {
+    return await Promise.any(FALLBACK.map((url) => ask(url(f))));
+  } catch (e) {
+    throw (e.errors && e.errors[e.errors.length - 1]) || e;
   }
-  throw last;
 }
 
 /**

@@ -1738,12 +1738,24 @@ function registerBuiltins() {
       // words ("just do the task now") made the model do it at once, not
       // at the time asked. A time from 3 minutes ago to 15 seconds ahead
       // is "about a minute from now", and the reply says the real time.
+      const tz = Number.isFinite(ctx.tzOffsetMin) ? ctx.tzOffsetMin : 330;
+      const clockOf = (ms) => {
+        const local = new Date(ms + tz * 60_000);
+        const hr = local.getUTCHours();
+        return `${hr % 12 || 12}:${String(local.getUTCMinutes()).padStart(2, "0")} ${hr < 12 ? "am" : "pm"}`;
+      };
       if (delayMs < -180_000) {
+        // The clock in a live prompt is the one from when the conversation
+        // began, so give the model the real one to work "in 5 minutes" out
+        // from, or the user's answer is refused all over again.
         return {
           ok: false,
-          error: "that time has already passed — ask the user which time they meant",
+          error:
+            `that time has already passed (the user's clock reads ${clockOf(Date.now())}) — ` +
+            "ask the user which time they meant",
         };
       }
+      const asked = at;
       const soon = delayMs < 15_000;
       if (soon) {
         at = Date.now() + 60_000;
@@ -1764,7 +1776,6 @@ function registerBuiltins() {
       const repeat = ["daily", "weekly", "monthly"].includes(args.repeat)
         ? args.repeat
         : null;
-      const tz = Number.isFinite(ctx.tzOffsetMin) ? ctx.tzOffsetMin : 330;
       const payload = {
         task: String(args.task).slice(0, 800),
         tzOffsetMin: tz,
@@ -1773,7 +1784,11 @@ function registerBuiltins() {
         payload.repeat = repeat;
         // Monthly recurrence keeps the ORIGINAL day-of-month ("the 31st")
         // even after passing through a short month that clamped it.
-        payload.anchorDay = new Date(at + tz * 60_000).getUTCDate();
+        payload.anchorDay = new Date(asked + tz * 60_000).getUTCDate();
+        // Only the FIRST run moves. "Every day at 9", asked at 9:02, runs
+        // at 9:03 today and at 9:00 after that — the series counts on from
+        // the time asked, not from 9:03 forever (see reenqueueIfRecurring).
+        if (soon) payload.repeatFrom = asked;
       }
       const id = await jobsQ.enqueue("scheduled_task", payload, {
         userId: ctx.userId,
@@ -1792,19 +1807,18 @@ function registerBuiltins() {
         /\b(tell|inform|ask|say|remind|let\s+(him|her|them)\s+know|convey|check\s+with)\b/i.test(payload.task) &&
         require("../agents/agentCall").enabled();
       // A moved time is said out loud, so nobody waits for the old one.
-      const local = new Date(at + tz * 60_000);
-      const hr = local.getUTCHours();
-      const clock = `${hr % 12 || 12}:${String(local.getUTCMinutes()).padStart(2, "0")} ${hr < 12 ? "am" : "pm"}`;
+      const clock = clockOf(at);
       const atWhen = soon ? `at ${clock}, a minute from now` : "at that time";
+      const series = repeat ? (soon ? `, then ${repeat} at ${clockOf(asked)}` : `, ${repeat}`) : "";
       return {
         ok: true,
         data: { id, runAt: new Date(at).toISOString(), repeat, ...(soon ? { movedTo: clock } : {}) },
         speak: delivers
-          ? `Done — I'll call them myself ${atWhen}${repeat ? `, ${repeat}` : ""}, and tell you what they say.`
+          ? `Done — I'll call them myself ${atWhen}${series}, and tell you what they say.`
           : isCall
-          ? `Done — ${atWhen}${soon ? "," : ""} your phone will place the call itself${repeat ? `, ${repeat}` : ""}.`
+          ? `Done — ${atWhen}${soon ? "," : ""} your phone will place the call itself${series}.`
           : repeat
-            ? `Scheduled ${repeat}${soon ? `, from ${clock}` : ""} — I'll do it each time and send you the outcome.`
+            ? `Scheduled ${repeat}${soon ? ` at ${clockOf(asked)}, the first one at ${clock}, a minute from now` : ""} — I'll do it each time and send you the outcome.`
             : soon
               ? `Scheduled for ${clock}, a minute from now — I'll do it then and send you the outcome.`
               : "Scheduled — I'll do it then and send you the outcome.",

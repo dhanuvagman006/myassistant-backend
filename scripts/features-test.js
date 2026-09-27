@@ -437,11 +437,39 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
         });
 
         await atest("schedule_task: a time long gone is refused, and the model is not told to do it now", async () => {
+          const t0 = Date.now();
           const r = await registry.get("schedule_task").execute(
-            { task: "Order biryani from Swiggy", when: isoLocal(Date.now() - 10 * 60_000) }, vctx);
+            { task: "Order biryani from Swiggy", when: isoLocal(t0 - 10 * 60_000) }, vctx);
           assert.strictEqual(r.ok, false);
           assert.match(r.error, /already passed/);
           assert.doesNotMatch(r.error, /\bnow\b/i, "the old wording made the model do it at once");
+          // A live prompt's clock is the session's first minute: the real
+          // one lets the model work the user's next answer out correctly.
+          assert.ok([t0, Date.now()].some((t) => r.error.includes(`clock reads ${clockOf(t)}`)), r.error);
+        });
+
+        await atest("schedule_task: 'every day at 9' asked just after 9 runs a minute from now, then at 9 each day", async () => {
+          const t0 = Date.now();
+          const asked = Math.floor((t0 - 90_000) / 1000) * 1000;
+          const r = await registry.get("schedule_task").execute(
+            { task: "Check the gold rate and tell me", when: isoLocal(asked), repeat: "daily" }, vctx);
+          assert.strictEqual(r.ok, true, JSON.stringify(r));
+          assert.ok(r.speak.startsWith(
+            `Scheduled daily at ${clockOf(asked)}, the first one at ${clockOf(Date.parse(r.data.runAt))}, a minute from now`), r.speak);
+          const job = await db.one(`SELECT * FROM jobs WHERE id=$1`, [r.data.id]);
+          assert.ok(Math.abs(Number(job.run_after) - (t0 + 60_000)) < 3000);
+          // The next occurrence counts from the time asked, not from the
+          // moved first run — or the series is a few minutes late forever.
+          // The stale path re-queues without running the task itself.
+          require("../src/infra/handlers").install();
+          const handler = require("../src/infra/jobs").HANDLERS.get("scheduled_task");
+          await handler(job.payload, { ...job, run_after: Date.now() - 2 * 3600e3 });
+          const next = await db.one(
+            `SELECT * FROM jobs WHERE user_id=$1 AND kind='scheduled_task' AND status='pending' AND id>$2`,
+            [VT, job.id]);
+          assert.strictEqual(Number(next.run_after), asked + 86_400_000);
+          assert.strictEqual(next.payload.repeatFrom, undefined, "only the first run was moved");
+          assert.strictEqual(next.payload.repeat, "daily");
         });
 
         await atest("schedule_task: a time well ahead is kept exactly as asked", async () => {
@@ -481,6 +509,15 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
           const r = await registry.get("convert_currency").execute({ amount: 1000, from: "INR", to: "MAD" }, vctx);
           assert.strictEqual(r.ok, true, JSON.stringify(r));
           assert.strictEqual(r.speak, "1000 INR is about 106.80 MAD.");
+          // A host that HANGS (an egress rule that drops) must not hold the
+          // spoken answer for its whole timeout before the other is asked.
+          fx = (u) => (/frankfurter/.test(u) ? reply(404, {})
+            : /jsdelivr/.test(u) ? new Promise(() => {})
+              : reply(200, { qar: { inr: 22.9 } }));
+          const t0 = Date.now();
+          const q = await registry.get("convert_currency").execute({ amount: 10, from: "QAR", to: "INR" }, vctx);
+          assert.strictEqual(q.speak, "10 QAR is about 229.00 INR.");
+          assert.ok(Date.now() - t0 < 2000, `waited ${Date.now() - t0} ms on the hung host`);
         });
 
         await atest("convert_currency: with no source for the pair it says so plainly and offers the web", async () => {
