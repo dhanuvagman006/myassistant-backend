@@ -49,6 +49,7 @@ async function connect(userId, serverAuthCode) {
       "UPDATE google_tokens SET access_token = $1, expires_at = $2, updated_at = $3 WHERE user_id = $4",
       [j.access_token, Date.now() + (j.expires_in || 3600) * 1000 - 60_000, Date.now(), userId]
     );
+    forgetInbox(userId);
     return;
   }
   await run(
@@ -63,6 +64,15 @@ async function connect(userId, serverAuthCode) {
     [userId, j.refresh_token, j.access_token || null,
      Date.now() + (j.expires_in || 3600) * 1000 - 60_000, j.scope || "", Date.now()]
   );
+  forgetInbox(userId);
+}
+
+/** The triaged inbox belongs to the mailbox that was linked when it was
+ *  read — never serve it across a link or an unlink (services/email.js). */
+function forgetInbox(userId) {
+  try {
+    require("../services/email").clearInboxCache(userId);
+  } catch (_) {}
 }
 
 /** Valid access token for a user, refreshing if needed. null = not linked. */
@@ -101,6 +111,7 @@ async function disconnect(userId) {
     } catch (_) {}
   }
   await run("DELETE FROM google_tokens WHERE user_id = $1", [userId]);
+  forgetInbox(userId);
 }
 
 module.exports = { connect, accessToken, isConnected, disconnect };

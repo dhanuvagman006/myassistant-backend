@@ -8,9 +8,9 @@
  * before it. The feature stays hidden (503 → the app falls back to a
  * direct dial) until all three env vars are set:
  *   BOLNA_API_KEY  BOLNA_FROM_NUMBER  BOLNA_AGENT_ID
- * plus PUBLIC_BASE_URL for webhooks. No answer → automatic redial after
- * AGENT_CALL_RETRY_MS (default 5 min), up to AGENT_CALL_MAX_ATTEMPTS
- * (default 3); the final outcome is pushed to the user's phone.
+ * plus PUBLIC_BASE_URL for webhooks. No answer → a redial only when the
+ * call asked for one (retryTimes / retryGapMinutes, see start()); the
+ * final outcome is pushed to the user's phone.
  */
 
 const crypto = require("crypto");
@@ -749,6 +749,74 @@ async function pushOutcome(rec) {
   );
 }
 
+// ---------------- CALLS THAT NEVER REPORTED BACK ----------------
+
+/**
+ * A CALLS ROW NOTHING WILL EVER CLOSE.
+ *
+ * A call's state lives in this process, and only a webhook or a poller
+ * settles its row. A restart mid-call, or a webhook that never came, left
+ * it "dialing" for good (production, 2026-09-27: 63 h and 160 h) — the
+ * user was never told, and check_task_outcomes kept saying the phone was
+ * dialling. The proactive sweep calls this every ten minutes: a row still
+ * dialling STALE_MS after its last attempt is closed as failed and the
+ * user is pushed, once (the UPDATE is the claim). A redial that is queued,
+ * or went out within STALE_MS, keeps its row open — with the user's own
+ * retry gap, "dialing" for an hour can be the truth. A row left over from
+ * days ago is closed without a push: news that late is only noise.
+ *
+ * The older of two rows for ONE call is the copy the voice path used to
+ * make beside start()'s; the webhook settles only the newest, so the copy
+ * is not a call of its own and is removed rather than reported.
+ */
+const STALE_MS = Number(process.env.AGENT_CALL_STALE_MS || 20 * 60 * 1000);
+const STALE_PUSH_WITHIN_MS = 6 * HOUR;
+const NO_RESULT = "no result came back from the call";
+
+async function closeStale({ olderThanMs = STALE_MS } = {}) {
+  const db = require("../db");
+  await require("../outcomes/store").migrate();
+  const now = Date.now();
+  const cutoff = now - olderThanMs;
+  await db.run(
+    `DELETE FROM task_outcomes t
+      WHERE t.kind = 'agent_call' AND t.status = 'dialing' AND t.external_id <> ''
+        AND t.updated_at < $1
+        AND EXISTS (SELECT 1 FROM task_outcomes o
+                     WHERE o.user_id = t.user_id AND o.external_id = t.external_id
+                       AND o.id > t.id)`,
+    [cutoff]
+  );
+  const closed = await db.query(
+    `UPDATE task_outcomes t SET status = 'failed', reason = $2, updated_at = $3
+      WHERE t.kind = 'agent_call' AND t.status = 'dialing' AND t.updated_at < $1
+        AND NOT EXISTS (SELECT 1 FROM jobs j
+                         WHERE j.user_id = t.user_id AND j.kind = 'agent_call_retry'
+                           AND t.external_id <> '' AND j.payload->>'id' = t.external_id
+                           AND (j.status IN ('pending', 'running') OR j.updated_at >= $1))
+      RETURNING t.user_id, t.target, t.created_at`,
+    [cutoff, NO_RESULT, now]
+  );
+  for (const r of closed) {
+    if (Number(r.created_at) < now - STALE_PUSH_WITHIN_MS) continue;
+    try {
+      const user = await db.findById(r.user_id);
+      if (!user?.fcm_token) continue;
+      const who = r.target || "them";
+      await require("../services/push").sendNotification(
+        user.fcm_token,
+        `No result from the call to ${who}`,
+        `No result came back from the call to ${who}, so I can't say whether it got through.`,
+        { kind: "agent_call", state: "failed" }
+      );
+    } catch (_) {
+      // One unreachable phone must not stop the rest being told.
+    }
+  }
+  if (closed.length) console.log(`agent-call: closed ${closed.length} call(s) with no result`);
+  return closed.length;
+}
+
 // ---------------- PUBLIC API ----------------
 
 async function preview({ userName, contactName, task, lang }) {
@@ -817,8 +885,9 @@ async function start({ userId, userName, toNumber, contactName, task, lang, self
   // the spoken result was the whole record, and missing it meant it was
   // gone. settle() updates this row by external id when the provider
   // reports back, which is what fills the Calls screen.
+  let filed = null;
   if (userId) {
-    require("../outcomes/store")
+    filed = require("../outcomes/store")
       .create(userId, {
         kind: "agent_call",
         target: contactName || to,
@@ -837,6 +906,10 @@ async function start({ userId, userName, toNumber, contactName, task, lang, self
     const reason = noteProviderFailure(e);
     rec.state = "failed";
     rec.result = `I couldn't start the call to ${contactName} just now.`;
+    // The row must exist before it is settled: callers no longer file a
+    // failed row of their own, so a refusal quicker than the INSERT would
+    // otherwise leave this call "dialing".
+    await filed;
     settle(rec);
     // THE SERVICE'S OWN WORDS STAY ON THE SERVER. Callers put `message`
     // into things the owner reads — a task's outcome, a tool result the
@@ -882,6 +955,7 @@ module.exports = {
   status,
   get,
   relayDown,
+  closeStale,
   // For tests: the failure bookkeeping, and a way to clear it.
   _trouble: trouble,
   redactNumbers,

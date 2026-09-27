@@ -339,6 +339,23 @@ async function turns(calls, n, ms = 3000) {
       const jobs = await pendingCalls(r.id);
       assert.strictEqual(jobs.length, 1, `${jobs.length} calls queued for one occurrence`);
     });
+
+    await atest("two un-ticks at once re-arm ONE call, not two", async () => {
+      // The app commits each toggle as its snackbar closes, without
+      // waiting for the last one, so "Moved back to your list" can land
+      // twice together.
+      const r = await store.create(u.id, "call the bank", Date.now() + 2 * 3600_000, "gentle",
+        { deliver: "call" });
+      assert.ok(r.call_job_id, "precondition: the call was queued");
+      await store.setDone(u.id, r.id, true);
+      assert.strictEqual((await pendingCalls(r.id)).length, 0, "precondition: done cancels the call");
+      await Promise.all([store.setDone(u.id, r.id, false), store.setDone(u.id, r.id, false)]);
+      const jobs = await pendingCalls(r.id);
+      assert.strictEqual(jobs.length, 1, `${jobs.length} calls queued for one reminder`);
+      const row = await db.one("SELECT done, call_job_id FROM reminders WHERE id=$1", [r.id]);
+      assert.strictEqual(Number(row.done), 0);
+      assert.strictEqual(Number(jobs[0].id), Number(row.call_job_id));
+    });
   } finally {
     agent.enabled = realAgent.enabled;
     agent.start = realAgent.start;
@@ -465,6 +482,12 @@ async function turns(calls, n, ms = 3000) {
       }
       const toRamesh = dialled.filter((d) => Number(d.userId) === Number(doc.id));
       assert.strictEqual(toRamesh.length, 1, `the patient was phoned ${toRamesh.length} times`);
+      // The Calls row is agentCall.start()'s (stubbed here): a second one
+      // filed by the sweep was never settled and stayed "in progress".
+      await new Promise((r) => setTimeout(r, 200));
+      await require("../src/outcomes/store").migrate();
+      const rows = await db.query(`SELECT id FROM task_outcomes WHERE user_id=$1`, [doc.id]);
+      assert.strictEqual(rows.length, 0, "the recall sweep filed a Calls row of its own");
     } finally {
       agent.enabled = realAgent.enabled;
       agent.start = realAgent.start;

@@ -293,7 +293,10 @@ async function placeScheduledAgentCall(userId, action) {
   const dialled = name.replace(/[^\d+]/g, "");
   if (dialled.replace(/\D/g, "").length >= 7 && dialled.length >= name.length - 4) {
     phone = dialled;
-    resolvedName = action?.contact_name || action?.contactName || "there";
+    // The number itself is who was rung: "there" is only how the call
+    // GREETS a bare number (agentCall.spokenName), and as the name it made
+    // the report "I spoke with there." and filed the Calls row under it.
+    resolvedName = action?.contact_name || action?.contactName || name;
   }
 
   try {

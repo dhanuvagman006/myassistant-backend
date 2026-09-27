@@ -276,6 +276,19 @@ async function agentCallFailures() {
       assert.strictEqual(s.pending?.action, "call");
     });
 
+    await atest("a refused call on the voice path leaves ONE Calls row, failed", async () => {
+      // agentCall.start() files the row and settles it; the voice path used
+      // to add a failed row of its own beside it.
+      const { newSession, startAgentCall } = require("../src/assistant/routes")._test;
+      const s = newSession(String(UID), "Owner Test");
+      await startAgentCall(s, { name: "Kiran Rao", phone: CONTACT }, "tell him the parcel came", null);
+      const rows = () => db.query(
+        `SELECT status FROM task_outcomes WHERE user_id=$1 AND target='Kiran Rao' ORDER BY id`, [UID]);
+      await waitFor(async () => (await rows()).some((r) => r.status === "failed"));
+      await settle();
+      assert.deepStrictEqual((await rows()).map((r) => r.status), ["failed"]);
+    });
+
     await atest("other refusals are logged with every number blanked", async () => {
       bolnaAnswer = () => new Response(
         JSON.stringify({ message: `recipient ${CONTACT} is not reachable` }), { status: 400 });
@@ -302,6 +315,43 @@ async function agentCallFailures() {
       assert.strictEqual(res.deviceAction.agent_available, true);
       assert.match(res.speak, /Let me find Ravi and call them/);
     });
+
+    await atest("a wake-up call promises a retry only when one is on the call, at its own gap", async () => {
+      // It always said "I'll try again in five minutes" while an unanswered
+      // call with no retry_times rang once and stopped.
+      const u = await db.createUser({ email: `wake-ok-${Date.now()}@example.com`, name: "Wake Test", provider: "email" });
+      await db.run("UPDATE users SET phone_number=$1 WHERE id=$2", ["+919800000002", u.id]);
+      try {
+        const tool = registry.get("place_phone_call");
+        const once = await tool.execute({ name: "me", message: "wake me up" }, { userId: u.id });
+        assert.strictEqual(once.ok, true, JSON.stringify(once));
+        assert.strictEqual(once.speak, "I'll ring your phone now.");
+        const twice = await tool.execute(
+          { name: "me", message: "wake me up", retry_times: 2, retry_gap_minutes: 4 }, { userId: u.id });
+        assert.strictEqual(twice.speak,
+          "I'll ring your phone now — if you don't pick up, I'll try again in 4 minutes, up to 2 more times.");
+        assert.strictEqual(agent.get(twice.data.call_id).maxAttempts, 3);
+      } finally {
+        await db.run("DELETE FROM task_outcomes WHERE user_id=$1", [u.id]).catch(() => {});
+        await db.run("DELETE FROM users WHERE id=$1", [u.id]).catch(() => {});
+      }
+    });
+
+    await atest("neither prompt tells the model to promise a retry nobody asked for", async () => {
+      // "Call me at 5 and wake me up" is SCHEDULED, so the promise is made
+      // by the model from its prompt, not by the tool's line above — and
+      // both prompts said "it tries again. Say that plainly when you
+      // schedule it", and "three minutes apart", for every call.
+      const prompts = {
+        voice: require("../src/agents/runtime").systemPrompt(""),
+        live: require("../src/live/proxy")._liveSystemPrompt("Hari", [], "", 330, "", "", 119),
+      };
+      for (const [path, p] of Object.entries(prompts)) {
+        assert.doesNotMatch(p, /it tries again\. (Say|Tell me) that/, `${path}: an unconditional retry promise`);
+        assert.doesNotMatch(p, /three minutes\s+apart/, `${path}: a fixed gap nobody chose`);
+        assert.match(p, /Never promise (me )?a retry/, `${path}: the rule is missing`);
+      }
+    });
   } finally {
     srv.close();
     globalThis.fetch = realFetch;
@@ -314,6 +364,103 @@ async function agentCallFailures() {
     await db.run(
       `DELETE FROM developer_feedback WHERE source='ops' AND summary LIKE 'Calling service rejected%'`);
     await db.run("DELETE FROM task_outcomes WHERE user_id=$1", [UID]).catch(() => {});
+    await db.run("DELETE FROM actions_log WHERE user_id=$1", [UID]).catch(() => {});
+  }
+}
+
+/**
+ * CALLS THAT NEVER REPORTED BACK (production health pass, 2026-09-27).
+ *
+ * Two agent calls sat "dialing" in production for 63 h and 160 h: the call
+ * lived only in the process that placed it and nothing closed its row, so
+ * the owner was never told and the assistant kept saying the phone was
+ * dialling. These pin the proactive sweep's answer: after 20 minutes with
+ * nothing heard the row is failed and the owner pushed, once; a redial
+ * still on the clock keeps it open; a days-old row is closed quietly; and
+ * the copy the voice path used to make beside a settled call is removed,
+ * not reported. The network is blocked and the push is recorded.
+ */
+async function staleCalls() {
+  const agent = require("../src/agents/agentCall");
+  const scheduler = require("../src/proactive/scheduler");
+  const jobs = require("../src/infra/jobs");
+  const push = require("../src/services/push");
+  const realSend = push.sendNotification;
+  const realFetch = globalThis.fetch;
+  const pushes = [];
+  push.sendNotification = async (token, title, body, data) => { pushes.push({ token, title, body, data }); return true; };
+  globalThis.fetch = async (u) => { throw new Error(`blocked in the test: ${String(u).slice(0, 40)}`); };
+
+  const u = await db.createUser({ email: `stale-${Date.now()}@example.com`, name: "Stale Test", provider: "email" });
+  const token = `tok-stale-${u.id}`;
+  await db.run("UPDATE users SET fcm_token=$1 WHERE id=$2", [token, u.id]);
+  const MIN = 60_000;
+  let n = 0;
+  const row = (target, ageMin, { status = "dialing", ext = `stale-${u.id}-${++n}` } = {}) => {
+    const t = Date.now() - ageMin * MIN;
+    return db.one(
+      `INSERT INTO task_outcomes (user_id, kind, target, detail, status, path, external_id, created_at, updated_at)
+       VALUES ($1, 'agent_call', $2, 'tell them the parcel came', $3, 'relay', $4, $5, $5)
+       RETURNING id, external_id`, [u.id, target, status, ext, t]);
+  };
+  const statusOf = (id) => db.one(`SELECT status, reason FROM task_outcomes WHERE id=$1`, [id]);
+  const told = () => pushes.filter((p) => p.token === token && p.data?.kind === "agent_call");
+
+  try {
+    console.log("\ncalls that never reported back");
+
+    await atest("after 20 minutes with no result the proactive sweep fails the call and tells the owner once", async () => {
+      const stale = await row("Ravi Kumar", 25);
+      const fresh = await row("Asha", 5);
+      await scheduler.sweep();
+      assert.deepStrictEqual({ ...(await statusOf(stale.id)) },
+        { status: "failed", reason: "no result came back from the call" });
+      assert.strictEqual((await statusOf(fresh.id)).status, "dialing", "a call five minutes old is still going");
+      const p = told();
+      assert.strictEqual(p.length, 1, JSON.stringify(p));
+      assert.strictEqual(p[0].title, "No result from the call to Ravi Kumar");
+      assert.match(p[0].body, /can't say whether it got through/);
+      await agent.closeStale();
+      assert.strictEqual(told().length, 1, "told twice");
+    });
+
+    await atest("a redial still on the clock keeps the call open", async () => {
+      const queued = await row("Anil", 40);
+      const redialled = await row("Meena", 40);
+      await jobs.enqueue("agent_call_retry", { id: queued.external_id }, { userId: u.id, delayMs: 3600_000 });
+      const ran = await jobs.enqueue("agent_call_retry", { id: redialled.external_id }, { userId: u.id, delayMs: 3600_000 });
+      await db.run(`UPDATE jobs SET status='done', updated_at=$2 WHERE id=$1`, [ran, Date.now() - 5 * MIN]);
+      const before = told().length;
+      await agent.closeStale();
+      assert.strictEqual((await statusOf(queued.id)).status, "dialing", "a queued redial was declared failed");
+      assert.strictEqual((await statusOf(redialled.id)).status, "dialing", "a redial five minutes old was declared failed");
+      assert.strictEqual(told().length, before);
+    });
+
+    await atest("a row stuck for days is closed without a push", async () => {
+      const old = await row("Suresh", 3 * 24 * 60);
+      const before = told().length;
+      await agent.closeStale();
+      assert.strictEqual((await statusOf(old.id)).status, "failed");
+      assert.strictEqual(told().length, before, "a push about a call from days ago");
+    });
+
+    await atest("the copy the voice path used to make beside a settled call is removed, not reported", async () => {
+      const ext = `stale-dup-${u.id}`;
+      const copy = await row("Kiran", 30, { ext });
+      const real = await row("Kiran", 30, { ext, status: "completed" });
+      const before = told().length;
+      await agent.closeStale();
+      assert.strictEqual(await statusOf(copy.id), null, "the orphaned copy is still on the Calls screen");
+      assert.strictEqual((await statusOf(real.id)).status, "completed");
+      assert.strictEqual(told().length, before);
+    });
+  } finally {
+    push.sendNotification = realSend;
+    globalThis.fetch = realFetch;
+    await db.run("DELETE FROM jobs WHERE user_id=$1", [u.id]).catch(() => {});
+    await db.run("DELETE FROM task_outcomes WHERE user_id=$1", [u.id]).catch(() => {});
+    await db.run("DELETE FROM users WHERE id=$1", [u.id]).catch(() => {});
   }
 }
 
@@ -443,6 +590,7 @@ async function waitFor(fn, ms = 3000) {
   });
 
   await agentCallFailures();
+  await staleCalls();
 
   server.close();
   await db.run(`DELETE FROM call_records WHERE user_id=$1`, [UID]);

@@ -2529,8 +2529,10 @@ function registerBuiltins() {
       "phone dials the contact directly for the user to speak. " +
       "WAKE-UP / SELF CALLS: 'call me and remind me…', 'give me a wake-up " +
       "call' — pass the literal name 'me' plus the reminder as `message`; " +
-      "the assistant rings the user's own registered number, and if they " +
-      "don't pick up it automatically calls again a few minutes later. " +
+      "the assistant rings the user's own registered number ONCE; it calls " +
+      "again only when the user asked for repeats ('keep calling till I'm " +
+      "up', 'try three times') — then pass retry_times, and " +
+      "retry_gap_minutes when they gave a gap. " +
       "WHATSAPP vs NORMAL: pass via='whatsapp' ONLY when the " +
       "user actually said WhatsApp ('WhatsApp call amma', 'call him on " +
       "WhatsApp'), and via='whatsapp_video' for a WhatsApp video call. " +
@@ -2666,7 +2668,8 @@ function registerBuiltins() {
       const agentConfigured = via === "phone" && agentCall.enabled();
 
       // "Call ME" — wake-up call to the user's own verified number, placed
-      // right here (no contact lookup, no device). Redials if unanswered.
+      // right here (no contact lookup, no device). Redials only when the
+      // user asked for repeats (retry_times).
       if (/^(me|myself|my\s*(own\s*)?(phone|number|mobile))$/i.test(String(args.name || "").trim())) {
         if (!agentConfigured) {
           return {
@@ -2707,12 +2710,22 @@ function registerBuiltins() {
             retryGapMinutes: args.retry_gap_minutes,
             tone: args.tone,
           });
+          // PROMISE ONLY THE RETRY THAT IS ON THE CALL. This always said
+          // "I'll try again in five minutes", while an unanswered call with
+          // no retry_times ends after one ring (agentCall.start: absent an
+          // instruction, ONE attempt) — and when there is a retry, its gap
+          // is the call's own, not a fixed five.
+          const rec = require("../agents/agentCall").get(id);
+          const again = rec ? Number(rec.maxAttempts) - 1 : 0;
+          const mins = rec ? Math.max(1, Math.round(Number(rec.retryMs) / 60000)) : 0;
           return {
             ok: true,
             data: { call_id: id, to: "own number" },
-            speak:
-              "I'll ring your phone now — if you don't pick up, I'll try " +
-              "again in five minutes.",
+            speak: again > 0
+              ? `I'll ring your phone now — if you don't pick up, I'll try ` +
+                `again in ${mins} minute${mins === 1 ? "" : "s"}` +
+                `${again > 1 ? `, up to ${again} more times` : ""}.`
+              : "I'll ring your phone now.",
           };
         } catch (e) {
           if (e?.code === "quota") {
@@ -5979,18 +5992,23 @@ function registerBuiltins() {
     async execute(args, ctx) {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
       if (!(await googleLinked(ctx.userId))) return NOT_LINKED;
-      const startMs = Date.parse(args.start);
-      if (!Number.isFinite(startMs)) {
+      // The USER's wall clock, as for reminders (parseUserTime): a bare
+      // "16:00" through Date.parse on the UTC server was booked at 9:30 pm.
+      const startMs = parseUserTime(args.start, ctx.tzOffsetMin);
+      if (startMs === null) {
         return { ok: false, error: "I could not read that start time" };
       }
-      const endMs = Date.parse(args.end);
+      const endMs = parseUserTime(args.end, ctx.tzOffsetMin);
+      if (args.end && endMs === null) {
+        return { ok: false, error: "I could not read that end time" };
+      }
       const gapi = require("../google/api");
       let ev;
       try {
         ev = await gapi.createEvent(ctx.userId, {
           title: args.title,
           startMs,
-          endMs: Number.isFinite(endMs) ? endMs : startMs + 36e5,
+          endMs: endMs !== null ? endMs : startMs + 36e5,
           location: args.location,
           description: args.description,
         });
@@ -6053,8 +6071,12 @@ function registerBuiltins() {
       const patch = {};
       if (args.new_title) patch.summary = String(args.new_title).slice(0, 200);
       if (args.new_location) patch.location = String(args.new_location).slice(0, 200);
-      const s2 = Date.parse(args.new_start);
-      const e2 = Date.parse(args.new_end);
+      // The user's wall clock, as in create_calendar_event.
+      const s2 = parseUserTime(args.new_start, ctx.tzOffsetMin) ?? NaN;
+      const e2 = parseUserTime(args.new_end, ctx.tzOffsetMin) ?? NaN;
+      if ((args.new_start && !Number.isFinite(s2)) || (args.new_end && !Number.isFinite(e2))) {
+        return { ok: false, error: "I could not read that new time" };
+      }
       if (Number.isFinite(s2)) patch.start = { dateTime: new Date(s2).toISOString() };
       if (Number.isFinite(e2)) patch.end = { dateTime: new Date(e2).toISOString() };
       else if (Number.isFinite(s2)) {
