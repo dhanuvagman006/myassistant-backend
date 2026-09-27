@@ -128,8 +128,13 @@ const chatModel = () => envModel("GEMINI_MODEL", DEFAULT_MODEL);
 // chat model — and its free daily allowance (gemini-3.5-flash: 20/day) —
 // with every conversation, so one long run could spend it and switch
 // family halfway through (audit, 2026-09-24). AUTOMATION_MODEL lets the
-// hands run on a model of their own; unset, nothing changes.
-const automationModel = () => envModel("AUTOMATION_MODEL", chatModel());
+// hands run on a model of their own.
+// UNSET, THE FAST MODEL (2026-09-27). Unset used to mean the chat model,
+// and gemini-3.5-flash spent the whole 12 s of a step with a screenshot
+// before the fast model was asked: 0 of 18 production runs finished, a
+// third of them "I couldn't reach my planner". The fast model answers
+// the same step in about 3 s. Set AUTOMATION_MODEL to plan on another.
+const automationModel = () => envModel("AUTOMATION_MODEL", automationFastModel());
 
 // THE PLANNER'S SECOND CHANCE: a model that answers fast. Measured
 // 2026-09-25 with the owner's key, one planner call on an Instagram Explore

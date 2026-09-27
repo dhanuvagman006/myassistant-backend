@@ -512,6 +512,11 @@ async function sweepMomentum() {
 }
 
 async function sweep() {
+  // Phone tasks whose phone went silent are closed for EVERY user here,
+  // not only when that user starts another (automation/service.js).
+  const silentRuns = await require("../automation/service").sweep().catch(() => 0);
+  if (silentRuns) console.log(`proactive: ${silentRuns} silent phone task(s) closed`);
+
   const results = await Promise.allSettled([
     sweepCommitments(),
     sweepPatientRecalls(),

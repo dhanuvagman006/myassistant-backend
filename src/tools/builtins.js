@@ -7392,7 +7392,12 @@ function registerBuiltins() {
       // THE APP THEY NAMED WINS. Asked "order biryani on Swiggy" after two
       // failed tries, the model once quietly switched to another app
       // (2026-09-24). Their own words decide, not the model's workaround.
-      const named = require("../automation/prefs").appNamedIn(ctx.userText);
+      // The phone's own [SYSTEM] note is not their words: off Live, "Swiggy
+      // is not installed … call again with app Zomato" named Swiggy first,
+      // and the missing app was installed in place of Zomato (2026-09-27).
+      const appNote = /\[SYSTEM\]/i.test(String(ctx.userText || "")) ||
+        require("../automation/intent").isAppNote(ctx.userText);
+      const named = appNote ? null : require("../automation/prefs").appNamedIn(ctx.userText);
       const app = named || args.app;
       const goal = named && !new RegExp(`\\b${named}\\b`, "i").test(String(args.goal || ""))
         ? `${args.goal} (in ${named})` : args.goal;
