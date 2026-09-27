@@ -132,6 +132,9 @@ const FAMILIES = [
       "show_alarms",
       // "Opening the installer" is the same claim again.
       "update_app",
+      // "Office mode — directions are opening": a shortcut's phone steps
+      // ride in one directive (2026-09-27).
+      "run_shortcut", "continue_shortcut",
       // "Opening your focus timer" (Momentum, 2026-09-25).
       "start_focus",
       // In-app panels the model announces the same way ("here's your
@@ -299,8 +302,10 @@ const FAMILIES = [
             // the words it is described with.
             "remember_person_date", "add_finance_item", "update_finance_item",
             "add_standing_instruction", "remember_event", "remember_case",
-            "update_my_profile"],
-    claim: /\b(logged|recorded|noted it down|saved (it |that )?(to|in) your|filed under|i'?ve (written|saved)|written that down)\b/i,
+            "update_my_profile",
+            // "Saved your shortcut" (2026-09-27).
+            "create_shortcut", "update_shortcut", "delete_shortcut", "save_last_as_shortcut"],
+    claim: /\b(logged|recorded|noted it down|saved (it |that )?(to|in) your|saved (the|your) shortcut|filed under|i'?ve (written|saved)|written that down)\b/i,
     // सहेज/सेव/नोट कर…, ಉಳಿಸ/ಸೇವ್ ಮಾಡ…, சேமிக்க…, సేవ్ చేస…, സേവ് ചെയ്…
     claimIntl: /(सहेज|सेव\s*कर|नोट\s*कर|लिख\s*दिया|ಉಳಿಸ|ಸೇವ್\s*ಮಾಡ|ಬರೆದಿ|சேமிக்க|குறித்து|సేవ్\s*చేస|రాశా|സേവ്\s*ചെയ്|എഴുതി)/,
     honest: () => "That wasn't saved — nothing was written down.",

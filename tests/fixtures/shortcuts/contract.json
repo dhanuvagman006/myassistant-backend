@@ -1,0 +1,56 @@
+{
+  "_about": "Shortcuts REST and directive shapes (routes/shortcuts.js). scripts/shortcuts-test.js checks the live responses against these keys; the app's test/shortcut_contract_test.dart parses a copy (test/fixtures/shortcuts_contract.json).",
+  "Shortcut": {
+    "id": 7,
+    "name": "Office mode",
+    "other_names": ["ഓഫീസ് മോഡ്"],
+    "version": 3,
+    "steps": [
+      { "i": 0, "tool": "phone_control", "label": "Phone on silent", "said": "put my phone on silent", "class": "in_app", "icon": "volume_off" },
+      { "i": 1, "tool": "send_whatsapp_message", "label": "Chat message to Priya Shetty: “I'm leaving” (you tap Send)", "said": "WhatsApp Priya: I'm leaving", "class": "hand_back", "icon": "chat" },
+      { "i": 2, "tool": "start_navigation", "label": "Directions to 4th floor, MG Road", "said": "directions to 4th floor, MG Road", "class": "stays", "icon": "directions" }
+    ],
+    "learned": false,
+    "learned_at": null,
+    "run_count": 12,
+    "last_run_at": 1790000000000,
+    "created_at": 1789000000000,
+    "updated_at": 1789500000000
+  },
+  "list": {
+    "ok": true,
+    "shortcuts": [],
+    "limits": { "max_shortcuts": 50, "max_steps": 10, "max_names": 4 }
+  },
+  "created": {
+    "ok": true,
+    "shortcut": {},
+    "read_back": "Saved “Reading mode”: do not disturb on, then torch on. Say “reading mode” any time.",
+    "warnings": []
+  },
+  "error": { "ok": false, "error": "needs_detail", "data": { "n": 2, "said": "directions to office", "question": "What's the address for office?" } },
+  "run_dispatched": {
+    "ok": true,
+    "run": { "id": 31, "status": "dispatched", "report": "Office mode — phone on silent, your message to Priya Shetty is ready to send, directions to 4th floor, MG Road are opening." },
+    "directive": {}
+  },
+  "run_confirm": {
+    "ok": true,
+    "run": { "id": 32, "status": "waiting", "report": "", "confirm": { "summary": "Shop mode will also send Priya Shetty's assistant “leaving now”" } }
+  },
+  "directive": {
+    "type": "shortcut_run",
+    "run_id": 31,
+    "shortcut_id": 7,
+    "name": "Office mode",
+    "leaves_app": true,
+    "steps": [
+      { "i": 0, "class": "in_app", "label": "Phone on silent", "wait_return": false,
+        "action": { "type": "phone_control", "action": "ringer_silent", "value": null, "panel": null } },
+      { "i": 1, "class": "hand_back", "label": "Chat message to Priya Shetty: “I'm leaving” (you tap Send)", "wait_return": true,
+        "action": { "type": "open_url", "url": "whatsapp://send?phone=+919800000001&text=I'm%20leaving" } },
+      { "i": 2, "class": "stays", "label": "Directions to 4th floor, MG Road", "wait_return": false,
+        "action": { "type": "open_url", "url": "google.navigation:q=4th%20floor%2C%20MG%20Road" } }
+    ]
+  }
+}

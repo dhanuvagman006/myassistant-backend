@@ -160,6 +160,12 @@ const USER_TABLES = [
   // of notice and consent. With the account gone there is nothing to cover.
   ["privacy_prefs", "user_id"],
   ["consent_events", "user_id"],
+  // Shortcuts (2026-09-27): the shortcuts, every name they answer to, and
+  // 30 days of runs. shortcut_names (the only foreign key here, ON DELETE
+  // CASCADE) goes first, so its rows are counted, never taken by the cascade.
+  ["shortcut_names", "user_id"],
+  ["shortcuts", "user_id"],
+  ["shortcut_runs", "user_id"],
 
   // Legacy tables, taken out of init() on 2026-08-10 but never DROPped, so
   // a database created before that date may still hold them.
@@ -459,6 +465,8 @@ async function deleteUserEverywhere(userId, { reason = "" } = {}) {
   // Known limit: a tool already running when the call is cut can still
   // finish and write its one row; the Leftovers card finds that.
   report.revoked.liveSessions = await closeLiveSessions(uid);
+  // The one in-process cache keyed by user: their shortcut names.
+  try { require("../shortcuts/match").forgetUser(uid); } catch (_) {}
 
   // 2) Every row, one transaction.
   let recordingFiles = [];

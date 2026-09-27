@@ -488,6 +488,10 @@ const TAINT_SENSITIVE = new Set([
   // A Notion page can be shared with other people: a write after reading
   // an email or a web page gets the same warning as a send.
   "notion_add", "notion_create_page",
+  // Shortcuts (2026-09-27) outlive the taint window: a step planted by an
+  // email today would run next week with no question asked, so saving,
+  // changing, deleting and running one after reading becomes a question.
+  "create_shortcut", "update_shortcut", "delete_shortcut", "save_last_as_shortcut", "run_shortcut",
 ]);
 
 const isUntrustedSource = (tool) =>
@@ -521,6 +525,17 @@ function requiresConfirmation(name, ctx = {}) {
   if (!tool) return false;
   if (tool.risk === "high") return true;
   return isTaintSensitive(tool) && turnIsUntrusted(ctx);
+}
+
+/**
+ * The key a spoken approval is matched on: the tool and its COERCED args,
+ * so {run_id:"31"} and {run_id:31} are the same request. Coercion only
+ * merges keys (drops unknown ones, fixes types), never splits them.
+ */
+function approvalKey(name, args) {
+  const tool = get(name);
+  const a = tool ? coerceArgs(tool, args || {}) : (args || {});
+  return `${name}:${JSON.stringify(a)}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1257,6 +1272,7 @@ module.exports = {
   declarations,
   execute,
   requiresConfirmation,
+  approvalKey,
   markTurnUntrusted,
   turnIsUntrusted,
   TAINT_SENSITIVE,

@@ -112,7 +112,7 @@ async function ensureEveryTable() {
     "actions/store", "agents/tasks", "live/recorder", "memory/recent",
     "outcomes/store", "practice/store", "records/store", "routes/contacts",
     "routes/finance", "routes/usage", "services/email", "services/pendingPush",
-    "studio/store", "tools/searchCache", "posters/store",
+    "studio/store", "tools/searchCache", "posters/store", "shortcuts/store",
   ]) {
     await require("../src/" + m).migrate();
   }
@@ -252,8 +252,12 @@ const recStem = (uid) => path.join(RECS, DAY, `sess-${uid}`);
 async function seedUser(uid, { phone }) {
   for (const [table, col] of await privacy.existingUserTables()) {
     if (table === "live_recordings" || table === "chat_group_members") continue; // real ones below
+    // A shortcut's name points at one of their own shortcuts (a foreign key).
+    if (table === "shortcut_names") continue;
     await seedRow(table, col, uid);
   }
+  const sc = await db.one("SELECT id FROM shortcuts WHERE user_id = $1 ORDER BY id LIMIT 1", [uid]);
+  await seedRow("shortcut_names", "user_id", uid, { shortcut_id: sc.id });
   // Search text and links belong to one of their own documents: those of
   // a document that is gone are a leftover of their own (see Leftovers).
   const doc = await db.one(`SELECT id FROM documents WHERE user_id = $1 ORDER BY id LIMIT 1`, [uid]);

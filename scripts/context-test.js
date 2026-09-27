@@ -270,7 +270,8 @@ async function waitFor(fn, ms = 2000) {
       await db.run(`DELETE FROM users WHERE id=$1`, [u.id]);
     }
     const rt = fs.readFileSync(__dirname + "/../src/agents/runtime.js", "utf8");
-    assert.match(rt, /contextBlock\(ctx\.userId, \{ lat: ctx\.lat, lng: ctx\.lng, tz: ctx\.tzOffsetMin \}\)/);
+    // (appBuild since shortcuts, 2026-09-27: the shortcut names are listed from build 120.)
+    assert.match(rt, /contextBlock\(ctx\.userId, \{ lat: ctx\.lat, lng: ctx\.lng, tz: ctx\.tzOffsetMin(, appBuild: ctx\.appBuild)? \}\)/);
     const px = fs.readFileSync(__dirname + "/../src/live/proxy.js", "utf8");
     assert.match(px, /lat: deviceCtx\.lat, lng: deviceCtx\.lng, tz: deviceCtx\.tz, at: deviceCtx\.locAt/);
   });

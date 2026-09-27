@@ -93,6 +93,8 @@ async function migrate(execSql) {
     -- 1 once the phone numbers its steps (app build 105): it understands
     -- owner_step, blocked and unconfirmed.
     ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS proto INTEGER NOT NULL DEFAULT 0;
+    -- The saved shortcut that started this run (shortcuts/runner.js).
+    ALTER TABLE automation_runs ADD COLUMN IF NOT EXISTS shortcut_id BIGINT;
   `);
 }
 
@@ -251,7 +253,7 @@ function directive(r, { resume = false } = {}) {
  * START / RESUME
  * ------------------------------------------------------------------ */
 
-async function start(userId, { goal, category = "", app = "", url = "", query = "" } = {}) {
+async function start(userId, { goal, category = "", app = "", url = "", query = "", shortcutId = null, hint = null } = {}) {
   const g = String(goal || "").replace(/\s+/g, " ").trim().slice(0, 500);
   if (!g) return { ok: false, error: "what should I do? (goal required)" };
 
@@ -333,14 +335,22 @@ async function start(userId, { goal, category = "", app = "", url = "", query = 
     }
   }
 
+  // A SAVED SHORTCUT (shortcuts/learn.js): the steps that got this job
+  // done last time, for the PLANNER only. They are another app's screen
+  // text, so they arrive as quoted data, never as instructions; the model
+  // still decides every step.
+  const hintNote = require("../shortcuts/learn").hintNote(hint);
+  if (hintNote) notes.push({ text: hintNote, owner: false, shortcut: true });
+
   const now = Date.now();
   const row = await one(
     `INSERT INTO automation_runs
        (user_id, goal, category, app_name, app_label, app_pkg, app_reason,
-        start_url, web, notes, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11) RETURNING *`,
+        start_url, web, notes, created_at, updated_at, shortcut_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12) RETURNING *`,
     [userId, g, String(category || ""), pick?.name || "", pick?.label || (web ? "the browser" : ""),
-     pick?.pkg || "", pick?.reason || "", startUrl, web ? 1 : 0, JSON.stringify(notes), now]);
+     pick?.pkg || "", pick?.reason || "", startUrl, web ? 1 : 0, JSON.stringify(notes), now,
+     shortcutId ? Number(shortcutId) : null]);
   const r = hydrate(row);
   return { ok: true, run: r, directive: directive(r) };
 }

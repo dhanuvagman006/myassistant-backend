@@ -1472,6 +1472,18 @@ router.post("/:sid/confirm", (req, res) => {
     // on a step the user has just refused — invisible, unreachable, and
     // counted as open work forever. Cancelling says what actually
     // happened: the steps that ran, ran; nothing after this one will.
+    // A SHORTCUT'S QUESTION ANSWERED NO: nothing runs, and the run says so.
+    if (pending.tool === "continue_shortcut" && pending.args && pending.args.run_id) {
+      const uidNum = Number(s.userSub) > 0 ? Number(s.userSub) : null;
+      if (uidNum) {
+        require("../shortcuts/runner").decline(uidNum, pending.args.run_id)
+          .catch((e) => console.warn("shortcut decline failed:", e.message));
+      }
+      state(s, "speaking");
+      emit(s, { type: "assistant_message", text: "Okay, I didn't run it." });
+      state(s, "completed");
+      return;
+    }
     if (pending.task && pending.task.id) {
       (async () => {
         const driver = require("../agents/taskDriver");
@@ -1626,6 +1638,9 @@ router.post("/:sid/confirm", (req, res) => {
           if (a.type === "open_url" && a.url) emit(s, { type: "open_url", url: a.url });
           else if (a.type === "open_camera") emit(s, { type: "open_camera", note: a.note });
           else if (a.type === "open_video") emit(s, { type: "open_video" });
+          // A shortcut's phone steps, approved: this branch forwards only
+          // the types it names, and silently dropped this one.
+          else if (a.type === "shortcut_run") emit(s, a);
           else if (a.type === "resolve_and_call") {
             s.pendingContactName = a.name;
             s.pendingCallTask = a.message || null;
