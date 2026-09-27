@@ -1024,14 +1024,20 @@ function registerBuiltins() {
         else match = `${args.about} ${match}`;
       }
       let r = await mem.forget(ctx.userId, { subjectType, subjectId, match });
-      if (!r.count && !r.choices.length && subjectId && r.specific) {
+      if (!r.count && (!r.choices.length || r.partial) && subjectId && r.specific) {
         // A saved person, but the fact was stored plainly ("Ravi's
         // hearing is on the 14th"): look again with the name as a word.
-        r = await mem.forget(ctx.userId, { match: `${args.about} ${match}` });
+        // A full match found that way wins over the person's near ones.
+        const again = await mem.forget(ctx.userId, { match: `${args.about} ${match}` });
+        if (again.count || !r.choices.length || (again.choices.length && !again.partial)) r = again;
       }
       if (r.choices.length) {
-        return { ok: false, error: "several memories match — nothing was forgotten. " +
-          "Ask the user which one they mean, then call again with its words.",
+        return { ok: false, error: r.partial
+          ? "no memory holds all of those words — nothing was forgotten. The closest are in " +
+            "choices: if one is what the user means, check with them and call again with its " +
+            "words; if none is, tell them nothing like that is stored."
+          : "several memories match — nothing was forgotten. " +
+            "Ask the user which one they mean, then call again with its words.",
           data: { choices: r.choices } };
       }
       if (!r.count) return { ok: false, error: "nothing matching was stored" };

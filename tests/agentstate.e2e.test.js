@@ -1608,6 +1608,14 @@ console.log("\nexecution record");
       assert.deepStrictEqual(r.others, ["User's sister's name is Kavya"]);
       // Only stop words: never a broad match.
       assert.strictEqual((await mem.forget(U, { match: "the thing about my" })).count, 0);
+      // Some of the words, not all: nothing goes, and the closest comes
+      // back to ask about — never "nothing is stored" while it is.
+      const near = await registry.execute("forget_memory", { what: "Meena's hearing time" }, { userId: U, approved: true });
+      assert.strictEqual(near.ok, false);
+      assert.match(near.error, /no memory holds all of those words/);
+      assert.deepStrictEqual(near.data.choices, ["Meena hearing date is 3 September"]);
+      assert.match((await registry.execute("forget_memory", { what: "gym timing" }, { userId: U, approved: true })).error,
+        /nothing matching was stored/);
       // Gone, not hidden: no row keeps the words.
       assert.deepStrictEqual(await facts(), ["User's sister's name is Kavya", "Meena hearing date is 3 September"]);
     } finally {

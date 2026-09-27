@@ -620,6 +620,46 @@ const tell = (from, toPhone, message) => db.one(
     assert.ok(!d.includes(spoken), "the rule removed by voice is still in the export");
   });
 
+  await atest("deleting a document takes its text everywhere, and an index job still running writes none back", async () => {
+    // Audit 2026-09-27: the row went; its search chunks, links and the
+    // index job's copy of the text stayed, and were exported. An index job
+    // still waiting or embedding when the delete ran wrote them back.
+    const store = require("../src/docs/store");
+    const intelligence = require("../src/docs/intelligence");
+    const embeddings = require("../src/memory/embeddings");
+    const realEmbed = embeddings.embed;
+    const text = `Biopsy report ${stamp}. Nothing of it may stay.`;
+    const newDoc = () => db.one(
+      `INSERT INTO documents (user_id, filename, mime, size, path, title, category, full_text, created_at)
+       VALUES ($1, 'biopsy.txt', 'text/plain', 10, $2, 'Biopsy', 'medical', $3, $4) RETURNING id`,
+      [B, path.join(FILES, String(B), `biopsy-${stamp}.txt`), text, Date.now()]);
+    const traces = async (id) => (await db.query(
+      `SELECT 'chunk' AS t FROM document_chunks WHERE user_id = $1 AND document_id = $2
+       UNION ALL SELECT 'link' FROM document_links WHERE user_id = $1 AND document_id = $2
+       UNION ALL SELECT 'job' FROM jobs WHERE user_id = $1 AND payload->>'documentId' = $3`,
+      [B, id, String(id)])).map((r) => r.t).sort();
+    try {
+      embeddings.embed = async () => null;
+      const d1 = await newDoc();
+      await require("../src/infra/jobs").enqueue("document.index", { userId: B, documentId: d1.id, text }, { userId: B });
+      await intelligence.indexDocument(B, d1.id, text);
+      await db.run(`INSERT INTO document_links (user_id, document_id, entity_type, entity_id, created_at)
+        VALUES ($1, $2, 'person', 1, $3)`, [B, d1.id, Date.now()]);
+      assert.deepStrictEqual(await traces(d1.id), ["chunk", "job", "link"]);
+      assert.strictEqual(await store.deleteDocument(B, d1.id), true);
+      assert.deepStrictEqual(await traces(d1.id), [], "the deleted document left its text behind");
+      // Deleted while its index job was embedding (a wrong upload, removed at once).
+      const d2 = await newDoc();
+      embeddings.embed = async () => { await store.deleteDocument(B, d2.id); return null; };
+      assert.strictEqual((await intelligence.indexDocument(B, d2.id, text)).chunks, 0);
+      assert.deepStrictEqual(await traces(d2.id), [], "the index job wrote the text back after the delete");
+      const d = await (await fetch(`${base}/privacy/export`, { headers: { "x-test-user": String(B) } })).text();
+      assert.ok(!d.includes(`Biopsy report ${stamp}`), "a deleted document's text is in the export");
+    } finally {
+      embeddings.embed = realEmbed;
+    }
+  });
+
   /* ================================================================ *
    * (c) LEFTOVERS
    * ================================================================ */
@@ -656,6 +696,13 @@ const tell = (from, toPhone, message) => db.one(
   const goneChunk = await seedRow("document_chunks", "user_id", B,
     { document_id: goneDoc, text: `deleted report ${stamp}` });
   await seedRow("document_links", "user_id", B, { document_id: goneDoc });
+  // Its document.index job, kept after it ran, whose payload is the same
+  // text — and one for a document B still has, which stays.
+  const indexJob = (documentId, text) => seedRow("jobs", "user_id", B,
+    { kind: "document.index", payload: JSON.stringify({ userId: B, documentId, text }) });
+  const goneJob = await indexJob(goneDoc, `deleted report ${stamp}`);
+  const bDoc = await db.one(`SELECT id FROM documents WHERE user_id = $1 ORDER BY id LIMIT 1`, [B]);
+  const liveJob = await indexJob(bDoc.id, `kept report ${stamp}`);
 
   let found;
   await atest("the Recordings page labels a deleted account's call as such", async () => {
@@ -680,6 +727,7 @@ const tell = (from, toPhone, message) => db.one(
     assert.ok(found.tables["kv (their keys)"] >= 4);
     assert.ok(found.tables["document_chunks (document deleted)"] >= 1, "a deleted document's text is not counted");
     assert.ok(found.tables["document_links (document deleted)"] >= 1);
+    assert.ok(found.tables["jobs (document deleted)"] >= 1, "a deleted document's index job is not counted");
     assert.ok(found.files.recordingFiles >= 3);
     assert.ok(found.files.strayRecordingFiles >= 1);
     assert.ok(found.files.documentFolders >= 1);
@@ -714,9 +762,14 @@ const tell = (from, toPhone, message) => db.one(
     assert.strictEqual(await db.one(`SELECT 1 AS x FROM document_chunks WHERE id = $1`, [goneChunk.id]), null,
       "a deleted document's text outlived the purge");
     assert.strictEqual(await db.one(`SELECT 1 AS x FROM document_links WHERE document_id = $1`, [goneDoc]), null);
+    assert.strictEqual(await db.one(`SELECT 1 AS x FROM jobs WHERE id = $1`, [goneJob.id]), null,
+      "a deleted document's text outlived the purge in its index job");
   });
 
   await atest("and nothing that still belongs to someone was touched", async () => {
+    assert.ok(await db.one(`SELECT 1 AS x FROM jobs WHERE id = $1`, [liveJob.id]),
+      "the index job of a document B still has was removed");
+    await db.run(`DELETE FROM jobs WHERE id = $1`, [liveJob.id]);
     assert.deepStrictEqual(await rowsOf(B), bExpect);
     for (const ext of [".m4a", ".user.pcm", ".agent.pcm"]) assert.ok(exists(recStem(B) + ext));
     assert.ok(exists(path.join(FILES, String(B), "2.jpg")));

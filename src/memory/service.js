@@ -327,7 +327,11 @@ function forgetWords(text, { dropStop = false } = {}) {
  * "User's sister's name is Kavya"); the best one is forgotten. When
  * different facts tie, nothing is forgotten and they come back as
  * `choices` so the model can ask which one. No significant words and no
- * subject means nothing is forgotten — never a broad match.
+ * subject means nothing is forgotten — never a broad match. Facts that
+ * hold only SOME of the words ("hearing date" when the fact says "hearing
+ * is on 14 October") are never forgotten either, but the closest come
+ * back as `choices` (`partial`): "nothing matching was stored" would have
+ * left the user believing a fact was gone that is still there.
  *
  * A HARD delete: the fact, its embedding and all. The privacy policy says
  * a deleted memory "is removed immediately", and a hidden (valid=0) row
@@ -335,8 +339,9 @@ function forgetWords(text, { dropStop = false } = {}) {
  * in remember() stays for automatic corrections.
  *
  * @returns {{count:number, forgotten:string[], choices:string[], others:string[],
- *   specific:boolean}} `others`: facts that also matched every word but
- *   ranked lower (kept). `specific`: `match` had words to match on.
+ *   specific:boolean, partial:boolean}} `others`: facts that also matched
+ *   every word but ranked lower (kept). `specific`: `match` had words to
+ *   match on. `partial`: the choices hold only some of them.
  */
 async function forget(userId, { subjectType = "", subjectId = null, match = "" }) {
   const uid = assertUser(userId);
@@ -352,28 +357,35 @@ async function forget(userId, { subjectType = "", subjectId = null, match = "" }
   let hits = [];
   let choices = [];
   let others = [];
+  let partial = false;
   if (!want.length) {
     // "Forget everything about Ravi": the whole subject, and only when a
     // subject was resolved.
     if (subjectType && subjectId) hits = rows;
   } else {
-    const ranked = rows
+    const scored = rows
       .map((r) => {
         const words = forgetWords(r.fact);
-        if (!want.every((w) => words.includes(w))) return null;
+        const has = want.filter((w) => words.includes(w)).length;
         const own = forgetWords(r.fact, { dropStop: true }).length || 1;
-        return { ...r, score: want.length / own };
+        return { ...r, has, score: has / own };
       })
-      .filter(Boolean)
-      .sort((a, b) => b.score - a.score);
-    const top = ranked.filter((r) => r.score === (ranked[0] && ranked[0].score));
-    const norm = (f) => forgetWords(f).join(" ");
-    if (new Set(top.map((r) => norm(r.fact))).size > 1) {
-      choices = top.map((r) => r.fact);
-    } else {
-      hits = top; // the same fact stored twice goes as one
+      .filter((r) => r.has > 0)
+      .sort((a, b) => b.has - a.has || b.score - a.score);
+    const ranked = scored.filter((r) => r.has === want.length);
+    if (ranked.length) {
+      const top = ranked.filter((r) => r.score === ranked[0].score);
+      const norm = (f) => forgetWords(f).join(" ");
+      if (new Set(top.map((r) => norm(r.fact))).size > 1) {
+        choices = top.map((r) => r.fact);
+      } else {
+        hits = top; // the same fact stored twice goes as one
+      }
+      others = ranked.filter((r) => !top.includes(r)).map((r) => r.fact);
+    } else if (scored.length) {
+      choices = scored.filter((r) => r.has === scored[0].has).map((r) => r.fact);
+      partial = true;
     }
-    others = ranked.filter((r) => !top.includes(r)).map((r) => r.fact);
   }
   if (hits.length) {
     await run(`DELETE FROM agent_memories WHERE user_id=$1 AND id = ANY($2::bigint[])`,
@@ -385,6 +397,7 @@ async function forget(userId, { subjectType = "", subjectId = null, match = "" }
     choices: choices.slice(0, 5),
     others: choices.length ? [] : others.slice(0, 5),
     specific: want.length > 0,
+    partial,
   };
 }
 

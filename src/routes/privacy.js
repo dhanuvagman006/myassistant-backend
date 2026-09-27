@@ -597,12 +597,19 @@ const GROUP_GRACE_MS = 3600_000;
 // Search chunks (a document's whole extracted text) and person/case links
 // of a document that is gone, its owner still here. Deleting a document
 // used to remove only its row (audit, 2026-09-27). Disjoint from the
-// user-orphan rule, which takes these rows once their owner is gone.
-const DOC_PARTS = ["document_chunks", "document_links"];
-const DOC_GONE = `EXISTS (SELECT 1 FROM users u WHERE u.id::text = x.user_id::text)
-  AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.id = x.document_id)`;
+// user-orphan rule, which takes these rows once their owner is gone. A
+// document.index job's payload is the same text, kept after it ran.
+const DOC_PARTS = ["document_chunks", "document_links", "jobs"];
+const DOC_ID = {
+  jobs: `CASE WHEN x.payload->>'documentId' ~ '^[0-9]{1,18}$'
+               THEN (x.payload->>'documentId')::bigint END`,
+};
+const DOC_GONE = (t) => `${t === "jobs" ? "x.kind = 'document.index' AND " : ""}
+  EXISTS (SELECT 1 FROM users u WHERE u.id::text = x.user_id::text)
+  AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.id = ${DOC_ID[t] || "x.document_id"})`;
 const docPartsIn = (cols) => (cols.has("documents.id")
-  ? DOC_PARTS.filter((t) => cols.has(`${t}.document_id`) && cols.has(`${t}.user_id`))
+  ? DOC_PARTS.filter((t) => cols.has(`${t}.${t === "jobs" ? "payload" : "document_id"}`) &&
+      cols.has(`${t}.user_id`))
   : []);
 
 /** Recording files on disk that no row points at, old enough to be dead. */
@@ -737,7 +744,7 @@ async function findOrphans() {
     put(table, r?.n);
   }
   for (const t of docPartsIn(cols)) {
-    const r = await one(`SELECT count(*)::int AS n FROM ${q(t)} x WHERE ${DOC_GONE}`);
+    const r = await one(`SELECT count(*)::int AS n FROM ${q(t)} x WHERE ${DOC_GONE(t)}`);
     put(`${t} (document deleted)`, r?.n);
   }
   // Same labels and the same order of rules as purgeOrphans(), so the
@@ -815,7 +822,7 @@ async function purgeOrphans() {
       put(table, r.rowCount);
     }
     for (const t of docPartsIn(cols)) {
-      const r = await client.query(`DELETE FROM ${q(t)} x WHERE ${DOC_GONE}`);
+      const r = await client.query(`DELETE FROM ${q(t)} x WHERE ${DOC_GONE(t)}`);
       put(`${t} (document deleted)`, r.rowCount);
     }
     if (cols.has("chat_groups.created_at") && cols.has("chat_group_messages.group_id")) {
