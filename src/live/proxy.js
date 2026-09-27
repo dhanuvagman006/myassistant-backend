@@ -1128,6 +1128,12 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   // is dropped — speech that was not addressed to the assistant gets no
   // reply at all (2026-09-24, a Tulu conversation was answered).
   let silentTurn = false;
+  // When the owner TYPED a request that has not been answered yet. Typing
+  // is always addressed to the assistant, so stay_silent is refused until
+  // the reply's turn completes: with a video playing near the phone, the
+  // model silenced the room's speech and the typed request with it — the
+  // app showed "That took too long" (2026-09-27).
+  let typedAt = 0;
   // CORRECTION STORM GUARD.
   //
   // The claim check tells the model, mid-call, that it just said something
@@ -1506,6 +1512,14 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           `Say exactly this, nothing before or after it: "${line}"` };
       };
       for (const fc of msg.toolCall.functionCalls || []) {
+        if (fc.name === "stay_silent" && typedAt && Date.now() - typedAt < 90_000) {
+          console.log("live: stay_silent refused — a typed request is waiting");
+          responses.push({ id: fc.id, name: fc.name,
+            response: { ok: false, result: "Do not stay silent: the owner TYPED their last " +
+              "message to you, so it is addressed to you. Answer that typed message now; " +
+              "ignore any background speech." } });
+          continue;
+        }
         if (fc.name === "stay_silent") {
           silentTurn = true;
           console.log("live: stay_silent — this turn gets no reply");
@@ -1942,6 +1956,8 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
     }
     if (sc.turnComplete) {
       if (silentTurn) { silentTurn = false; modelBuf = ""; }
+      // The typed request has had its answer (words or a tool).
+      if (typedAt && (modelBuf.trim() || turnTools.length)) typedAt = 0;
       flushUserTurn();
       flushModelTurn();
       appWs.send(JSON.stringify({ type: "turn_complete" }));
@@ -2165,6 +2181,8 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         }
         lastUserText = typed.slice(0, 500);
         lastUserAt = Date.now();
+        typedAt = lastUserAt;
+        silentTurn = false;
         wordsSeq = heardSeq;
         // Words handled here are never run again by a tool the model
         // calls on its way to saying the fixed sentence (routedAt).

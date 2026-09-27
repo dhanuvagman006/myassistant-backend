@@ -768,6 +768,27 @@ function isoLocal(ms, tz = 330) {
       }
     });
 
+    await atest("a typed request is never silenced by stay_silent (a video playing near the phone)", async () => {
+      const s = await openLive();
+      try {
+        s.fromApp({ type: "text", text: "make a one page PDF with tips to save electricity", typed: true });
+        const a = await s.call("ts1", "stay_silent", {});
+        assert.strictEqual(a.response.ok, false);
+        assert.match(a.response.result, /TYPED/);
+        const before = s.frames.filter((f) => f.type === "output_transcript").length;
+        s.says("Sure, making that PDF now.");
+        await s.turnDone();
+        assert.ok(s.frames.filter((f) => f.type === "output_transcript").length > before,
+          "the answer to the typed request is captioned");
+        // Answered: room speech after it may be silenced again.
+        s.heard("that's why you're next year");
+        const b = await s.call("ts2", "stay_silent", {});
+        assert.match(b.response.result, /Stay silent/);
+      } finally {
+        await s.close();
+      }
+    });
+
     await atest("Google ends the session: the phone's socket closes (so the app reconnects) and the new session remembers", async () => {
       const s = await openLive();
       s.heard("book me a table at Truffles for Friday night");
