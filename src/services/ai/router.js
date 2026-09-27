@@ -210,6 +210,17 @@ const MODEL_ENVS = ["GEMINI_MODEL", "AUTOMATION_MODEL", "AUTOMATION_FAST_MODEL",
 const isModelGone = (e) => e?.status === 404;
 
 /**
+ * A BUSY MODEL IS NOT A BROKEN TURN. Google answers 503 "this model is
+ * currently experiencing high demand" for minutes at a time, and retries a
+ * second apart on the same model cannot outlast that: on 2026-09-25 six of
+ * the seven scheduled tasks died on one while the fallback model was
+ * healthy the whole time. Once a path's own retries are spent, the turn is
+ * answered on the fallback model — as for a retired model or a spent key.
+ */
+const BUSY = new Set([500, 502, 503, 504]);
+const isBusy = (e) => BUSY.has(Number(e?.status));
+
+/**
  * Logs once per model which variable to change. `env` names its default.
  * Only once EVERY key has said 404: the review of 2026-09-25 caught this
  * line saying "set GEMINI_MODEL" when key 1 lacked the model and key 2
@@ -494,7 +505,18 @@ async function generateReply(messages, opts = {}) {
     if (transient && !opts.noRetry) {
       // One short-delay retry on transient network/5xx errors.
       await new Promise((res) => setTimeout(res, 800));
-      return answer(await bounded());
+      try {
+        return answer(await bounded());
+      } catch (e2) {
+        // Still busy (isBusy): the fallback model answers. Deep research's
+        // synthesis died on a 503 with nothing else to try (2026-09-25).
+        const used = opts.model || chatModel();
+        if (!isBusy(e2) || fallbackModel() === used) throw e2;
+        console.warn(`gemini: ${used} busy (${e2.status}) — retrying on ${fallbackModel()}`);
+        const onFallback = () => callGeminiMeta(messages, system, { ...call, _model: fallbackModel() });
+        return answer(await (Number(opts.timeoutMs) > 0
+          ? hardDeadline(onFallback(), Number(opts.timeoutMs)) : onFallback()));
+      }
     }
     throw e;
   }
@@ -1025,11 +1047,16 @@ async function generateWithTools({ contents, system, declarations = [], _model =
         // Quota/auth belong to the KEY — hand them straight back so the
         // pool rotates instead of hammering a key that has nothing left.
         if (!TRANSIENT.has(r.status)) throw lastErr;
-        console.warn(`gemini tools ${r.status} on ${model} — retry ${attempt + 1}/2`);
+        if (attempt < 2) console.warn(`gemini tools ${r.status} on ${model} — retry ${attempt + 1}/2`);
       }
       throw lastErr;
     });
   } catch (e) {
+    // Still busy after those retries (isBusy): the fallback model answers.
+    if (isBusy(e) && !_model && fallbackModel() !== model) {
+      console.warn(`gemini tools: ${model} busy (${e.status}) — retrying on ${fallbackModel()}`);
+      return generateWithTools({ contents, system, declarations, timeoutMs, _model: fallbackModel() });
+    }
     // A retired model (404): the tool turn — the one chat waits on — is
     // answered on the fallback, and the log says once what to change.
     if (isModelGone(e)) {
@@ -1138,9 +1165,16 @@ async function generateWithToolsStream(
       if (r.status === 429) console.warn(`gemini tools stream: ${model} out of quota — retrying on ${fallbackModel()}`);
       return again({ _model: fallbackModel(), _tried: [] });
     }
-    throw new Error(
+    // A busy model (isBusy). The voice turn is waiting, and a same-model
+    // retry a second later rarely finds it free: nothing was streamed yet,
+    // so the fallback model answers this turn at once.
+    if (BUSY.has(r.status) && !_model && fallbackModel() !== model) {
+      console.warn(`gemini tools stream: ${model} busy (${r.status}) — retrying on ${fallbackModel()}`);
+      return again({ _model: fallbackModel(), _tried: [] });
+    }
+    throw Object.assign(new Error(
       `gemini tools stream ${r.status} [model=${model}] ${errBody.slice(0, 300) || "(empty body)"}`
-    );
+    ), { status: r.status, body: errBody });
   }
 
   const calls = [];

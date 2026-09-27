@@ -328,6 +328,10 @@ async function init() {
       seen_at    BIGINT NOT NULL DEFAULT 0,
       diag       TEXT NOT NULL DEFAULT '{}'
     );
+    -- diag came after the table (2026-09-20), and CREATE TABLE IF NOT
+    -- EXISTS never adds a column to a table that exists: production had
+    -- none, and every device write failed from that day on.
+    ALTER TABLE user_devices ADD COLUMN IF NOT EXISTS diag TEXT NOT NULL DEFAULT '{}';
     CREATE TABLE IF NOT EXISTS documents (
       id         SERIAL PRIMARY KEY,
       user_id    INTEGER NOT NULL,

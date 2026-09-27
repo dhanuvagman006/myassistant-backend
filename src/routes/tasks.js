@@ -165,7 +165,7 @@ router.post("/:id/ack", async (req, res) => {
     });
   if (!out) return res.status(404).json({ error: "no such task or step" });
   const task = out.task || out;
-  res.json({ ok: true, task: forClient(task), speak: driver.summarise(task) });
+  res.json({ ok: true, task: forClient(task), speak: driver.summarise(task, out) });
 });
 
 module.exports = router;

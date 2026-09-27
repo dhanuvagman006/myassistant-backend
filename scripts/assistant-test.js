@@ -39,12 +39,12 @@ function stubRuntime(reply = "Done.", impl = null) {
   return { calls, restore: () => { runtime.runAgentTurn = real; } };
 }
 
-async function mount() {
+async function mount(sub = "0") {
   const routes = require("../src/assistant/routes");
   const app = express();
   app.get("/assistant/stream/:sid", routes.streamHandler);
   app.use(express.json());
-  app.use((req, _res, next) => { req.user = { sub: "0", name: "Test" }; next(); });
+  app.use((req, _res, next) => { req.user = { sub, name: "Test" }; next(); });
   app.use("/assistant", routes);
   const server = await new Promise((r) => { const s = app.listen(0, "127.0.0.1", () => r(s)); });
   const base = `http://127.0.0.1:${server.address().port}/assistant`;
@@ -468,6 +468,177 @@ async function turns(calls, n, ms = 3000) {
     } finally {
       agent.enabled = realAgent.enabled;
       agent.start = realAgent.start;
+    }
+  });
+
+  console.log("\nscheduled work outlasts a busy model");
+
+  // PRODUCTION, 2026-09-25: all seven scheduled tasks that evening ended
+  // "Scheduled task failed" — six on a 503 from the chat model, one on a
+  // timeout — and nothing was ever tried again.
+  const jobs = require("../src/infra/jobs");
+  require("../src/infra/handlers").install();
+  const sent = [];
+  push.sendNotification = async (token, title, body, data) => { sent.push({ token, title, body, data }); };
+  const busyErr = () => Object.assign(
+    new Error('gemini tools 503 [model=gemini-3.5-flash] {"error":{"code":503,"message":"high demand"}}'), { status: 503 });
+  const worker = await db.createUser({ email: `busy-${Date.now()}@example.com`, name: "Busy Test", provider: "email" });
+  await db.run("UPDATE users SET fcm_token=$2 WHERE id=$1", [worker.id, `tok-busy-${worker.id}`]);
+  const pushesTo = () => sent.filter((p) => p.token === `tok-busy-${worker.id}`);
+  const pending = (kind) => db.query(
+    "SELECT * FROM jobs WHERE user_id=$1 AND kind=$2 AND status='pending' ORDER BY id", [worker.id, kind]);
+  /** What the queue does with a claimed row: run its handler, then mark it done. */
+  const runJob = async (row) => {
+    await jobs.HANDLERS.get(row.kind)(row.payload, row);
+    await db.run("UPDATE jobs SET status='done' WHERE id=$1", [row.id]);
+  };
+  const queue = async (kind, payload) => db.one("SELECT * FROM jobs WHERE id=$1",
+    [await jobs.enqueue(kind, payload, { userId: worker.id, delayMs: -1000 })]);
+
+  try {
+    await atest("a scheduled task that meets a busy model runs again in a minute, then three — then says it failed", async () => {
+      const rt = stubRuntime("", async () => { throw busyErr(); });
+      try {
+        const first = await queue("scheduled_task",
+          { task: "Call Ravi and tell him the meeting moved", tzOffsetMin: 330, repeat: "daily" });
+        const due = Number(first.run_after);
+        await runJob(first);
+        assert.strictEqual(pushesTo().length, 0, "no failure push while a retry is queued");
+        let [retry] = await pending("scheduled_task");
+        assert.ok(retry, "the busy run was not queued again");
+        assert.deepStrictEqual([retry.payload.retry, retry.payload.dueAt, retry.payload.task],
+          [1, due, "Call Ravi and tell him the meeting moved"]);
+        assert.ok(Math.abs(Number(retry.run_after) - (Date.now() + 60_000)) < 5000, "a minute later");
+        const note = await db.one("SELECT last_error FROM jobs WHERE id=$1", [first.id]);
+        assert.match(note.last_error, /^RETRYING in 1 min: I couldn't complete it: gemini tools 503/);
+
+        await runJob(retry);
+        [retry] = await pending("scheduled_task");
+        assert.deepStrictEqual([retry.payload.retry, retry.payload.dueAt], [2, due]);
+        assert.ok(Math.abs(Number(retry.run_after) - (Date.now() + 180_000)) < 5000, "then three minutes");
+        assert.strictEqual(pushesTo().length, 0);
+
+        await runJob(retry);
+        const p = pushesTo();
+        assert.strictEqual(p.length, 1, JSON.stringify(p));
+        assert.strictEqual(p[0].title, "Scheduled task failed");
+        assert.match(p[0].body, /503/);
+        assert.strictEqual(rt.calls.length, 3);
+        // Tomorrow is queued from when today's run was DUE, not from the
+        // last retry — and starts with a clean slate.
+        const [tomorrow] = await pending("scheduled_task");
+        assert.ok(Math.abs(Number(tomorrow.run_after) - (due + 24 * 3600_000)) < 5000,
+          `tomorrow drifted by ${Number(tomorrow.run_after) - (due + 24 * 3600_000)} ms`);
+        assert.strictEqual(tomorrow.payload.retry, undefined);
+        assert.strictEqual(tomorrow.payload.dueAt, undefined);
+      } finally {
+        rt.restore();
+        await db.run("UPDATE jobs SET status='cancelled' WHERE user_id=$1 AND status='pending'", [worker.id]);
+      }
+    });
+
+    await atest("a run that already placed the call is never run again, busy model or not", async () => {
+      const sessionState = require("../src/agents/sessionState");
+      const rt = stubRuntime("", async (_text, ctx) => {
+        sessionState.begin(ctx.userId, ctx.sessionId).executed.push({ tool: "place_phone_call", ok: true, at: Date.now() });
+        throw busyErr();
+      });
+      try {
+        const before = pushesTo().length;
+        await runJob(await queue("scheduled_task", { task: "Call Ravi and tell him the meeting moved", tzOffsetMin: 330 }));
+        assert.strictEqual((await pending("scheduled_task")).length, 0, "a second call could be placed");
+        assert.strictEqual(pushesTo().slice(before)[0].title, "Scheduled task failed");
+      } finally {
+        rt.restore();
+      }
+    });
+
+    await atest("a refusal or a spent quota is reported at once, not retried", async () => {
+      const rt = stubRuntime("", async () => {
+        throw Object.assign(new Error("gemini tools 429 [model=gemini-flash-lite-latest] quota exceeded"), { status: 429 });
+      });
+      try {
+        const before = pushesTo().length;
+        await runJob(await queue("scheduled_task", { task: "Order my usual biryani", tzOffsetMin: 330 }));
+        assert.strictEqual((await pending("scheduled_task")).length, 0);
+        assert.strictEqual(pushesTo().slice(before).length, 1);
+      } finally {
+        rt.restore();
+      }
+    });
+
+    await atest("deep research that meets a busy model is queued again, and says so only once the retries are spent", async () => {
+      const ai = require("../src/services/ai/router");
+      const webSearch = require("../src/tools/webSearch");
+      const [realReply, realSearch] = [ai.generateReply, webSearch.run];
+      ai.generateReply = async () => {
+        throw Object.assign(new Error("gemini 503 [model=gemini-3.5-flash] high demand"), { status: 503 });
+      };
+      webSearch.run = async (q) => ({ ok: true, data: [{ title: q, url: "https://example.test/a", snippet: `About ${q}.` }] });
+      try {
+        const before = pushesTo().length;
+        await runJob(await queue("deep_research", { userId: worker.id, question: "Is an e-scooter worth it for 20 km a day?" }));
+        assert.strictEqual(pushesTo().length, before, "no 'didn't finish' while a retry is queued");
+        const [retry] = await pending("deep_research");
+        assert.strictEqual(retry.payload.retry, 1);
+        assert.ok(Math.abs(Number(retry.run_after) - (Date.now() + 60_000)) < 5000);
+        await db.run("UPDATE jobs SET status='cancelled' WHERE id=$1", [retry.id]);
+        // Out of retries: the user is told.
+        await runJob(await queue("deep_research", { ...retry.payload, retry: 2 }));
+        assert.strictEqual((await pending("deep_research")).length, 0);
+        const p = pushesTo().slice(before);
+        assert.strictEqual(p.length, 1);
+        assert.strictEqual(p[0].title, "Research didn't finish");
+      } finally {
+        ai.generateReply = realReply;
+        webSearch.run = realSearch;
+      }
+    });
+  } finally {
+    push.sendNotification = realSend;
+    await db.run("DELETE FROM jobs WHERE user_id=$1", [worker.id]).catch(() => {});
+  }
+
+  console.log("\nthe phone's capability report is kept");
+
+  // Production, 2026-09-20 to 27: the table predates its diag column, which
+  // only CREATE TABLE named — so every write failed, silently, for a week.
+  await atest("a table from before diag gets the column at boot, and a failed write is said out loud", async () => {
+    if (!/@(localhost|127\.0\.0\.1)[:/]/.test(process.env.DATABASE_URL)) {
+      console.log("       (not a local database — the column is not dropped; skipped)");
+      return;
+    }
+    const u = await db.createUser({ email: `caps-${Date.now()}@example.com`, name: "Caps Test", provider: "email" });
+    const srv = await mount(String(u.id));
+    const warned = [];
+    const warn = console.warn;
+    console.warn = (...a) => { warned.push(a.join(" ")); };
+    try {
+      const report = { platform: "android", build: 119, model: "Pixel 8", osVersion: "15",
+        granted: ["microphone"], denied: ["location"], diag: { battery: "unrestricted" } };
+      await db.run("ALTER TABLE user_devices DROP COLUMN IF EXISTS diag"); // production's table
+      const s = await (await srv.post("/session", {})).json();
+      assert.strictEqual((await srv.post(`/${s.sessionId}/capabilities`, report)).status, 200);
+      for (let i = 0; i < 50 && !warned.some((w) => /user_devices write failed/.test(w)); i++) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      assert.ok(warned.some((w) => /user_devices write failed: .*diag/.test(w)), warned.join("\n"));
+
+      await db.init();
+      await srv.post(`/${s.sessionId}/capabilities`, report);
+      let row = null;
+      for (let i = 0; i < 50 && !row; i++) {
+        row = await db.one("SELECT * FROM user_devices WHERE user_id=$1", [u.id]);
+        if (!row) await new Promise((r) => setTimeout(r, 20));
+      }
+      assert.ok(row, "the report was not stored");
+      assert.deepStrictEqual([row.build, row.model, row.denied], [119, "Pixel 8", "location"]);
+      assert.deepStrictEqual(JSON.parse(row.diag), { battery: "unrestricted" });
+    } finally {
+      console.warn = warn;
+      await db.init(); // the column is back whatever happened above
+      await db.run("DELETE FROM user_devices WHERE user_id=$1", [u.id]).catch(() => {});
+      await srv.close();
     }
   });
 

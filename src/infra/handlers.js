@@ -25,9 +25,55 @@ async function documentIndex(payload) {
  *
  * DELIBERATELY NO RETRY: a crash halfway through "order food" must not
  * order twice. The handler reports failure to the user instead of
- * throwing, so the queue never re-runs it.
+ * throwing, so the queue never re-runs it. The one exception is a
+ * TRANSIENT failure before anything in the world was done (see
+ * retryable below): that run is queued again, a little later, by hand.
  */
 const STALE_AFTER_MS = 45 * 60 * 1000;
+
+/**
+ * A BUSY MODEL IS A MOMENT, NOT AN OUTCOME. Production, 2026-09-25: all
+ * seven scheduled tasks that evening ended "Scheduled task failed" — six
+ * on a 503 "high demand" from the chat model, one on a timeout — and the
+ * call, message or order simply never happened. Such a run is queued
+ * again (a minute later, then three) before the failure push goes out,
+ * but only while nothing in the world has been done: a run that already
+ * placed the call must never place it twice.
+ */
+const RETRY_DELAYS_MS = [60_000, 3 * 60_000];
+
+/** A 5xx or a timeout — worth another go. A spent quota or a refusal is not. */
+function isTransient(e) {
+  const status = Number(e?.status) || 0;
+  if (status >= 500 && status <= 504) return true;
+  const m = String(e?.message || e || "");
+  return e?.name === "TimeoutError" || /\b50[0234]\b/.test(m) || /timed out|timeout|aborted/i.test(m);
+}
+
+/** Did this job's own session run a world action (a call, a message, an order)? */
+function worldActionRan(userId, sessionId) {
+  const state = require("../agents/sessionState").get(userId, sessionId);
+  const { isWorldAction } = require("../tools/registry");
+  return !!state && state.executed.some((x) => isWorldAction(x.tool));
+}
+
+/**
+ * Queue this job's payload again after the next retry delay. Returns the
+ * wait in minutes, or 0 when the retries are spent or the queue refused.
+ */
+async function retryLater(kind, payload, userId) {
+  const tries = Number(payload?.retry) || 0;
+  if (tries >= RETRY_DELAYS_MS.length) return 0;
+  try {
+    await jobs.enqueue(kind, { ...payload, retry: tries + 1 }, {
+      userId, delayMs: RETRY_DELAYS_MS[tries],
+    });
+    return RETRY_DELAYS_MS[tries] / 60_000;
+  } catch (e) {
+    console.error(`${kind} retry enqueue failed:`, e.message);
+    return 0;
+  }
+}
 
 async function scheduledTask(payload, job) {
   const task = String(payload?.task || "").trim();
@@ -51,6 +97,7 @@ async function scheduledTask(payload, job) {
 
   let outcome = "";
   let failed = false;
+  let retryable = false;
   const jobSessionId = `job:${job.id || job.jobId || Date.now()}`;
   try {
     const res = await require("../agents/runtime").runAgentTurn(
@@ -130,6 +177,24 @@ async function scheduledTask(payload, job) {
   } catch (e) {
     failed = true;
     outcome = `I couldn't complete it: ${String(e.message).slice(0, 160)}`;
+    retryable = isTransient(e) && !worldActionRan(userId, jobSessionId);
+  }
+  if (retryable) {
+    // The retry carries the time this occurrence was DUE, so a daily
+    // series rolls on from 9:00 and not from the 9:01 retry.
+    const mins = await retryLater("scheduled_task",
+      { ...payload, dueAt: Number(payload?.dueAt) || Number(job.run_after) }, userId);
+    if (mins) {
+      // No push and no next occurrence: the retry reports, and rolls on.
+      try {
+        await run(`UPDATE jobs SET last_error=$2, updated_at=$3 WHERE id=$1`, [
+          job.id, `RETRYING in ${mins} min: ${outcome.slice(0, 240)}`, Date.now(),
+        ]);
+      } catch (e) {
+        console.error("scheduled_task retry note failed:", e.message);
+      }
+      return;
+    }
   }
   await notify(
     userId,
@@ -159,10 +224,12 @@ async function scheduledTask(payload, job) {
  * exists per series and cancel_scheduled_task ends the whole thing.
  */
 async function reenqueueIfRecurring(job) {
-  const p = job.payload || {};
+  // A retried occurrence (retryLater) rolls on from when it was DUE; the
+  // next occurrence starts with neither its retry count nor that time.
+  const { retry: _retry, dueAt, ...p } = job.payload || {};
   if (!["daily", "weekly", "monthly"].includes(p.repeat)) return;
   try {
-    let next = nextOccurrence(Number(job.run_after), p.repeat, p);
+    let next = nextOccurrence(Number(dueAt) || Number(job.run_after), p.repeat, p);
     // Catch up past a long outage without queueing a backlog of stale runs.
     while (next <= Date.now()) next = nextOccurrence(next, p.repeat, p);
     await jobs.enqueue("scheduled_task", p, {
@@ -335,17 +402,79 @@ function short(task) {
   return task.length > 48 ? `${task.slice(0, 45)}…` : task;
 }
 
-async function notify(userId, title, body) {
+async function notify(userId, title, body, kind = "scheduled_task") {
   try {
     const u = await one(`SELECT fcm_token FROM users WHERE id=$1`, [userId]);
     if (u?.fcm_token) {
       await require("../services/push").sendNotification(u.fcm_token, title, body, {
-        kind: "scheduled_task",
+        kind,
       });
     }
   } catch (e) {
-    console.error("scheduled_task notify failed:", e.message);
+    console.error(`${kind} notify failed:`, e.message);
   }
+}
+
+/**
+ * THE REST OF A PLAN — the crank a voice turn could not wait for.
+ *
+ * start_task runs a plan for as long as a conversation can hold its
+ * breath (taskDriver.TURN_BUDGET_MS); what is left is queued here
+ * (taskDriver.handOff) and runs on with nobody holding the phone, so it
+ * runs as a background turn does: unattended tools refused, a step that
+ * needs a yes parked, not guessed. The outcome is pushed, or the next
+ * crank is queued and that one reports.
+ *
+ * Never thrown from: a step may be a world action, and the queue must
+ * not run one twice. A crank that breaks stops its plan and says so.
+ */
+async function taskContinue(payload, job) {
+  const userId = job.user_id;
+  const taskId = Number(payload?.taskId);
+  if (!userId || !taskId) return;
+  const tasks = require("../agents/tasks");
+  const driver = require("../agents/taskDriver");
+  const task = await tasks.get(userId, taskId).catch(() => null);
+  // Cancelled, finished or parked since it was queued: nothing to add.
+  if (!task || task.status !== tasks.STATUS.RUNNING) return;
+
+  // ITS OWN SESSION, as a scheduled task has — carrying the taint of what
+  // the plan has already read. A step that fetched a web page or an email
+  // made the rest of the turn untrusted (registry.markTurnUntrusted), and
+  // the rest of the plan must not come back clean in a fresh session.
+  const registry = require("../tools/registry");
+  const sessionState = require("../agents/sessionState");
+  const sessionId = `task:${taskId}`;
+  const session = sessionState.begin(userId, sessionId, { surface: "background" });
+  const readUntrusted = task.steps.some((s) => s.status === tasks.STEP.DONE &&
+    (registry.UNTRUSTED_SOURCES.has(s.tool) || registry.get(s.tool)?.source === "mcp"));
+  const earlier = task.sessionId ? sessionState.get(userId, task.sessionId) : null;
+  if (readUntrusted || typeof earlier?.__untrustedAt === "number") session.__untrustedAt = Date.now();
+
+  const tz = Number.isFinite(payload?.tzOffsetMin) ? payload.tzOffsetMin : 330;
+  let out;
+  try {
+    out = await driver.runWithin(userId, taskId, {
+      userId, tzOffsetMin: tz, background: true, source: "background",
+      session, sessionId, intent: task.goal,
+      ...(payload?.approved === true ? { approved: true } : {}),
+    }, { budgetMs: driver.BACKGROUND_BUDGET_MS, hop: Number(payload?.hop) || 0 });
+  } catch (e) {
+    console.error(`task_continue ${taskId} failed:`, e.message);
+    out = { task: await tasks.cancel(userId, taskId,
+      `stopped: ${String(e.message).slice(0, 160)}`).catch(() => null) };
+  } finally {
+    sessionState.end(userId, sessionId);
+  }
+  if (out.handedOff) return; // the next crank reports
+  const left = out.task || task;
+  // Out of cranks with steps still to run: stopped, not left RUNNING.
+  if (out.exhausted) await tasks.cancel(userId, taskId, "ran out of time").catch(() => null);
+  const title =
+    left.status === tasks.STATUS.DONE ? `Done: ${short(left.goal)}` :
+    left.status === tasks.STATUS.BLOCKED ? `Needs you: ${short(left.goal)}` :
+    `Stopped: ${short(left.goal)}`;
+  await notify(userId, title, driver.summarise(left, out), "task");
 }
 
 /**
@@ -379,6 +508,7 @@ async function deepResearch(payload = {}) {
     });
     await notify(userId, "Research didn't finish", why);
   };
+  let filed = false;
 
   try {
     // 1. Break the question up. Several angles find things one query does
@@ -482,6 +612,7 @@ async function deepResearch(payload = {}) {
       mime: "text/plain",
       note: question,
     });
+    filed = true;
     try {
       await docs.setMetadata(userId, row.id, {
         title, category: "other", docDate: stamp,
@@ -501,6 +632,15 @@ async function deepResearch(payload = {}) {
     });
     await notify(userId, "Your research is ready", short(question));
   } catch (e) {
+    // A busy model is a moment (RETRY_DELAYS_MS): the whole job runs
+    // again a little later — nothing was filed, so nothing doubles.
+    if (!filed && isTransient(e)) {
+      const mins = await retryLater("deep_research", payload, userId);
+      if (mins) {
+        console.warn(`deep_research: ${String(e.message).slice(0, 120)} — again in ${mins} min`);
+        return;
+      }
+    }
     await fail(String(e.message).slice(0, 160));
   }
 }
@@ -641,6 +781,8 @@ function install() {
   jobs.register("group_agent_reply", (payload) =>
     require("../agents/groupAgent").replyFromJob(payload));
   jobs.register("scheduled_task", scheduledTask);
+  // The rest of a plan the turn's time budget cut short (taskDriver.handOff).
+  jobs.register("task_continue", taskContinue);
   jobs.register("deep_research", deepResearch);
   jobs.register("generate_video", videoJob);
   // A call retry that survives a restart — see agentCall.handleNoAnswer.

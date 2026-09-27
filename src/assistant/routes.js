@@ -936,7 +936,9 @@ router.post("/:sid/capabilities", (req, res) => {
          s.deviceCaps.osVersion, s.deviceCaps.granted.join(","),
          s.deviceCaps.denied.join(","), Date.now(),
          JSON.stringify(s.deviceCaps.diag || {}).slice(0, 4000)]
-      ).catch(() => {});
+      // Said, not swallowed: a missing diag column silently stopped every
+      // write here for a week (2026-09-20 → 27) and nobody could tell.
+      ).catch((e) => console.warn("user_devices write failed:", e.message));
     }
   } catch (_) {}
   res.json({ ok: true });
@@ -1550,7 +1552,7 @@ router.post("/:sid/confirm", (req, res) => {
           { ...(pending.ctx || {}), sessionId: s.sid }
         );
         const said = out
-          ? driver.summarise(out.task, { exhausted: out.exhausted })
+          ? driver.summarise(out.task, out)
           : "I couldn't find that task any more.";
         emit(s, { type: "task_update", task: out ? out.task : null });
         state(s, "speaking");

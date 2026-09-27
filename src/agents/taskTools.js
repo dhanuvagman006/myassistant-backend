@@ -122,7 +122,9 @@ function registerTaskTools() {
       // it does in conversation. Note it does NOT carry approvedStep:
       // the first high-risk step will stop the plan and ask, which is the
       // entire point.
-      const { task: finished, exhausted } = await driver.runWithin(
+      // Past the turn's budget the rest is handed to the job queue
+      // (taskDriver.handOff), which finishes it and pushes the outcome.
+      const { task: finished, exhausted, handedOff } = await driver.runWithin(
         ctx.userId,
         task.id,
         ctx,
@@ -131,7 +133,7 @@ function registerTaskTools() {
 
       const steps = (finished && finished.steps) || [];
       const waiting = steps.find((s) => s.status === tasks.STEP.WAITING);
-      const speak = driver.summarise(finished, { exhausted });
+      const speak = driver.summarise(finished, { exhausted, handedOff });
 
       // ── A STEP WANTS THE USER ───────────────────────────────────────
       // Raise the ordinary confirmation card. `task` rides along so the
@@ -176,7 +178,7 @@ function registerTaskTools() {
       return {
         ok: true,
         speak,
-        data: taskPayload(finished, { exhausted }),
+        data: taskPayload(finished, { exhausted: exhausted && handedOff }),
       };
     },
   });

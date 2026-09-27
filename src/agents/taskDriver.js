@@ -12,7 +12,8 @@
  * executor and the wrong one for a conversation: three steps of
  * deep_research is a minute and a half of silence with the user holding
  * their phone. runWithin() stops at whichever comes first and leaves the
- * task RUNNING, so nothing is lost — the work resumes on the next crank.
+ * task RUNNING, so nothing is lost — and hands it to the job queue
+ * (handOff), which is the next crank.
  */
 const tasks = require("./tasks");
 
@@ -20,11 +21,22 @@ const tasks = require("./tasks");
 const TURN_BUDGET_MS = 22_000;
 
 /**
+ * One background crank (task_continue in infra/handlers.js). Nobody is
+ * waiting on it, but the queue runs one job at a time: a long plan hands
+ * the worker back between cranks rather than holding every scheduled task
+ * behind it.
+ */
+const BACKGROUND_BUDGET_MS = 2 * 60_000;
+
+/**
  * Step a task until it finishes, blocks, or runs out of time.
  *
- * Returns { task, ranSteps, exhausted } — `exhausted` true means the
- * budget ended it, not the plan, so the caller should say so rather than
- * implying the work stopped.
+ * Returns { task, ranSteps, exhausted, handedOff } — `exhausted` true
+ * means the budget ended it, not the plan; `handedOff` that the rest is
+ * queued to run in the background. The caller says which, rather than
+ * implying the work stopped — or that it goes on when it does not.
+ *
+ * opts.hop — how many background cranks came before this one.
  */
 async function runWithin(userId, taskId, ctx = {}, opts = {}) {
   const budgetMs = Number(opts.budgetMs) || TURN_BUDGET_MS;
@@ -36,7 +48,8 @@ async function runWithin(userId, taskId, ctx = {}, opts = {}) {
 
   for (let i = 0; i < maxSteps; i++) {
     if (Date.now() >= deadline) {
-      return { task, ranSteps, exhausted: true };
+      const handedOff = await handOff(userId, task, ctx, opts);
+      return { task, ranSteps, exhausted: true, handedOff };
     }
     const out = await tasks.step(userId, taskId, ctx);
     task = out.task;
@@ -50,6 +63,39 @@ async function runWithin(userId, taskId, ctx = {}, opts = {}) {
     }
   }
   return { task, ranSteps, exhausted: false };
+}
+
+/**
+ * THE NEXT CRANK. Nothing used to turn it: runWithin is called by the
+ * turn that started the plan, an approval and a phone's receipt, and no
+ * job, sweep or screen ever resumed a RUNNING plan. So a plan the turn's
+ * budget cut short was told "still working on the rest" and then sat,
+ * half done, forever (audit, 2026-09-27). Now the rest is a durable job
+ * that runs on and pushes the outcome.
+ *
+ * Every crank runs at least one step, so a plan of MAX_STEPS needs at
+ * most that many; the ceiling only guards a budget that is never
+ * positive. True when the work is queued — the one case in which the
+ * caller may promise it continues.
+ */
+async function handOff(userId, task, ctx = {}, opts = {}) {
+  const hop = Number(opts.hop) || 0;
+  if (!task || task.status !== tasks.STATUS.RUNNING || hop >= tasks.MAX_STEPS) return false;
+  try {
+    await require("../infra/jobs").enqueue("task_continue", {
+      taskId: task.id,
+      hop: hop + 1,
+      tzOffsetMin: Number.isFinite(ctx.tzOffsetMin) ? ctx.tzOffsetMin : 330,
+      // A scheduled run's consent covered its whole task (tasks.step), so
+      // the rest of that task keeps it. A turn's plan has none to keep:
+      // a step that needs a yes parks the plan and the push says so.
+      approved: ctx.approved === true && ctx.background === true,
+    }, { userId });
+    return true;
+  } catch (e) {
+    console.warn(`task ${task.id}: could not queue the rest:`, e.message);
+    return false;
+  }
 }
 
 /**
@@ -99,7 +145,7 @@ async function acknowledge(userId, taskId, stepIndex, { ok, detail = "" } = {}, 
  * four things has to report the three and name the fourth, which is the
  * whole reason a task exists rather than a tool loop.
  */
-function summarise(task, { exhausted = false } = {}) {
+function summarise(task, { exhausted = false, handedOff = false } = {}) {
   if (!task) return "I couldn't find that task.";
   const steps = task.steps || [];
   const total = steps.length;
@@ -125,7 +171,10 @@ function summarise(task, { exhausted = false } = {}) {
     return `I got ${done} of ${total} done, then it stopped: ${why || "a step did not work"}.`;
   }
   if (exhausted) {
-    return `${done} of ${total} done so far — still working on the rest.`;
+    // Only a queued crank may be promised (handOff).
+    return handedOff
+      ? `${done} of ${total} done so far — still working on the rest, and I'll send you the outcome.`
+      : `${done} of ${total} done — I ran out of time, and the rest has not run.`;
   }
   return `${done} of ${total} done.`;
 }
@@ -137,4 +186,5 @@ module.exports = {
   acknowledge,
   summarise,
   TURN_BUDGET_MS,
+  BACKGROUND_BUDGET_MS,
 };

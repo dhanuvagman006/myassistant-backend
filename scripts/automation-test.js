@@ -1839,6 +1839,65 @@ const swiggyCart = { pkg: SW, nodes: [
     }
   });
 
+  // PRODUCTION, 2026-09-25: six of seven scheduled tasks died on "gemini
+  // tools 503 [model=gemini-3.5-flash] … high demand" — three tries on the
+  // busy model in two seconds, and the healthy fallback was never asked.
+  await atest("a busy model (503): the tool turn, the tool stream and a reply move to the fallback once their retries are spent", async () => {
+    const realFetch = global.fetch;
+    const logs = [];
+    const [warn, error] = [console.warn, console.error];
+    const hits = [];
+    let fallbackBusy = false;
+    const busy = JSON.stringify({ error: { code: 503, status: "UNAVAILABLE",
+      message: "This model is currently experiencing high demand. Please try again later." } });
+    try {
+      await withEnv({ GEMINI_API_KEY: "test-key-eeee-1111", GEMINI_FALLBACK_KEYS: "test-key-ffff-2222",
+        GEMINI_MODEL: "gemini-busy-chat", GEMINI_FALLBACK_MODEL: "gemini-fallback-free" }, async () => {
+        console.warn = (...a) => logs.push(a.join(" "));
+        console.error = (...a) => logs.push(a.join(" "));
+        global.fetch = async (url) => {
+          const model = String(url).match(/models\/([^:]+):/)[1];
+          hits.push(model);
+          if (/busy/.test(model) || fallbackBusy) return { ok: false, status: 503, text: async () => busy };
+          if (/:streamGenerateContent/.test(url)) return { ok: true, status: 200, body: sseBody("done on the fallback") };
+          return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: "done on the fallback" }] } }] }) };
+        };
+        const turn = { contents: [{ role: "user", parts: [{ text: "call Ravi and tell him the meeting moved" }] }], system: "s" };
+        // The tool path: its three tries on the busy model, then the fallback.
+        const tools = await ai.generateWithTools(turn);
+        assert.strictEqual(tools.text, "done on the fallback");
+        assert.deepStrictEqual(hits, ["gemini-busy-chat", "gemini-busy-chat", "gemini-busy-chat", "gemini-fallback-free"]);
+        // The stream: nothing was said yet, so straight to the fallback.
+        hits.length = 0;
+        const streamed = await ai.generateWithToolsStream(turn);
+        assert.strictEqual(streamed.text, "done on the fallback");
+        assert.deepStrictEqual(hits, ["gemini-busy-chat", "gemini-fallback-free"]);
+        // A reply (deep research's synthesis): its one retry, then the fallback.
+        hits.length = 0;
+        const out = await realGenerateReply([{ role: "user", content: "hi" }], { system: "s" });
+        assert.deepStrictEqual([out.reply, out.model], ["done on the fallback", "gemini-fallback-free"]);
+        assert.deepStrictEqual(hits, ["gemini-busy-chat", "gemini-busy-chat", "gemini-fallback-free"]);
+        // A busy model is not a spent key: nothing set aside, both keys still in service.
+        const keys = require("../src/services/ai/keys");
+        assert.ok(!keys.status().spent.some((s) => /busy/.test(s.model)), JSON.stringify(keys.status().spent));
+        assert.ok(!logs.some((l) => /out of quota/.test(l)), logs.join("\n"));
+        // A caller with its own budget (noRetry) gets the 503 back at once.
+        hits.length = 0;
+        await assert.rejects(realGenerateReply([{ role: "user", content: "x" }], { system: "s", noRetry: true }),
+          (e) => e.status === 503);
+        assert.deepStrictEqual(hits, ["gemini-busy-chat"]);
+        // Both busy: the error keeps its status, so a scheduled task can
+        // tell a busy model (worth another go later) from a refusal.
+        fallbackBusy = true;
+        await assert.rejects(ai.generateWithTools(turn), (e) => e.status === 503);
+        await assert.rejects(ai.generateWithToolsStream(turn), (e) => e.status === 503);
+      });
+    } finally {
+      global.fetch = realFetch;
+      [console.warn, console.error] = [warn, error];
+    }
+  });
+
   console.log("\nphase A · 5: every step logs its times and counts, never the screen");
 
   await atest("the step log line carries seq, llm_ms and in_tok — and none of the screen's words", async () => {
