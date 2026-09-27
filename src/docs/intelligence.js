@@ -172,7 +172,7 @@ async function findDocuments(userId, q, { person = null, limit = 5 } = {}) {
         .sort((a, b) => Number(b.created_at) - Number(a.created_at))
         .slice(0, 50)
         .map((d) => require("./store").toClient(d));
-      return { scope: scopeLabel, found: true, all: true, documents: all };
+      return { scope: scopeLabel, found: true, all: true, documents: all, cards: all };
     }
   }
 
@@ -206,7 +206,19 @@ async function findDocuments(userId, q, { person = null, limit = 5 } = {}) {
 
   const ranked = docs
     .map((d) => {
-      const hit = best.get(String(d.id)) || { score: 0, snippet: "" };
+      let hit = best.get(String(d.id));
+      // NOT CHUNKED YET — its document.index job is still queued (a file
+      // the assistant wrote a moment ago) or never ran. Its words are
+      // already in full_text, so rank on those, lexically, instead of on
+      // the title alone ("find the proposal that mentions the subsidy").
+      if (!hit && d.full_text) {
+        const low = String(d.full_text).toLowerCase();
+        const score = words.length
+          ? words.filter((w) => low.includes(w)).length / words.length
+          : 0;
+        hit = { score, snippet: score > 0 ? snippetAround(String(d.full_text), words) : "" };
+      }
+      hit = hit || { score: 0, snippet: "" };
       // Title/category matches count too — a scanned notice may have poor
       // OCR text but a good title.
       const meta = `${d.title} ${d.category} ${d.summary} ${d.filename}`.toLowerCase();
@@ -230,7 +242,15 @@ async function findDocuments(userId, q, { person = null, limit = 5 } = {}) {
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 
-  return { scope: scopeLabel, found: ranked.length > 0, documents: ranked };
+  // The ranked rows are shaped for the model. The phone's cards and
+  // gallery need the full client shape — without mime a found PDF or deck
+  // was drawn as a broken image, and without createdAt it had no date.
+  const byId = new Map(docs.map((d) => [String(d.id), d]));
+  const cards = ranked.map((r) => ({
+    ...require("./store").toClient(byId.get(String(r.id))),
+    snippet: r.snippet,
+  }));
+  return { scope: scopeLabel, found: ranked.length > 0, documents: ranked, cards };
 }
 
 /**
