@@ -496,6 +496,13 @@ const swiggyCart = { pkg: SW, nodes: [
       assert.deepStrictEqual({ pkg: r.directive.pkg, url: r.directive.start_url, web: r.directive.web, resume: r.directive.resume },
         { pkg: SB, url: "", web: true, resume: true }, "back in the same browser, on its own tab");
       assert.deepStrictEqual(r.directive.allowed, guard.BROWSERS);
+      // A phone maker's own browser, not in the list, is kept the same way.
+      const v = await svc.start(ME, { goal: "Apply for the NSP scholarship with my details", url, category: "web" });
+      script = [{ status: "ask_user", question: "Which course are you in?" }];
+      await svc.step(ME, v.run.id, { screen: { pkg: "com.vivo.browser",
+        nodes: [N(1, { cls: "EditText", edit: 1, hint: "Course name" })] }, seq: 0 });
+      const vr = await svc.resume(ME, v.run.id, "B.Com second year", { remember: false });
+      assert.strictEqual(vr.directive.pkg, "com.vivo.browser");
       // Only a browser is recorded: a web run that went into another app
       // before its question keeps its link for the resume instead.
       const t = await svc.start(ME, { goal: "Apply for the NSP scholarship with my details", url, category: "web" });

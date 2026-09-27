@@ -225,7 +225,8 @@ function directive(r, { resume = false } = {}) {
       guard.MONEY_APP_NAME.test(`${r.app_label || ""} ${r.app_name || ""}`),
     // A web run records the browser it is in (stepLocked), so a resumed
     // run reopens that browser on its own tab. One with no browser on
-    // record keeps its link: an empty pkg AND url opens nothing.
+    // record keeps its link: an empty pkg AND url opens nothing. (Builds
+    // 118/119 open no link on a resume at all, so there only pkg helps.)
     pkg: r.app_pkg,
     start_url: resume && !(r.web && !r.app_pkg) ? "" : r.start_url,
     web: r.web,
@@ -701,8 +702,12 @@ async function stepLocked(userId, runId, { screen, last, seq = null } = {}, meta
   // A web run keeps the browser it is in: after a question to the owner
   // the run resumes there (directive pkg). Without it the phone was handed
   // no app and no link, and "What is your father's name?" ended the form
-  // (audit, 2026-09-27).
-  if (r.web && !r.app_pkg && guard.BROWSERS.includes(pkg)) await save(userId, r, { app_pkg: pkg });
+  // (audit, 2026-09-27). The phone makers' own browsers (com.vivo.browser,
+  // com.heytap.browser, com.mi.globalbrowser) are not in the list: they
+  // are known by the name, or their web runs could not resume either.
+  if (r.web && !r.app_pkg && (guard.BROWSERS.includes(pkg) || /browser/i.test(pkg))) {
+    await save(userId, r, { app_pkg: pkg });
+  }
 
   if (r.steps.length >= MAX_STEPS) {
     await save(userId, r, { steps: r.steps });
