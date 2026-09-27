@@ -109,6 +109,8 @@ app.use(
       ["^/admin-panel/api/video-notes/\\d+.*", "/admin-panel/api/video-notes/#id"],
       ["^/posters/photos/\\d+.*", "/posters/photos/#id"],
       ["^/posters/\\d+.*", "/posters/#id"],
+      ["^/shortcuts/runs/\\d+.*", "/shortcuts/runs/#id"],
+      ["^/shortcuts/\\d+.*", "/shortcuts/#id"],
     ],
   })
 );
@@ -168,6 +170,17 @@ const perUserLimit = rateLimit({
 const posterLimit = rateLimit({
   windowMs: 60_000,
   max: 120,
+  standardHeaders: true,
+  keyGenerator: (req) => String(req.user?.sub || req.ip),
+});
+
+// SHORTCUTS get their own per-user bucket too (2026-09-27): the Hub list,
+// a Run tap and its yes must never starve the voice turns. Creating and
+// changing one can cost a model call; that has its own daily cap
+// (shortcuts/compile.js).
+const shortcutLimit = rateLimit({
+  windowMs: 60_000,
+  max: 60,
   standardHeaders: true,
   keyGenerator: (req) => String(req.user?.sub || req.ip),
 });
@@ -352,6 +365,8 @@ app.use("/studio", appAuth, perUserLimit, require("./routes/studio"));
 // card drawn on the phone. Working photos stay out of /docs; only the
 // finished card (and a photo he keeps) becomes a document.
 app.use("/posters", appAuth, posterLimit, require("./routes/posters"));
+// SHORTCUTS — "office mode": one word, several things (routes/shortcuts.js).
+app.use("/shortcuts", appAuth, shortcutLimit, require("./routes/shortcuts"));
 
 // PROFESSIONAL MODE — per-client/patient case files (doctor, lawyer…):
 // profile + dated notes + linked documents, recalled by voice

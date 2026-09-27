@@ -297,7 +297,7 @@ async function removeInstruction(userId, match) {
  * The system-prompt fragment carrying who the user is, who the assistant
  * is, and the standing rules. Returns "" for anonymous sessions.
  */
-async function contextBlock(userId, { lat, lng, tz, at } = {}) {
+async function contextBlock(userId, { lat, lng, tz, at, appBuild = 0 } = {}) {
   if (!uidOk(userId)) return "";
   const [p, here] = await Promise.all([
     getProfile(userId).catch(() => null),
@@ -333,6 +333,12 @@ async function contextBlock(userId, { lat, lng, tz, at } = {}) {
       "THE USER'S STANDING RULES — follow these before deciding on any action:\n" +
         rules.map((r) => `- ${r.instruction}`).join("\n")
     );
+  }
+  // Their shortcuts' names (build 120+), so "office mode" is a command,
+  // never a question (shortcuts/match.js).
+  if (Number(appBuild) >= 120 && process.env.SHORTCUTS !== "off") {
+    const block = await require("../shortcuts/match").promptBlock(userId).catch(() => "");
+    if (block) lines.push(block);
   }
   return lines.join("\n");
 }

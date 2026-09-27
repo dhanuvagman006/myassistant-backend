@@ -79,11 +79,11 @@ dns.promises.lookup = async (host, opts) => {
   }
   return realLookupP(host, opts);
 };
-const { ImapFlow } = require(path.join(BACKEND, "node_modules", "imapflow"));
+const { ImapFlow } = require("imapflow"); // the same instance src/ resolves (NODE_PATH in a worktree)
 const imapLogins = [];
 ImapFlow.prototype.connect = async function () { imapLogins.push(this.options && this.options.host); };
 ImapFlow.prototype.logout = async function () {};
-const nodemailer = require(path.join(BACKEND, "node_modules", "nodemailer"));
+const nodemailer = require("nodemailer");
 nodemailer.createTransport = () => ({ verify: async () => true, sendMail: async () => ({ messageId: "stub" }) });
 
 // The AI model: scripted where a test drives a turn, refused everywhere else.
@@ -1030,8 +1030,13 @@ async function seedRow(table, userCol, uid, over = {}) {
         for (const [table, col] of await privacy.existingUserTables()) {
           if (table === "live_recordings" || table === "chat_group_members") continue;
           const over = table === "google_tokens" ? { refresh_token: `refresh-${u.id}-${stamp}` } : {};
+          // A shortcut's name points at one of their own shortcuts (a foreign
+          // key): seeded below, once that shortcut exists.
+          if (table === "shortcut_names") continue;
           await seedRow(table, col, u.id, over);
         }
+        const sc = await db.one("SELECT id FROM shortcuts WHERE user_id = $1 ORDER BY id LIMIT 1", [u.id]);
+        await seedRow("shortcut_names", "user_id", u.id, { shortcut_id: sc.id });
         const files = path.join(process.env.DATA_DIR, "files", String(u.id));
         fs.mkdirSync(path.join(files, "posters"), { recursive: true });
         fs.writeFileSync(path.join(files, "1.pdf"), "x");

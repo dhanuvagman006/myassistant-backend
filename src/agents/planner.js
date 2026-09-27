@@ -364,4 +364,4 @@ const NEVER_PLANNABLE = new Set([
   "translator_mode",
 ]);
 
-module.exports = { plan, NEVER_PLANNABLE, PLAN_DECLARATION, catalogueFor };
+module.exports = { plan, NEVER_PLANNABLE, PLAN_DECLARATION, catalogueFor, parseArgs };

@@ -777,6 +777,10 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   // First name only, matching the classic assistant path.
   let userName = null;
   let personalContext = "";
+  // The name keys of this user's shortcuts (build 120+), loaded with the
+  // personal context and refreshed after any shortcut tool: read by the
+  // input-quality verdict and the steering below, never from the DB there.
+  let liveShortcutKeys = [];
   let preferredLanguage = "";
   // A rider added to the system prompt for the one session in which the
   // assistant is allowed to raise the language question. Empty otherwise.
@@ -852,6 +856,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         const [ctxBlock, recentBlock, memBlock] = await Promise.all([
           require("../users/context").contextBlock(uid, {
             lat: deviceCtx.lat, lng: deviceCtx.lng, tz: deviceCtx.tz, at: deviceCtx.locAt,
+            appBuild: deviceCtx.build,
           }),
           require("../memory/recent").recentBlock(uid, {
             excludeSessionId: liveSessionId,
@@ -861,6 +866,9 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         personalContext = [ctxBlock, memBlock, recentBlock]
           .filter(Boolean)
           .join("\n");
+        if (Number(deviceCtx.build) >= 120 && process.env.SHORTCUTS !== "off") {
+          liveShortcutKeys = await require("../shortcuts/match").keysFor(uid).catch(() => []);
+        }
         if (recentBlock) {
           // A fresh session must not inherit the last session's ORDERS.
           // Without this, opening the orb and saying "hello" re-ran the
@@ -1043,6 +1051,8 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         // lets a French-looking transcript be called a mis-recognition.
         // Feeding it a detected language would close that escape hatch.
         languages: preferredLanguage ? [preferredLanguage] : [],
+        // Said whole, the name of one of their shortcuts is a command.
+        known: liveShortcutKeys,
       });
       turnQuality.heard = t.slice(0, 120);
       if (liveState) {
@@ -1248,6 +1258,26 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
   // Device actions that background the app. Held until turnComplete so
   // the reply she was told to speak is actually spoken first.
   const EXIT_ACTIONS = new Set(["open_url"]);
+  // A shortcut's directive leaves the app when any step opens another app.
+  const leavesApp = (a) => EXIT_ACTIONS.has(a.type) || (a.type === "shortcut_run" && a.leaves_app === true);
+  // "office mode" said whole, as a command — not as the answer to a
+  // question, and not while a yes/no is pending (shortcuts/match.js).
+  const shortcutNamed = (text) => {
+    if (!liveShortcutKeys.length || !text) return null;
+    const m = require("../shortcuts/match");
+    if (m.answerGuard(lastModelLine, !!pendingApproval)) return null;
+    const keys = new Set(liveShortcutKeys);
+    if (keys.has(m.nameKey(text))) return m.nameKey(text);
+    if (keys.has(m.stripFillers(text))) return m.stripFillers(text);
+    return null;
+  };
+  const SHORTCUT_TOOLS = new Set(["run_shortcut", "continue_shortcut", "create_shortcut", "update_shortcut",
+    "delete_shortcut", "list_shortcuts", "save_last_as_shortcut"]);
+  const refreshShortcutKeys = () => {
+    const uid = Number(user?.sub);
+    if (!(uid > 0) || Number(deviceCtx.build) < 120) return;
+    require("../shortcuts/match").keysFor(uid).then((k) => { liveShortcutKeys = k; }).catch(() => {});
+  };
   const pendingExitActions = [];
   // Mic audio that arrives before Google's setupComplete would be lost —
   // buffer a little so the first word is never clipped.
@@ -1499,6 +1529,20 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         // out by the model: the run gets them, memory does not.
         let autoAnswer = false;
         const freshWords = !!lastUserText && wordsSeq === heardSeq && Date.now() - lastUserAt < 30_000;
+        // SHORTCUT STEERING (2026-09-27): the owner said a shortcut's name
+        // whole, and the model reached for something else ("silent" read
+        // as phone_control mute, "weekly groceries" as a fresh task). It
+        // runs the shortcut instead — before the task routes below, and
+        // never in place of a shortcut-management tool.
+        if (freshWords && !SHORTCUT_TOOLS.has(fc.name) && fc.name !== "stay_silent" && fc.name !== "end_conversation") {
+          const key = shortcutNamed(lastUserText);
+          if (key) {
+            console.log(`live: shortcut steering ${calledAs} -> run_shortcut`);
+            fc.name = "run_shortcut";
+            fc.args = { name: key };
+            fixedLine = true;
+          }
+        }
         const routable = Number(user?.sub) > 0 && Number(deviceCtx.build) >= 104 && intent.ROUTABLE.has(fc.name);
         if (routable && (routedTurn || (freshWords && routedAt === lastUserAt))) {
           console.log(`live: spoken route — ${calledAs} not run, this request already started`);
@@ -1559,7 +1603,8 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         // email/web page entered this session), so the spoken handshake
         // and the gate inside execute() cannot disagree.
         if (tool && registry.requiresConfirmation(fc.name, { session: liveState, turnId: currentTurnId })) {
-          const key = `${fc.name}:${JSON.stringify(fc.args || {})}`;
+          // Coerced, so {run_id:"31"} and {run_id:31} are the same request.
+          const key = registry.approvalKey(fc.name, fc.args || {});
           if (pendingApproval && pendingApproval.key === key && userTurns > pendingApproval.askedAtTurn) {
             userConfirmed = true; // they said yes out loud, in between
             pendingApproval = null;
@@ -1626,6 +1671,29 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
         try {
           appWs.send(JSON.stringify({ type: "tool_completed", tool: fc.name }));
         } catch (_) {}
+        if (SHORTCUT_TOOLS.has(fc.name) && fc.name !== "run_shortcut") refreshShortcutKeys();
+
+        // A RESULT THAT ASKS FOR A YES (run_shortcut parking before any
+        // step runs). The spoken handshake above only ever ran BEFORE a
+        // high-risk call; this registers the tool the result names, so the
+        // user's yes, spoken in between, lets that call through — and a
+        // call before they have said anything is refused as usual.
+        if (res.needsConfirmation && res.tool && registry.requiresConfirmation(res.tool, { session: liveState })) {
+          pendingApproval = { key: registry.approvalKey(res.tool, res.args || {}), askedAtTurn: userTurns };
+          responses.push({
+            id: fc.id,
+            name: calledAs,
+            response: {
+              ok: false,
+              needs_confirmation: true,
+              result:
+                `Not done yet — nothing has run. Ask them out loud exactly: "${res.summary}?" ` +
+                `If they say yes, call ${res.tool} with ${JSON.stringify(res.args || {})}. ` +
+                "If they say no, say it will not run. Do not say it is done.",
+            },
+          });
+          continue;
+        }
 
         // If the tool produced a device action (like open_camera or contact_lookup),
         // we send it down the WebSocket so the app can perform the action.
@@ -1640,7 +1708,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           // three places she had just found were never spoken. The
           // classic runtime already drains its device actions after the
           // sentences go out; this makes live match it.
-          if (EXIT_ACTIONS.has(res.deviceAction.type)) {
+          if (leavesApp(res.deviceAction)) {
             pendingExitActions.push(res.deviceAction);
           } else {
             appWs.send(JSON.stringify(res.deviceAction));
@@ -2127,6 +2195,44 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
             sayExactly("Okay, I've stopped that task.", false);
             return;
           }
+          // A SHORTCUT'S NAME, TYPED WHOLE, RUNS IT (build 120+) — not as
+          // the answer to a question, nor while a task waits on one.
+          const typedKey = !waiting && Number(deviceCtx.build) >= 120 ? shortcutNamed(typed) : null;
+          if (typedKey) {
+            routedAt = at;
+            routedTurn = true;
+            const registry = require("../tools/registry");
+            const res = await registry.execute("run_shortcut", { name: typedKey }, {
+              session: liveState, sessionId: liveSessionId, turnId: currentTurnId,
+              source: "live", userId: user?.sub, userName,
+              inputQuality: { quality: "clear", reason: "the name of one of their shortcuts", heard: typed.slice(0, 120) },
+              platform: deviceCtx.platform, tzOffsetMin: deviceCtx.tz,
+              appBuild: deviceCtx.build, deviceCaps: deviceCtx.caps || null,
+              userText: lastUserText,
+            }).catch((e) => ({ ok: false, error: String(e.message || e) }));
+            if (res.needsConfirmation && res.tool) {
+              pendingApproval = { key: registry.approvalKey(res.tool, res.args || {}), askedAtTurn: userTurns };
+              if (upstream.readyState !== WebSocket.OPEN) return;
+              upstream.send(JSON.stringify({
+                clientContent: {
+                  turns: [{ role: "user", parts: [{ text:
+                    `[SYSTEM] The owner typed: "${typed.slice(0, 300)}". Nothing has run yet. ` +
+                    `Ask exactly: "${res.summary}?" If they say yes, call ${res.tool} with ` +
+                    `${JSON.stringify(res.args || {})}; if no, say it will not run.` }] }],
+                  turnComplete: true,
+                },
+              }));
+              return;
+            }
+            if (res.ok && res.deviceAction) {
+              if (leavesApp(res.deviceAction)) pendingExitActions.push(res.deviceAction);
+              else {
+                try { appWs.send(JSON.stringify(res.deviceAction)); } catch (_) {}
+              }
+            }
+            sayExactly(res.ok ? (res.speak || "Done.") : `I couldn't run that shortcut: ${res.error || "something went wrong"}.`, !!res.ok);
+            return;
+          }
           // A TYPED PHONE TASK TAKES THE STRUCTURED PATH: straight to the
           // task engine, then one fixed sentence — no improvising around it
           // (automation/intent.js). Everything else goes to the model as
@@ -2164,7 +2270,7 @@ async function bridge(appWs, user, room, deviceCtx = {}) {
           if (res.ok && res.deviceAction) {
             // A link that leaves the app (play_music's) waits until the
             // sentence has been said, as it does for the model's own calls.
-            if (EXIT_ACTIONS.has(res.deviceAction.type)) pendingExitActions.push(res.deviceAction);
+            if (leavesApp(res.deviceAction)) pendingExitActions.push(res.deviceAction);
             else {
               try { appWs.send(JSON.stringify(res.deviceAction)); } catch (_) {}
             }

@@ -161,9 +161,20 @@ function offeredWords(text) {
  * @param opts.languages      languages this user actually speaks
  * @returns {{quality:'clear'|'weak'|'garbled', reason:string, digitsOnly:boolean}}
  */
-function assess(text, { expectsNumber = false, expectsName = false, offered = "", languages = [] } = {}) {
+function assess(text, { expectsNumber = false, expectsName = false, offered = "", languages = [], known = null } = {}) {
   const raw = String(text || "").trim();
   if (!raw) return { quality: "garbled", reason: "empty", digitsOnly: false };
+
+  // THE NAME OF ONE OF THEIR SHORTCUTS (2026-09-27). "pooja" or "പൂജ" on
+  // its own reads as one weak word; said whole, it is a known command.
+  // `known` is the caller's cached list of that user's name keys.
+  if (known && known.length) {
+    const m = require("../shortcuts/match");
+    const keys = new Set(known);
+    if (keys.has(m.nameKey(raw)) || keys.has(m.stripFillers(raw))) {
+      return { quality: "clear", reason: "the name of one of their shortcuts", digitsOnly: false };
+    }
+  }
 
   const lower = raw.toLowerCase();
   const words = raw.split(/\s+/).filter(Boolean);
@@ -277,4 +288,4 @@ function mayAct(assessment) {
   return !assessment || assessment.quality === "clear";
 }
 
-module.exports = { assess, clarificationFor, mayAct, expectationsFrom };
+module.exports = { assess, clarificationFor, mayAct, expectationsFrom, SHORT_OK };

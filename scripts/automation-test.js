@@ -2381,8 +2381,9 @@ const swiggyCart = { pkg: SW, nodes: [
     const offered = reg.declarations({ userId: UID, deviceCaps: caps(104) }).map((d) => d.name);
     assert.ok(!offered.includes("uninstall_app") && offered.includes("do_task_in_app"));
     const live = fs.readFileSync(__dirname + "/../src/live/proxy.js", "utf8");
-    assert.strictEqual((live.match(/deviceCaps: deviceCtx\.caps \|\| null/g) || []).length, 3,
-      "the tool list, the model's own calls and the typed fast path all carry the caps");
+    // Four since shortcuts (2026-09-27): the typed shortcut route too.
+    assert.strictEqual((live.match(/deviceCaps: deviceCtx\.caps \|\| null/g) || []).length, 4,
+      "the tool list, the model's own calls and both typed fast paths all carry the caps");
     assert.match(live, /caps: granted\.length \|\| denied\.length \|\| \(num\("build"\) \?\? 0\) > 0/,
       "caps exist whenever the phone reports its build");
   });
@@ -2888,7 +2889,8 @@ const swiggyCart = { pkg: SW, nodes: [
       "only the newest request's words steer a call");
     assert.match(live, /if \(routable && \(routedTurn \|\| \(freshWords && routedAt === lastUserAt\)\)\) \{/,
       "a second routable call for the same request is answered, not run");
-    assert.strictEqual((live.match(/routedAt = at;/g) || []).length, 2, "words the typed path handled are not run again");
+    // Three since shortcuts (2026-09-27): a typed shortcut name is a route too.
+    assert.strictEqual((live.match(/routedAt = at;/g) || []).length, 3, "words the typed path handled are not run again");
     assert.match(live, /name: calledAs, response: fixedLine \? fixedReply\(res\) : res/);
   });
 

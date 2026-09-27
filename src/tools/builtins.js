@@ -326,6 +326,10 @@ function registerBuiltins() {
   // his signature, drawn on the phone — no AI. App build 119+.
   require("../posters/tools").registerPosterTools(registry);
 
+  // Shortcuts (2026-09-27): "office mode" — one word, several things. App
+  // build 120+.
+  require("../shortcuts/tools").registerShortcutTools(registry);
+
   // ---------------- INFORMATION (low risk) ----------------
 
   registry.register({
@@ -2995,7 +2999,10 @@ function registerBuiltins() {
       "Control the phone itself — what Siri/Gemini do on-device: " +
       "'turn on the flashlight/torch', 'volume up / set volume to 40 / " +
       "mute', 'pause/play/next song' (controls whatever app is playing), " +
-      "'battery level', 'open wifi/bluetooth/sound settings'. Runs ON the " +
+      "'battery level', 'open wifi/bluetooth/sound settings', 'put my phone " +
+      "on silent' (ringer_silent), 'vibrate only' (ringer_vibrate), 'ringer " +
+      "back on' (ringer_normal), 'do not disturb on/off' (dnd_on/dnd_off). " +
+      "mute/unmute are the MEDIA volume, not the ringer. Runs ON the " +
       "device; for battery, wait for the [SYSTEM] result before answering. " +
       "If the device reports a failure, say so plainly.\n" +
       "open_settings is ONLY for the user explicitly asking for a settings " +
@@ -3019,7 +3026,9 @@ function registerBuiltins() {
           enum: ["flashlight_on", "flashlight_off", "volume_set", "volume_up",
                  "volume_down", "mute", "unmute", "media_play", "media_pause",
                  "media_next", "media_previous", "battery", "open_settings",
-                 "go_home", "app_info"],
+                 "go_home", "app_info",
+                 // App build 120: the ringer and Do Not Disturb.
+                 "ringer_silent", "ringer_vibrate", "ringer_normal", "dnd_on", "dnd_off"],
         },
         value: { type: "integer", description: "For volume_set: 0-100." },
         app_package: {
@@ -3036,7 +3045,18 @@ function registerBuiltins() {
       },
       required: ["action"],
     },
-    async execute(args) {
+    async execute(args, ctx = {}) {
+      // The ringer and Do Not Disturb arrive in app build 120; an older app
+      // would drop the action after hearing the phone was going silent.
+      if (/^(ringer_|dnd_)/.test(String(args.action || "")) &&
+          Number(ctx.appBuild) > 0 && Number(ctx.appBuild) < 120) {
+        return {
+          ok: false,
+          error: "app_too_old",
+          data: { needsBuild: 120 },
+          note: "This phone's app is too old to change the ringer. Say an app update is needed, in one line.",
+        };
+      }
       // go_home and app_info are INTENTS, not device controls — the same
       // deep-link route set_alarm uses, so they need no app change.
       if (args.action === "go_home") {
@@ -3091,6 +3111,11 @@ function registerBuiltins() {
         open_settings: "Opening settings.",
         go_home: "Taking you Home.",
         app_info: "Opening its settings.",
+        ringer_silent: "Putting your phone on silent.",
+        ringer_vibrate: "Vibrate only.",
+        ringer_normal: "Ringer back on.",
+        dnd_on: "Do not disturb on.",
+        dnd_off: "Do not disturb off.",
       };
       return {
         ok: true,
@@ -5010,7 +5035,7 @@ function registerBuiltins() {
             "settings", "home", "hub", "chat",
             "documents", "clients", "finance", "stocks",
             "diagnostics", "mcp", "meetings", "reminders", "call_notes",
-            "news", "momentum", "focus", "avatar_identity",
+            "news", "momentum", "focus", "avatar_identity", "shortcuts",
           ],
           description:
             "settings = the assistant's own settings (voice, name, theme). " +
@@ -5019,6 +5044,7 @@ function registerBuiltins() {
             "news = the News screen, only when they ask to OPEN it — for " +
             "'what's the news' use show_news. avatar_identity = Send " +
             "messages as you (their recorded video for video notes). The " +
+            "shortcuts = their saved shortcuts (build 120). The " +
             "rest are feature screens.",
         },
       },
@@ -5029,7 +5055,7 @@ function registerBuiltins() {
       const ALLOWED = [
         "settings", "home", "hub", "chat", "documents", "clients",
         "finance", "stocks", "diagnostics", "mcp", "meetings", "reminders",
-        "call_notes", "news", "momentum", "focus", "avatar_identity",
+        "call_notes", "news", "momentum", "focus", "avatar_identity", "shortcuts",
       ];
       if (!ALLOWED.includes(screen)) {
         return { ok: false, error: `I don't have a screen called "${args.screen}"` };
@@ -5041,6 +5067,10 @@ function registerBuiltins() {
         return { ok: false, error: "that screen needs the latest app update — say so, and offer momentum_status instead" };
       }
       // The video recorder for "Send messages as you" arrives in build 118.
+      // The Shortcuts screen arrives in build 120.
+      if (screen === "shortcuts" && build < 120) {
+        return { ok: false, error: "that screen needs the latest app update — say so" };
+      }
       if (screen === "avatar_identity" && build < VIDEO_NOTE_MIN_BUILD) {
         return { ok: false, error: "that screen needs the latest app update — say so" };
       }
@@ -5074,6 +5104,7 @@ function registerBuiltins() {
         call_notes: "your call notes", news: "the news",
         momentum: "your Momentum page", focus: "the focus timer",
         avatar_identity: "Send messages as you",
+        shortcuts: "your shortcuts",
       };
       return {
         ok: true,
@@ -7533,8 +7564,12 @@ function registerBuiltins() {
         site = require("../automation/officialSites").siteFor(`${goal || ""} ${ctx.userText || ""}`);
         if (site) url = site.url;
       }
+      // A SAVED SHORTCUT's run (shortcuts/runner.js sets this; the model
+      // never can): the steps that worked last time go to the planner.
+      const replay = ctx.shortcutReplay || null;
       const out = await svc.start(ctx.userId, {
         goal, category: site ? "web" : args.category, app, url, query: args.query,
+        shortcutId: replay ? replay.shortcutId : null, hint: replay ? replay.hint : null,
       });
       if (!out.ok) return out;
       const r = out.run;

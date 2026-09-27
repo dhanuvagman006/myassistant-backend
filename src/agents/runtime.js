@@ -637,9 +637,16 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   // has just asked for it ("How old is she turning?" → "25"): read from
   // its last line (inputQuality.expectationsFrom, 2026-09-26).
   const lastLine = state && state.turns.slice(-1)[0];
+  // The names of their shortcuts (build 120+): said whole, "pooja mode" is
+  // a clear command, and it is routed below before the model.
+  const shortcutKeys = ctx.userId && !ctx.background && Number(ctx.appBuild) >= 120 &&
+    process.env.SHORTCUTS !== "off"
+    ? await require("../shortcuts/match").keysFor(ctx.userId).catch(() => [])
+    : [];
   const quality = inputQuality.assess(userText, {
     ...inputQuality.expectationsFrom(lastLine && lastLine.role === "assistant" ? lastLine.text : ""),
     languages: ctx.languages || [],
+    known: shortcutKeys,
   });
   quality.heard = String(userText || "").slice(0, 120);
   if (state) sessionState.beginTurn(state, { turnId, text: userText, quality: quality.quality });
@@ -699,6 +706,63 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
     return { text: ask, deviceActions: [], toolResults: [], clarified: true };
   }
 
+  // ── A SHORTCUT'S NAME, SAID WHOLE, RUNS IT ────────────────────────
+  // "office mode" (or "start office mode please") goes straight to
+  // run_shortcut with one fixed sentence back — except as the ANSWER to a
+  // question just asked, or while a yes/no is pending: "Which shortcut
+  // should I delete?" answered "office mode" must never run it.
+  if (shortcutKeys.length && !ctx.approved) {
+    const match = require("../shortcuts/match");
+    const guarded = match.answerGuard(
+      lastLine && lastLine.role === "assistant" ? lastLine.text : "",
+      !!(state && state.pending && Date.now() - state.pending.askedAt < sessionState.PENDING_TTL_MS)
+    );
+    const sc = guarded ? null : await match.exactFor(ctx.userId, userText).catch(() => null);
+    if (sc) {
+      const res = await registry.execute("run_shortcut", { name: sc.name }, ctx)
+        .catch((e) => ({ ok: false, error: String(e.message || e) }));
+      const recentMem = require("../memory/recent");
+      const meta = { source: ctx.source || "voice", appBuild: ctx.appBuild, turnId, sessionId: sid };
+      if (res.needsConfirmation) {
+        const question = res.summary ? `${res.summary}?` : "Shall I go ahead?";
+        if (state) {
+          sessionState.setPending(state, { tool: res.tool, args: res.args, summary: res.summary });
+          sessionState.recordReply(state, question);
+        }
+        try {
+          recentMem.append(ctx.userId, "user", userText, { ...meta, latencyMs: 0 });
+          recentMem.append(ctx.userId, "assistant", question, { ...meta, latencyMs: Date.now() - turnStartedAt, tools: ["run_shortcut"] });
+          require("../actions/store").attachReply(ctx.userId, turnId, question);
+        } catch (_) {}
+        return {
+          text: "",
+          question,
+          turnId,
+          needsConfirmation: { tool: res.tool, args: res.args, summary: res.summary },
+          deviceActions: [],
+          toolResults: [{ name: "run_shortcut", ...res }],
+          routed: true,
+        };
+      }
+      const line = res.ok
+        ? (res.speak || "Done.")
+        : `I couldn't run ${sc.name}: ${res.error || "something went wrong"}.`;
+      onEvent("sentence", { text: line });
+      if (state) sessionState.recordReply(state, line);
+      try {
+        recentMem.append(ctx.userId, "user", userText, { ...meta, latencyMs: 0 });
+        recentMem.append(ctx.userId, "assistant", line, { ...meta, latencyMs: Date.now() - turnStartedAt, tools: ["run_shortcut"] });
+        require("../actions/store").attachReply(ctx.userId, turnId, line);
+      } catch (_) {}
+      return {
+        text: line,
+        deviceActions: res.ok && res.deviceAction ? [res.deviceAction] : [],
+        toolResults: [{ name: "run_shortcut", ...res }],
+        routed: true,
+      };
+    }
+  }
+
   // ── A CLEAR PHONE TASK TAKES THE STRUCTURED PATH ──────────────────
   // "Order veg biryani … on Swiggy" is a job, not a question: straight to
   // the task engine, one fixed sentence back, the same way every time
@@ -734,7 +798,7 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   if (ctx.userId && ctx.extraSystem === undefined) {
     try {
       const [block, mem, recent] = await Promise.all([
-        require("../users/context").contextBlock(ctx.userId, { lat: ctx.lat, lng: ctx.lng, tz: ctx.tzOffsetMin }),
+        require("../users/context").contextBlock(ctx.userId, { lat: ctx.lat, lng: ctx.lng, tz: ctx.tzOffsetMin, appBuild: ctx.appBuild }),
         require("../agents/memory").memoryBlock(ctx.userId),
         // Continuity across sessions: what was said minutes ago, so a
         // fresh session never re-asks what it just answered. THIS
@@ -820,6 +884,12 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
         history: ctx.history || [],
         sessionId: ctx.sessionId || "",
       });
+  // A user with shortcuts is always offered run_shortcut — never every
+  // user (relevance.CORE ships on every turn, and the catalogue is the
+  // latency), and a no-signal turn gets the whole catalogue anyway.
+  if (Array.isArray(only) && shortcutKeys.length) {
+    for (const n of ["run_shortcut", "continue_shortcut"]) if (!only.includes(n)) only.push(n);
+  }
   const declarations = registry.declarations({
     userId: ctx.userId,
     // A tool whose permission the phone has denied is not offered at all.
