@@ -197,10 +197,14 @@ function shop({ provider, query, platform }) {
   };
   const url = paths[provider];
   if (!url) return null;
+  // SEARCH only when the link carries the search. MakeMyTrip's has no
+  // query in it, so "flights to Goa" opens its home page and must be
+  // said as that — not "pick the one you want" (audit, 2026-09-27).
+  const searched = !!q && url.includes(q);
   return {
     url: wrap(url, p.pkg, platform),
-    precision: q ? "search" : "app",
-    note: query ? `${p.label} search for ${query}` : `${p.label} home`,
+    precision: searched ? "search" : "app",
+    note: searched ? `${p.label} search for ${query}` : `${p.label} home`,
   };
 }
 

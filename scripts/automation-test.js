@@ -372,12 +372,25 @@ const swiggyCart = { pkg: SW, nodes: [
     const s = await svc.start(UID, { goal: "Order a masala dosa", app: "swiggy" });
     assert.strictEqual(s.directive.named, true);
     assert.strictEqual(s.directive.no_install, false);
-    const pay = await svc.start(UID, { goal: "Pay the electricity bill", app: "PhonePe" });
-    assert.strictEqual(pay.directive.named, true);
-    assert.strictEqual(pay.directive.no_install, true, "money apps are the owner's to install");
+    // A money app is never even opened for a task (audit, 2026-09-27: the
+    // phone opened PhonePe and the owner heard "It's ready for payment"):
+    // refused before a run exists, whatever it is called.
+    for (const app of ["PhonePe", "Google Pay", "Paytm", "YONO", "my bank app"]) {
+      const pay = await svc.start(UID, { goal: "Pay the electricity bill", app });
+      assert.strictEqual(pay.ok, false, app);
+      assert.ok(!pay.run && !pay.directive, app);
+      assert.match(pay.error, /I don't open money apps like .+ for a task/, app);
+    }
+    const phonepe = await svc.start(UID, { goal: "Check my balance", app: "phonepe" });
+    assert.match(phonepe.error, /money apps like PhonePe/i);
+    // …and the directive's own rule stays the second line.
+    const pay = svc.directive({ id: 1, goal: "g", app_label: "PhonePe", app_name: "phonepe",
+      app_reason: "you asked for PhonePe", steps: [] });
+    assert.strictEqual(pay.named, true);
+    assert.strictEqual(pay.no_install, true, "money apps are the owner's to install");
     // Gone again: the tests after this one read the owner's latest run.
     await require("../src/db").run("DELETE FROM automation_runs WHERE id = ANY($1)",
-      [[s.run.id, pay.run.id]]).catch(() => {});
+      [[s.run.id]]).catch(() => {});
   });
 
   await atest("text on the screen cannot talk it into paying", async () => {
@@ -461,6 +474,49 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.match(prompts[prompts.length - 1], /Q: For how many people, Sir\?\n  A: four of us/);
     const again = await svc.resume(UID, s.run.id, "five");
     assert.strictEqual(again.ok, false, "a finished run cannot be resumed");
+  });
+
+  await atest("a web form's question resumes in the browser it was asked in; with none on record, at its page (2026-09-27)", async () => {
+    // The phone opens directive pkg (or start_url when not resuming); a
+    // resumed web run used to carry neither, and the phone opened nothing.
+    // Its own user, like the ITR test: the shared user's recent tasks are
+    // read back later.
+    const ME = UID + 11;
+    const url = "https://scholarships.gov.in/fresh/newstdRegfrmInstruction";
+    try {
+      const s = await svc.start(ME, { goal: "Apply for the NSP scholarship with my details", url, category: "web" });
+      assert.strictEqual(s.directive.pkg, "");
+      const SB = "com.sec.android.app.sbrowser";
+      script = [{ status: "ask_user", question: "Which course are you in?" }];
+      const out = await svc.step(ME, s.run.id, { screen: { pkg: SB,
+        nodes: [N(1, { cls: "EditText", edit: 1, hint: "Course name" })] }, seq: 0 });
+      assert.strictEqual(out.status, "waiting", JSON.stringify(out));
+      assert.strictEqual((await svc.get(ME, s.run.id)).app_pkg, SB);
+      const r = await svc.resume(ME, s.run.id, "B.Com second year", { remember: false });
+      assert.deepStrictEqual({ pkg: r.directive.pkg, url: r.directive.start_url, web: r.directive.web, resume: r.directive.resume },
+        { pkg: SB, url: "", web: true, resume: true }, "back in the same browser, on its own tab");
+      assert.deepStrictEqual(r.directive.allowed, guard.BROWSERS);
+      // A phone maker's own browser, not in the list, is kept the same way.
+      const v = await svc.start(ME, { goal: "Apply for the NSP scholarship with my details", url, category: "web" });
+      script = [{ status: "ask_user", question: "Which course are you in?" }];
+      await svc.step(ME, v.run.id, { screen: { pkg: "com.vivo.browser",
+        nodes: [N(1, { cls: "EditText", edit: 1, hint: "Course name" })] }, seq: 0 });
+      const vr = await svc.resume(ME, v.run.id, "B.Com second year", { remember: false });
+      assert.strictEqual(vr.directive.pkg, "com.vivo.browser");
+      // Only a browser is recorded: a web run that went into another app
+      // before its question keeps its link for the resume instead.
+      const t = await svc.start(ME, { goal: "Apply for the NSP scholarship with my details", url, category: "web" });
+      script = [{ status: "ask_user", question: "Which course are you in?" }];
+      await svc.step(ME, t.run.id, { screen: { pkg: "com.google.android.apps.docs",
+        nodes: [N(1, { text: "Marks card.pdf" })] }, seq: 0 });
+      const run = await svc.get(ME, t.run.id);
+      assert.strictEqual(run.status, "waiting");
+      assert.strictEqual(run.app_pkg, "");
+      const d = svc.directive(run, { resume: true });
+      assert.deepStrictEqual({ pkg: d.pkg, url: d.start_url }, { pkg: "", url });
+    } finally {
+      await db.run("DELETE FROM automation_runs WHERE user_id=$1", [ME]).catch(() => {});
+    }
   });
 
   await atest("the same step failing three times stops the run honestly", async () => {
@@ -754,6 +810,48 @@ const swiggyCart = { pkg: SW, nodes: [
     const r = await reg.get("check_recent_actions").execute({ about: "biryani" }, { userId: UID });
     assert.match(r.speak, /Task "Book veg biryani from a 4-star restaurant near me" in Swiggy ended handoff/);
     assert.match(r.speak, /NOT ordered or paid/);
+  });
+
+  await atest("the phone's 'use Zomato instead' retry starts a run in Zomato; the same call twice in one breath does not (2026-09-27)", async () => {
+    // Build 117: Swiggy (the usual pick, not named) is missing and Zomato is
+    // on the phone, so the phone's note asks for do_task_in_app again with
+    // app "Zomato" — seconds later, in the same session. It was swallowed
+    // as a repeat of the first call, and off Live the note's first app
+    // (Swiggy, the missing one) replaced the model's choice.
+    const ME = UID + 12;
+    const sessionState = require("../src/agents/sessionState");
+    const sid = `live:auto-${Date.now()}`;
+    const st = sessionState.begin(ME, sid, { surface: "live", appBuild: 118 });
+    const ctx = (turnId, userText) => ({ session: st, sessionId: sid, turnId, source: "live", userId: ME,
+      platform: "android", appBuild: 118, userText, inputQuality: { quality: "clear" } });
+    const task = { goal: "order veg biryani", category: "food", query: "veg biryani" };
+    const note = "[SYSTEM] Swiggy is not installed on this phone, but Zomato (the same kind of app) is, and the " +
+      'user did not name Swiggy. Call do_task_in_app again now with app "Zomato", the same goal and the same ' +
+      "query. Do not ask anything first.";
+    try {
+      const first = await reg.execute("do_task_in_app", task, ctx("t1", "order veg biryani"));
+      assert.strictEqual(first.deviceAction.app_name, "swiggy");
+      assert.strictEqual(first.deviceAction.named, false);
+      await svc.finish(ME, first.deviceAction.run_id, { reason: "not_installed" });
+      const retry = await reg.execute("do_task_in_app", { ...task, app: "Zomato" }, ctx("t2", note));
+      assert.ok(!retry.repeated, JSON.stringify(retry));
+      assert.strictEqual(retry.deviceAction.app_name, "zomato", "the model's app, not the missing one the note names");
+      assert.match(retry.speak, /doing this in Zomato/);
+      // A stutter — the very same call again at once — is still one run.
+      const twice = await reg.execute("do_task_in_app", { ...task, app: "Zomato" }, ctx("t3", note));
+      assert.strictEqual(twice.repeated, true, JSON.stringify(twice));
+      assert.ok(!twice.deviceAction);
+      const runs = await db.query(`SELECT app_name FROM automation_runs WHERE user_id=$1 ORDER BY id`, [ME]);
+      assert.deepStrictEqual(runs.map((x) => x.app_name), ["swiggy", "zomato"]);
+      // The owner's own words still win over the model's pick.
+      const owned = await reg.get("do_task_in_app").execute({ goal: "order dosa", app: "Zomato", query: "dosa" },
+        { userId: ME, platform: "android", userText: "order dosa on swiggy" });
+      assert.strictEqual(owned.deviceAction.app_name, "swiggy");
+    } finally {
+      for (const t of ["automation_runs", "executed_actions"]) {
+        await db.run(`DELETE FROM ${t} WHERE user_id=$1`, [ME]).catch(() => {});
+      }
+    }
   });
 
   await atest("the app the owner named wins over the model's choice", async () => {
@@ -1618,14 +1716,43 @@ const swiggyCart = { pkg: SW, nodes: [
     });
   });
 
+  await atest("AUTOMATION_MODEL unset: a screenshot step is planned by the fast model at once, not after the chat model's 12 s (2026-09-27)", async () => {
+    // Production, 09-25/26: 0 of 18 runs finished and a third ended "I
+    // couldn't reach my planner" — unset, the planner was the chat model
+    // (gemini-3.5-flash), which needs ~14.6 s for a step with a screenshot.
+    await withEnv({ GEMINI_MODEL: "gemini-3.5-flash", AUTOMATION_MODEL: undefined, AUTOMATION_FAST_MODEL: undefined }, async () => {
+      assert.strictEqual(ai.automationModel(), "gemini-flash-lite-latest");
+      const seen = modelStub(async () => ({ reply: PLAN }));
+      const d = await planner.decide(plannerRun(), menuShot, { deadline: Date.now() + svc.STEP_BUDGET_MS });
+      assert.deepStrictEqual(seen.map((c) => c.model), ["gemini-flash-lite-latest"], "never the chat model first");
+      assert.strictEqual(seen[0].timeoutMs, planner.CALL_TIMEOUT_MS, "the whole 12 s, nothing kept back");
+      assert.deepStrictEqual({ s: d.status, c: d.usage.calls, m: d.usage.model, f: d.usage.fallback },
+        { s: "continue", c: 1, m: "gemini-flash-lite-latest", f: undefined });
+      // One slow answer: asked again on the same model, inside the step.
+      seen.length = 0;
+      let n = 0;
+      modelStub(async (model, o) => { seen.push(model); if (n++ === 0) throw timeoutErr(o.timeoutMs); return { reply: PLAN }; });
+      const again = await planner.decide(plannerRun(), menuShot, { deadline: Date.now() + svc.STEP_BUDGET_MS });
+      assert.deepStrictEqual({ s: again.status, c: again.usage.calls }, { s: "continue", c: 2 });
+      assert.deepStrictEqual(seen, ["gemini-flash-lite-latest", "gemini-flash-lite-latest"]);
+      // A model set on purpose is still the one asked first.
+      process.env.AUTOMATION_MODEL = "gemini-3.1-flash-lite";
+      const own = modelStub(async () => ({ reply: PLAN }));
+      await planner.decide(plannerRun(), menuShot, { deadline: Date.now() + svc.STEP_BUDGET_MS });
+      assert.deepStrictEqual(own.map((c) => c.model), ["gemini-3.1-flash-lite"]);
+    });
+  });
+
   /* ---- RETIRED DEFAULTS AND RETIRED MODELS ---- */
   await atest("unset model settings fall on the -latest aliases; live, TTS and image models are untouched", async () => {
     const envs = ["GEMINI_MODEL", "GEMINI_FALLBACK_MODEL", "AUTOMATION_MODEL", "AUTOMATION_FAST_MODEL"];
     await withEnv(Object.fromEntries(envs.map((k) => [k, undefined])), async () => {
       // gemini-2.5-flash answered the owner's key 404 "no longer available
-      // to new users" (2026-09-25): no default may name it again.
+      // to new users" (2026-09-25): no default may name it again. The
+      // planner, unset, is the fast model — not the chat model, which
+      // spent a step's whole 12 s on a screenshot (2026-09-27).
       assert.deepStrictEqual([ai.chatModel(), ai.fallbackModel(), ai.automationModel(), ai.automationFastModel()],
-        ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-flash-latest", "gemini-flash-lite-latest"]);
+        ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-flash-lite-latest", "gemini-flash-lite-latest"]);
     });
     const read = (f) => require("fs").readFileSync(require("path").join(__dirname, "..", f), "utf8");
     for (const f of ["src/services/ai/router.js", "src/docs/analyze.js", "src/people/card.js", "src/routes/vision.js",
@@ -2055,6 +2182,42 @@ const swiggyCart = { pkg: SW, nodes: [
     assert.strictEqual(r.report, "The phone stopped reporting partway, so I closed this task.");
     assert.strictEqual((await svc.get(UID, fresh.run.id)).status, "running", "an unstarted run gets longer");
     assert.strictEqual((await svc.step(UID, s.run.id, { screen: swiggyMenu, seq: 1 })).status, "failed");
+  });
+
+  await atest("every user's silent runs are closed by the ten-minute proactive sweep, with no new task needed (2026-09-27)", async () => {
+    // Production: two runs sat 'running' 37-46 h with no steps, because
+    // only their owner's next task ever swept them.
+    const OTHER = UID + 13;
+    const ago = (ms) => Date.now() - ms;
+    const put = async (status, steps, updated) => Number((await db.one(
+      `INSERT INTO automation_runs (user_id, goal, status, steps, created_at, updated_at)
+       VALUES ($1,'Order idli',$2,$3,$4,$4) RETURNING id`, [OTHER, status, JSON.stringify(steps), updated])).id);
+    const tap = [{ action: { type: "tap", id: 11 }, expect: "added" }];
+    const push = require("../src/services/push");
+    const realSend = push.sendNotification;
+    try {
+      const neverBegun = await put("running", [], ago(37 * 3600_000));
+      const silent = await put("running", tap, ago(5 * 60_000));
+      const ownerTurn = await put("waiting_owner", tap, ago(20 * 60_000));
+      const permission = await put("running", [], ago(5 * 60_000)); // the owner is still switching it on
+      const busy = await put("running", tap, ago(10_000));
+      const status = async (id) => (await svc.get(OTHER, id)).status;
+      // Another user's own sweep never touches these.
+      await svc.sweep(UID);
+      assert.strictEqual(await status(neverBegun), "running");
+      // The scheduler's sweep closes them for everyone (no push, no model: stubbed).
+      push.sendNotification = async () => {};
+      ai.generateReply = async () => { throw new Error("no model in this test"); };
+      await require("../src/proactive/scheduler").sweep();
+      assert.deepStrictEqual([await status(neverBegun), await status(silent), await status(ownerTurn)],
+        ["failed", "failed", "failed"]);
+      assert.strictEqual((await svc.get(OTHER, neverBegun)).report, say.stale());
+      assert.deepStrictEqual([await status(permission), await status(busy)], ["running", "running"]);
+    } finally {
+      push.sendNotification = realSend;
+      ai.generateReply = scriptedReply;
+      await db.run(`DELETE FROM automation_runs WHERE user_id=$1`, [OTHER]).catch(() => {});
+    }
   });
 
   await atest("Stop pressed while a step is still thinking wins: no new step is handed out", async () => {
@@ -2544,10 +2707,12 @@ const swiggyCart = { pkg: SW, nodes: [
       await planner.decide(run({ ok: true, changed: false }), big);
       assert.deepStrictEqual(calls[3].body.generationConfig.thinkingConfig, { thinkingBudget: 0 });
       assert.deepStrictEqual(calls[4].body.generationConfig.thinkingConfig, { thinkingBudget: 1024 });
-      // Unset, the planner uses the chat model, as before.
+      // Unset, the planner uses the fast model, never the chat model
+      // (2026-09-27: the chat model ran out a screenshot step's 12 s).
       delete process.env.AUTOMATION_MODEL;
       await planner.decide(run(null), big);
-      assert.match(calls[5].url, /\/models\/gemini-2\.5-flash-lite:generateContent$/);
+      assert.ok(calls[5].url.endsWith(`/models/${ai.automationFastModel()}:generateContent`), calls[5].url);
+      assert.ok(!calls[5].url.includes("gemini-2.5-flash-lite"), "not the chat model");
       // Chat callers are untouched: no schema, no picture setting, no JSON mode.
       await realGenerateReply([{ role: "user", content: "hi" }], { system: "s" });
       const chat = calls[6].body.generationConfig;

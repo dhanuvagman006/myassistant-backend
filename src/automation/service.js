@@ -116,20 +116,27 @@ async function get(userId, id) {
     `SELECT * FROM automation_runs WHERE user_id=$1 AND id=$2`, [userId, Number(id)]));
 }
 
-/** Runs whose phone went silent are closed, honestly, not left running. */
-async function sweep(userId) {
+/**
+ * Runs whose phone went silent are closed, honestly, not left running.
+ * With no user, EVERY user's: the proactive scheduler's ten-minute sweep.
+ * Only the owner's next task used to close them — two runs sat 'running'
+ * 37-46 h in production (audit, 2026-09-27). Returns how many it closed.
+ */
+async function sweep(userId = null) {
   const now = Date.now();
-  await exec(
+  const who = userId == null ? null : Number(userId);
+  const n1 = await exec(
     `UPDATE automation_runs SET status='failed', report=$4, updated_at=$5
-      WHERE user_id=$1 AND status='running'
+      WHERE ($1::int IS NULL OR user_id=$1) AND status='running'
         AND updated_at < $2 AND (steps <> '[]' OR updated_at < $3)`,
-    [userId, now - STALE_MS, now - UNSTARTED_STALE_MS, say.stale(), now]).catch(() => 0);
+    [who, now - STALE_MS, now - UNSTARTED_STALE_MS, say.stale(), now]).catch(() => 0);
   // The owner's turn (sign in, then Continue) is given 15 minutes; a phone
   // that died meanwhile never says so, and the run must not wait for ever.
-  await exec(
+  const n2 = await exec(
     `UPDATE automation_runs SET status='failed', report=$3, updated_at=$4
-      WHERE user_id=$1 AND status='waiting_owner' AND updated_at < $2`,
-    [userId, now - UNSTARTED_STALE_MS, say.stale(), now]).catch(() => 0);
+      WHERE ($1::int IS NULL OR user_id=$1) AND status='waiting_owner' AND updated_at < $2`,
+    [who, now - UNSTARTED_STALE_MS, say.stale(), now]).catch(() => 0);
+  return (n1 || 0) + (n2 || 0);
 }
 
 /** Steps the phone was actually handed (a refused step never left here). */
@@ -216,8 +223,12 @@ function directive(r, { resume = false } = {}) {
     named: /^you asked/.test(r.app_reason || ""),
     no_install: guard.PAYMENT_PKGS.has(r.app_pkg || "") ||
       guard.MONEY_APP_NAME.test(`${r.app_label || ""} ${r.app_name || ""}`),
+    // A web run records the browser it is in (stepLocked), so a resumed
+    // run reopens that browser on its own tab. One with no browser on
+    // record keeps its link: an empty pkg AND url opens nothing. (Builds
+    // 118/119 open no link on a resume at all, so there only pkg helps.)
     pkg: r.app_pkg,
-    start_url: resume ? "" : r.start_url,
+    start_url: resume && !(r.web && !r.app_pkg) ? "" : r.start_url,
     web: r.web,
     // The whole phone: any app except money apps, the installer and
     // permission pop-ups (the phone enforces those itself).
@@ -262,6 +273,15 @@ async function start(userId, { goal, category = "", app = "", url = "", query = 
     if (!pick) pick = { name: "", label: "your phone", pkg: "", reason: "" };
     // The owner's words can be lower case ("open google maps and …").
     else pick = { ...pick, label: say.pretty(pick.label) };
+    // A MONEY APP IS NEVER OPENED FOR A TASK (guard.MONEY_APP_NAME). "Check
+    // my PhonePe balance" used to open PhonePe, find its first screen
+    // barred and tell the owner "It's ready for payment" — nothing was.
+    if (guard.PAYMENT_PKGS.has(pick.pkg || "") || guard.MONEY_APP_NAME.test(`${pick.label || ""} ${pick.name || ""}`)) {
+      return {
+        ok: false,
+        error: `I don't open money apps like ${pick.label} for a task — that one is yours to do, and nothing was opened`,
+      };
+    }
   }
   // A start link only ever opens INSIDE the chosen app (the phone pins the
   // package), so a link the app doesn't understand just opens the app.
@@ -679,6 +699,15 @@ async function stepLocked(userId, runId, { screen, last, seq = null } = {}, meta
     }));
   }
   if (!r.web && !r.app_pkg && pkg && r.app_name) await save(userId, r, { app_pkg: pkg });
+  // A web run keeps the browser it is in: after a question to the owner
+  // the run resumes there (directive pkg). Without it the phone was handed
+  // no app and no link, and "What is your father's name?" ended the form
+  // (audit, 2026-09-27). The phone makers' own browsers (com.vivo.browser,
+  // com.heytap.browser, com.mi.globalbrowser) are not in the list: they
+  // are known by the name, or their web runs could not resume either.
+  if (r.web && !r.app_pkg && (guard.BROWSERS.includes(pkg) || /browser/i.test(pkg))) {
+    await save(userId, r, { app_pkg: pkg });
+  }
 
   if (r.steps.length >= MAX_STEPS) {
     await save(userId, r, { steps: r.steps });
@@ -979,6 +1008,6 @@ async function finish(userId, runId, { reason = "error", kind = "", detail = "" 
 }
 
 module.exports = {
-  migrate, start, resume, step, finish, ownerDone, get, recent, directive, waitingRun,
+  migrate, start, resume, step, finish, ownerDone, get, recent, directive, waitingRun, sweep,
   composeReport, forPhone, MAX_STEPS, DAILY_RUNS, STEP_BUDGET_MS,
 };

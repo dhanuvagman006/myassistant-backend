@@ -101,6 +101,18 @@ test("unknown shop provider returns null rather than a broken link", () => {
   assert.strictEqual(deeplinks.shop({ provider: "nosuchapp", query: "x" }), null);
 });
 
+test("a shop link is 'search' only when it carries the search (MakeMyTrip's does not)", () => {
+  for (const provider of ["blinkit", "zepto", "amazon", "flipkart"]) {
+    const l = deeplinks.shop({ provider, query: "milk" });
+    assert.strictEqual(l.precision, "search", provider);
+    assert.ok(l.url.includes("milk"), provider);
+  }
+  const mmt = deeplinks.shop({ provider: "makemytrip", query: "flights to Goa" });
+  assert.ok(!decodeURIComponent(mmt.url).includes("Goa"), mmt.url);
+  assert.strictEqual(mmt.precision, "app", "its home page is not a search");
+  assert.strictEqual(mmt.note, "MakeMyTrip home");
+});
+
 section("honesty invariants");
 
 test("every handoff sentence tells the user THEY finish the payment", () => {
