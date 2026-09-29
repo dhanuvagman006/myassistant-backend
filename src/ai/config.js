@@ -70,6 +70,14 @@ const FRESH_WORDS = [
 // thinking calls tools reliably (at minimal it claimed a reminder it never
 // set). The fallback answers when the first fails or stalls.
 const cloudModel = () => envModel("AI_CLOUD_MODEL", "gemini-3.5-flash-lite");
+// Google Search grounding through AI Logic (the app's "search" route). Off
+// unless AI_GROUNDING=on since 2026-09-29: the project's grounding quota
+// ran out (429 on every fresh question) while the server's own web_search
+// and get_weather tools answer the same questions on the cloud route. The
+// app reads an empty list as "use your own", so a word nobody says is
+// what switches the route off.
+const NO_GROUNDING = "__grounding_off__";
+const groundingOn = () => /^(on|1|true|yes)$/i.test(String(process.env.AI_GROUNDING || "off").trim());
 const cloudFastModel = () => envModel("AI_CLOUD_FAST_MODEL", "gemini-flash-lite-latest");
 const cloudFallbackModel = () => envModel("AI_CLOUD_FALLBACK_MODEL", "gemini-flash-lite-latest");
 // How hard the conversation model thinks before answering (minimal, low,
@@ -151,7 +159,7 @@ async function forUser(userId, { build } = {}) {
         return VOICES.has(voice) ? voice : "Kore";
       })(),
     },
-    routing: { toolWords, freshWords: FRESH_WORDS.slice(), shortcutNames },
+    routing: { toolWords, freshWords: groundingOn() ? FRESH_WORDS.slice() : [NO_GROUNDING], shortcutNames },
     limits: { maxToolRounds: 6 },
   };
 }
@@ -159,5 +167,5 @@ async function forUser(userId, { build } = {}) {
 module.exports = {
   forUser, voiceFor, speechLanguage, cloudModel, cloudFastModel, cloudFallbackModel,
   thinkingLevel, ttsModel, expressiveTtsModel, ttsStyle, liveModel,
-  VOICES, LIBRARY_VOICES, EXPRESSIVE_BUILD, TOOL_VERBS, FRESH_WORDS,
+  VOICES, LIBRARY_VOICES, EXPRESSIVE_BUILD, TOOL_VERBS, FRESH_WORDS, NO_GROUNDING, groundingOn,
 };

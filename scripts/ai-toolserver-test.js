@@ -178,8 +178,17 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
         assert.ok(c.routing.toolWords.includes(w), `toolWords has ${w}`);
       }
       for (const w of ["day", "the", "get"]) assert.ok(!c.routing.toolWords.includes(w), `toolWords has no ${w}`);
-      for (const w of ["today", "latest", "who won", "price", "score"]) {
-        assert.ok(c.routing.freshWords.includes(w), `freshWords has ${w}`);
+      // Grounding is off unless AI_GROUNDING=on (its quota ran out): a word
+      // nobody says keeps the app from its own list of fresh words.
+      assert.deepStrictEqual(c.routing.freshWords, ["__grounding_off__"]);
+      process.env.AI_GROUNDING = "on";
+      try {
+        const on = (await api("GET", "/ai/config", { token: A.token })).json;
+        for (const w of ["today", "latest", "who won", "price", "score"]) {
+          assert.ok(on.routing.freshWords.includes(w), `freshWords has ${w}`);
+        }
+      } finally {
+        delete process.env.AI_GROUNDING;
       }
       assert.deepStrictEqual(c.routing.shortcutNames, []);
     });
