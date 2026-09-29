@@ -320,6 +320,7 @@ let analysisReply = () => "{}";
   app.use("/calls", appAuth, require("../src/routes/calls").router);
   app.use("/tasks", appAuth, require("../src/routes/tasks"));
   app.use("/outcomes", appAuth, require("../src/routes/outcomes"));
+  app.use("/brief", appAuth, require("../src/routes/brief"));
   const server = await new Promise((r) => { const s = app.listen(0, "127.0.0.1", () => r(s)); });
   const base = `http://127.0.0.1:${server.address().port}`;
   async function api(method, path, { token = T1, body, headers = {}, form } = {}) {
@@ -1256,6 +1257,106 @@ let analysisReply = () => "{}";
         // 2026-09-27): an unattended job would otherwise launder the taint.
         place_phone_call: true, create_reminder: false, schedule_task: true, cancel_scheduled_task: false });
     });
+
+    /* ================================================================ */
+    console.log("\nhome brief: tomorrow, birthdays and bills, promise dates, weather");
+    /* ================================================================ */
+
+    // Headlines and weather are outside sources: stubbed here like every
+    // other network call in this file.
+    const newsMod = require("../src/services/tools/news");
+    const weatherMod = require("../src/services/tools/weather");
+    const realNews = newsMod.getHeadlines;
+    const realWeather = weatherMod.getWeather;
+    newsMod.getHeadlines = async () => [];
+    weatherMod.getWeather = async () => null;
+    const midnight = (offset) => {
+      const l = new Date(Date.now() + 330 * 60e3);
+      return Date.UTC(l.getUTCFullYear(), l.getUTCMonth(), l.getUTCDate() + offset) - 330 * 60e3;
+    };
+    try {
+      await atest("GET /brief files tomorrow's reminders and meetings under tomorrow, never under today", async () => {
+        const saved = gcal.events;
+        const t10 = midnight(1) + 10 * 3600e3;
+        const t15 = midnight(1) + 15 * 3600e3;
+        gcal.events = [{ id: "evTm", title: "Board call", start: isoLocal(t15), end: isoLocal(t15 + 3600e3) }];
+        try {
+          // Only these: the reminders earlier tests left may be due
+          // tomorrow too (late in the evening), and tomorrow keeps six.
+          await db.run(`DELETE FROM reminders WHERE user_id = $1`, [U1]);
+          // Google was unlinked by an earlier test; link it again here.
+          await db.run(`DELETE FROM google_tokens WHERE user_id = $1`, [U1]);
+          await db.run(
+            `INSERT INTO google_tokens (user_id, refresh_token, access_token, expires_at, scopes, updated_at)
+             VALUES ($1,'1//refresh-test','ya29.test-token',$2,'gmail.send calendar.events',$3)`,
+            [U1, Date.now() + 3600e3, Date.now()]);
+          await api("POST", "/reminders", { body: { text: "Dentist tomorrow", dueAt: t10 } });
+          await api("POST", "/reminders", { body: { text: "The day after", dueAt: midnight(2) + 11 * 3600e3 } });
+          const b = (await api("GET", "/brief")).json;
+          const titles = (xs) => xs.map((x) => x.title);
+          assert.ok(Array.isArray(b.tomorrow), JSON.stringify(b));
+          const mine = b.tomorrow.filter((x) => ["Dentist tomorrow", "Board call"].includes(x.title));
+          assert.deepStrictEqual(titles(mine), ["Dentist tomorrow", "Board call"], "tomorrow, in time order");
+          assert.strictEqual(mine[0].at, t10);
+          assert.strictEqual(mine[1].kind, "meeting");
+          assert.ok(!titles(b.agenda).includes("Board call"),
+            "tomorrow's meeting used to sit on today's agenda (the calendar was read for 24 h and all filed under today)");
+          assert.ok(!titles(b.agenda).includes("Dentist tomorrow"));
+          assert.ok(![...b.agenda, ...b.tomorrow].some((x) => x.title === "The day after"));
+        } finally { gcal.events = saved; }
+      });
+
+      await atest("GET /brief brings birthdays and bills for today and tomorrow, and dates each promise", async () => {
+        const now = Date.now();
+        const md = (offset) => {
+          const d = new Date(midnight(offset) + 330 * 60e3);
+          return { m: d.getUTCMonth() + 1, d: d.getUTCDate() };
+        };
+        const amma = await db.one(
+          `INSERT INTO clients (user_id, name, kind, created_at, updated_at) VALUES ($1,'Amma','other',$2,$2) RETURNING id`,
+          [U1, now]);
+        await db.run(
+          `INSERT INTO person_dates (user_id, person_id, label, month, day, created_at) VALUES ($1,$2,'birthday',$3,$4,$5)`,
+          [U1, amma.id, md(1).m, md(1).d, now]);
+        await require("../src/routes/finance").listItems(U1); // creates the table
+        await db.run(
+          `INSERT INTO finance_items (user_id, kind, name, amount, due_day, created_at)
+           VALUES ($1,'emi','Home loan EMI',12000,$2,$3), ($1,'income','Salary',90000,$2,$3)`,
+          [U1, md(0).d, now]);
+        // Due before tonight's midnight, whatever time the test runs.
+        const due = midnight(1) - 30e3;
+        await db.run(
+          `INSERT INTO commitments (user_id, text, owed_to, due_at, created_at, updated_at)
+           VALUES ($1,'Send the revised quote','Ravi',$2,$3,$3)`,
+          [U1, due, now]);
+        const b = (await api("GET", "/brief")).json;
+        assert.deepStrictEqual(b.dates.filter((x) => x.kind === "birthday"),
+          [{ kind: "birthday", title: "Amma's birthday", person: "Amma", when: "tomorrow" }]);
+        assert.deepStrictEqual(b.dates.filter((x) => x.kind === "payment"),
+          [{ kind: "payment", title: "Home loan EMI · ₹12000", when: "today" }], "money coming in is not a bill");
+        const p = b.promises.find((x) => x.text === "To Ravi: Send the revised quote");
+        assert.ok(p, JSON.stringify(b.promises));
+        assert.strictEqual(p.owed_to, "Ravi");
+        assert.strictEqual(p.due_at, due);
+        assert.strictEqual(p.due_label, "due today");
+      });
+
+      await atest("GET /brief finds the weather from the location headers the app sends", async () => {
+        const seen = [];
+        weatherMod.getWeather = async (where) => {
+          seen.push(where);
+          return { current: { tempC: 21.4, condition: "clear sky" } };
+        };
+        const b = (await api("GET", "/brief", { headers: { "X-Geo-Lat": "12.9716", "X-Geo-Lng": "77.5946" } })).json;
+        assert.strictEqual(b.weather_line, "Clear sky · 21°C");
+        assert.strictEqual(seen[0].lat, 12.9716);
+        assert.strictEqual(seen[0].lng, 77.5946);
+        assert.strictEqual(seen[0].city, undefined, "the phone's own fix, not the profile's city");
+      });
+    } finally {
+      newsMod.getHeadlines = realNews;
+      weatherMod.getWeather = realWeather;
+    }
 
     await atest("no request left the machine except to the stubs", () => {
       assert.deepStrictEqual(blocked, []);

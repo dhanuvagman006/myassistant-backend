@@ -1,6 +1,7 @@
 /**
  * GET /brief — the home dashboard's single aggregate fetch.
- * Query: lat, lng (optional, for the weather chip).
+ * Query: lat, lng (optional, for the weather chip); without them the
+ * X-Geo-Lat / X-Geo-Lng headers every app request carries.
  * Header: X-TZ-Offset (minutes east of UTC; defaults to IST 330).
  */
 const router = require("express").Router();
@@ -13,16 +14,21 @@ router.get("/", async (req, res) => {
     // Dev/appKey sessions have no user row — an EMPTY brief, not an error,
     // so the home screen renders its calm state instead of a banner.
     return res.json({
-      name: null, weather_line: null, agenda: [], promises: [],
-      messages: [], people: [], people_count: 0, headlines: [],
+      name: null, weather_line: null, agenda: [], tomorrow: [], dates: [],
+      promises: [], messages: [], people: [], people_count: 0, headlines: [],
     });
   }
+  // WHERE THE PHONE IS (2026-09-29). The app never put lat/lng in the
+  // query — it sends its last fix as headers on every request — so the
+  // weather chip only appeared for a profile with a city typed in.
+  let lat = parseFloat(req.query.lat);
+  let lng = parseFloat(req.query.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    lat = parseFloat(req.get("X-Geo-Lat"));
+    lng = parseFloat(req.get("X-Geo-Lng"));
+  }
   try {
-    const brief = await buildBrief(uid, {
-      lat: parseFloat(req.query.lat),
-      lng: parseFloat(req.query.lng),
-      tzOffsetMin: tzFromReq(req),
-    });
+    const brief = await buildBrief(uid, { lat, lng, tzOffsetMin: tzFromReq(req) });
     res.json(brief);
   } catch (e) {
     console.error("brief failed:", e.message);

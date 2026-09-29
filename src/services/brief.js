@@ -5,6 +5,9 @@
  * Composes, per user:
  *   • agenda    — open reminders (due soon or undated) + today's calendar
  *                 events when Google is linked, time-sorted
+ *   • tomorrow  — tomorrow's timed reminders and meetings (Home shows them
+ *                 once today is done)
+ *   • dates     — birthdays and bills today or tomorrow (Home's cards)
  *   • promises  — open commitments Hari heard the user make
  *   • messages  — UNREAD agent-to-agent messages (preview only: they are
  *                 marked read exclusively when a live session speaks them,
@@ -43,27 +46,36 @@ function dueLabel(dueMs, tzOffsetMin, now = Date.now()) {
   return null;
 }
 
-async function agendaOf(uid, tzOffsetMin) {
-  const out = [];
-  const now = Date.now();
-
-  // "Today's agenda" means TODAY: overdue, due before the user's local
-  // midnight, or undated. The old 36-hour window pulled tomorrow's items
-  // in ("EMI tomorrow" sat under today) — tomorrow belongs to the
-  // calendar, not the agenda.
+/// Epoch ms of the user's local midnight that starts day [offset]
+/// (0 = today, 1 = tomorrow).
+function localMidnight(now, tzOffsetMin, offset = 0) {
   const local = new Date(now + tzOffsetMin * 60_000);
-  const endOfToday =
-    Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + 1) -
-    tzOffsetMin * 60_000;
-  // AND NOT YESTERDAY'S. Anything overdue used to qualify, with no lower
-  // bound at all, so a meeting at 5:30pm on Saturday was still sitting
-  // under "Today's agenda" on Sunday — and would have sat there next
-  // month too. A section called TODAY must mean today: from local
-  // midnight. Undone items from previous days are not lost; they stay in
-  // Reminders, which is the list that is meant to keep them.
-  const startOfToday =
-    Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate()) -
-    tzOffsetMin * 60_000;
+  return (
+    Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + offset) -
+    tzOffsetMin * 60_000
+  );
+}
+
+/// TODAY and TOMORROW from one read of each source.
+///
+/// "Today's agenda" means TODAY: overdue, due before the user's local
+/// midnight, or undated. The old 36-hour window pulled tomorrow's items
+/// in ("EMI tomorrow" sat under today). AND NOT YESTERDAY'S: a meeting at
+/// 5:30pm on Saturday used to sit under "Today" on Sunday; undone items
+/// from earlier days stay in Reminders, the list meant to keep them.
+///
+/// TOMORROW (2026-09-29) is what Home shows once today is done: timed
+/// items only — an undated reminder belongs to no particular day. The
+/// calendar is now read for two days and split at midnight; it used to be
+/// read for the next 24 hours and all of it filed under today, so
+/// tomorrow morning's meetings showed on tonight's agenda.
+async function daysOf(uid, tzOffsetMin) {
+  const today = [];
+  const tomorrow = [];
+  const now = Date.now();
+  const startOfToday = localMidnight(now, tzOffsetMin, 0);
+  const endOfToday = localMidnight(now, tzOffsetMin, 1);
+  const endOfTomorrow = localMidnight(now, tzOffsetMin, 2);
 
   try {
     const rows = await reminders.list(uid);
@@ -71,39 +83,88 @@ async function agendaOf(uid, tzOffsetMin) {
       if (r.done) continue;
       const due = Number(r.due_at);
       const timed = Number.isFinite(due) && due > 0;
-      if (timed && (due >= endOfToday || due < startOfToday)) continue;
-      out.push({
+      const item = {
         kind: "reminder",
         id: r.id,
         title: String(r.text || "").slice(0, 140),
         at: timed ? due : null,
-      });
+      };
+      if (!timed || (due >= startOfToday && due < endOfToday)) today.push(item);
+      else if (due >= endOfToday && due < endOfTomorrow) tomorrow.push(item);
     }
   } catch (_) {}
 
   // Calendar only when the user linked Google; null means not linked.
   try {
     const gapi = require("../google/api");
-    const events = await gapi.upcomingEvents(uid, { days: 1, max: 8 });
+    const events = await gapi.upcomingEvents(uid, { days: 2, max: 16 });
     for (const e of events || []) {
       const at = Date.parse(e.start);
-      // upcomingEvents already starts at "now", but an all-day event
-      // returns a bare date that parses to midnight — which is behind us
-      // for most of the day and would read as something still to come.
+      // upcomingEvents starts at "now", but an all-day event returns a
+      // bare date that parses to midnight — behind us for most of the day.
       if (Number.isFinite(at) && at < startOfToday) continue;
-      out.push({
+      const item = {
         kind: "meeting",
         title:
           String(e.title || "Meeting").slice(0, 120) +
           (e.location ? ` · ${String(e.location).slice(0, 40)}` : ""),
         at: Number.isFinite(at) ? at : null,
-      });
+      };
+      if (!Number.isFinite(at) || at < endOfToday) today.push(item);
+      else if (at < endOfTomorrow) tomorrow.push(item);
     }
   } catch (_) {}
 
   // Timed first (soonest up), undated last.
-  out.sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity));
-  return out.slice(0, 10);
+  const byTime = (a, b) => (a.at ?? Infinity) - (b.at ?? Infinity);
+  today.sort(byTime);
+  tomorrow.sort(byTime);
+  return { today: today.slice(0, 10), tomorrow: tomorrow.slice(0, 6) };
+}
+
+/// Birthdays and bills TODAY or TOMORROW (2026-09-29), for Home's cards:
+/// "Amma's birthday · tomorrow", "Home loan EMI · ₹12000 · today". The
+/// same sources the month calendar paints; nothing new is stored.
+async function datesOf(uid, tzOffsetMin) {
+  const now = Date.now();
+  const days = ["today", "tomorrow"].map((when, offset) => {
+    const d = new Date(localMidnight(now, tzOffsetMin, offset) + tzOffsetMin * 60_000);
+    return { when, month: d.getUTCMonth() + 1, day: d.getUTCDate() };
+  });
+  const out = [];
+  try {
+    const rows = await db.query(
+      `SELECT pd.month, pd.day, pd.label, c.name
+         FROM person_dates pd JOIN clients c ON c.id = pd.person_id
+        WHERE pd.user_id = $1
+          AND ((pd.month = $2 AND pd.day = $3) OR (pd.month = $4 AND pd.day = $5))`,
+      [uid, days[0].month, days[0].day, days[1].month, days[1].day]
+    );
+    for (const r of rows) {
+      const hit = days.find((x) => x.month === Number(r.month) && x.day === Number(r.day));
+      if (!hit) continue;
+      const name = String(r.name || "").slice(0, 60);
+      out.push({ kind: "birthday", title: `${name}'s ${r.label || "birthday"}`, person: name, when: hit.when });
+    }
+  } catch (_) {}
+  // EMIs and bills recur monthly on their due_day; money coming IN is not
+  // something to act on.
+  try {
+    const items = await require("../routes/finance").listItems(uid);
+    for (const it of items) {
+      if (it.kind === "income") continue;
+      const hit = days.find((x) => x.day === Number(it.due_day));
+      if (!hit) continue;
+      out.push({
+        kind: "payment",
+        title:
+          String(it.name || "Payment").slice(0, 80) +
+          (Number.isFinite(Number(it.amount)) ? ` · ₹${Math.round(Number(it.amount))}` : ""),
+        when: hit.when,
+      });
+    }
+  } catch (_) {}
+  return out.slice(0, 6);
 }
 
 async function promisesOf(uid, tzOffsetMin) {
@@ -117,6 +178,10 @@ async function promisesOf(uid, tzOffsetMin) {
       text:
         (c.owed_to ? `To ${c.owed_to}: ` : "") +
         String(c.text || "").slice(0, 140),
+      // For Home's ranking (2026-09-29): what is late or due today comes
+      // first, and a person waiting on it counts for more than a chore.
+      due_at: Number(c.due_at) > 0 ? Number(c.due_at) : null,
+      owed_to: c.owed_to ? String(c.owed_to).slice(0, 60) : null,
       // An UNDATED promise has no deadline — calling it "overdue" (via
       // Number(null) → 0 → in the past) told users their fresh promises
       // were already late.
@@ -265,21 +330,24 @@ async function buildBrief(uid, opts = {}) {
     ]);
 
   const practice = await boxed(practiceOf(uid, tz), 2500, null);
-  const [agenda, promises, messages, people, weather_line, headlines, screen_time] =
+  const [days, promises, messages, people, weather_line, headlines, screen_time, dates] =
     await Promise.all([
-      boxed(agendaOf(uid, tz), 3000, []),
+      boxed(daysOf(uid, tz), 3000, { today: [], tomorrow: [] }),
       boxed(promisesOf(uid, tz), 2500, []),
       boxed(messagesOf(profile?.user?.phone_number || null), 2500, []),
       boxed(peopleOf(uid), 2500, []),
       boxed(weatherLineOf({ lat: opts.lat, lng: opts.lng, city }), 2000, null),
       boxed(headlinesOf(), 2000, []),
       boxed(screenTimeOf(uid), 2000, null),
+      boxed(datesOf(uid, tz), 2000, []),
     ]);
 
   return {
     name: profile?.user?.name ? String(profile.user.name).split(" ")[0] : null,
     weather_line,
-    agenda,
+    agenda: days.today,
+    tomorrow: days.tomorrow,
+    dates,
     practice,
     promises,
     messages,
