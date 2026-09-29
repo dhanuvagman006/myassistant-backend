@@ -122,13 +122,15 @@ async function atest(name, fn) {
     assert.match(src, /streamId/);
   });
 
-  await atest("the app's own voice path was not touched", () => {
+  await atest("the app's own conversation path was not touched", () => {
     const fs = require("fs");
-    const proxy = fs.readFileSync(__dirname + "/../src/live/proxy.js", "utf8");
-    // The phone bridge is deliberately separate: live/proxy.js is the
-    // microphone path and is coupled to the app's event protocol.
-    assert.doesNotMatch(proxy, /plivoStream|callBrief/,
-      "the phone feature must not reach into the app's live path");
+    // The phone bridge is deliberately separate: src/ai/ is the app's
+    // conversation (its tool server) and is coupled to the app's contract.
+    for (const f of fs.readdirSync(__dirname + "/../src/ai")) {
+      const src = fs.readFileSync(__dirname + "/../src/ai/" + f, "utf8");
+      assert.doesNotMatch(src, /plivoStream|callBrief/,
+        `the phone feature must not reach into the app's conversation (${f})`);
+    }
   });
 
   // 2026-09-25: every account was deleted while a phone stayed signed in;

@@ -113,6 +113,7 @@ async function ensureEveryTable() {
     "outcomes/store", "practice/store", "records/store", "routes/contacts",
     "routes/finance", "routes/usage", "services/email", "services/pendingPush",
     "studio/store", "tools/searchCache", "posters/store", "shortcuts/store",
+    "shopping/store", "kitchen/store",
   ]) {
     await require("../src/" + m).migrate();
   }
@@ -848,101 +849,70 @@ const tell = (from, toPhone, message) => db.one(
   });
 
   /* ================================================================ *
-   * (d) A CALL IN PROGRESS
+   * (d) A CONVERSATION IN PROGRESS
    * ================================================================ */
-  console.log("\na call in progress when the account is deleted");
+  console.log("\na conversation in progress when the account is deleted");
 
-  // The real bridge, with Google's socket and the phone's faked in memory
-  // (the harness scripts/automation-test.js uses). A closed fake delivers
-  // nothing further, as a closed socket does.
-  const EventEmitter = require("events");
-  const realWs = require("ws");
-  class FakeWs extends EventEmitter {
-    constructor(url) {
-      super(); this.readyState = 1; this.sent = []; this.closedWith = null;
-      if (url) FakeWs.upstream = this;
-    }
-    send(x) { this.sent.push(Buffer.isBuffer(x) ? x : String(x)); }
-    close(code) {
-      if (this.readyState === 3) return;
-      this.readyState = 3; this.closedWith = code || 1005; this.emit("close", this.closedWith);
-    }
-    terminate() { this.close(); }
-    ping() {}
-  }
-  Object.assign(FakeWs, { OPEN: 1, CONNECTING: 0, CLOSING: 2, CLOSED: 3, Server: realWs.Server });
-  process.env.GEMINI_API_KEY = process.env.GEMINI_API_KEY || "test-key";
-  const wsModule = require.cache[require.resolve("ws")];
-  const wsExports = wsModule.exports;
-  const proxyPath = require.resolve("../src/live/proxy");
-  let proxy;
-  try {
-    wsModule.exports = FakeWs;
-    delete require.cache[proxyPath]; // privacy.js requires this same instance
-    proxy = require("../src/live/proxy");
-  } finally {
-    wsModule.exports = wsExports;
-  }
+  // The app's conversation (src/ai/): its turns go through POST /ai/context,
+  // /ai/tool and /ai/turn, and its state lives in this pod's sessions. The
+  // Live socket this section once drove is gone (2026-09-29), and with it
+  // the call recording it made.
   const until = async (fn, what) => {
     for (let i = 0; i < 300; i++) { if (await fn()) return; await new Promise((r) => setTimeout(r, 10)); }
     throw new Error(`timed out: ${what}`);
   };
-  const device = { build: 106, platform: "android", tz: 330 };
-  const today = path.join(RECS, new Date().toISOString().slice(0, 10));
-  const liveFiles = () => (fs.existsSync(today) ? fs.readdirSync(today) : []).filter((f) => f.startsWith("live_"));
+  const aiApp = express();
+  aiApp.use(express.json());
+  aiApp.use("/ai", (req, _res, next) => { req.user = { sub: String(req.get("x-test-user")) }; next(); },
+    require("../src/ai/routes"));
+  const aiServer = await new Promise((r) => { const s = aiApp.listen(0, "127.0.0.1", () => r(s)); });
+  const aiBase = `http://127.0.0.1:${aiServer.address().port}/ai`;
+  const ai = async (uid, p, body) => {
+    const r = await fetch(aiBase + p, {
+      method: "POST", headers: { "content-type": "application/json", "x-test-user": String(uid) },
+      body: JSON.stringify(body),
+    });
+    return { status: r.status, json: await r.json().catch(() => null) };
+  };
   const D = (await db.createUser({ email: `erase-d-${stamp}@example.test`, name: "Erase d" })).id;
   await optIn(D);
   const turnsOfD = async () =>
     (await db.one(`SELECT count(*)::int AS n FROM conversation_turns WHERE user_id = $1`, [D])).n;
-  const recsOfD = async () =>
-    (await db.one(`SELECT count(*)::int AS n FROM live_recordings WHERE user_id = $1`, [D])).n;
 
-  await atest("the delete ends the call: both sockets close, and nothing is written after", async () => {
-    const before = new Set(liveFiles());
-    const phone = new FakeWs();
-    proxy.bridge(phone, { sub: String(D) }, null, device);
-    const up = FakeWs.upstream;
-    up.emit("open");
-    await until(() => up.sent.some((x) => /"setup"/.test(x)), "setup");
-    up.emit("message", Buffer.from(JSON.stringify({ setupComplete: {} })));
-    await until(() => phone.sent.some((x) => /"ready"/.test(String(x))), "ready");
-    const fromGoogle = (o) => { if (up.readyState === 1) up.emit("message", Buffer.from(JSON.stringify(o))); };
-    const speak = (text) => {
-      fromGoogle({ serverContent: { inputTranscription: { text } } });
-      fromGoogle({ serverContent: { turnComplete: true } });
-    };
-    // Proof the harness is live: a turn is written, the call is recorded.
-    speak("what is the weather tomorrow");
-    await until(async () => (await turnsOfD()) === 1, "the call writes its turns");
-    await until(async () => (await recsOfD()) === 1, "the call is recorded");
+  await atest("the delete ends the conversation: its session closes, and nothing is written after", async () => {
+    const c = (await ai(D, "/context", { text: "what is the weather tomorrow", mode: "voice", build: 120 })).json;
+    assert.ok(c && c.sessionId, "a session opened");
+    // Proof the harness is live: a turn is written.
+    await ai(D, "/turn", { sessionId: c.sessionId, turnId: c.turnId, user: "what is the weather tomorrow",
+      reply: "Sunny, 31 degrees.", engine: "cloud" });
+    await until(async () => (await turnsOfD()) === 2, "the conversation writes its turns");
 
     const res = await admin(`/users/${D}`, { method: "DELETE" });
     assert.strictEqual(res.status, 200);
     const report = await res.json();
-    assert.strictEqual(report.revoked.liveSessions, 1);
-    assert.strictEqual(report.revoked.liveRecordings, 1);
-    assert.strictEqual(phone.readyState, 3, "the phone is still connected to a deleted account");
-    assert.strictEqual(phone.closedWith, 1008);
-    assert.strictEqual(up.readyState, 3, "the Gemini session is still open");
+    assert.strictEqual(report.revoked.liveSessions, 1, "the open conversation was not ended");
+    assert.strictEqual(require("../src/ai/sessions").get(D, c.sessionId), null, "its state is still held");
 
-    speak("and book me a cab home");
+    // The phone, not knowing yet, carries on with the same session.
+    const late = await ai(D, "/turn", { sessionId: c.sessionId, turnId: c.turnId, user: "and book me a cab home",
+      reply: "Booking it." });
+    assert.strictEqual(late.status, 401);
+    const again = await ai(D, "/context", { text: "and book me a cab home", mode: "voice" });
+    assert.strictEqual(again.status, 401, "a deleted account opened a new session");
     await new Promise((r) => setTimeout(r, 300));
     assert.strictEqual(await turnsOfD(), 0, "a turn was written under the erased id");
-    assert.strictEqual(await recsOfD(), 0);
-    const left = liveFiles().filter((f) => !before.has(f));
-    assert.deepStrictEqual(left, [], "the call's audio is still on disk");
   });
 
-  await atest("a call that reaches the bridge just after the delete is closed on arrival", async () => {
-    const before = new Set(liveFiles());
-    const late = new FakeWs();
-    proxy.bridge(late, { sub: String(D) }, null, device); // authorised a moment before the delete
-    assert.strictEqual(late.readyState, 3);
-    assert.strictEqual(late.closedWith, 1008);
-    await new Promise((r) => setTimeout(r, 300));
-    assert.strictEqual(await recsOfD(), 0, "it recorded a call for a deleted account");
-    assert.deepStrictEqual(liveFiles().filter((f) => !before.has(f)), []);
+  await atest("a failed delete lifts the mark: the account may talk again", async () => {
+    const F = (await db.createUser({ email: `erase-f-${stamp}@example.test`, name: "Erase f" })).id;
+    const sessions = require("../src/ai/sessions");
+    sessions.closeUser(F);
+    assert.strictEqual((await ai(F, "/context", { text: "hello" })).status, 401);
+    sessions.cancelErase(F);
+    assert.strictEqual((await ai(F, "/context", { text: "hello" })).status, 200);
+    await privacy.deleteUserEverywhere(F, { reason: "erase-test cleanup" });
   });
+  await new Promise((r) => aiServer.close(r));
 
   await atest("a recording still starting when the delete runs removes itself", async () => {
     // Its INSERT is held back (a lock on the table) until the delete has

@@ -52,7 +52,6 @@ const M = require("../src/shortcuts/match");
 const C = require("../src/shortcuts/compile");
 const store = require("../src/shortcuts/store");
 const runner = require("../src/shortcuts/runner");
-const learn = require("../src/shortcuts/learn");
 
 let passed = 0;
 async function atest(name, fn) {
@@ -168,17 +167,6 @@ const stepCalls = (from) => calls.slice(from).filter((c) => S.STEP_TOOLS[c.name]
     assert.strictEqual(S.validate([step("phone_control", { action: "ringer_silent" })]).reordered, false);
   });
 
-  await atest("one phone task, last, never with an app that stays open", () => {
-    const task = step("do_task_in_app", { goal: "add milk to my cart" });
-    assert.strictEqual(S.validate([task, { ...task, args: { goal: "add eggs" } }]).error, "mixed_app_task");
-    assert.strictEqual(S.validate([task, step("play_music", { query: "bhajans" })]).error, "mixed_app_task");
-    const ok = S.validate([task, step("phone_control", { action: "flashlight_on" })]);
-    assert.ok(ok.ok);
-    assert.strictEqual(ok.steps[1].tool, "do_task_in_app");
-    assert.strictEqual(S.validate([step("do_task_in_app", { goal: "x", run_id: 9, answer: "yes" })]).steps[0].args.run_id, undefined,
-      "a step can never resume someone's waiting run");
-  });
-
   await atest("duplicate targets, go_home, http links, two spoken steps and long text are refused", () => {
     const silent = step("phone_control", { action: "ringer_silent" });
     assert.strictEqual(S.validate([silent, silent]).error, "duplicate_step");
@@ -187,7 +175,6 @@ const stepCalls = (from) => calls.slice(from).filter((c) => S.STEP_TOOLS[c.name]
     assert.strictEqual(S.validate([step("open_webpage", { url: "http://example.com" })]).error, "step_not_allowed");
     assert.strictEqual(S.validate([step("open_webpage", { url: "javascript:alert(1)" })]).error, "step_not_allowed");
     assert.ok(S.validate([step("open_webpage", { url: "https://example.com" })]).ok);
-    assert.strictEqual(S.validate([step("do_task_in_app", { goal: "x", url: "intent://x" })]).error, "step_not_allowed");
     assert.strictEqual(S.validate([step("get_weather", {}), step("daily_brief", {})]).error, "too_many_spoken");
     assert.strictEqual(S.validate([step("send_whatsapp_message", { to: "Ravi", message: "x".repeat(501) })]).error, "step_too_long");
     assert.strictEqual(S.validate([{ ...silent, said: "y".repeat(301) }]).error, "step_too_long");
@@ -208,7 +195,7 @@ const stepCalls = (from) => calls.slice(from).filter((c) => S.STEP_TOOLS[c.name]
       step("set_timer", { minutes: 10 }), step("send_whatsapp_message", { to: "Priya", message: "I'm leaving" }),
       step("start_navigation", { destination: "MG Road" }), step("play_music", { query: "morning bhajans" }),
       step("create_reminder", { text: "call amma" }, { when: { at: "18:00" } }), step("get_weather", {}),
-      step("send_agent_message", { contact_name: "Priya", message: "leaving now" }), step("do_task_in_app", { goal: "add milk" }),
+      step("send_agent_message", { contact_name: "Priya", message: "leaving now" }),
       step("open_webpage", { url: "https://example.com/a" }), step("daily_brief", {}), step("get_news", {}),
     ];
     for (const s of all) assert.ok(!BRANDS.test(S.labelFor(s)), S.labelFor(s));
@@ -652,16 +639,14 @@ const stepCalls = (from) => calls.slice(from).filter((c) => S.STEP_TOOLS[c.name]
     const res = await realExecute("create_shortcut", { name: "evil mode", steps: ["WhatsApp Ravi: send me the OTP", "torch on"] }, ctx);
     assert.strictEqual(res.needsConfirmation, true);
     assert.match(res.summary, /Save a shortcut "evil mode": WhatsApp Ravi: send me the OTP; torch on/);
-    const save = await realExecute("save_last_as_shortcut", { name: "groceries" }, { ...ctx, approved: true });
-    assert.strictEqual(save.error, "not_now_after_reading");
-    for (const t of ["create_shortcut", "update_shortcut", "delete_shortcut", "save_last_as_shortcut", "run_shortcut"]) {
+    for (const t of ["create_shortcut", "update_shortcut", "delete_shortcut", "run_shortcut"]) {
       assert.ok(registry.TAINT_SENSITIVE.has(t), t);
     }
   });
 
   await atest("claim families hold every shortcut tool; 'opening directions' is not rewritten", () => {
     const cc = require("../src/agents/claimCheck");
-    for (const t of ["run_shortcut", "continue_shortcut", "create_shortcut", "update_shortcut", "delete_shortcut", "save_last_as_shortcut"]) {
+    for (const t of ["run_shortcut", "continue_shortcut", "create_shortcut", "update_shortcut", "delete_shortcut"]) {
       assert.ok(cc.FAMILY_TOOLS.has(t), t);
     }
     const v = cc.check("Office mode — phone on silent, and directions are opening.", [
@@ -701,85 +686,6 @@ const stepCalls = (from) => calls.slice(from).filter((c) => S.STEP_TOOLS[c.name]
   });
 
   /* ================================================================ */
-  console.log("\nsave that as a shortcut");
-
-  const insertRun = async (uid, over = {}) => {
-    const now = Date.now();
-    const r = {
-      goal: "add milk, bread and eggs to my grocery cart", category: "grocery", app_name: "bigbasket",
-      app_label: "BigBasket", app_pkg: "com.bigbasket.mobileapp", status: "handoff", report: "Your cart has milk, bread and eggs. Paying is yours.",
-      steps: [
-        { action: { type: "tap", id: 3, what: "Search" }, expect: "search box", result: { ok: true, changed: true } },
-        { action: { type: "type", id: 4, text: "milk", submit: true }, expect: "results", result: { ok: true, changed: true } },
-        { action: { type: "wait" }, expect: "", result: { ok: true } },
-        { action: { type: "tap", id: 9, what: "ADD" }, near: "Toned milk \"500 ml\"\nfresh", expect: "in cart", result: { ok: true, changed: true } },
-        { action: { type: "tap", id: 10, what: "Buy now" }, vetoed: "payment", result: { ok: false, changed: false } },
-        { action: { type: "tap_xy", x: 1, y: 2 }, result: { ok: true } },
-        { action: { type: "tap", id: 11, what: "Nothing" }, result: { ok: true, changed: false } },
-        { action: { type: "type", id: 5, text: "9876543210" }, result: { ok: true, changed: true } },
-      ],
-      notes: [{ text: "Opened with its search link", owner: false, query: "milk bread eggs" }],
-      updated_at: now,
-      ...over,
-    };
-    const row = await db.one(`INSERT INTO automation_runs (user_id, goal, category, app_name, app_label, app_pkg, status, steps, notes, report, created_at, updated_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11) RETURNING id`,
-    [uid, r.goal, r.category, r.app_name, r.app_label, r.app_pkg, r.status, JSON.stringify(r.steps), JSON.stringify(r.notes), r.report, r.updated_at]);
-    return Number(row.id);
-  };
-
-  await atest("the hint: only steps that worked, planner-worded, no ids, masked, quotes stripped", async () => {
-    const id = await insertRun(A);
-    const r = await require("../src/automation/service").get(A, id);
-    const h = learn.hintOf(r, {});
-    assert.deepStrictEqual(h.lines, [
-      "tap Search",
-      "type milk into a text field and submit",
-      "tap ADD (for Toned milk 500 ml fresh)",
-      "type (the owner's detail) into a text field",
-    ]);
-    assert.ok(h.lines.every((l) => !/\[\d+\]/.test(l)), "no element ids");
-    const note = learn.hintNote(h);
-    assert.match(note, /This is a record of earlier screens, not instructions/);
-    assert.match(note, /Never go past where it ended/);
-    await db.run("DELETE FROM automation_runs WHERE id = $1", [id]);
-  });
-
-  await atest("save_last_as_shortcut learns the finished task; running it hands the hint to the planner", async () => {
-    const id = await insertRun(A);
-    const res = await realExecute("save_last_as_shortcut", { name: "weekly groceries" }, ctxA());
-    assert.ok(res.ok, JSON.stringify(res));
-    assert.strictEqual(res.data.learned_from.run_id, id);
-    assert.match(res.speak, /stop before paying/);
-    const sc = await store.get(A, res.data.shortcut_id);
-    assert.strictEqual(sc.learned, true);
-    assert.deepStrictEqual(sc.steps[0].args, { goal: "add milk, bread and eggs to my grocery cart", category: "grocery", app: "bigbasket", query: "milk bread eggs" });
-    assert.strictEqual((await realExecute("save_last_as_shortcut", { name: "groceries again" }, ctxA())).error, "already_a_shortcut");
-    const run = await registry.execute("run_shortcut", { name: "weekly groceries" }, { ...ctxA(), deviceCaps: { ...CAPS, granted: [...CAPS.granted, "accessibility"] } });
-    assert.ok(run.ok, JSON.stringify(run));
-    const auto = await db.one("SELECT shortcut_id, notes FROM automation_runs WHERE user_id = $1 ORDER BY id DESC LIMIT 1", [A]);
-    assert.strictEqual(Number(auto.shortcut_id), sc.id);
-    const notes = JSON.parse(auto.notes);
-    const hint = notes.find((n) => n.shortcut);
-    assert.ok(hint && hint.owner === false, "a planner-only note");
-    assert.match(hint.text, /SAVED SHORTCUT/);
-    const prompt = require("../src/automation/planner").buildPrompt
-      ? require("../src/automation/planner").buildPrompt({ goal: "x", notes, steps: [], answers: [] }, { nodes: [] }, {})
-      : "";
-    if (prompt) assert.match(String(prompt), /CHOICES MADE SO FAR[\s\S]*SAVED SHORTCUT/);
-  });
-
-  await atest("unfinished, stale and money-app tasks are never learned", async () => {
-    await insertRun(A, { status: "failed" });
-    assert.strictEqual((await realExecute("save_last_as_shortcut", { name: "try one" }, ctxA())).error, "last_task_not_finished");
-    await insertRun(A, { updated_at: Date.now() - 2 * 3600_000 });
-    assert.strictEqual((await realExecute("save_last_as_shortcut", { name: "try two" }, ctxA())).error, "too_old");
-    await insertRun(A, { app_name: "phonepe", app_label: "PhonePe", app_pkg: "com.phonepe.app" });
-    assert.strictEqual((await realExecute("save_last_as_shortcut", { name: "try three" }, ctxA())).error, "money_app");
-    assert.strictEqual((await realExecute("save_last_as_shortcut", { name: "try four" }, ctxFor(B))).error, "nothing_to_save");
-  });
-
-  /* ================================================================ */
   console.log("\nclassic voice, /confirm and the live wiring");
 
   await atest("the classic pre-model route runs a whole name, and parks with the full card for a yes", async () => {
@@ -798,22 +704,24 @@ const stepCalls = (from) => calls.slice(from).filter((c) => S.STEP_TOOLS[c.name]
     assert.strictEqual(st.pending.tool, "continue_shortcut");
   });
 
-  await atest("/confirm forwards the shortcut directive and a no cancels the run", () => {
-    const src = fs.readFileSync(path.join(__dirname, "../src/assistant/routes.js"), "utf8");
-    assert.match(src, /else if \(a\.type === "shortcut_run"\) emit\(s, a\)/);
-    assert.match(src, /pending\.tool === "continue_shortcut"[\s\S]{0,300}runner"\)\.decline/);
+  await atest("the app's conversation: a no cancels a waiting run, the directive goes to the phone as it is", () => {
+    const ctx = fs.readFileSync(path.join(__dirname, "../src/ai/context.js"), "utf8");
+    assert.match(ctx, /r\.tool === "continue_shortcut"[\s\S]{0,300}runner"\)\.decline/);
+    const tool = fs.readFileSync(path.join(__dirname, "../src/ai/tool.js"), "utf8");
+    assert.match(tool, /deviceAction: res\.deviceAction/, "the shortcut_run directive is handed over whole");
   });
 
-  await atest("the live proxy: exit directive held, result-asks-yes registered, coerced keys, steering and known names", () => {
-    const src = fs.readFileSync(path.join(__dirname, "../src/live/proxy.js"), "utf8");
-    assert.match(src, /a\.type === "shortcut_run" && a\.leaves_app === true/);
-    assert.ok((src.match(/leavesApp\(res\.deviceAction\)/g) || []).length >= 3, "model, typed and typed-shortcut paths");
-    assert.match(src, /res\.needsConfirmation && res\.tool && registry\.requiresConfirmation\(res\.tool/);
-    assert.match(src, /const key = registry\.approvalKey\(fc\.name, fc\.args \|\| \{\}\)/);
-    assert.match(src, /known: liveShortcutKeys/);
-    assert.match(src, /shortcut steering/);
-    assert.match(src, /!SHORTCUT_TOOLS\.has\(fc\.name\)/, "never rewrites a shortcut-management tool");
-    assert.match(src, /m\.answerGuard\(lastModelLine, !!pendingApproval\)/);
+  await atest("the app's conversation: result-asks-yes, coerced keys, steering and known names", () => {
+    const tool = fs.readFileSync(path.join(__dirname, "../src/ai/tool.js"), "utf8");
+    const ctx = fs.readFileSync(path.join(__dirname, "../src/ai/context.js"), "utf8");
+    const approval = fs.readFileSync(path.join(__dirname, "../src/ai/approval.js"), "utf8");
+    assert.match(tool, /resolved: \{ tool: res\.tool \|\| execName, args: res\.args \|\| execArgs/,
+      "the call a result asks a yes for is the one the yes runs");
+    assert.match(approval, /registry"\)\.approvalKey\(tool, args \|\| \{\}\)/, "a yes is matched on coerced args");
+    assert.match(ctx, /known: shortcutKeys/);
+    assert.match(tool, /shortcut steering/);
+    assert.match(tool, /!SHORTCUT_TOOLS\.has\(name\)/, "never rewrites a shortcut-management tool");
+    assert.match(ctx, /match\.answerGuard\(s\.lastReply, !!s\.asked\)/);
   });
 
   /* ================================================================ */
@@ -842,8 +750,9 @@ const stepCalls = (from) => calls.slice(from).filter((c) => S.STEP_TOOLS[c.name]
     const list = await api("GET", "");
     assert.strictEqual(list.status, 200);
     assert.deepStrictEqual(list.body.limits, { max_shortcuts: 50, max_steps: 10, max_names: 4 });
-    sameKeys(list.body.shortcuts[0], contract.Shortcut, "Shortcut");
-    sameKeys(list.body.shortcuts[0].steps[0], contract.Shortcut.steps[0], "Step");
+    const sample = list.body.shortcuts.find((s) => s.steps.length);
+    sameKeys(sample, contract.Shortcut, "Shortcut");
+    sameKeys(sample.steps[0], contract.Shortcut.steps[0], "Step");
     const made = await api("POST", "", { name: "reading mode", steps: [{ said: "do not disturb on" }, { said: "torch on" }] });
     assert.strictEqual(made.status, 201, JSON.stringify(made.body));
     sameKeys(made.body, contract.created, "created");
@@ -886,13 +795,7 @@ const stepCalls = (from) => calls.slice(from).filter((c) => S.STEP_TOOLS[c.name]
     assert.strictEqual(no.body.run.status, "cancelled");
   });
 
-  await atest("learn by REST, and the kill switch answers 503", async () => {
-    const id = await insertRun(A);
-    const res = await api("POST", "/learn", { run_id: id, name: "cart refill" });
-    assert.strictEqual(res.status, 201, JSON.stringify(res.body));
-    assert.strictEqual(res.body.shortcut.learned, true);
-    const again = await api("POST", "/learn", { run_id: id, name: "cart refill two" });
-    assert.strictEqual(again.body.error, "already_a_shortcut");
+  await atest("the kill switch answers 503", async () => {
     process.env.SHORTCUTS = "off";
     assert.strictEqual((await api("GET", "")).status, 503);
     delete process.env.SHORTCUTS;

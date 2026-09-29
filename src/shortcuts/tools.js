@@ -9,7 +9,6 @@
  *   list_shortcuts         what they have
  *   update_shortcut        rename, other names, add / remove / replace steps
  *   delete_shortcut        always asks first
- *   save_last_as_shortcut  the phone task that just finished, as a shortcut
  *
  * App build 120 ships the phone half (SHORTCUT_MIN_BUILD); older builds
  * are offered none of this. Kill switch: SHORTCUTS=off.
@@ -45,7 +44,6 @@ const NOTES = {
   too_many_steps: "A shortcut can have up to 10 steps. Ask which to leave out.",
   step_not_allowed: "Say which step can't be in a shortcut and why, in one line. Nothing was saved.",
   needs_detail: "Nothing was saved. Ask the question in data.question, then call again with that step written out in full.",
-  mixed_app_task: "A phone task can't share a shortcut with steps that open other apps. Suggest making it two shortcuts.",
   compile_failed: "Nothing was saved. Ask them to say that step more simply.",
   compile_limit: "That's the limit for making shortcuts today. Say so in one line.",
   too_many_spoken: "Only one of weather, headlines, today's brief or today's list fits in a shortcut. Ask which to keep.",
@@ -305,7 +303,7 @@ function registerShortcutTools(registry) {
         data: {
           shortcuts: list.map((s) => ({
             name: s.name, other_names: s.other_names, steps: s.steps.map((st) => st.label),
-            learned: s.learned, runs: s.run_count,
+            runs: s.run_count,
           })),
         },
         speak: !list.length
@@ -388,43 +386,6 @@ function registerShortcutTools(registry) {
       }
     },
   });
-
-  registry.register({
-    ...base,
-    name: "save_last_as_shortcut",
-    risk: "medium",
-    effects: ["write:record"],
-    unattended: false,
-    timeoutMs: 20_000,
-    description:
-      "Save the phone task that JUST finished as a shortcut, so next time one word repeats it: \"save that " +
-      "as a shortcut called weekly groceries\". It will do the same job the same way and still stop before " +
-      "paying. If they did not give a name, suggest a short one and ask before calling. For things you did " +
-      "in this conversation (not a phone task), use create_shortcut with those steps instead.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "The name exactly as the user said it." },
-        other_names: { type: "array", items: { type: "string" } },
-      },
-      required: ["name"],
-    },
-    confirmSummary: (args = {}) => `Save your last phone task as a shortcut "${args.name || ""}"`,
-    async execute(args, ctx) {
-      if (!ctx.userId) return { ok: false, error: "not signed in" };
-      if (tooOld(ctx)) return TOO_OLD;
-      if (registry.turnIsUntrusted(ctx)) {
-        return fail("not_now_after_reading", {},
-          "An email or web page was read in this chat. Ask them to tell you the steps, and use create_shortcut.");
-      }
-      try {
-        return await learnAs(ctx, { name: args.name, otherNames: otherNamesOf(args.other_names) });
-      } catch (e) {
-        if (e instanceof require("./learn").LearnError) return fail(e.code, e.data, e.note);
-        return fromError(e);
-      }
-    },
-  });
 }
 
 /** Shared by update_shortcut and PATCH /shortcuts/:id. */
@@ -473,30 +434,4 @@ async function applyUpdate(ctx, sc, { newName, otherNames, add, remove, replace,
   return savedResult(updated, { reordered, warnings });
 }
 
-/** Shared by save_last_as_shortcut and POST /shortcuts/learn. */
-async function learnAs(ctx, { name, otherNames = [], runId = null }) {
-  const uid = Number(ctx.userId);
-  const names = await checkNames(uid, [name, ...otherNames]);
-  if (!names.ok) return fail(names.error, names.data);
-  const taken = await store.byNameKey(uid, match.nameKey(name));
-  if (taken) return fail("name_taken", { name });
-  const learn = require("./learn");
-  const got = await learn.fromAutomationRun(uid, runId);
-  const v = S.validate([got.step], { build: Number(ctx.appBuild) || 0 });
-  if (!v.ok) return fail(v.error, v.data);
-  const sc = await store.create(uid, {
-    name, otherNames, steps: v.steps, source: "learned", replay: got.hint, fromRunId: got.run.id,
-  });
-  const ends = got.run.status === "handoff" ? "where you take over — paying stays yours" : "when it's done";
-  return {
-    ok: true,
-    data: {
-      shortcut_id: sc.id, name: sc.name,
-      learned_from: { run_id: got.run.id, app: got.run.app_label, steps: got.hint.lines.length, ends },
-    },
-    speak: `Saved “${sc.name}”. Next time just say “${sc.name.toLowerCase()}” — I'll do it the same way and stop before paying.`,
-    shortcut: sc,
-  };
-}
-
-module.exports = { registerShortcutTools, SHORTCUT_MIN_BUILD, applyUpdate, learnAs, readBack, fail, NOTES, runResult };
+module.exports = { registerShortcutTools, SHORTCUT_MIN_BUILD, applyUpdate, readBack, fail, NOTES, runResult };

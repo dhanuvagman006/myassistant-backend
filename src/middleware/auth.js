@@ -56,13 +56,30 @@ function noteAppBuild(uid, req) {
  * is how every outstanding token is revoked at once, e.g. when a password
  * of unproven ownership is removed.
  *
- * @returns {{user}|{error:string, status:number}}
+ * TWO KINDS OF TOKEN (2026-09-29). A session token (no scope claim) opens
+ * everything. An ASSISTANT-FUNCTIONS key (scope "appfn", src/appfunctions)
+ * is what the phone's background AppFunctionService holds so Gemini can
+ * add to the list or set a reminder without the app open: it is refused
+ * everywhere except /appfunctions/* (allowAppFn), and dies with the
+ * user's appfn_epoch — DELETE /appfunctions/token bumps it, and every key
+ * issued before stops working at once. Any other scope is not ours.
+ *
+ * @param {string} token
+ * @param {{allowAppFn?: boolean}} [opts] only the /appfunctions mount sets it
+ * @returns {{user, scope:"session"|"appfn"}|{error:string, status:number}}
  */
-async function verifySession(token) {
+const APPFN_SCOPE = "appfn";
+const APPFN_ONLY = "this key only works for assistant functions";
+
+async function verifySession(token, { allowAppFn = false } = {}) {
   let payload;
   try {
     payload = jwt.verify(String(token || ""), process.env.JWT_SECRET, { algorithms: ["HS256"] });
   } catch (_) {
+    return { error: "invalid or expired token", status: 401 };
+  }
+  const scope = payload.scope === undefined ? "session" : payload.scope;
+  if (scope !== "session" && scope !== APPFN_SCOPE) {
     return { error: "invalid or expired token", status: 401 };
   }
   const user = await db.findById(payload.uid);
@@ -74,36 +91,56 @@ async function verifySession(token) {
   if (validAfter && Number(payload.iat || 0) < validAfter) {
     return { error: "signed out — please sign in again", status: 401 };
   }
-  return { user };
+  if (scope === APPFN_SCOPE) {
+    if (!allowAppFn) return { error: APPFN_ONLY, status: 403 };
+    // 401, like a revoked session: the phone drops the key and asks the
+    // app for a new one the next time it is opened.
+    if (!Number.isInteger(payload.ep) || payload.ep !== (Number(user.appfn_epoch) || 0)) {
+      return { error: "this assistant key was turned off — open My Assistant to turn it back on", status: 401 };
+    }
+  }
+  return { user, scope };
 }
 
-async function appAuth(req, res, next) {
-  if (process.env.AUTH_DISABLED === "true") {
-    req.user = { sub: "anonymous-dev", email: null, name: "Dev User" };
-    return next();
-  }
-  try {
-    const authz = req.get("Authorization") || "";
-    if (authz.startsWith("Bearer ")) {
-      const v = await verifySession(authz.slice(7));
-      if (v.error) return res.status(v.status).json({ error: v.error });
-      const user = v.user;
-      req.user = { sub: String(user.id), email: user.email, name: user.name };
-      noteAppBuild(user.id, req);
+/**
+ * The request gate. `appAuth` (every protected route) takes session
+ * tokens only; `appFnAuth` (the /appfunctions mount alone) also takes an
+ * assistant-functions key. req.auth says which one it was, and carries
+ * the user's saved UTC offset for routes that have no header to read.
+ */
+function makeAppAuth({ allowAppFn = false } = {}) {
+  return async function appAuth(req, res, next) {
+    if (process.env.AUTH_DISABLED === "true") {
+      req.user = { sub: "anonymous-dev", email: null, name: "Dev User" };
       return next();
     }
-    if (
-      process.env.ALLOW_APP_KEY === "true" &&
-      process.env.APP_API_KEY &&
-      req.get("X-App-Key") === process.env.APP_API_KEY
-    ) {
-      req.user = { sub: "dev", email: "dev@local", name: "Dev" };
-      return next();
+    try {
+      const authz = req.get("Authorization") || "";
+      if (authz.startsWith("Bearer ")) {
+        const v = await verifySession(authz.slice(7), { allowAppFn });
+        if (v.error) return res.status(v.status).json({ error: v.error });
+        const user = v.user;
+        req.user = { sub: String(user.id), email: user.email, name: user.name };
+        req.auth = { scope: v.scope, tzOffsetMin: user.tz_offset_min ?? null };
+        noteAppBuild(user.id, req);
+        return next();
+      }
+      if (
+        process.env.ALLOW_APP_KEY === "true" &&
+        process.env.APP_API_KEY &&
+        req.get("X-App-Key") === process.env.APP_API_KEY
+      ) {
+        req.user = { sub: "dev", email: "dev@local", name: "Dev" };
+        return next();
+      }
+      return res.status(401).json({ error: "sign in required" });
+    } catch (e) {
+      return res.status(401).json({ error: "invalid or expired token" });
     }
-    return res.status(401).json({ error: "sign in required" });
-  } catch (e) {
-    return res.status(401).json({ error: "invalid or expired token" });
-  }
+  };
 }
 
-module.exports = { appAuth, verifySession };
+const appAuth = makeAppAuth();
+const appFnAuth = makeAppAuth({ allowAppFn: true });
+
+module.exports = { appAuth, appFnAuth, verifySession, APPFN_SCOPE, APPFN_ONLY };

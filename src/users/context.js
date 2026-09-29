@@ -87,7 +87,7 @@ const uidOk = (u) => Number.isFinite(Number(u)) && Number(u) > 0;
 ///
 /// phone_number is deliberately NOT here. It is the address other people's
 /// agents deliver to, so it may only be set by POST /phone/verify, which
-/// reads it out of a verified Firebase OTP token. Leaving it writable here
+/// reads it out of a verified Phone Number Verification token. Writable here, it
 /// would let any signed-in client claim any number — including one already
 /// belonging to somebody else — and quietly receive that person's messages.
 const PROFILE_FIELDS = ["profession", "organisation", "location", "preferred_language", "timezone", "birthday", "fcm_token"];

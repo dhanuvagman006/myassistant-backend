@@ -12,7 +12,6 @@
  *   POST   /shortcuts/:id/run           → {ok, run:{id,status,report,confirm?:{summary}}, directive?}
  *   POST   /shortcuts/runs/:id/approve  → same shape as run · 410 {error:"expired"}
  *   POST   /shortcuts/runs/:id/decline  → {ok, run}
- *   POST   /shortcuts/learn             {run_id?, name, other_names?} → 201 {ok, shortcut} · 400
  *
  * A tap is the user's own request: there is no voice turn, so no input
  * quality; every step still runs through registry.execute with its gates.
@@ -195,27 +194,6 @@ router.post("/runs/:id(\\d+)/decline", async (req, res) => {
   if (!run) return res.status(404).json({ ok: false, error: "not_found" });
   const out = await require("../shortcuts/runner").decline(id, run.id);
   res.json({ ok: true, run: { id: run.id, status: out.ok ? out.run.status : run.status } });
-});
-
-router.post("/learn", async (req, res) => {
-  const id = uid(req, res);
-  if (!id) return;
-  const name = String(req.body?.name || "").trim();
-  if (!name) return res.status(400).json({ ok: false, error: "bad_name", data: {} });
-  try {
-    const ctx = await ctxFor(id, req, "learn");
-    const { learnAs } = require("../shortcuts/tools");
-    const runId = req.body?.run_id ? Number(req.body.run_id) : null;
-    const out = await learnAs(ctx, { name, otherNames: otherNames(req.body?.other_names), runId });
-    if (!out.ok) return res.status(400).json({ ok: false, error: out.error, data: out.data || {} });
-    res.status(201).json({ ok: true, shortcut: store.publicShortcut(out.shortcut), read_back: out.speak });
-  } catch (e) {
-    const { LearnError } = require("../shortcuts/learn");
-    if (e instanceof LearnError) return res.status(400).json({ ok: false, error: e.code, data: e.data });
-    if (e instanceof store.ShortcutError) return res.status(400).json({ ok: false, error: e.code, data: e.data });
-    console.error("shortcuts learn:", e.message);
-    res.status(500).json({ ok: false, error: "failed" });
-  }
 });
 
 module.exports = router;

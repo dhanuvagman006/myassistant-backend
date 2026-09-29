@@ -90,6 +90,11 @@ async function init() {
     -- Unix seconds; a session token issued before it is refused
     -- (middleware/auth.js verifySession). 0 = nothing revoked.
     ALTER TABLE users ADD COLUMN IF NOT EXISTS sessions_valid_after BIGINT NOT NULL DEFAULT 0;
+    -- The generation of the user's assistant-functions keys (scope "appfn",
+    -- src/appfunctions): a key carries the value it was issued under, and
+    -- DELETE /appfunctions/token adds one, so every earlier key stops
+    -- working at once. Dies with the users row on erase.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS appfn_epoch INTEGER NOT NULL DEFAULT 0;
     -- Minutes east of UTC, from the X-TZ-Offset header the app sends on
     -- every request (middleware/auth.js). users.timezone is a free-text
     -- profile field the model fills ("Asia/Kolkata"), which the scheduler
@@ -126,7 +131,8 @@ async function init() {
     ALTER TABLE users ALTER COLUMN phone_number DROP NOT NULL;
     UPDATE users SET phone_number = NULL WHERE phone_number = '';
 
-    -- When was the number proven to be theirs (Firebase OTP)? NULL means
+    -- When was the number proven to be theirs (Firebase Phone Number
+    -- Verification, routes/phone.js)? NULL means
     -- unverified, which the API treats as not having one at all.
     ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified_at BIGINT;
 
@@ -464,9 +470,6 @@ async function init() {
 
   // Fare watches: re-priced by the proactive sweep, alert on a real drop.
   await require("./travel/fares").migrate((sql) => pool.query(sql));
-
-  // Hands-on tasks inside other apps, one checked step at a time.
-  await require("./automation/service").migrate((sql) => pool.query(sql));
 
   // Momentum: Today's 3, habits, focus sessions and the streak they feed.
   await require("./momentum/service").migrate((sql) => pool.query(sql));

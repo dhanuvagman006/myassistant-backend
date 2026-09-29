@@ -1101,29 +1101,9 @@ let analysisReply = () => "{}";
       } finally { delete process.env.AGENT_CALL_DAILY_LIMIT; }
     });
 
-    // DEFECT: agentCall.start() creates the task_outcomes row for every call
-    // (agentCall.js "EVERY CALL LEAVES A ROW"), and the SSE path's
-    // startAgentCall (assistant/routes.js ~1225) creates a second one with the
-    // same external id. settle() updates only the newest, so the first stays
-    // 'dialing' forever: Hub > Calls shows the call twice, one "in progress".
-    await atest("a relayed call on the voice (SSE) path leaves ONE Calls row, and it finishes", async () => {
-      const { newSession, startAgentCall } = require("../src/assistant/routes")._test;
-      const s = newSession(String(U1), "Dhanush K");
-      const n = bolnaCalls.length;
-      const running = startAgentCall(s, { name: "Asha Nair", phone: "+919812345670" }, "tell her the parcel arrived", null);
-      await waitFor(() => bolnaCalls.length > n, 5000, "the relayed call");
-      const ex = bolnaCalls[bolnaCalls.length - 1].execId;
-      await webhook({ id: ex, status: "completed", conversation_duration: 15,
-        transcript: "assistant: Hello ma'am, your parcel arrived.\nuser: Okay, thank you." });
-      await running;
-      const said = s.buffer.map((b) => JSON.parse(b.json)).filter((e) => e.type === "assistant_message").map((e) => e.text);
-      assert.ok(said.some((t) => /I spoke with Asha Nair/.test(t)), JSON.stringify(said));
-      const rows = await db.query(
-        `SELECT id, status FROM task_outcomes WHERE user_id=$1 AND target='Asha Nair' ORDER BY id`, [U1]);
-      assert.strictEqual(rows.length, 1,
-        `one call, ${rows.length} rows on the Calls screen: ${JSON.stringify(rows.map((r) => r.status))}`);
-      assert.strictEqual(rows[0].status, "completed");
-    });
+    // ("a relayed call on the voice (SSE) path leaves ONE Calls row" drove the
+    // classic /assistant loop's own call starter, which went with that loop on
+    // 2026-09-29; calls are placed by the place_phone_call tool, below.)
 
     // DEFECT: place_phone_call('me') says "if you don't pick up, I'll try
     // again in five minutes" (builtins.js ~2660) but agentCall.start makes

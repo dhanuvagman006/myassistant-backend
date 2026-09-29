@@ -30,9 +30,9 @@
  *   • Files are found only through values in the database, and a path is
  *     used only when it resolves inside its known root. A bad row can never
  *     aim an unlink at anything else.
- *   • A live call they are on when the delete starts is cut off first
- *     (live/proxy.js closeUser), so it cannot write turns, tool logs or
- *     audio under the erased id once the rows are gone.
+ *   • A conversation they are in when the delete starts is ended first
+ *     (ai/sessions.js closeUser), so it cannot write turns or tool logs
+ *     under the erased id once the rows are gone.
  *
  * Not revoked (known limits, review 2026-09-25). Some legacy rows below
  * point at things kept by an outside service. The rows go; the things
@@ -110,7 +110,7 @@ const USER_TABLES = [
   ["assistant_profiles", "user_id"], // assistant name/voice/face choices
   ["user_instructions", "user_id"], // standing rules
   ["developer_feedback", "user_id"], // what the assistant reported for them
-  ["automation_runs", "user_id"], // tasks done for them inside other apps
+  ["automation_runs", "user_id"], // legacy (feature removed 2026-09-29); the table stays until the owner drops it
   ["inbound_calls", "user_id"],
   ["inbound_numbers", "user_id"],
   ["inbound_settings", "user_id"],
@@ -166,6 +166,12 @@ const USER_TABLES = [
   ["shortcut_names", "user_id"],
   ["shortcuts", "user_id"],
   ["shortcut_runs", "user_id"],
+  // The shopping list and the kitchen (2026-09-29): src/shopping and
+  // src/kitchen export the same lists as USER_TABLES.
+  ["shopping_items", "user_id"],
+  ["kitchen_pantry", "user_id"],
+  ["kitchen_recipes", "user_id"],
+  ["kitchen_plans", "user_id"],
   // Bills by email (2026-09-27): their private address (old ones and the
   // sending addresses they marked "This was me"), and the emails received.
   // Raw files live in files/<uid>/mailin/, which goes with files/<uid>.
@@ -399,26 +405,29 @@ async function closeMcp(uid, cols) {
   return n;
 }
 
-/** Cuts off their live calls on this pod. Returns how many were open. */
+/**
+ * Ends their conversations with the assistant on this pod (the app's /ai
+ * sessions: turn state, taint, approvals), and refuses them from here on.
+ * Returns how many were open.
+ */
 async function closeLiveSessions(uid) {
   try {
-    // Required here, not at the top: the live proxy is a large module
-    // that nothing else in this file needs.
-    return require("../live/proxy").closeUser(uid);
+    return require("../ai/sessions").closeUser(uid);
   } catch (e) {
-    console.warn("live close during account delete:", e.message);
+    console.warn("assistant sessions close during account delete:", e.message);
     return 0;
   }
 }
 
 /**
  * The transaction failed, so the account still exists: lift the marks
- * abortUser/closeUser left, or this pod would refuse the user's calls and
- * recordings until it restarts. A call already cut off stays cut off.
+ * abortUser/closeUser left, or this pod would refuse the user's
+ * conversations and recordings until it restarts. A session already
+ * ended stays ended.
  */
 function cancelLiveErase(uid) {
   try { recorder.cancelErase(uid); } catch (_) {}
-  try { require("../live/proxy").cancelErase(uid); } catch (_) {}
+  try { require("../ai/sessions").cancelErase(uid); } catch (_) {}
 }
 
 /* ------------------------------------------------------------------ *

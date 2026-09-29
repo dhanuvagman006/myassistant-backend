@@ -745,14 +745,16 @@ console.log("\nexecution record");
       "the job session id is not passed into the turn");
   });
 
-  test("J — the live path no longer pre-approves every tool", () => {
+  test("J — the app's tool calls never pre-approve a tool", () => {
     // approved:true meant both "not high risk" and "the user said yes",
-    // so the input-quality gate never fired in live mode.
-    const proxy = fs.readFileSync(require.resolve("../src/live/proxy.js"), "utf8");
-    assert.match(proxy, /approved: userConfirmed/,
-      "live tool calls no longer carry a real approval flag");
-    assert.ok(!/^\s*let approved = true;/m.test(proxy),
-      "the blanket approval flag is still there");
+    // so the input-quality gate never fired in live mode. The app's model
+    // calls tools through /ai/tool now: only the owner's own yes (a valid
+    // approval token) approves.
+    const tool = fs.readFileSync(require.resolve("../src/ai/tool.js"), "utf8");
+    assert.match(tool, /approved: userConfirmed/,
+      "tool calls no longer carry a real approval flag");
+    assert.ok(!/^\s*let (approved|userConfirmed) = true;/m.test(tool),
+      "a blanket approval flag is back");
   });
 
   await atest("J — a garbled turn is answered with a question, not an action", async () => {
@@ -769,15 +771,18 @@ console.log("\nexecution record");
       "clarificationFor still has no caller in the runtime");
   });
 
-  test("A/C — a confirmation card expires and a new utterance retires it", () => {
-    const routes = fs.readFileSync(require.resolve("../src/assistant/routes.js"), "utf8");
-    assert.match(routes, /askedAt: Date\.now\(\)/,
-      "confirmation cards carry no timestamp, so none can expire");
-    assert.match(routes, /pending\.askedAt && Date\.now\(\) - pending\.askedAt > PENDING_TTL_MS/,
-      "an old card is still executable by one POST /confirm");
-    // \r? — a Windows checkout (core.autocrlf) has CRLF line endings.
-    assert.match(routes, /s\.pending = null;\r?\n    s\.ambiguous = null;/,
-      "a new utterance no longer retires the previous card");
+  test("A/C — an approval expires, and a no retires the question", () => {
+    // The classic screen's confirmation card is gone; the app's yes is an
+    // approval token (src/ai/approval.js) that lives ten minutes and works
+    // once, and the question it answers is dropped when it goes stale or
+    // the owner says no (src/ai/context.js).
+    const approval = fs.readFileSync(require.resolve("../src/ai/approval.js"), "utf8");
+    assert.match(approval, /x: now \+ TTL_MS/, "tokens carry no expiry, so none can expire");
+    assert.match(approval, /reason: "expired"/, "an old token is still accepted");
+    assert.match(approval, /reason: "already used"/, "one yes can run twice");
+    const ctx = fs.readFileSync(require.resolve("../src/ai/context.js"), "utf8");
+    assert.match(ctx, /Date\.now\(\) - s\.asked\.at < ASK_TTL_MS/, "a stale question is still pending");
+    assert.match(ctx, /asked && NO_RX\.test\(text\)/, "a no does not retire the question");
   });
 
   await atest("F — a failed call is retracted under either name", async () => {
@@ -1256,15 +1261,15 @@ console.log("\nexecution record");
     assert.match(alarm, /phone's own app/);
   });
 
-  test("live mode refuses to answer a garbled transcript", () => {
+  test("the app's conversation refuses to answer a garbled transcript", () => {
     // "o a", "clove" and "Love illah" all came back as confident answers,
     // because the tool gate only fires when the model reaches for a tool
     // and these reached for nothing.
-    const proxy = fs.readFileSync(require.resolve("../src/live/proxy.js"), "utf8");
-    assert.match(proxy, /turnQuality\.quality === "garbled"/,
-      "live mode still generates from a garbled transcript");
-    assert.match(proxy, /clarificationFor/,
-      "live mode has no clarification path");
+    const ctx = fs.readFileSync(require.resolve("../src/ai/context.js"), "utf8");
+    assert.match(ctx, /turnQuality\.quality === "garbled"/,
+      "the app's model is still handed a garbled transcript to answer");
+    assert.match(ctx, /clarificationFor/,
+      "the app's conversation has no clarification path");
     for (const fragment of ["o a", "clove"]) {
       assert.notStrictEqual(inputQuality.assess(fragment).quality, "clear",
         `"${fragment}" was judged clear`);
@@ -1511,10 +1516,10 @@ console.log("\nexecution record");
     // turn later, that generation had failed. The live path was
     // summarising every device action with no `data` as "Device action
     // REQUESTED: show_image" and throwing away the tool's own words.
-    const proxy = fs.readFileSync(require.resolve("../src/live/proxy.js"), "utf8");
-    assert.ok(!/result: "Device action requested: " \+ res\.deviceAction\.type/.test(proxy),
-      "the live path still tells the model the action was merely requested");
-    assert.match(proxy, /result:\s*\n?\s*res\.speak \|\|/,
+    const tool = fs.readFileSync(require.resolve("../src/ai/tool.js"), "utf8");
+    assert.ok(!/Device action requested/.test(tool),
+      "the app's model is still told the action was merely requested");
+    assert.match(tool, /out\.result = res\.speak \|\|/,
       "the tool's own speak is still discarded");
 
     const src = fs.readFileSync(require.resolve("../src/tools/builtins.js"), "utf8");
@@ -1686,7 +1691,7 @@ console.log("\nexecution record");
   });
 
   test("both surfaces forbid telling the user to go do it themselves", () => {
-    for (const f of ["../src/agents/runtime.js", "../src/live/proxy.js"]) {
+    for (const f of ["../src/agents/runtime.js", "../src/ai/voicePrompt.js"]) {
       const src = fs.readFileSync(require.resolve(f), "utf8");
       assert.match(src, /HAND THE USER HOMEWORK/,
         `${f} does not forbid instructing the user to do it themselves`);

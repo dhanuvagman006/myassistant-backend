@@ -445,7 +445,7 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
       assert.strictEqual(mcp.ensureConnected(UID), a, "one reconnect, not one per turn");
       assert.deepStrictEqual(await mcp.ensureConnectedWithin(UID), []);
       assert.match(src("agents/runtime.js"), /ensureConnectedWithin\(ctx\.userId\)/);
-      assert.match(src("live/proxy.js"), /ensureConnectedWithin\(uid\)/);
+      assert.match(src("ai/context.js"), /ensureConnectedWithin\(uid\)/);
     });
 
     await atest("no API key is committed in the astrology tool", () => {
@@ -546,8 +546,8 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
           assert.strictEqual(r.speak, "Scheduled — I'll do it then and send you the outcome.");
         });
 
-        await atest("the live prompt's clock carries seconds", () => {
-          const p = require("../src/live/proxy")._liveSystemPrompt("Hari", [], "", 330, "", "", 120);
+        await atest("the spoken prompt's clock carries seconds", () => {
+          const p = require("../src/ai/voicePrompt").voiceSystemPrompt("Hari", [], "", 330, "", "", 120);
           const line = (p.match(/Current date and time for the user: [^(]*\(UTC\+05:30\)/) || [""])[0];
           assert.match(line, /: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \(/, `cut to the minute: "${line}"`);
         });

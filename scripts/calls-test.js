@@ -261,33 +261,9 @@ async function agentCallFailures() {
       assert.ok(!/doesn't exist for/.test(text), "the reply was logged, not a count");
     });
 
-    await atest("the assistant screen offers the owner's own phone, not a dead end", async () => {
-      const { newSession, startAgentCall } = require("../src/assistant/routes")._test;
-      const s = newSession(null, "Owner Test");
-      await startAgentCall(s, { name: "Ravi Kumar", phone: CONTACT }, "tell him I'll be late", null);
-      const events = s.buffer.map((b) => JSON.parse(b.json));
-      const said = events.filter((e) => e.type === "assistant_message").map((e) => e.text);
-      assert.ok(said.some((t) => /couldn't place the call through my calling service/.test(t) &&
-        /dial Ravi Kumar from your phone/.test(t)), JSON.stringify(said));
-      assert.ok(!/plivo|from_number/i.test(JSON.stringify(events)));
-      // The dial waits for the owner's tap.
-      const ask = events.find((e) => e.type === "confirmation_request");
-      assert.ok(ask && ask.action === "call", "no direct dial was offered");
-      assert.strictEqual(s.pending?.action, "call");
-    });
-
-    await atest("a refused call on the voice path leaves ONE Calls row, failed", async () => {
-      // agentCall.start() files the row and settles it; the voice path used
-      // to add a failed row of its own beside it.
-      const { newSession, startAgentCall } = require("../src/assistant/routes")._test;
-      const s = newSession(String(UID), "Owner Test");
-      await startAgentCall(s, { name: "Kiran Rao", phone: CONTACT }, "tell him the parcel came", null);
-      const rows = () => db.query(
-        `SELECT status FROM task_outcomes WHERE user_id=$1 AND target='Kiran Rao' ORDER BY id`, [UID]);
-      await waitFor(async () => (await rows()).some((r) => r.status === "failed"));
-      await settle();
-      assert.deepStrictEqual((await rows()).map((r) => r.status), ["failed"]);
-    });
+    // (Two checks of the classic /assistant screen's own call starter —
+    // its "dial from your phone" card and a second Calls row it used to
+    // add — went with that screen on 2026-09-29.)
 
     await atest("other refusals are logged with every number blanked", async () => {
       bolnaAnswer = () => new Response(
@@ -344,7 +320,7 @@ async function agentCallFailures() {
       // schedule it", and "three minutes apart", for every call.
       const prompts = {
         voice: require("../src/agents/runtime").systemPrompt(""),
-        live: require("../src/live/proxy")._liveSystemPrompt("Hari", [], "", 330, "", "", 119),
+        spoken: require("../src/ai/voicePrompt").voiceSystemPrompt("Hari", [], "", 330, "", "", 119),
       };
       for (const [path, p] of Object.entries(prompts)) {
         assert.doesNotMatch(p, /it tries again\. (Say|Tell me) that/, `${path}: an unconditional retry promise`);

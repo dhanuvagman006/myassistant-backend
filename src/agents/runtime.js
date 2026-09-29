@@ -1,8 +1,11 @@
 /**
  * AGENT RUNTIME — the decision-making layer (§37).
  *
- * Replaces the regex chain in assistant/routes.js. One loop handles every
- * request, whatever the channel (voice, text, live, avatar):
+ * Replaced the regex chain of the old /assistant loop. One loop handles
+ * every turn the SERVER runs — scheduled tasks, the home-screen widget,
+ * deep research, reminder calls. (Since 2026-09-29 the app's own
+ * conversation runs its models itself, through Firebase AI Logic, and
+ * reaches this server as tools: src/ai/.)
  *
  *   context → model reasons over TOOL DECLARATIONS → executes chosen tools
  *   → feeds results back → model composes the spoken answer
@@ -111,7 +114,7 @@ function systemPrompt(extra = "", { appBuild } = {}) {
     "DOWNLOADS DO NOT NEED A CONVERSATION. \"Download a German Shepherd photo\", \"get me the metro map\": search, pick the best result yourself and save it — then ONE short sentence, \"Saved to your documents\". Never ask which one, which format, which size, or whether to go ahead; never list options or describe what you are about to do. If the first result fails, try the next one silently. Their time is the point: a question costs more than a wrong pick they can correct in three words. " +
     "SOMETHING REAL IS FOUND, NEVER DRAWN. A METRO, ROUTE, RAIL OR BUS MAP IS A DOCUMENT, NOT A PLACE — it does NOT go to open_app maps, which only answers \"what is near me\". \"Bangalore metro map\" means find the real diagram: web_search, then save_web_document with an image or PDF URL from the results, or open_webpage. AND SAY ONLY WHAT YOU DID: never announce Google Images or any site you did not actually open. \"Download the metro map\", a timetable, a fare chart, a form, a floor plan, a real logo: web_search for it, then save_web_document with a URL the search returned (that is the download), or open_webpage for the official page. generate_image would invent a map with fake stations — never use it for anything that exists and has to be correct. " +
     "\"DOWNLOAD X\" / \"INSTALL X\" / \"GET X\" (the app): call open_named_app with install true — their words are the permission; it opens the app when they already have it and installs it from the app store only when they genuinely do not. People often say download for an app that is already installed. A plain \"open X\" keeps install false; if X turns out not to be installed, ask once whether to install it. Say \"the app store\", never a store brand name. " +
-    "OPEN X AND DO Y — ANYTHING DONE ON THE PHONE: when they want something DONE inside or across apps — 'open the calculator and work out 12 times 7', 'turn on Bluetooth', 'set brightness to full', 'add milk and bread to my cart', 'fill this form with my details', 'order veg biryani from a 4-star place', 'find my last order' — call do_task_in_app with the WHOLE request as the goal. It opens the apps itself and works step by step; never stop at just opening the app, and never do the task in your head instead of on the phone when they asked for it on the phone. It needs NO location permission (the app finds 'near me' itself) and no setup: never answer a phone task with a permission excuse or an offer to open Settings, and never bring up developer feedback unless the user is complaining about this app. " +
+    "OPEN X AND DO Y: a plain 'open X' goes to open_named_app. Phone settings ('turn on Bluetooth', 'set brightness to full', 'phone on silent') go through phone_control when it has that action or panel; otherwise open the app or its settings page and say plainly that you can only open it — you cannot tap or type inside other apps, so never claim something was done inside one. " +
     "OPENING APPS: any plain 'open X' goes to open_named_app (open_app " +
     "only for its own listed apps). If an app fails to open or is not " +
     "installed, say that in one sentence and stop — NEVER open settings " +
@@ -560,6 +563,82 @@ function systemPrompt(extra = "", { appBuild } = {}) {
 }
 
 /**
+ * WHO the user is, WHO the assistant is, their STANDING RULES, what is
+ * remembered, the earlier conversation, their clock, who this session is
+ * about and what already ran in it, and the honest limits of this phone —
+ * the judgment layer (§13/§14) every text turn is given. Shared with the
+ * app's cloud model (src/ai/context.js), which is handed the same block.
+ *
+ * @param ctx   { userId, lat, lng, tzOffsetMin, appBuild, sessionId, deviceCaps }
+ * @param state this session's sessionState, or null
+ * @returns the joined block (no leading blank line), or ""
+ */
+async function contextExtra(ctx, state) {
+  const sessionState = require("../agents/sessionState");
+  const [block, mem, recent] = await Promise.all([
+    require("../users/context").contextBlock(ctx.userId, { lat: ctx.lat, lng: ctx.lng, tz: ctx.tzOffsetMin, appBuild: ctx.appBuild }),
+    require("../agents/memory").memoryBlock(ctx.userId),
+    // Continuity across sessions: what was said minutes ago, so a
+    // fresh session never re-asks what it just answered. THIS
+    // session's own turns are excluded — they are the live
+    // conversation, not history to be re-read as instructions.
+    require("../memory/recent").recentBlock(ctx.userId, {
+      excludeSessionId: ctx.sessionId || "",
+    }),
+  ]);
+  // The user's clock, so "tomorrow 5 pm" resolves in THEIR zone and
+  // tool datetimes carry the right offset (bare ones read as UTC).
+  const tz = Number.isFinite(ctx.tzOffsetMin) ? ctx.tzOffsetMin : 330;
+  const sign = tz < 0 ? "-" : "+";
+  const abs = Math.abs(tz);
+  const off = `${sign}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`;
+  const nowLine =
+    `Current date and time for the user: ` +
+    `${new Date(Date.now() + tz * 60_000).toISOString().replace("T", " ").slice(0, 16)} (UTC${off}). ` +
+    `When passing any datetime to a tool, use the user's LOCAL time with ` +
+    `this offset written explicitly, e.g. 2026-09-04T17:00:00${off}.`;
+  const live = sessionLines(state);
+  // The honest limits of THIS phone, so a denied permission is
+  // explained rather than attempted and then apologised for.
+  const limits = registry.limitsBlock(ctx.deviceCaps);
+  return [nowLine, block, mem, recent, ...live, limits]
+    .filter(Boolean).join("\n");
+}
+
+/**
+ * WHO WE ARE TALKING ABOUT, and WHAT ALREADY HAPPENED in this session.
+ * Both were tracked and never shown to the model, so a pronoun resolved
+ * from whatever survived in its own window, and a question about this
+ * session's actions could be answered from remembered facts instead of
+ * from what actually ran.
+ */
+function sessionLines(state) {
+  const sessionState = require("../agents/sessionState");
+  const live = [];
+  const who = state && sessionState.activeEntity(state);
+  if (who) {
+    live.push(
+      `CURRENTLY TALKING ABOUT: ${who.name}` +
+      (who.phone ? ` (${who.phone})` : "") +
+      `. "her", "him", "them", "that number" mean this person until the ` +
+      `user names someone else. If the user corrects the name, the ` +
+      `correction wins immediately — do not act on the old one.`
+    );
+  }
+  const doneHere = state ? sessionState.executedThisSession(state) : [];
+  if (doneHere.length) {
+    live.push(
+      "ALREADY DONE IN THIS SESSION (from the execution record, not memory — " +
+      "answer questions about what you did from THIS list, and do not repeat these):\n" +
+      doneHere.slice(-8).map((e) =>
+        `- ${e.tool}${e.target ? ` → ${e.target}` : ""}${e.ok ? "" : " (FAILED)"}`
+      ).join("\n")
+    );
+  }
+  return live;
+}
+
+/**
  * Runs one turn.
  *
  * @param {string} userText   what the user said
@@ -763,93 +842,11 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
     }
   }
 
-  // ── A CLEAR PHONE TASK TAKES THE STRUCTURED PATH ──────────────────
-  // "Order veg biryani … on Swiggy" is a job, not a question: straight to
-  // the task engine, one fixed sentence back, the same way every time
-  // (automation/intent.js; the live socket does the same for typed text).
-  if (!ctx.background && ctx.userId && Number(ctx.appBuild) >= 104) {
-    const task = require("../automation/intent").matchFor(userText, ctx.appBuild);
-    if (task) {
-      const tool = task.tool || "do_task_in_app";
-      const res = await registry.execute(tool,
-        task.args || { goal: task.goal, category: task.category, app: task.app, url: task.url }, ctx)
-        .catch((e) => ({ ok: false, error: String(e.message || e) }));
-      const line = res.ok
-        ? (res.speak || "On it.")
-        : `I couldn't start that: ${res.error || "something went wrong"}.`;
-      onEvent("sentence", { text: line });
-      if (state) sessionState.recordReply(state, line);
-      try {
-        const recentMem = require("../memory/recent");
-        const meta = { source: ctx.source || "voice", appBuild: ctx.appBuild, turnId, sessionId: sid };
-        recentMem.append(ctx.userId, "user", userText, { ...meta, latencyMs: 0 });
-        recentMem.append(ctx.userId, "assistant", line, { ...meta, latencyMs: Date.now() - turnStartedAt });
-      } catch (_) {}
-      return {
-        text: line,
-        deviceActions: res.ok && res.deviceAction ? [res.deviceAction] : [],
-        toolResults: [{ name: tool, ...res }],
-        routed: true,
-      };
-    }
-  }
   // WHO the user is, WHO the assistant is, and the user's STANDING RULES
   // sit in front of every decision — this is the judgment layer (§13/§14).
   if (ctx.userId && ctx.extraSystem === undefined) {
     try {
-      const [block, mem, recent] = await Promise.all([
-        require("../users/context").contextBlock(ctx.userId, { lat: ctx.lat, lng: ctx.lng, tz: ctx.tzOffsetMin, appBuild: ctx.appBuild }),
-        require("../agents/memory").memoryBlock(ctx.userId),
-        // Continuity across sessions: what was said minutes ago, so a
-        // fresh session never re-asks what it just answered. THIS
-        // session's own turns are excluded — they are the live
-        // conversation, not history to be re-read as instructions.
-        require("../memory/recent").recentBlock(ctx.userId, {
-          excludeSessionId: ctx.sessionId || "",
-        }),
-      ]);
-      // The user's clock, so "tomorrow 5 pm" resolves in THEIR zone and
-      // tool datetimes carry the right offset (bare ones read as UTC).
-      const tz = Number.isFinite(ctx.tzOffsetMin) ? ctx.tzOffsetMin : 330;
-      const sign = tz < 0 ? "-" : "+";
-      const abs = Math.abs(tz);
-      const off = `${sign}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`;
-      const nowLine =
-        `Current date and time for the user: ` +
-        `${new Date(Date.now() + tz * 60_000).toISOString().replace("T", " ").slice(0, 16)} (UTC${off}). ` +
-        `When passing any datetime to a tool, use the user's LOCAL time with ` +
-        `this offset written explicitly, e.g. 2026-09-04T17:00:00${off}.`;
-      // WHO WE ARE TALKING ABOUT, and WHAT ALREADY HAPPENED in this
-      // session. Both were tracked and never shown to the model, so a
-      // pronoun resolved from whatever survived in its own window, and a
-      // question about this session's actions could be answered from
-      // remembered facts instead of from what actually ran.
-      const live = [];
-      const who = state && sessionState.activeEntity(state);
-      if (who) {
-        live.push(
-          `CURRENTLY TALKING ABOUT: ${who.name}` +
-          (who.phone ? ` (${who.phone})` : "") +
-          `. "her", "him", "them", "that number" mean this person until the ` +
-          `user names someone else. If the user corrects the name, the ` +
-          `correction wins immediately — do not act on the old one.`
-        );
-      }
-      const doneHere = state ? sessionState.executedThisSession(state) : [];
-      if (doneHere.length) {
-        live.push(
-          "ALREADY DONE IN THIS SESSION (from the execution record, not memory — " +
-          "answer questions about what you did from THIS list, and do not repeat these):\n" +
-          doneHere.slice(-8).map((e) =>
-            `- ${e.tool}${e.target ? ` → ${e.target}` : ""}${e.ok ? "" : " (FAILED)"}`
-          ).join("\n")
-        );
-      }
-      // The honest limits of THIS phone, so a denied permission is
-      // explained rather than attempted and then apologised for.
-      const limits = registry.limitsBlock(ctx.deviceCaps);
-      const joined = [nowLine, block, mem, recent, ...live, limits]
-        .filter(Boolean).join("\n");
+      const joined = await contextExtra(ctx, state);
       if (joined) ctx = { ...ctx, extraSystem: "\n\n" + joined };
     } catch (_) {}
   }
@@ -1160,4 +1157,4 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   };
 }
 
-module.exports = { runAgentTurn, systemPrompt };
+module.exports = { runAgentTurn, systemPrompt, contextExtra, sessionLines };

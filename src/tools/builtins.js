@@ -333,6 +333,13 @@ function registerBuiltins() {
   require("../shortcuts/tools").registerShortcutTools(registry);
   require("../mailin/tools").registerMailinTools(registry);
 
+  // The shopping list (2026-09-29): anything they want to buy, one list,
+  // handed to the right shopping app at the end. And the kitchen: pantry,
+  // recipes and the week plan — ingredients go on that same list. The
+  // tools that need the new app screens ask for build 124.
+  require("../shopping").registerShoppingTools(registry);
+  require("../kitchen").registerKitchenTools(registry);
+
   // ---------------- INFORMATION (low risk) ----------------
 
   registry.register({
@@ -1996,7 +2003,7 @@ function registerBuiltins() {
       const rows = await reminders.list(ctx.userId);
       const items = rows
         .filter((r) => !r.done)
-        .map((r) => ({ kind: "reminder", text: r.text, dueAt: Number(r.due_at) || null,
+        .map((r) => ({ kind: "reminder", id: r.id, text: r.text, dueAt: Number(r.due_at) || null,
           when: humanize(Number(r.due_at)) }))
         .filter((r) => !wantDay || (r.dueAt && localDay(r.dueAt) === wantDay));
 
@@ -5064,7 +5071,7 @@ function registerBuiltins() {
             "documents", "clients", "finance", "stocks",
             "diagnostics", "mcp", "meetings", "reminders", "call_notes",
             "news", "momentum", "focus", "avatar_identity", "connected_apps", "shortcuts",
-            "news", "momentum", "focus", "avatar_identity", "bills_email",
+            "bills_email", "shopping_list",
           ],
           description:
             "settings = the assistant's own settings (voice, name, theme). " +
@@ -5076,7 +5083,8 @@ function registerBuiltins() {
             "connected_apps = link or unlink Notion, mail and other apps. " +
             "shortcuts = their saved shortcuts (build 120). " +
             "bills_email = Bills by email (their private address for " +
-            "forwarding bills). The " +
+            "forwarding bills). shopping_list = their shopping list " +
+            "(build 124). The " +
             "rest are feature screens.",
         },
       },
@@ -5088,7 +5096,7 @@ function registerBuiltins() {
         "settings", "home", "hub", "chat", "documents", "clients",
         "finance", "stocks", "diagnostics", "mcp", "meetings", "reminders",
         "call_notes", "news", "momentum", "focus", "avatar_identity", "connected_apps", "shortcuts",
-        "call_notes", "news", "momentum", "focus", "avatar_identity", "bills_email",
+        "bills_email", "shopping_list",
       ];
       if (!ALLOWED.includes(screen)) {
         return { ok: false, error: `I don't have a screen called "${args.screen}"` };
@@ -5113,6 +5121,10 @@ function registerBuiltins() {
       }
       // Bills by email arrives in build 120; an unknown build counts as old.
       if (screen === "bills_email" && build < require("../mailin/tools").MAILIN_MIN_BUILD) {
+        return { ok: false, error: "that screen needs the latest app update — say so" };
+      }
+      // The shopping list screen arrives in build 124; an unknown build counts as old.
+      if (screen === "shopping_list" && build < require("../shopping").APP_BUILD) {
         return { ok: false, error: "that screen needs the latest app update — say so" };
       }
       // The News screen arrives in build 111. An older app would report
@@ -5148,6 +5160,7 @@ function registerBuiltins() {
         connected_apps: "Connected apps",
         shortcuts: "your shortcuts",
         bills_email: "Bills by email",
+        shopping_list: "your shopping list",
       };
       return {
         ok: true,
@@ -5169,10 +5182,6 @@ function registerBuiltins() {
       "back saying the app is not installed do you tell the user that.\n" +
       "Do NOT substitute a different app. Opening YouTube when the user " +
       "asked for Swiggy is worse than admitting you could not.\n" +
-      "ONLY TO OPEN. When they want something DONE in or across apps " +
-      "('open the calculator and work out 12 x 7', 'open settings and " +
-      "turn on dark mode', 'add it to my cart') use do_task_in_app — it " +
-      "opens the app itself and does the steps.\n" +
       "IF IT IS NOT INSTALLED the phone opens its page in the app store. " +
       "'open X', 'download X', 'install X' and 'get X' all go through this " +
       "tool. INSTALLING IS THE USER'S WORD: set install true only when they " +
@@ -5352,8 +5361,8 @@ function registerBuiltins() {
       if (ctx.platform === "ios") {
         return { ok: false, error: "iPhones don't let an app remove other apps — press and hold its icon, then Remove App" };
       }
-      const known = require("../automation/prefs").appInfo(
-        require("../fulfillment/deeplinks").resolveAppName?.(asked) || asked.toLowerCase());
+      const deeplinks = require("../fulfillment/deeplinks");
+      const known = deeplinks.PROVIDERS[deeplinks.resolveAppName(asked) || ""] || null;
       const label = known?.label || asked;
       return {
         ok: true,
@@ -5430,6 +5439,10 @@ function registerBuiltins() {
 
   registry.register({
     name: "open_video_mode",
+    // HIDDEN (2026-09-29): face-to-face video rode the Live socket, which is
+    // gone — the app answers open_video with "not available". Offered, the
+    // model said "Opening video mode." and the next line took it back.
+    available: () => false,
     description:
       "Switch to the face-to-face video avatar conversation. Use only when " +
       "the user asks for video/face mode — NOT for calling a contact.",
@@ -7326,9 +7339,7 @@ function registerBuiltins() {
       "exactly as they said it. Do NOT ask which restaurant, which app, " +
       "veg or non-veg, or for confirmation — default to swiggy and let " +
       "them choose specifics inside the app. For a table reservation or a " +
-      "collection order use book_by_calling_business. When they want YOU " +
-      "to choose and fill the cart ('from a 4-star place', 'add it to my " +
-      "cart', 'book it for me'), use do_task_in_app instead.",
+      "collection order use book_by_calling_business.",
     risk: "low",
     deviceAction: true,
     inputSchema: {
@@ -7491,151 +7502,6 @@ function registerBuiltins() {
   });
 
   // ---------------- INTERPRETER ----------------
-
-  // "DO IT FOR ME" INSIDE OTHER APPS (automation/). Owner's spec,
-  // 2026-09-24: open the app, look at the screen, act, check it worked,
-  // report — and stop before payment, money, passwords and sending. The
-  // phone's accessibility service is the hands; the planner picks one
-  // checked step at a time; guard.js holds the lines on both ends.
-  registry.register({
-    name: "do_task_in_app",
-    // The accessibility engine ships in app build 104; an older app would
-    // drop the action after the assistant said it was on it.
-    minAppBuild: 104,
-    description:
-      "USE THE USER'S PHONE FOR THEM, like their own fingers — any app, " +
-      "several apps in a row, ordinary settings, the home screen and " +
-      "notifications: search, filter, choose, add to cart, fill in and " +
-      "submit forms, change a setting, find something in an app. Use for " +
-      "'book veg biryani from a 4-star restaurant near me', 'add milk, " +
-      "bread and eggs to my grocery cart', 'turn on Bluetooth', 'set " +
-      "brightness to full', 'fill this form with my details', 'apply for " +
-      "the <name> scholarship with my details', 'register me for <event>', " +
-      "'follow <person> on Instagram', 'play <song> on Spotify', " +
-      "'find my last order', 'check cab prices to the airport'. Forms are " +
-      "filled from everything remembered about the user; a missing answer " +
-      "is asked once and remembered. GOVERNMENT AND OFFICIAL SERVICES — " +
-      "'file my ITR / income tax return', 'check my PF balance', 'renew my " +
-      "passport', 'download my Aadhaar', 'pay my GST', 'renew my driving " +
-      "licence': call it AT ONCE with the whole request as the goal and " +
-      "category 'web'; the official site is opened for them. Never say you " +
-      "can't do it and never ask whether to open the portal: opening it IS " +
-      "the start of doing it, and the run hands over only where they must " +
-      "sign in, enter an OTP, check their own figures or e-verify. For any " +
-      "other website task without a link, find the OFFICIAL page with " +
-      "web_search first and pass it as url (government portals end in " +
-      ".gov.in / .nic.in). Picks the user's " +
-      "preferred app from memory when they don't name one. It STOPS before " +
-      "paying, placing a paid order, moving money, typing passwords, OTPs, " +
-      "Aadhaar or bank numbers, ticking declarations / 'I agree', " +
-      "CAPTCHAs, uploads, sending a message, deleting anything, security " +
-      "settings or permission pop-ups — the user does that one step. An app the " +
-      "task needs that is not on the phone is HANDLED BY THE PHONE (it installs " +
-      "it, or tells you exactly what to say) — never ask whether to install it " +
-      "before calling. Call it AT ONCE " +
-      "with the whole request as the goal; do not ask which app first. Say " +
-      "you're on it and will report back — never claim it is ordered or " +
-      "done. When the task asked the user a question, call it again with " +
-      "run_id and their answer. Plain 'open <app>' is open_named_app; a " +
-      "WhatsApp message is send_whatsapp_message.",
-    risk: "medium",
-    deviceAction: true,
-    inputSchema: {
-      type: "object",
-      properties: {
-        goal: {
-          type: "string",
-          description:
-            "The task itself, as one instruction with every detail they gave " +
-            "(dish, rating, veg, quantity, size, address, time): 'order veg " +
-            "biryani from a 4-star place on Swiggy'. Not their sentence word " +
-            "for word — no 'open Swiggy and', no filler.",
-        },
-        category: {
-          type: "string",
-          enum: ["food", "grocery", "ride", "shopping", "movies", "travel", "web", "phone", "other"],
-          description:
-            "What kind of task — decides the default app. 'phone' for settings " +
-            "and anything across the phone itself.",
-        },
-        app: { type: "string", description: "ONLY if the user named an app." },
-        query: {
-          type: "string",
-          description: "The thing to search for in the app, in their words: 'veg biryani', 'phone cover'. ALWAYS fill it when they named a dish or product. Lets the app open straight on the results.",
-        },
-        url: { type: "string", description: "For a website task: the page to open (https://…)." },
-        run_id: { type: "integer", description: "Resuming a task that asked the user a question." },
-        answer: { type: "string", description: "The user's answer to that question." },
-      },
-    },
-    async execute(args, ctx) {
-      if (!ctx.userId) return { ok: false, error: "not signed in" };
-      if (ctx.platform === "ios") {
-        return { ok: false, error: "working inside other apps is only possible on Android phones" };
-      }
-      const svc = require("../automation/service");
-      if (args.run_id) {
-        // ctx.autoAnswer: the live socket, not the model, took the owner's
-        // whole words as the answer — the run gets them, memory does not.
-        const out = await svc.resume(ctx.userId, args.run_id, args.answer, { remember: !ctx.autoAnswer });
-        if (!out.ok) return out;
-        return {
-          ok: true,
-          data: { run_id: out.run.id, resumed: true },
-          deviceAction: out.directive,
-          // "carrying on in your phone" read wrong for a task across the
-          // phone itself.
-          speak: out.run.app_name ? `Got it — carrying on in ${out.run.app_label}.` : "Got it — carrying on.",
-        };
-      }
-      // THE APP THEY NAMED WINS. Asked "order biryani on Swiggy" after two
-      // failed tries, the model once quietly switched to another app
-      // (2026-09-24). Their own words decide, not the model's workaround.
-      // The phone's own [SYSTEM] note is not their words: off Live, "Swiggy
-      // is not installed … call again with app Zomato" named Swiggy first,
-      // and the missing app was installed in place of Zomato (2026-09-27).
-      const appNote = /\[SYSTEM\]/i.test(String(ctx.userText || "")) ||
-        require("../automation/intent").isAppNote(ctx.userText);
-      const named = appNote ? null : require("../automation/prefs").appNamedIn(ctx.userText);
-      const app = named || args.app;
-      const goal = named && !new RegExp(`\\b${named}\\b`, "i").test(String(args.goal || ""))
-        ? `${args.goal} (in ${named})` : args.goal;
-      // A GOVERNMENT TASK STARTS ON THE OFFICIAL SITE (2026-09-26, "file my
-      // ITR"): with no app and no link from the model, the known official
-      // address is opened in the browser rather than a search or a refusal.
-      let url = args.url;
-      let site = null;
-      // Only a task that is not for an app of another kind: "book a flight,
-      // my passport is ready" must never open Passport Seva.
-      const kind = String(args.category || "").toLowerCase();
-      if (!app && !/^https?:\/\//i.test(String(url || "")) && (!kind || kind === "web" || kind === "other")) {
-        site = require("../automation/officialSites").siteFor(`${goal || ""} ${ctx.userText || ""}`);
-        if (site) url = site.url;
-      }
-      // A SAVED SHORTCUT's run (shortcuts/runner.js sets this; the model
-      // never can): the steps that worked last time go to the planner.
-      const replay = ctx.shortcutReplay || null;
-      const out = await svc.start(ctx.userId, {
-        goal, category: site ? "web" : args.category, app, url, query: args.query,
-        shortcutId: replay ? replay.shortcutId : null, hint: replay ? replay.hint : null,
-      });
-      if (!out.ok) return out;
-      const r = out.run;
-      const why = r.app_reason && !/you asked/.test(r.app_reason) ? ` — ${r.app_reason}` : "";
-      return {
-        ok: true,
-        data: { run_id: r.id, app: r.app_label, why: r.app_reason, working: true },
-        deviceAction: out.directive,
-        speak: site
-          ? `On it — opening ${site.label}. I'll take it as far as I can and stop where you need to sign in yourself.`
-          : r.web
-          ? "On it — I'm filling that in now and I'll tell you when it's done."
-          : !r.app_name
-            ? "On it — doing that on your phone now, and I'll tell you when it's done."
-            : `On it, doing this in ${r.app_label}${why}. I'll stop before any payment and tell you what I did.`,
-      };
-    },
-  });
 
   registry.register({
     name: "start_interpreter_mode",
@@ -9037,34 +8903,6 @@ function registerBuiltins() {
           })
         : rows;
       const use = (matched.length ? matched : rows).slice(0, 8);
-      // Tasks done inside other apps: the record above knows they STARTED,
-      // only the run knows how they ended (in the cart, stopped, failed).
-      const since = Date.now() - minutes * 60_000;
-      const runs = await require("../automation/service").recent(ctx.userId, 20).catch(() => []);
-      const HOW = {
-        running: "is still in progress", waiting: "is waiting for the user's answer",
-        waiting_owner: "is waiting for the user to sign in or answer on the phone, then tap Continue",
-        done: "finished", handoff: "ended handoff (waiting for the user's own last step)",
-        failed: "failed", stopped: "was stopped by the user",
-        blocked: "could not be done — the app itself keeps assistants out; the user must do it themselves",
-        unconfirmed: "ended, but the result could not be confirmed on screen — the user should check it",
-      };
-      const runLines = runs
-        .filter((r) => Number(r.updated_at) >= since && (!words.length ||
-          words.some((w) => `${r.goal} ${r.app_label}`.toLowerCase().includes(w))))
-        .slice(0, 5)
-        .map((r) => `Task "${r.goal}" in ${r.app_label || "an app"} ${HOW[r.status] || r.status}` +
-          (r.report ? `: ${r.report}` : ""));
-      if (runLines.length) {
-        return {
-          ok: true,
-          data: [...runLines.map((line) => ({ tool: "do_task_in_app", line })),
-            ...use.map((r) => ({ tool: r.tool, target: r.target, line: store.describe(r) }))],
-          speak: [...runLines, ...use.map((r) => store.describe(r))].join(". ") +
-            ". Answer ONLY from these; they are the record of what really ran. " +
-            "A task that ended handoff is waiting for the user's own last step (usually payment) — it is NOT ordered or paid.",
-        };
-      }
       if (!use.length) {
         return {
           ok: true,

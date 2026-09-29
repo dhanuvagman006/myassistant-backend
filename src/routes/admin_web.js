@@ -1450,7 +1450,7 @@ router.get("/api/debug", async (req, res) => {
     youtube: env("YOUTUBE_API_KEY"),
     notion: env("NOTION_CLIENT_ID") && env("NOTION_CLIENT_SECRET"),
     google_signin: env("GOOGLE_WEB_CLIENT_ID"),
-    dev_otp_bypass: String(process.env.ALLOW_DEV_PHONE_VERIFY) === "true",
+    dev_phone_typed: String(process.env.ALLOW_DEV_PHONE_VERIFY) === "true",
   };
 
   const probes = {};

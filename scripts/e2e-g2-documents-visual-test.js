@@ -15,7 +15,7 @@
  *              header+trailer, pptx/docx zip parts, xlsx cells + SUM).
  *   generate_image   billing off → a clear failure, nothing saved; the
  *              keyless provider up → an image document + show_image.
- *   /vision    ask / PDF / screenshot (calendar action) / errors.
+ *   (/vision — the camera's own questions — is the app's since 2026-09-29.)
  *   /clients/scan-card  real card reader → person + card photo document.
  *   /meetings  the app's upload shape → minutes → list → PDF.
  *   /posters   build-119 gating and route sanity (full suite: posters-test).
@@ -184,7 +184,6 @@ const MIME = {
   const app = express();
   app.use(express.json({ limit: "2mb" }));
   app.use("/docs", appAuth, require("../src/routes/docs"));
-  app.use("/vision", appAuth, require("../src/routes/vision"));
   app.use("/clients", appAuth, require("../src/routes/clients"));
   app.use("/meetings", appAuth, require("../src/meetings/routes"));
   app.use("/posters", appAuth, require("../src/routes/posters"));
@@ -637,10 +636,8 @@ const MIME = {
     });
 
     /* ============================================================== */
-    console.log("\n/vision — camera questions, documents, screenshots");
+    console.log("\nthe camera and screenshots — handed to the phone, which answers them itself");
     /* ============================================================== */
-    let visionOut = () => geminiText("It is a strip of Dolo 650 (paracetamol 650 mg).");
-    R.vision = async (call) => visionOut(call);
 
     await atest("analyze_camera / look_at_screenshot hand the phone the actions it handles", async () => {
       const a = await registry.execute("analyze_camera", { question: "what tablet is this" }, ctx);
@@ -652,49 +649,9 @@ const MIME = {
       assert.strictEqual(c.deviceAction.source, "gallery");
     });
 
-    await atest("a camera question (the app's exact request) gets an answer", async () => {
-      // assistant_engine.dart _analyzeCameraInner: mode=ask, question, scan.jpg as image/jpeg.
-      const r = await upload("/vision", { bytes: fakeJpeg(3000), mime: "image/jpeg", filename: "scan.jpg",
-        fields: { mode: "ask", question: "What tablet is this?" } });
-      assert.strictEqual(r.status, 200);
-      const j = await r.json();
-      assert.deepStrictEqual(j, { answer: "It is a strip of Dolo 650 (paracetamol 650 mg).", action: null });
-      const call = geminiCalls.filter((c) => kindOf(c.model, c.text) === "vision").pop();
-      assert.match(call.text, /What tablet is this\?/);
-      assert.strictEqual(call.parts[0].inline_data.mime_type, "image/jpeg");
-    });
-
-    await atest("a PDF can be asked about (document reading)", async () => {
-      visionOut = () => geminiText("A lab report: haemoglobin 13.2, normal.");
-      const r = await upload("/vision", { bytes: Buffer.from("%PDF-1.4\n%fake\n%%EOF"), mime: "application/pdf",
-        filename: "report.pdf", fields: { mode: "ask" } });
-      assert.strictEqual(r.status, 200);
-      assert.match((await r.json()).answer, /haemoglobin/);
-    });
-
-    await atest("a screenshot of an event returns the calendar action in the shape the app parses", async () => {
-      visionOut = () => geminiText(JSON.stringify({ answer: "A wedding invite for Sunday.", action: {
-        type: "calendar", title: "Priya's wedding", startIso: "2026-10-04T11:00:00+05:30", endIso: null, location: "Mysuru" } }));
-      const r = await upload("/vision", { bytes: fakeJpeg(3000), mime: "image/jpeg", filename: "screenshot.jpg",
-        fields: { mode: "screenshot", question: "" } });
-      const j = await r.json();
-      assert.strictEqual(j.answer, "A wedding invite for Sunday.");
-      assert.deepStrictEqual(j.action, { type: "calendar", title: "Priya's wedding",
-        startIso: "2026-10-04T11:00:00+05:30", endIso: null, location: "Mysuru" });
-    });
-
-    await atest("vision errors are clean JSON the app can log: 415 type, 429 busy, 502 model, 400 no file", async () => {
-      const gif = await upload("/vision", { bytes: Buffer.alloc(100, 1), mime: "image/gif", filename: "a.gif" });
-      assert.strictEqual(gif.status, 415);
-      visionOut = () => ({ status: 429, json: { error: { message: "Resource has been exhausted" } } });
-      const busy = await upload("/vision", { bytes: fakeJpeg(), mime: "image/jpeg", filename: "a.jpg" });
-      assert.strictEqual(busy.status, 429);
-      assert.match((await busy.json()).error, /busy/);
-      visionOut = () => ({ status: 404, json: { error: { message: "models/x is not found" } } });
-      assert.strictEqual((await upload("/vision", { bytes: fakeJpeg(), mime: "image/jpeg", filename: "a.jpg" })).status, 502);
-      const none = await fetch(`${base}/vision`, { method: "POST", headers: H, body: new FormData() });
-      assert.strictEqual(none.status, 400);
-    });
+    // (The camera's own questions — "what is this", a PDF, a screenshot's
+    // event — were POST /vision until 2026-09-29. The app answers them with
+    // its own models now; /vision answers 426 (scripts/ai-toolserver-test.js).)
 
     /* ============================================================== */
     console.log("\nbusiness card → contact (the real card reader, model stubbed)");
@@ -795,22 +752,16 @@ const MIME = {
     /* ============================================================== */
     console.log("\nkey pool — the camera must survive one spent key");
     /* ============================================================== */
-    await atest("[DEFECT] /vision answers on the fallback key when the primary key is out of quota (like docs/analyze.js does)", async () => {
+    await atest("the document analyser survives one spent key: it rotates to the fallback key", async () => {
       process.env.GEMINI_FALLBACK_KEYS = FALLBACK_KEY;
       const spent = { status: 429, json: { error: { code: 429, message: "Resource has been exhausted (e.g. check quota)." } } };
-      visionOut = (call) => (call.key === PRIMARY_KEY ? spent : geminiText("A STOP sign."));
       R.analyze = async (call) => (call.key === PRIMARY_KEY ? spent : geminiText(JSON.stringify({
         title: "Receipt — Big Bazaar", category: "receipt", doc_date: "", expires_on: "", summary: "₹640.",
         tags: ["receipt"], full_text: "Big Bazaar ₹640" })));
       try {
-        // The document analyser rotates to the fallback key…
         const meta = await require("../src/docs/analyze").analyzeDocument(fakeJpeg(), "image/jpeg", "r.jpg");
         assert.strictEqual(meta && meta.title, "Receipt — Big Bazaar", "analysis used the fallback key");
-        // …the camera does not.
-        const r = await upload("/vision", { bytes: fakeJpeg(), mime: "image/jpeg", filename: "scan.jpg",
-          fields: { mode: "ask", question: "what does this sign say" } });
-        const body = await r.json();
-        assert.strictEqual(r.status, 200, `/vision gave ${r.status} ${JSON.stringify(body)} with a working fallback key`);
+        // (Its camera half — /vision on the fallback key — went with /vision.)
       } finally {
         delete process.env.GEMINI_FALLBACK_KEYS;
       }

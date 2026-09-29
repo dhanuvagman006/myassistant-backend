@@ -13,7 +13,6 @@
  *   in_app     the phone does it without leaving the app (ringer, torch…)
  *   hand_back  leaves for another app where the owner taps Send, then back
  *   stays      leaves for another app and stays there (directions, music)
- *   app_task   the do-it-for-me engine takes over the phone — always last
  *
  * `class` and `label` are ALWAYS recomputed here, never trusted from a
  * client.
@@ -53,7 +52,6 @@ const STEP_TOOLS = {
   get_news: { cls: "server", keep: ["topic"], speaks: true },
   send_agent_message: { cls: "server", keep: ["contact_name", "message"], confirmEachRun: true },
   email_send: { cls: "server", keep: ["to", "subject", "body"], confirmEachRun: true },
-  do_task_in_app: { cls: "app_task", keep: ["goal", "category", "app", "query", "url"], minBuild: 104 },
 };
 const STEP_TOOL_NAMES = Object.keys(STEP_TOOLS);
 
@@ -68,7 +66,7 @@ function whyNot(tool) {
   return "that can't be part of a shortcut";
 }
 
-const CLASS_RANK = { server: 0, in_app: 0, hand_back: 1, stays: 2, app_task: 3 };
+const CLASS_RANK = { server: 0, in_app: 0, hand_back: 1, stays: 2 };
 
 function classify(step) {
   return (STEP_TOOLS[step && step.tool] || {}).cls || null;
@@ -141,7 +139,6 @@ function labelFor(step) {
     case "get_news": return "Headlines";
     case "send_agent_message": return `Message to ${clip(a.contact_name, 40)}: “${clip(a.message, 60)}”`;
     case "email_send": return `Email to ${clip(a.to, 40)}: “${clip(a.subject, 50)}”`;
-    case "do_task_in_app": return `In ${clip(a.app || "your phone", 30)}: ${clip(a.goal, 70)}`;
     default: return clip(step && step.said, 60) || "A step";
   }
 }
@@ -166,7 +163,7 @@ function stepIcon(step) {
     send_whatsapp_message: "chat", start_navigation: "directions", play_music: "music",
     open_named_app: "apps", open_webpage: "web", create_reminder: "reminder",
     plan_my_day: "list", check_habit: "check", get_weather: "weather", daily_brief: "brief",
-    get_news: "news", send_agent_message: "send", email_send: "mail", do_task_in_app: "touch",
+    get_news: "news", send_agent_message: "send", email_send: "mail",
   }[step.tool] || "bolt";
 }
 
@@ -243,9 +240,6 @@ function validate(input, { build = 0 } = {}) {
     if (tool === "open_webpage" && !isHttps(args.url)) {
       return { ok: false, error: "step_not_allowed", data: { n, said, why: "only secure web links (https) can be a step" } };
     }
-    if (tool === "do_task_in_app" && args.url !== undefined && !isHttps(args.url)) {
-      return { ok: false, error: "step_not_allowed", data: { n, said, why: "only secure web links (https) can be a step" } };
-    }
     if (SPOKEN.has(tool) && ++spoken > 1) {
       return { ok: false, error: "too_many_spoken", data: { n, said } };
     }
@@ -265,9 +259,6 @@ function validate(input, { build = 0 } = {}) {
     step.label = labelFor(step);
     out.push(step);
   }
-  const tasks = out.filter((s) => s.class === "app_task");
-  if (tasks.length > 1) return { ok: false, error: "mixed_app_task", data: {} };
-  if (tasks.length && out.some((s) => s.class === "stays")) return { ok: false, error: "mixed_app_task", data: {} };
   const warnings = [];
   if (out.filter((s) => s.class === "stays").length > 1) {
     warnings.push("The second app opens when you tap the notification, unless 'use other apps' is switched on.");

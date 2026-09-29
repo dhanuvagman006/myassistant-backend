@@ -1,9 +1,15 @@
 /**
- * VOICE LOOP (/assistant) TESTS — `npm run test:assistant`.
+ * THE ASSISTANT'S BACKGROUND AGENT — `npm run test:assistant`.
  *
- * The SSE voice loop is the app's main path and had no HTTP-level test.
- * These drive the real router over HTTP with the agent runtime stubbed, so
- * they check what the loop hands the agent — no model, no keys.
+ * The server's own agent (agents/runtime.js) still runs every turn nobody
+ * is holding the phone for: scheduled tasks, the home-screen widget, deep
+ * research, reminder calls and nudges. These drive it with the model
+ * stubbed — no model, no keys.
+ *
+ * (Until 2026-09-29 this suite also drove the /assistant voice loop over
+ * HTTP: the session's clock and place, and its legacy fallback chain. That
+ * loop is gone — the app runs its own models — and the clock-and-place
+ * checks moved to scripts/ai-toolserver-test.js.)
  */
 process.env.DATABASE_URL =
   process.env.DATABASE_URL || "postgres://test:test@localhost:5432/test";
@@ -39,112 +45,9 @@ function stubRuntime(reply = "Done.", impl = null) {
   return { calls, restore: () => { runtime.runAgentTurn = real; } };
 }
 
-async function mount(sub = "0") {
-  const routes = require("../src/assistant/routes");
-  const app = express();
-  app.get("/assistant/stream/:sid", routes.streamHandler);
-  app.use(express.json());
-  app.use((req, _res, next) => { req.user = { sub, name: "Test" }; next(); });
-  app.use("/assistant", routes);
-  const server = await new Promise((r) => { const s = app.listen(0, "127.0.0.1", () => r(s)); });
-  const base = `http://127.0.0.1:${server.address().port}/assistant`;
-  const post = (path, body = {}, headers = {}) => fetch(base + path, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...headers },
-    body: JSON.stringify(body),
-  });
-  /** Opens the session's SSE stream and collects its events. */
-  const listen = async (s) => {
-    const ac = new AbortController();
-    const res = await fetch(`${base}/stream/${s.sessionId}?token=${s.streamToken}`, { signal: ac.signal });
-    const events = [];
-    (async () => {
-      const dec = new TextDecoder();
-      let buf = "";
-      try {
-        for await (const chunk of res.body) {
-          buf += dec.decode(chunk, { stream: true });
-          let i;
-          while ((i = buf.indexOf("\n\n")) >= 0) {
-            const block = buf.slice(0, i); buf = buf.slice(i + 2);
-            const data = block.split("\n").find((l) => l.startsWith("data: "));
-            if (data) events.push(JSON.parse(data.slice(6)));
-          }
-        }
-      } catch (_) {}
-    })();
-    return { events, stop: () => ac.abort() };
-  };
-  return { post, listen, close: () => new Promise((r) => server.close(r)) };
-}
-
-/** Waits until an event matching `pred` arrives (or times out). */
-async function waitFor(events, pred, ms = 3000) {
-  const until = Date.now() + ms;
-  while (Date.now() < until) {
-    if (events.some(pred)) return;
-    await new Promise((r) => setTimeout(r, 20));
-  }
-}
-
-/** Waits until the stub has seen `n` turns (turns run after the 202). */
-async function turns(calls, n, ms = 3000) {
-  const until = Date.now() + ms;
-  while (calls.length < n && Date.now() < until) await new Promise((r) => setTimeout(r, 20));
-  assert.ok(calls.length >= n, `expected ${n} agent turn(s), saw ${calls.length}`);
-}
-
 (async () => {
   console.log("\nwhere and when the user is");
 
-  await atest("a turn with no headers (an audio upload) keeps the session's timezone and place", async () => {
-    const rt = stubRuntime();
-    const srv = await mount();
-    try {
-      const s = await (await srv.post("/session", {}, {
-        "X-TZ-Offset": "60", "X-Geo-Lat": "51.5072", "X-Geo-Lng": "-0.1276",
-      })).json();
-      // The audio upload carries only Authorization — mimic it: no headers.
-      await srv.post(`/${s.sessionId}/message`, { text: "remind me at 8 tomorrow to call the bank" });
-      await turns(rt.calls, 1);
-      const ctx = rt.calls[0].ctx;
-      assert.strictEqual(ctx.tzOffsetMin, 60, "the agent was not given the user's timezone");
-      assert.strictEqual(ctx.lat, 51.5072);
-      assert.strictEqual(ctx.lng, -0.1276);
-    } finally {
-      rt.restore();
-      await srv.close();
-    }
-  });
-
-  await atest("UTC is a timezone, not a missing one", async () => {
-    const rt = stubRuntime();
-    const srv = await mount();
-    try {
-      const s = await (await srv.post("/session", {}, { "X-TZ-Offset": "0" })).json();
-      await srv.post(`/${s.sessionId}/message`, { text: "what's on my calendar tomorrow" });
-      await turns(rt.calls, 1);
-      assert.strictEqual(rt.calls[0].ctx.tzOffsetMin, 0, "a UTC user was treated as IST");
-    } finally {
-      rt.restore();
-      await srv.close();
-    }
-  });
-
-  await atest("IST is assumed only when the phone never said", async () => {
-    const rt = stubRuntime();
-    const srv = await mount();
-    try {
-      const s = await (await srv.post("/session")).json();
-      await srv.post(`/${s.sessionId}/message`, { text: "what's the weather" });
-      await turns(rt.calls, 1);
-      assert.strictEqual(rt.calls[0].ctx.tzOffsetMin, 330);
-      assert.strictEqual(rt.calls[0].ctx.lat, undefined, "a location was invented");
-    } finally {
-      rt.restore();
-      await srv.close();
-    }
-  });
 
   await atest("the offset helper keeps 0 and rejects nonsense", () => {
     const { offsetOr } = require("../src/services/tz");
@@ -156,81 +59,6 @@ async function turns(calls, n, ms = 3000) {
     assert.strictEqual(offsetOr(99999), 330, "an impossible offset was accepted");
   });
 
-  console.log("\nnothing the agent already did is done twice");
-
-  const CALL = "call mom and tell her I'll be late";
-
-  await atest("a runtime failure AFTER a tool ran is reported, not re-run by the legacy chain", async () => {
-    const rt = stubRuntime(null, async (_t, _c, onEvent) => {
-      onEvent("tool_start", { name: "place_phone_call" });
-      onEvent("tool_done", { name: "place_phone_call", ok: true }); // the call went out
-      throw new Error("model timed out on the follow-up round");
-    });
-    const srv = await mount();
-    try {
-      const s = await (await srv.post("/session")).json();
-      const sse = await srv.listen(s);
-      await srv.post(`/${s.sessionId}/message`, { text: CALL });
-      await waitFor(sse.events, (e) => e.type === "assistant_message");
-      await new Promise((r) => setTimeout(r, 150)); // anything the legacy chain would add
-      sse.stop();
-      assert.ok(!sse.events.some((e) => e.type === "contact_lookup"),
-        "the legacy chain started a second call");
-      const said = sse.events.find((e) => e.type === "assistant_message");
-      assert.ok(said, "the user was told nothing");
-      assert.match(said.text, /may already have gone through/);
-    } finally {
-      rt.restore();
-      await srv.close();
-    }
-  });
-
-  await atest("a silent reply after a successful tool speaks the tool's result, not the legacy chain", async () => {
-    const rt = stubRuntime(null, async (_t, _c, onEvent) => {
-      onEvent("tool_done", { name: "send_agent_message", ok: true });
-      return {
-        text: "",
-        toolResults: [{ name: "send_agent_message", ok: true, speak: "Sent to Mom." }],
-        deviceActions: [],
-      };
-    });
-    const srv = await mount();
-    try {
-      const s = await (await srv.post("/session")).json();
-      const sse = await srv.listen(s);
-      await srv.post(`/${s.sessionId}/message`, { text: CALL });
-      await waitFor(sse.events, (e) => e.type === "assistant_message");
-      await new Promise((r) => setTimeout(r, 150));
-      sse.stop();
-      assert.ok(!sse.events.some((e) => e.type === "contact_lookup"),
-        "an empty reply handed the turn to the legacy chain, which dialled");
-      assert.strictEqual(sse.events.find((e) => e.type === "assistant_message").text, "Sent to Mom.");
-    } finally {
-      rt.restore();
-      await srv.close();
-    }
-  });
-
-  await atest("when the agent did nothing at all, the legacy chain still catches the turn", async () => {
-    // The fallback exists for a runtime that broke before acting; that
-    // must keep working.
-    const rt = stubRuntime(null, async () => { throw new Error("model unavailable"); });
-    const srv = await mount();
-    try {
-      const s = await (await srv.post("/session")).json();
-      const sse = await srv.listen(s);
-      await srv.post(`/${s.sessionId}/message`, { text: CALL });
-      await waitFor(sse.events, (e) => e.type === "contact_lookup");
-      sse.stop();
-      assert.ok(sse.events.some((e) => e.type === "contact_lookup"),
-        "the fallback no longer handles a turn the agent never started");
-    } finally {
-      rt.restore();
-      await srv.close();
-    }
-  });
-
-  console.log("\na dropped stream is not a reason to say it twice");
 
   /** A fresh runtime bound to stubbed model calls (it binds them at load). */
   function runtimeWith(streamImpl, fullImpl) {
@@ -647,42 +475,46 @@ async function turns(calls, n, ms = 3000) {
 
   // Production, 2026-09-20 to 27: the table predates its diag column, which
   // only CREATE TABLE named — so every write failed, silently, for a week.
-  await atest("a table from before diag gets the column at boot, and a failed write is said out loud", async () => {
+  // The report arrives with each turn of the app's conversation now
+  // (POST /ai/context: build, platform, granted, denied).
+  await atest("a table from before diag gets the column at boot, and the phone's report is stored", async () => {
     if (!/@(localhost|127\.0\.0\.1)[:/]/.test(process.env.DATABASE_URL)) {
       console.log("       (not a local database — the column is not dropped; skipped)");
       return;
     }
     const u = await db.createUser({ email: `caps-${Date.now()}@example.com`, name: "Caps Test", provider: "email" });
-    const srv = await mount(String(u.id));
-    const warned = [];
-    const warn = console.warn;
-    console.warn = (...a) => { warned.push(a.join(" ")); };
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.user = { sub: String(u.id) }; next(); });
+    app.use("/ai", require("../src/ai/routes"));
+    const server = await new Promise((r) => { const s = app.listen(0, "127.0.0.1", () => r(s)); });
+    const post = (body) => fetch(`http://127.0.0.1:${server.address().port}/ai/context`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
     try {
-      const report = { platform: "android", build: 119, model: "Pixel 8", osVersion: "15",
-        granted: ["microphone"], denied: ["location"], diag: { battery: "unrestricted" } };
       await db.run("ALTER TABLE user_devices DROP COLUMN IF EXISTS diag"); // production's table
-      const s = await (await srv.post("/session", {})).json();
-      assert.strictEqual((await srv.post(`/${s.sessionId}/capabilities`, report)).status, 200);
-      for (let i = 0; i < 50 && !warned.some((w) => /user_devices write failed/.test(w)); i++) {
-        await new Promise((r) => setTimeout(r, 20));
-      }
-      assert.ok(warned.some((w) => /user_devices write failed: .*diag/.test(w)), warned.join("\n"));
-
       await db.init();
-      await srv.post(`/${s.sessionId}/capabilities`, report);
+      const col = await db.one(
+        `SELECT 1 AS ok FROM information_schema.columns WHERE table_name='user_devices' AND column_name='diag'`);
+      assert.ok(col, "boot does not add the diag column back");
+      const r = await post({ text: "hello", mode: "chat", platform: "android", build: 120,
+        caps: { granted: ["microphone"], denied: ["location"] } });
+      assert.strictEqual(r.status, 200);
       let row = null;
       for (let i = 0; i < 50 && !row; i++) {
         row = await db.one("SELECT * FROM user_devices WHERE user_id=$1", [u.id]);
-        if (!row) await new Promise((r) => setTimeout(r, 20));
+        if (!row) await new Promise((res) => setTimeout(res, 20));
       }
       assert.ok(row, "the report was not stored");
-      assert.deepStrictEqual([row.build, row.model, row.denied], [119, "Pixel 8", "location"]);
-      assert.deepStrictEqual(JSON.parse(row.diag), { battery: "unrestricted" });
+      assert.deepStrictEqual([row.platform, row.build, row.granted, row.denied], ["android", 120, "microphone", "location"]);
+      const src = require("fs").readFileSync(require.resolve("../src/ai/context.js"), "utf8");
+      assert.match(src, /catch\(\(e\) => console\.warn\("user_devices write failed:", e\.message\)\)/,
+        "a failed write is said out loud");
     } finally {
-      console.warn = warn;
       await db.init(); // the column is back whatever happened above
       await db.run("DELETE FROM user_devices WHERE user_id=$1", [u.id]).catch(() => {});
-      await srv.close();
+      await require("../src/routes/privacy").deleteUserEverywhere(u.id, { reason: "assistant-test cleanup" }).catch(() => {});
+      await new Promise((r) => server.close(r));
     }
   });
 

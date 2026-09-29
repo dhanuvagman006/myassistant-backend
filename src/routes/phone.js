@@ -1,14 +1,17 @@
 /**
  * Phone verification — the identity spine of agent-to-agent messaging.
  *
- *   POST /phone/verify   { firebaseIdToken }  → { ok, phone, user }
  *   GET  /phone          → { phone, verified }
+ *   GET  /phone/methods  → { sim, typed }   which ways this server accepts
+ *   POST /phone/verify   { pnvToken }      → { ok, phone, user }
  *
- * The number is never taken from the request body. The app runs Firebase's
- * SMS OTP, and Firebase mints a token containing phone_number only after
- * the code was entered on the handset that received it. We verify that
- * token server-side and read the number out of the VERIFIED claims, so a
- * caller cannot assert a number they do not control.
+ * The number is never taken from the request body. The app runs Firebase
+ * Phone Number Verification: Google reads the number of the SIM in the
+ * phone from its carrier, with the user's consent, and signs it into a
+ * token (services/pnv.js). We verify that token and read the number out of
+ * its VERIFIED subject, so a caller cannot assert a number they do not
+ * control. The SMS code (Firebase Auth) this replaced was removed on
+ * 2026-09-29; builds up to 122 that still send one are told to update.
  *
  * That matters more here than in a typical signup: a phone number is the
  * address other people's agents deliver to. Letting someone claim a number
@@ -17,7 +20,7 @@
  */
 const express = require("express");
 const db = require("../db");
-const { verifyIdToken, configured } = require("../services/firebase");
+const pnv = require("../services/pnv");
 const { normalizePhone } = require("../users/phone");
 
 const router = express.Router();
@@ -45,42 +48,23 @@ async function accountGone(uid) {
   return !(await db.findById(uid).catch(() => null));
 }
 
-router.post("/verify", async (req, res) => {
-  if (!configured()) {
-    return res.status(503).json({ error: "phone verification unavailable" });
-  }
-  const uid = Number(req.user?.sub);
-  if (!Number.isFinite(uid)) return res.status(401).json({ error: "unauthorized" });
-  if (await accountGone(uid)) return res.status(401).json({ error: ACCOUNT_GONE });
+const TAKEN = "This number is already registered to another account.";
 
-  const decoded = await verifyIdToken(req.body?.firebaseIdToken);
-  if (!decoded) return res.status(401).json({ error: "invalid verification token" });
-
-  // Present only when the token came from a phone sign-in that completed.
-  const claimed = decoded.phone_number || decoded.phoneNumber || null;
-  if (!claimed) {
-    return res.status(400).json({ error: "token carries no verified phone number" });
-  }
-
-  // Firebase already emits E.164, but normalise anyway: this is the single
-  // point where a number enters the system, and everything downstream is an
-  // exact-string match.
-  const phone = normalizePhone(claimed);
-  if (!phone) return res.status(400).json({ error: "phone number not usable" });
-
+/**
+ * Give [phone] to [uid] as its verified number. One number, one account:
+ * deliberately a hard stop rather than a silent move — agent messages are
+ * addressed by number, so reassigning one would redirect a real person's
+ * mail. Answers the request itself when it cannot (409) and returns false.
+ */
+async function assignNumber(uid, phone, res) {
   const existing = await db.one(
     `SELECT id FROM users WHERE phone_number = $1 LIMIT 1`,
     [phone]
   );
   if (existing && existing.id !== uid) {
-    // One number, one account. Deliberately a hard stop rather than a
-    // silent move: agent messages are addressed by number, so reassigning
-    // one would redirect a real person's mail.
-    return res.status(409).json({
-      error: "This number is already registered to another account.",
-    });
+    res.status(409).json({ error: TAKEN });
+    return false;
   }
-
   try {
     await db.run(
       `UPDATE users SET phone_number = $1, phone_verified_at = $2 WHERE id = $3`,
@@ -91,24 +75,72 @@ router.post("/verify", async (req, res) => {
     // makes the common case a friendly message. Two devices verifying the
     // same number at once land here.
     if (/duplicate key|unique/i.test(String(e.message))) {
-      return res.status(409).json({
-        error: "This number is already registered to another account.",
-      });
+      res.status(409).json({ error: TAKEN });
+      return false;
     }
     throw e;
   }
+  return true;
+}
+
+// What the verify screen may offer. "sim" is Phone Number Verification;
+// "typed" is the testing switch below. The app asks rather than assumes.
+router.get("/methods", (_req, res) =>
+  res.json({ sim: pnv.configured(), typed: devVerifyAllowed() })
+);
+
+router.post("/verify", async (req, res) => {
+  const uid = Number(req.user?.sub);
+  if (!Number.isFinite(uid)) return res.status(401).json({ error: "unauthorized" });
+  // Builds up to 122 send the SMS code's Firebase ID token; that way in is
+  // gone. The old app shows this text as it stands.
+  if (req.body?.firebaseIdToken && !req.body?.pnvToken) {
+    return res.status(426).json({ error: "Update the app to verify your number." });
+  }
+  if (!pnv.configured()) {
+    return res.status(503).json({ error: "phone verification unavailable" });
+  }
+  if (await accountGone(uid)) return res.status(401).json({ error: ACCOUNT_GONE });
+
+  const v = await pnv.verify(req.body?.pnvToken);
+  if (!v.ok) {
+    if (v.error === "unavailable") {
+      return res.status(503).json({ error: "Couldn't reach Google to check your number. Try again in a minute." });
+    }
+    if (v.error === "expired") {
+      return res.status(401).json({ error: "That confirmation expired. Tap Confirm again." });
+    }
+    return res.status(401).json({ error: "invalid verification token" });
+  }
+
+  // Google already emits E.164, but normalise anyway: this is the single
+  // point where a number enters the system, and everything downstream is an
+  // exact-string match.
+  const phone = normalizePhone(v.phone);
+  if (!phone) return res.status(400).json({ error: "phone number not usable" });
+
+  // A retry after a lost reply: already theirs, nothing to do.
+  const me = await db.findById(uid);
+  if (me && me.phone_number === phone && me.phone_verified_at) {
+    return res.json({ ok: true, phone, user: db.publicUser(me) });
+  }
+  if (!(await pnv.claimOnce(v.hash, v.expiresAt))) {
+    return res.status(401).json({ error: "This confirmation was already used. Tap Confirm again." });
+  }
+  if (!(await assignNumber(uid, phone, res))) return;
 
   const user = await db.findById(uid);
   res.json({ ok: true, phone, user: db.publicUser(user) });
 });
 
 /**
- * DEV ONLY — register a number with no OTP.
+ * TESTING ONLY — register a number by typing it.
  *
- * Firebase Phone Auth needs the Blaze plan to send real SMS, which blocks
- * every downstream feature (agent-to-agent messaging is addressed BY phone
- * number) while that is being sorted out. This lets a number be claimed by
- * typing it.
+ * Phone Number Verification works only where Google has a deal with the
+ * carrier, and in September 2026 that is 12 countries, India not among
+ * them: without this switch no tester in India could finish signing up
+ * (agent-to-agent messaging is addressed BY phone number). This lets a
+ * number be claimed by typing it.
  *
  * GATING: an ungated version of this endpoint is a complete
  * account-takeover primitive — anyone could claim anyone's number and
@@ -118,16 +150,16 @@ router.post("/verify", async (req, res) => {
  * typing a number in the production deployment); the number still goes
  * through normalisation AND the uniqueness rule.
  *
- * ██ BEFORE MARKET RELEASE: set ALLOW_DEV_PHONE_VERIFY=false (and enable
- * ██ Firebase Phone Auth / Blaze for real OTP). The boot warning below
- * ██ exists so this cannot be forgotten.
+ * ██ BEFORE MARKET RELEASE: set ALLOW_DEV_PHONE_VERIFY=false (Phone Number
+ * ██ Verification in production mode is then the only way in). The boot
+ * ██ warning below exists so this cannot be forgotten.
  */
 const devVerifyAllowed = () => process.env.ALLOW_DEV_PHONE_VERIFY === "true";
 
 if (devVerifyAllowed()) {
   console.warn(
     "⚠️  ALLOW_DEV_PHONE_VERIFY is ON: phone numbers can be claimed by " +
-      "typing them (no OTP). Testing only — MUST be off for market release."
+      "typing them (no proof). Testing only — MUST be off for market release."
   );
 }
 
@@ -146,31 +178,9 @@ router.post("/dev-verify", async (req, res) => {
   const phone = normalizePhone(req.body?.phone);
   if (!phone) return res.status(400).json({ error: "Enter a valid phone number." });
 
-  const existing = await db.one(
-    `SELECT id FROM users WHERE phone_number = $1 LIMIT 1`,
-    [phone]
-  );
-  if (existing && existing.id !== uid) {
-    return res.status(409).json({
-      error: "This number is already registered to another account.",
-    });
-  }
+  if (!(await assignNumber(uid, phone, res))) return;
 
-  try {
-    await db.run(
-      `UPDATE users SET phone_number = $1, phone_verified_at = $2 WHERE id = $3`,
-      [phone, Date.now(), uid]
-    );
-  } catch (e) {
-    if (/duplicate key|unique/i.test(String(e.message))) {
-      return res.status(409).json({
-        error: "This number is already registered to another account.",
-      });
-    }
-    throw e;
-  }
-
-  console.warn(`phone: DEV verify (no OTP) — user ${uid} claimed ${phone}`);
+  console.warn(`phone: DEV verify (typed) — user ${uid} claimed ${phone}`);
   const user = await db.findById(uid);
   res.json({ ok: true, phone, user: db.publicUser(user) });
 });

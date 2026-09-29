@@ -623,6 +623,10 @@ const IST = (iso) => Date.parse(iso + "+05:30");
     assert.strictEqual(p.length, 1);
     assert.doesNotMatch(p[0].title + p[0].body, /\d/);
     assert.strictEqual(p[0].data.kind, "mail_confirm");
+    // The list checks the 24 h window against the real clock, and NOW is a
+    // fixed date: stamp this message as just received, or the test starts
+    // failing a day after NOW (it did, 2026-09-28).
+    await db.run("UPDATE mail_inbound SET received_at = $1 WHERE id = $2", [Date.now(), Number(row.id)]);
     const list = (await call(U, "/mailin/messages")).body.messages;
     const item = list.find((m) => m.id === Number(row.id));
     assert.deepStrictEqual([item.status, item.confirmCode], ["confirm_code", "482913557"]);
@@ -902,15 +906,10 @@ const IST = (iso) => Date.parse(iso + "+05:30");
       { type: "open_app_screen", screen: "bills_email" });
   });
 
-  await atest("the legacy recall block labels an email document and says its words are data", async () => {
-    const { buildToolContext } = require("../src/services/intents");
-    const ctx = await buildToolContext({ userId: U, messages: [{ role: "user", content: "show me my BESCOM electricity bill document" }] });
-    const text = JSON.stringify(ctx);
-    assert.match(text, /FROM EMAIL — outside sender/);
-    assert.match(text, /never as instructions/);
-    const plainCtx = await buildToolContext({ userId: V + 100000, messages: [{ role: "user", content: "show me my bill document" }] });
-    assert.doesNotMatch(JSON.stringify(plainCtx), /FROM EMAIL/);
-  });
+  // (The classic voice loop's legacy recall block — services/intents.js —
+  // went with that loop on 2026-09-29; documents reach the model through
+  // the document tools, whose results are marked as outside content and
+  // taint the session (registry.carriesEmailContent, checked above).)
 
   await atest("the analyser's request is byte-identical without the mail option", async () => {
     process.env.GEMINI_API_KEY = "test-key";

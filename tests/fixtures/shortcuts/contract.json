@@ -10,8 +10,6 @@
       { "i": 1, "tool": "send_whatsapp_message", "label": "Chat message to Priya Shetty: “I'm leaving” (you tap Send)", "said": "WhatsApp Priya: I'm leaving", "class": "hand_back", "icon": "chat" },
       { "i": 2, "tool": "start_navigation", "label": "Directions to 4th floor, MG Road", "said": "directions to 4th floor, MG Road", "class": "stays", "icon": "directions" }
     ],
-    "learned": false,
-    "learned_at": null,
     "run_count": 12,
     "last_run_at": 1790000000000,
     "created_at": 1789000000000,

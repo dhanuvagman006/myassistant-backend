@@ -101,14 +101,13 @@ const scripted = async (kind, opts = {}) => {
 };
 ai.generateWithToolsStream = (o) => scripted("stream", o);
 ai.generateWithTools = (o) => scripted("full", o);
-for (const f of ["generateReply", "generateReplyStream", "transcribeAudio", "synthesizeSpeech"]) {
+for (const f of ["generateReply", "generateReplyStream", "transcribeAudio"]) {
   ai[f] = async () => { modelCalls.push(f); throw new Error("model stubbed in e2e-g5"); };
 }
 
 const firebase = require("../src/services/firebase");
 const firebaseDeleted = [];
 firebase.deletePhoneUser = async (phone) => { firebaseDeleted.push(phone); return "deleted"; };
-firebase.verifyIdToken = async () => { throw new Error("firebase stubbed"); };
 const push = require("../src/services/push");
 push.send = async () => ({ ok: true, stub: true });
 push.sendNotification = async () => ({ ok: true, stub: true });
@@ -165,40 +164,6 @@ async function api(method, p, { token, body, ip, headers = {} } = {}) {
   let json = null;
   try { json = JSON.parse(text); } catch (_) {}
   return { status: r.status, json, text, headers: r.headers };
-}
-
-/** Reads the assistant SSE stream (it replays the session's buffer). */
-async function sseEvents(sid, streamToken, { until, timeoutMs = 5000 } = {}) {
-  const ctl = new AbortController();
-  const events = [];
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
-  try {
-    const r = await realFetch(
-      `${BASE}/assistant/stream/${sid}?token=${encodeURIComponent(streamToken)}`,
-      { signal: ctl.signal, headers: { "X-Forwarded-For": nextIp() } });
-    const reader = r.body.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let i;
-      while ((i = buf.indexOf("\n\n")) >= 0) {
-        const block = buf.slice(0, i);
-        buf = buf.slice(i + 2);
-        const line = block.split("\n").find((l) => l.startsWith("data: "));
-        if (line) { try { events.push(JSON.parse(line.slice(6))); } catch (_) {} }
-      }
-      if (until && until(events)) break;
-    }
-  } catch (e) {
-    if (e.name !== "AbortError") throw e;
-  } finally {
-    clearTimeout(timer);
-    ctl.abort();
-  }
-  return events;
 }
 
 const SECRET = process.env.JWT_SECRET;
@@ -276,8 +241,6 @@ async function seedRow(table, userCol, uid, over = {}) {
 
   const registry = require("../src/tools/registry");
   const privacy = require("../src/routes/privacy");
-  const guard = require("../src/automation/guard");
-  const prefs = require("../src/automation/prefs");
   const userCtx = require("../src/users/context");
   const mcpSchema = require("../src/mcp/schema");
   const manager = require("../src/mcp/manager");
@@ -305,8 +268,8 @@ async function seedRow(table, userCol, uid, over = {}) {
         ["GET", "/privacy/export"], ["DELETE", "/privacy/account"], ["GET", "/actions"],
         ["GET", "/google/status"], ["DELETE", "/google"], ["GET", "/email/account"],
         ["DELETE", "/email/account"], ["GET", "/email/inbox"], ["GET", "/mcp/servers"],
-        ["GET", "/profile/instructions"], ["GET", "/docs"], ["POST", "/assistant/session"],
-        ["GET", "/automation/recent"], ["GET", "/auth/me"], ["GET", "/reminders"],
+        ["GET", "/profile/instructions"], ["GET", "/docs"], ["POST", "/ai/context"], ["POST", "/ai/tool"],
+        ["GET", "/auth/me"], ["GET", "/reminders"],
       ];
       for (const [m, p] of probes) {
         const r = await api(m, p);
@@ -377,50 +340,53 @@ async function seedRow(table, userCol, uid, over = {}) {
      * ============================================================== */
     console.log("\napproval: a consequential action waits for the owner's own yes");
 
-    await atest("another account cannot answer, drive or read someone's assistant session", async () => {
-      const s = (await api("POST", "/assistant/session", { token: A.token })).json;
-      assert.ok(s && s.sessionId && s.streamToken);
-      for (const [p, body] of [
-        ["confirm", { approved: true }], ["message", { text: "hello" }],
-        ["capabilities", { granted: ["contacts"] }], ["cancel", {}],
-        ["choose", { contactId: "1" }],
-      ]) {
-        const r = await api("POST", `/assistant/${s.sessionId}/${p}`, { token: B.token, body });
-        assert.strictEqual(r.status, 404, `B reached A's /${p}: ${r.status}`);
-      }
-      const peek = await api("GET", `/assistant/stream/${s.sessionId}?token=wrong-token`);
-      assert.strictEqual(peek.status, 401);
+    // The app runs its own models since 2026-09-29; a turn reaches this
+    // server as POST /ai/context, a tool call as POST /ai/tool (src/ai/).
+    const aiTurn = async (who, text, extra = {}) => (await api("POST", "/ai/context", {
+      token: who.token, body: { text, mode: "chat", build: 120, platform: "android", tz: 330, ...extra },
+    })).json;
+    const aiTool = (who, c, name, args, extra = {}) => api("POST", "/ai/tool", {
+      token: who.token, body: { sessionId: c.sessionId, turnId: c.turnId, name, args, userText: "", ...extra },
     });
 
-    await atest("an email the model asks to send waits for a card; B's yes is refused; A's yes sends it once", async () => {
+    await atest("another account cannot answer, drive or read someone's conversation", async () => {
+      const s = await aiTurn(A, "hello");
+      assert.ok(s && s.sessionId && s.turnId);
+      for (const [p, body] of [
+        ["/ai/tool", { sessionId: s.sessionId, turnId: s.turnId, name: "recall_memory", args: {} }],
+        ["/ai/turn", { sessionId: s.sessionId, turnId: s.turnId, user: "hello", reply: "hi" }],
+      ]) {
+        const r = await api("POST", p, { token: B.token, body });
+        assert.strictEqual(r.status, 404, `B reached A's ${p}: ${r.status}`);
+      }
+      const theirs = await aiTurn(B, "hello", { sessionId: s.sessionId });
+      assert.notStrictEqual(theirs.sessionId, s.sessionId, "B was handed A's session");
+    });
+
+    await atest("an email the model asks to send waits for the owner's yes; B's yes is refused; A's yes sends it once", async () => {
       sentMail.length = 0;
-      const s = (await api("POST", "/assistant/session", { token: A.token })).json;
-      modelScript = [{
-        text: "",
-        functionCalls: [{ name: "email_send", args: {
-          to: "ravi@corp.e2e-g5.test", subject: "Running late", body: "I will be ten minutes late.",
-        } }],
-      }];
-      const r = await api("POST", `/assistant/${s.sessionId}/message`, {
-        token: A.token, body: { text: "email ravi@corp.e2e-g5.test that I will be ten minutes late" },
-      });
-      assert.strictEqual(r.status, 202);
-      const ev = await sseEvents(s.sessionId, s.streamToken, {
-        until: (e) => e.some((x) => x.type === "confirmation_request" ||
-          (x.type === "assistant_state" && x.state === "completed")),
-      });
-      const card = ev.find((x) => x.type === "confirmation_request");
-      assert.ok(card, `no confirmation card: ${JSON.stringify(ev.map((x) => x.type))}`);
-      assert.match(card.message, /ravi@corp\.e2e-g5\.test/);
+      const args = { to: "ravi@corp.e2e-g5.test", subject: "Running late", body: "I will be ten minutes late." };
+      const said = "email ravi@corp.e2e-g5.test that I will be ten minutes late";
+      const c1 = await aiTurn(A, said);
+      const asked = (await aiTool(A, c1, "email_send", args, { userText: said })).json;
+      assert.strictEqual(asked.needsConfirmation, true, `no question: ${JSON.stringify(asked)}`);
+      assert.match(asked.summary, /ravi@corp\.e2e-g5\.test/);
+      assert.ok(asked.approvalToken);
       assert.strictEqual(sentMail.length, 0, "mail left before the owner said yes");
 
-      const theirs = await api("POST", `/assistant/${s.sessionId}/confirm`, { token: B.token, body: { approved: true } });
-      assert.strictEqual(theirs.status, 404);
+      const c2 = await aiTurn(A, "yes, send it", { sessionId: c1.sessionId });
+      const inA = await api("POST", "/ai/tool", { token: B.token,
+        body: { sessionId: c1.sessionId, turnId: c2.turnId, name: "email_send", args, approvalToken: asked.approvalToken } });
+      assert.strictEqual(inA.status, 404, "B drove A's conversation");
+      const bs = await aiTurn(B, "yes");
+      const inB = (await aiTool(B, bs, "email_send", args, { approvalToken: asked.approvalToken })).json;
+      assert.ok(!inB.ok, "A's yes ran in B's conversation");
       await sleep(150);
       assert.strictEqual(sentMail.length, 0, "another account's yes sent the mail");
 
-      const mine = await api("POST", `/assistant/${s.sessionId}/confirm`, { token: A.token, body: { approved: true } });
+      const mine = await aiTool(A, c2, "email_send", args, { userText: "yes, send it", approvalToken: asked.approvalToken });
       assert.strictEqual(mine.status, 200);
+      assert.strictEqual(mine.json.ok, true, mine.text);
       await waitFor(() => sentMail.length > 0);
       assert.strictEqual(sentMail.length, 1);
       assert.strictEqual(sentMail[0].to, "ravi@corp.e2e-g5.test");
@@ -428,28 +394,28 @@ async function seedRow(table, userCol, uid, over = {}) {
       const logged = await waitFor(async () => (await api("GET", "/actions", { token: A.token })).json
         .actions.find((x) => x.action === "tool.email_send"));
       assert.ok(logged, "the sent mail is missing from GET /actions");
-      const bs = (await api("GET", "/actions", { token: B.token })).json.actions;
-      assert.ok(!bs.some((x) => x.action === "tool.email_send"), "B sees A's activity");
+      const bActs = (await api("GET", "/actions", { token: B.token })).json.actions;
+      assert.ok(!bActs.some((x) => x.action === "tool.email_send"), "B sees A's activity");
       // A second yes replays nothing.
-      await api("POST", `/assistant/${s.sessionId}/confirm`, { token: A.token, body: { approved: true } });
+      const again = (await aiTool(A, c2, "email_send", args, { approvalToken: asked.approvalToken })).json;
+      assert.ok(!again.ok);
       await sleep(200);
-      assert.strictEqual(sentMail.length, 1, "one card sent two mails");
-      modelScript = [];
+      assert.strictEqual(sentMail.length, 1, "one yes sent two mails");
     });
 
-    await atest("a declined card sends nothing", async () => {
+    await atest("a no sends nothing — not even when the old token is tried after it", async () => {
       sentMail.length = 0;
-      const s = (await api("POST", "/assistant/session", { token: A.token })).json;
-      modelScript = [{ functionCalls: [{ name: "email_send", args: {
-        to: "boss@corp.e2e-g5.test", subject: "Resignation", body: "I quit.",
-      } }] }];
-      await api("POST", `/assistant/${s.sessionId}/message`, { token: A.token, body: { text: "email my boss boss@corp.e2e-g5.test that I quit" } });
-      const ev = await sseEvents(s.sessionId, s.streamToken, { until: (e) => e.some((x) => x.type === "confirmation_request") });
-      assert.ok(ev.some((x) => x.type === "confirmation_request"));
-      await api("POST", `/assistant/${s.sessionId}/confirm`, { token: A.token, body: { approved: false } });
+      const args = { to: "boss@corp.e2e-g5.test", subject: "Resignation", body: "I quit." };
+      const c1 = await aiTurn(A, "email my boss boss@corp.e2e-g5.test that I quit");
+      const asked = (await aiTool(A, c1, "email_send", args)).json;
+      assert.strictEqual(asked.needsConfirmation, true);
+      const no = await aiTurn(A, "no, don't send it", { sessionId: c1.sessionId });
+      assert.ok(!/WAITING ON THE OWNER'S YES/.test(no.system), "the question outlived the no");
+      const late = (await aiTool(A, no, "email_send", args, { approvalToken: asked.approvalToken })).json;
+      assert.ok(!late.ok);
+      assert.match(late.error || "", /already used/);
       await sleep(300);
       assert.strictEqual(sentMail.length, 0);
-      modelScript = [];
     });
 
     /* ============================================================== *
@@ -468,26 +434,20 @@ async function seedRow(table, userCol, uid, over = {}) {
     email.listImportant = async () => INJECTED;
     email.listRecent = async () => INJECTED;
     try {
-      await atest("after an email is read, saving a UPI ID or a standing rule needs a card (HTTP turn)", async () => {
-        const s = (await api("POST", "/assistant/session", { token: A.token })).json;
-        modelScript = [
-          { functionCalls: [{ name: "email_read", args: {} }] },
-          { functionCalls: [{ name: "save_upi_id", args: { person: "Ravi", upi_id: "thief@ybl" } }] },
-        ];
-        await api("POST", `/assistant/${s.sessionId}/message`, { token: A.token, body: { text: "read my mails" } });
-        const ev = await sseEvents(s.sessionId, s.streamToken, {
-          until: (e) => e.some((x) => x.type === "confirmation_request" ||
-            (x.type === "assistant_state" && x.state === "completed")),
-        });
-        const card = ev.find((x) => x.type === "confirmation_request");
-        assert.ok(card, `saved without a card: ${JSON.stringify(ev.map((x) => x.type))}`);
-        assert.match(card.message, /email or web page/);
+      await atest("after an email is read, saving a UPI ID or a standing rule asks the owner first (the app's turn)", async () => {
+        const c = await aiTurn(A, "read my mails");
+        const read = (await aiTool(A, c, "email_read", {}, { userText: "read my mails" })).json;
+        assert.strictEqual(read.ok, true, JSON.stringify(read));
+        assert.match(read.result.note, /EXTERNAL CONTENT/);
+        const save = (await aiTool(A, c, "save_upi_id", { person: "Ravi", upi_id: "thief@ybl" },
+          { userText: "read my mails" })).json;
+        assert.strictEqual(save.needsConfirmation, true, `saved without asking: ${JSON.stringify(save)}`);
+        assert.match(save.summary, /email or web page/);
         const saved = await db.query(
           `SELECT 1 FROM clients WHERE user_id=$1 AND upi_id ILIKE '%thief%'`, [A.id]);
         assert.strictEqual(saved.length, 0, "the injected UPI ID was stored");
         const pay = await registry.execute("pay_by_upi", { payee: "Ravi", amount: 500 }, { userId: A.id });
         assert.ok(!(pay.deviceAction && /thief@ybl/.test(pay.deviceAction.url)), "pay Ravi now pays the thief");
-        modelScript = [];
       });
 
       await atest("the taint lasts the session (10 min), not just the turn; a clean session is unaffected", async () => {
@@ -496,7 +456,7 @@ async function seedRow(table, userCol, uid, over = {}) {
         assert.strictEqual(r.ok, true);
         assert.match(r.note, /EXTERNAL CONTENT/);
         for (const t of ["save_upi_id", "add_standing_instruction", "send_whatsapp_message",
-          "do_task_in_app", "pay_by_upi", "uninstall_app", "place_phone_call"]) {
+          "pay_by_upi", "uninstall_app", "place_phone_call"]) {
           assert.strictEqual(registry.requiresConfirmation(t, ctx), true, `${t} would run on the email's say-so`);
         }
         const rule = await registry.execute("add_standing_instruction",
@@ -573,39 +533,9 @@ async function seedRow(table, userCol, uid, over = {}) {
     });
 
     /* ============================================================== *
-     * SENTINEL RULES (automation/guard.js + the phone's copy)
+     * SENTINEL RULES (the fixed lines money never crosses)
      * ============================================================== */
     console.log("\nsentinel: the fixed rules stop pay, money, passwords, OTPs, send, delete, security");
-
-    await atest("the server's guard refuses every line the client text promises", () => {
-      const v = (a, s, o) => (guard.checkAction(a, s, o) || {}).kind || null;
-      assert.strictEqual(v({ type: "tap", id: 1 }, { pkg: "in.swiggy.android", nodes: [{ id: 1, text: "Proceed to Pay", click: 1 }] }), "payment");
-      assert.strictEqual(v({ type: "type", id: 2, text: "hunter2" }, { pkg: "com.x", nodes: [{ id: 2, edit: 1, pwd: 1, label: "Password" }] }), "credential");
-      assert.strictEqual(v({ type: "type", id: 4, text: "123456" }, { pkg: "com.x", nodes: [{ id: 3, text: "Enter the 6-digit code sent to your phone" }, { id: 4, edit: 1 }] }), "credential");
-      assert.strictEqual(v({ type: "type", id: 8, text: "4111 1111 1111 1111" }, { pkg: "com.x", nodes: [{ id: 8, edit: 1, label: "Name on card" }] }), "credential");
-      assert.strictEqual(v({ type: "tap", id: 5 }, { pkg: "com.whatsapp", nodes: [{ id: 5, desc: "Send", click: 1 }] }), "message_send");
-      assert.strictEqual(v({ type: "tap", id: 1 }, { pkg: "com.phonepe.app", nodes: [{ id: 1, text: "Home", click: 1 }] }), "blocked_app");
-      assert.strictEqual(v({ type: "open_app", name: "PhonePe" }, { pkg: "com.android.launcher", nodes: [] }), "money");
-      assert.strictEqual(v({ type: "tap", id: 6 }, { pkg: "com.android.settings", nodes: [{ id: 6, text: "Screen lock", click: 1 }] }), "security");
-      assert.strictEqual(v({ type: "tap", id: 7 }, { pkg: "com.android.vending", nodes: [{ id: 7, text: "Install", click: 1 }] }, { installApp: "" }), "install");
-      assert.strictEqual(v({ type: "tap", id: 10 }, { pkg: "com.google.android.gm", nodes: [{ id: 10, text: "Delete", click: 1 }] }), "destructive");
-      // …and ordinary steps are not in the way.
-      assert.strictEqual(v({ type: "tap", id: 9 }, { pkg: "in.swiggy.android", nodes: [{ id: 9, text: "Add to cart", click: 1 }] }), null);
-    });
-
-    await atest("the phone's accessibility service blocks the same money and chat apps as the server", () => {
-      const kt = path.join(APP_ROOT, "android/app/src/main/kotlin/com/myassistant/myassistant/HariAccessibilityService.kt");
-      if (!fs.existsSync(kt)) { console.log("       (app repo not found — skipped)"); return; }
-      const src = fs.readFileSync(kt, "utf8");
-      const setOf = (name) => {
-        const m = src.match(new RegExp(`val ${name} = setOf\\(([\\s\\S]*?)\\)`));
-        assert.ok(m, `${name} not found in HariAccessibilityService.kt`);
-        return new Set([...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]));
-      };
-      assert.deepStrictEqual([...setOf("MONEY_APPS")].sort(), [...guard.PAYMENT_PKGS].sort());
-      assert.deepStrictEqual([...setOf("MESSAGING")].sort(), [...guard.MESSAGING_PKGS].sort());
-      assert.match(src, /if \(n\.isPassword\) "" else/, "password text is no longer blanked before upload");
-    });
 
     await atest("pay by UPI only ever opens the owner's UPI app for their PIN", async () => {
       const r = await registry.execute("pay_by_upi", { payee: "Amma", amount: 250, upi_id: "amma@okaxis", note: "milk" }, { userId: A.id });
@@ -648,9 +578,10 @@ async function seedRow(table, userCol, uid, over = {}) {
     });
 
     await atest("the capability report is stored for the owner only", async () => {
-      const s = (await api("POST", "/assistant/session", { token: A.token })).json;
-      const r = await api("POST", `/assistant/${s.sessionId}/capabilities`, {
-        token: A.token, body: { platform: "android", build: 119, granted: ["microphone"], denied: ["location"] },
+      // It rides on each turn of the app's conversation (POST /ai/context).
+      const r = await api("POST", "/ai/context", {
+        token: A.token, body: { text: "hello", mode: "chat", platform: "android", build: 119,
+          caps: { granted: ["microphone"], denied: ["location"] } },
       });
       assert.strictEqual(r.status, 200);
       const row = await waitFor(() => db.one(`SELECT denied FROM user_devices WHERE user_id=$1`, [A.id]));
@@ -887,19 +818,17 @@ async function seedRow(table, userCol, uid, over = {}) {
      * ============================================================== */
     console.log("\nstanding rules: honoured, removable, and per account");
 
-    await atest("'Never use Uber' changes the app chosen; deleting the rule restores it; B is unaffected", async () => {
+    await atest("'Never use Uber' sits in A's context and nobody else's; deleting the rule removes it", async () => {
       const add = await api("POST", "/profile/instructions", { token: A.token, body: { instruction: "Never use Uber" } });
       assert.strictEqual(add.status, 201);
       const rid = add.json.instruction.id;
-      assert.notStrictEqual((await prefs.pickApp(A.id, "ride")).name, "uber");
-      assert.strictEqual((await prefs.pickApp(B.id, "ride")).name, "uber", "A's rule leaked into B's choice");
       assert.match(await userCtx.contextBlock(A.id), /Never use Uber/);
+      assert.doesNotMatch(await userCtx.contextBlock(B.id), /Never use Uber/, "A's rule leaked into B's context");
       // B cannot delete A's rule by its id.
       await api("DELETE", `/profile/instructions/${rid}`, { token: B.token });
       assert.ok((await userCtx.listInstructions(A.id)).some((x) => x.instruction === "Never use Uber"));
       const del = await api("DELETE", `/profile/instructions/${rid}`, { token: A.token });
       assert.strictEqual(del.status, 200);
-      assert.strictEqual((await prefs.pickApp(A.id, "ride")).name, "uber");
       assert.doesNotMatch(await userCtx.contextBlock(A.id), /Never use Uber/);
     });
 

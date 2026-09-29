@@ -194,7 +194,7 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
     assert.match(owner.RESPECT, /OWNER/);
     assert.match(owner.FEEDBACK, /send_developer_feedback/);
     assert.match(src("agents/runtime.js"), /require\("\.\/owner"\)\.OWNER_RULE/);
-    assert.match(src("live/proxy.js"), /require\("\.\.\/agents\/owner"\)\.OWNER_RULE/);
+    assert.match(src("ai/voicePrompt.js"), /require\("\.\.\/agents\/owner"\)\.OWNER_RULE/);
     // The plain fallback may have no tools: respect, but no feedback order.
     const router = src("services/ai/router.js");
     assert.match(router, /require\("\.\.\/\.\.\/agents\/owner"\)\.RESPECT/);

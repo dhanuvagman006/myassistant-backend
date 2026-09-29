@@ -54,6 +54,9 @@ const INDIC = /[ऀ-෿]/;
  * the assistant's own commands ("stop", "yes", "news"), the assistant's
  * name, or wholly an app's name.
  */
+// "stop", "cancel", "never mind" — a name that would read as ending a task.
+const STOP = /^\s*(?:(?:no|ok|okay|please)[,\s]+)*(?:stop|cancel|never ?mind|forget (?:it|about it)|leave it|don'?t bother)(?:\s+(?:it|that|this|(?:the|that|this)\s+(?:task|order)))?(?:[,\s]+please)?\s*[.!]*\s*$/i;
+
 function checkName(name, { assistantName = "" } = {}) {
   const raw = String(name || "").trim();
   const key = nameKey(raw);
@@ -64,12 +67,11 @@ function checkName(name, { assistantName = "" } = {}) {
   const reserved = new Set(["hari", "assistant", "shortcut", "shortcuts", nameKey(assistantName)].filter(Boolean));
   let SHORT_OK = new Set();
   try { SHORT_OK = require("../agents/inputQuality").SHORT_OK || new Set(); } catch (_) {}
-  let stop = null;
-  try { stop = require("../automation/intent").STOP; } catch (_) {}
+  // Wholly an app's name (the launchable apps in fulfillment/deeplinks.js).
   const app = (() => {
-    try { return require("../automation/prefs").appNamedIn(key); } catch (_) { return null; }
+    try { return require("../fulfillment/deeplinks").resolveAppName(key); } catch (_) { return null; }
   })();
-  if (reserved.has(key) || SHORT_OK.has(key) || (stop && stop.test(key)) ||
+  if (reserved.has(key) || SHORT_OK.has(key) || STOP.test(key) ||
       ["news", "weather", "help", "home", "back", "music"].includes(key) ||
       (app && nameKey(app) === key)) {
     return { ok: false, error: "reserved_name", data: { name: raw } };

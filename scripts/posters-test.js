@@ -1805,9 +1805,9 @@ function measure(rgb) {
     sessionState.end(T, sid);
     const src = (f) => fs.readFileSync(path.join(__dirname, "..", "src", f), "utf8");
     assert.match(src("agents/runtime.js"), /claimCheck\.appNoteVouches\(userText\)/);
-    assert.match(src("live/proxy.js"), /claimCheck\.appNoteVouches\(typed\)/);
+    assert.match(src("ai/context.js"), /claimCheck\.appNoteVouches\(text\)/);
     assert.match(src("agents/runtime.js"), /inputQuality\.expectationsFrom\(/);
-    assert.match(src("live/proxy.js"), /inputQuality\.expectationsFrom\(lastModelLine\)/);
+    assert.match(src("ai/context.js"), /inputQuality\.expectationsFrom\(s\.lastReply\)/);
   });
 
   await atest("the prompt rule sits BEFORE 'CREATE IMAGES' on build 119, and is absent on 118", () => {
@@ -1820,7 +1820,7 @@ function measure(rgb) {
     assert.match(p119, /spell the name letter by letter/);
     assert.ok(!p118.includes("make_greeting_poster"));
     assert.ok(!runtime.systemPrompt("").includes("make_greeting_poster"));
-    const live = require("../src/live/proxy")._liveSystemPrompt;
+    const live = require("../src/ai/voicePrompt").voiceSystemPrompt;
     const l119 = live("Assistant", [], "", 330, "", "", 119);
     const l118 = live("Assistant", [], "", 330, "", "", 118);
     const j = l119.indexOf("make_greeting_poster");

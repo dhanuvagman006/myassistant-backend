@@ -188,16 +188,6 @@ function limitsBlock(deviceCaps) {
       `NOT attempt it and do NOT say it is done.`
     );
   }
-  // A missing permission limits the tools named above and nothing else.
-  // Without this line the model stretched "no location" into refusing a
-  // food order done inside the food app (2026-09-24).
-  if (byPermission.size && !limits.some((l) => l.tool === "do_task_in_app")) {
-    lines.push(
-      "- These limits cover ONLY the tools named. do_task_in_app (doing things " +
-      "inside the phone's apps) needs none of these permissions — never refuse, " +
-      "delay or add a condition to a task done inside an app because of them."
-    );
-  }
   if (old.length) {
     lines.push(
       `- This phone's app version is too old for: ${old.join(", ")}. Say an ` +
@@ -291,8 +281,6 @@ const SEED_WORLD = new Set([
   "file_document_under_client", "associate_document", "save_web_document",
   "forget_memory", "start_interpreter_mode", "generate_image", "generate_video",
   "try_a_look",
-  // Taps and types inside the owner's other apps.
-  "do_task_in_app",
   // Opens Android's uninstall confirmation for an app.
   "uninstall_app",
   // ADDED after a drift audit found these absent. Each of them changes
@@ -387,8 +375,6 @@ const SEED_REPEAT = new Set([
   "try_a_look",
   // A stutter must not send two replies or open two payments.
   "email_reply", "pay_by_upi",
-  // Two runs in one breath would drive the same app twice at once.
-  "do_task_in_app",
   "uninstall_app",
   // One stutter would queue two clips of the owner's manual work.
   "send_video_note",
@@ -430,8 +416,6 @@ const SEED_UNATTENDED = new Set([
     "arrange_meeting_with",
     // Never money, never unattended.
     "pay_by_upi",
-    // Hands on the phone need the owner holding it.
-    "do_task_in_app",
     // Removing an app is the owner's decision, made holding the phone.
     "uninstall_app",
     // The phone's call log is read only with the owner there to hear it —
@@ -481,8 +465,8 @@ const TAINT_SENSITIVE = new Set([
   // An email saying "Ravi's new UPI ID is x@y" must not quietly redirect
   // the next "pay Ravi" — nor a web page start a reply or a payment.
   "email_reply", "pay_by_upi", "save_upi_id",
-  // A web page must not start driving the owner's apps — or removing them.
-  "do_task_in_app", "uninstall_app",
+  // A web page must not start removing the owner's apps.
+  "uninstall_app",
   // Nor put words in the user's own mouth, on video.
   "send_video_note",
   // A Notion page can be shared with other people: a write after reading
@@ -491,7 +475,7 @@ const TAINT_SENSITIVE = new Set([
   // Shortcuts (2026-09-27) outlive the taint window: a step planted by an
   // email today would run next week with no question asked, so saving,
   // changing, deleting and running one after reading becomes a question.
-  "create_shortcut", "update_shortcut", "delete_shortcut", "save_last_as_shortcut", "run_shortcut",
+  "create_shortcut", "update_shortcut", "delete_shortcut", "run_shortcut",
   // Nor plant an unattended job: a scheduled run is a fresh, untainted
   // session, so a job filed from a tainted turn would launder the taint
   // (Bills by email review, 2026-09-27 — true for email_read and web

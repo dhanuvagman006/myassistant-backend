@@ -1,5 +1,5 @@
 /**
- * One Firebase Admin app, shared by push delivery and phone verification.
+ * One Firebase Admin app, shared by push delivery and account deletion.
  *
  * initializeApp() throws if called twice, and two modules that each keep
  * their own "did I init yet" boolean will do exactly that. The guard here
@@ -9,7 +9,7 @@
 // firebase-admin v12+ removed the old namespaced API: `admin.apps`,
 // `admin.credential.cert`, `admin.messaging()` and `admin.auth()` are gone
 // (admin.apps is undefined and everything else throws). Every push and
-// every phone-verification check was silently failing because of this —
+// every Firebase call was silently failing because of this —
 // the errors were caught and reported as "skipped". The modular imports
 // below are the only API v12+ supports.
 const { initializeApp, getApps, cert } = require("firebase-admin/app");
@@ -35,32 +35,18 @@ function ensure() {
 
 const configured = () => fs.existsSync(KEY_PATH);
 
-/**
- * Verify a Firebase ID token and return its decoded claims, or null.
- *
- * This is the whole basis for trusting a phone number. The app runs the SMS
- * OTP through Firebase; Firebase mints a token carrying phone_number ONLY
- * once the code was actually entered on that handset. Verifying it here
- * means the number is proven, not merely typed — which is what stops one
- * person registering another's number and receiving their agent's messages.
- */
-async function verifyIdToken(idToken) {
-  if (!idToken || !ensure()) return null;
-  try {
-    return await getAuth().verifyIdToken(String(idToken), true);
-  } catch (e) {
-    console.warn("firebase: token rejected:", String(e.message).slice(0, 140));
-    return null;
-  }
-}
+/// The Admin Auth client, behind ensure(). A function (not the SDK import
+/// itself) so the /ai/firebase-token route and its tests share one seam.
+const auth = () => getAuth();
 
 /**
  * Forget a phone number at Firebase when its account is deleted.
  *
  * Owner, 2026-09-25: "delete old user accounts and data's from the
- * database". The OTP sign-in leaves a Firebase user holding the number;
- * our side never stored that user's id, so it is looked up by the number
- * itself. Best effort: "not found" and "not configured" are both fine, and
+ * database". Numbers verified by the SMS code (removed 2026-09-29) left
+ * a Firebase user holding the number; our side never stored that user's
+ * id, so it is looked up by the number itself. Phone Number Verification
+ * creates no Firebase user, so for newer numbers this finds nothing. Best effort: "not found" and "not configured" are both fine, and
  * nothing here may stop the account deletion that called it.
  *
  * @returns "deleted" | "not found" | "not configured" | "failed: …"
@@ -78,4 +64,4 @@ async function deletePhoneUser(phone) {
   }
 }
 
-module.exports = { ensure, configured, verifyIdToken, deletePhoneUser };
+module.exports = { ensure, configured, auth, deletePhoneUser };

@@ -607,48 +607,35 @@ test("the app actually handles the voice-change action it is sent", () => {
   // this morning's bug, so the two halves are checked together.
   assert.match(engine, /case 'live_voice_changed':/,
     "the engine must handle live_voice_changed");
-  assert.match(engine, /_rebuildLiveForVoice/,
-    "and must actually rebuild the session");
+  // Since 2026-09-29 the phone speaks with Gemini TTS through Firebase AI
+  // Logic, in the voice /ai/config names: the change takes effect by
+  // fetching that config again, and the greeting cached in the old voice
+  // must go.
+  assert.match(engine, /case 'live_voice_changed':[\s\S]{0,400}AiConfigStore\.instance\.refresh\(\)/,
+    "and must fetch the voice again");
+  assert.match(engine, /case 'live_voice_changed':[\s\S]{0,500}GreetingVoice\.instance\.clear\(\)/,
+    "and drop the greeting made in the old voice");
 });
 
-test("talking over her: only on a measured check, only where the server offers it", () => {
+test("talking over her: only on a measured check", () => {
   const fs = require("fs");
-  const live = fs.readFileSync(
-    APP_ROOT + "/lib/services/live_service.dart",
-    "utf8"
-  );
+  const mic = fs.readFileSync(APP_ROOT + "/lib/services/audio/mic_stream.dart", "utf8");
   // 2026-09-20: "remove the interruption or barge-in completely… it fails
   // on a Samsung S24" — that phone's echo canceller let her own voice back
-  // in and Google cut her off with it. 2026-09-26: "interrupt should be
-  // there… a strong valid one interrupt… how we talk with a human". So it
-  // is back, but never the way it failed: not a fixed multiple of the
-  // room's noise (bargeFloor, _bargeInFactor), and never by streaming
-  // everything while she speaks. Playback still shuts the microphone; the
-  // one way through is barge_in.dart, which measures how much of her voice
-  // this phone leaks back and waits for sustained speech well above it.
-  assert.match(live, /if \(playing \|\| remoteSpeaking(?: \|\| typingMute)?\) \{/,
-    "playback must still gate the microphone");
-  assert.doesNotMatch(live, /bargeFloor/,
-    "the old noise-multiple barge-in threshold must stay gone");
-  assert.doesNotMatch(live, /_bargeInFactor/,
-    "and so must its tuning constant");
-  assert.match(live, /_micOpenAt = DateTime\.now\(\)\.add\(_speakerTail\)/,
-    "the speaker tail must stay shut out, or her last word reopens the mic");
-  assert.match(live, /bool get _mayBargeIn =>\s*bargeInOffered &&\s*playing &&\s*!remoteSpeaking/,
-    "only when the server offered it, and only for her voice on this phone");
-  assert.match(live, /_barge\.feed\(/, "through the measured check, nothing else");
-  const check = fs.readFileSync(APP_ROOT + "/lib/services/barge_in.dart", "utf8");
+  // in and she was cut off by it. 2026-09-26: "interrupt should be there…
+  // a strong valid one… how we talk with a human". So it is back, but never
+  // the way it failed: not a fixed multiple of the room's noise, only the
+  // measured check in barge_in.dart (how much of her voice this phone
+  // leaks back, and sustained speech well above it). Since 2026-09-29 the
+  // phone runs the conversation itself (Firebase AI Logic): the watch is
+  // the phone's alone, in lib/services/audio/mic_stream.dart.
+  assert.doesNotMatch(mic, /bargeFloor/, "the old noise-multiple barge-in threshold must stay gone");
+  assert.doesNotMatch(mic, /_bargeInFactor/, "and so must its tuning constant");
+  assert.match(mic, /if \(!player\.playing\) \{/, "only while she is speaking");
+  assert.match(mic, /detector\.feed\(/, "through the measured check, nothing else");
+  const check = fs.readFileSync(APP_ROOT + "/lib/services/audio/barge_in.dart", "utf8");
   assert.match(check, /double get coupling/, "the leak is measured, not guessed");
   assert.match(check, /this\.holdMs = 380/, "a word, not a cough");
-
-  // The server half: half-duplex builds keep NO_INTERRUPTION as their
-  // second lock; only a build with the check is offered barge-in.
-  const turns = fs.readFileSync(__dirname + "/../src/live/turnTaking.js", "utf8");
-  assert.match(turns, /NO_INTERRUPTION/,
-    "a half-duplex session must tell Google not to interrupt either");
-  assert.match(turns, /const DUPLEX_BUILD = 113;/);
-  const proxy = fs.readFileSync(__dirname + "/../src/live/proxy.js", "utf8");
-  assert.match(proxy, /realtimeInputConfig: turns\.realtimeInputConfig/);
 });
 
 test("neither surface may hand the task back to the user", () => {
@@ -662,10 +649,10 @@ test("neither surface may hand the task back to the user", () => {
   assert.match(runtime, /say in ONE sentence WHY/i,
     "a refusal must still carry a reason");
 
-  const proxy = fs.readFileSync(__dirname + "/../src/live/proxy.js", "utf8");
-  assert.match(proxy, /YOU DO THE WORK, NOT THEM/,
-    "live mode needs the same rule — it is where this was reported");
-  assert.match(proxy, /doItRule/, "and it must actually be in the prompt");
+  const voice = fs.readFileSync(__dirname + "/../src/ai/voicePrompt.js", "utf8");
+  assert.match(voice, /YOU DO THE WORK, NOT THEM/,
+    "the spoken prompt needs the same rule — it is where this was reported");
+  assert.match(voice, /doItRule/, "and it must actually be in the prompt");
 });
 
 test("the system prompt has no concatenation debris in it", () => {
@@ -1007,8 +994,8 @@ test("a known provider still opens on a build too old to ask the phone", async (
   assert.strictEqual(res.deviceAction.type, "open_url");
 });
 
-test("live mode is told to call the tool before narrating it", () => {
-  const src = require("fs").readFileSync(__dirname + "/../src/live/proxy.js", "utf8");
+test("the spoken prompt tells the model to call the tool before narrating it", () => {
+  const src = require("fs").readFileSync(__dirname + "/../src/ai/voicePrompt.js", "utf8");
   // Asked three times to open an app, the live model said "one second,
   // opening it" three times and called NO tool — the ledger for that
   // window is empty. The text model picks the right tool for the same
@@ -1027,7 +1014,7 @@ test("live mode is told to call the tool before narrating it", () => {
 test("a correction is answered with an action, not a defence", () => {
   const fs = require("fs");
   const runtime = require("../src/agents/runtime").systemPrompt("");
-  const proxy = fs.readFileSync(__dirname + "/../src/live/proxy.js", "utf8");
+  const proxy = fs.readFileSync(__dirname + "/../src/ai/voicePrompt.js", "utf8");
   // Observed: told its fare was wrong, it replied "I understand your
   // frustration", lectured about why prices vary, and asked permission to
   // open a site it could simply have opened. Three failures, one paragraph.

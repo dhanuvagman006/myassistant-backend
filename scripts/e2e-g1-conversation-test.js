@@ -7,13 +7,13 @@
  * The paths a person uses to TALK to the assistant, driven the way the
  * phone drives them:
  *
- *   - the LIVE VOICE SOCKET: a real HTTP upgrade on /live/ws with a real
- *     session token (JWT through verifySession), the proxy's Google socket
- *     redirected to a fake Google on 127.0.0.1 that plays the model's part
- *     (setupComplete, transcripts, tool calls, turn ends);
- *   - the TYPED / CLASSIC LOOP: POST /assistant/session, the SSE stream and
- *     POST /:sid/message through the REAL agent runtime and REAL tools, with
- *     only the model call scripted;
+ *   - THE APP'S CONVERSATION (since 2026-09-29 the app runs its own models
+ *     through Firebase AI Logic): POST /ai/context, /ai/tool and /ai/turn
+ *     behind the real appAuth with a real session token, the REAL tools and
+ *     the REAL claim check, spoken (mode voice) and typed (mode chat); the
+ *     test plays the model's part. (The Live socket and the /assistant loop
+ *     these once drove are gone: their audio framing, barge-in and Live
+ *     model settings went with them.)
  *   - memory (remember -> recall -> forget), plans (start_task -> planner ->
  *     driver), finance, Momentum, schedule_task and the widget's /tasks/quick
  *     through the job handler, deep research, the proactive sweep producing
@@ -51,8 +51,8 @@ const assert = require("assert");
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "g1-e2e-data-"));
 process.env.DATA_DIR = DATA_DIR;
 process.env.LIVE_RECORD = "0";
-// The live proxy refuses to start without a key; this one never reaches
-// Google (the socket is redirected and fetch is blocked below).
+// Background turns need a key; this one never reaches Google (fetch is
+// blocked below).
 process.env.GEMINI_API_KEY = "g1-e2e-not-a-real-key";
 process.env.JWT_SECRET = "g1-e2e-" + crypto.randomBytes(12).toString("hex");
 for (const k of [
@@ -149,7 +149,6 @@ webSearch.run = (q, opts) => searchImpl(q, opts);
 const db = require("../src/db");
 const jwt = require("jsonwebtoken");
 const express = require("express");
-const RealWs = require("ws");
 
 let passed = 0;
 let failed = 0;
@@ -195,55 +194,17 @@ function isoLocal(ms, tz = 330) {
   const tasks = require("../src/agents/tasks");
   await tasks.migrate();
 
-  /* ---------------- the live proxy, with Google on this machine ---------------- */
-  let GOOGLE_PORT = 0;
-  class ToLocalGoogle extends RealWs {
-    constructor(address, protocols, options) {
-      const s = String(address);
-      if (s.startsWith("wss://generativelanguage.googleapis.com/")) {
-        address = `ws://127.0.0.1:${GOOGLE_PORT}/google${new URL(s).search}`;
-      }
-      super(address, protocols, options);
-    }
-  }
-  const wsPath = require.resolve("ws");
-  const proxyPath = require.resolve("../src/live/proxy");
-  const wsExports = require.cache[wsPath].exports;
-  delete require.cache[proxyPath];
-  require.cache[wsPath].exports = ToLocalGoogle;
-  let proxy;
-  try {
-    proxy = require("../src/live/proxy");
-  } finally {
-    require.cache[wsPath].exports = wsExports;
-  }
-
-  const GOOGLE = { conns: [] };
-  const googleWss = new RealWs.Server({ host: "127.0.0.1", port: 0 });
-  await new Promise((r) => googleWss.once("listening", r));
-  GOOGLE_PORT = googleWss.address().port;
-  googleWss.on("connection", (ws, req) => {
-    const c = { ws, url: req.url, msgs: [], closed: false };
-    c.send = (o) => ws.send(JSON.stringify(o));
-    ws.on("message", (d) => { try { c.msgs.push(JSON.parse(String(d))); } catch (_) {} });
-    ws.on("close", () => { c.closed = true; });
-    ws.on("error", () => {});
-    GOOGLE.conns.push(c);
-  });
-
   /* ---------------- the real routers, behind the real appAuth ---------------- */
   const { appAuth } = require("../src/middleware/auth");
-  const assistantRoutes = require("../src/assistant/routes");
   const app = express();
   app.use(express.json({ limit: "1mb" }));
-  app.get("/assistant/stream/:sid", assistantRoutes.streamHandler);
-  app.use("/assistant", appAuth, assistantRoutes);
+  // The app's conversation: its models run on the phone and in Firebase AI
+  // Logic; this server is its tool server and memory (src/ai/).
+  app.use("/ai", appAuth, require("../src/ai/routes"));
   app.use("/tasks", appAuth, require("../src/routes/tasks"));
   app.use("/finance", appAuth, require("../src/routes/finance").router);
   app.use("/momentum", appAuth, require("../src/momentum/routes"));
-  app.use("/live", proxy.probeRouter());
   const server = http.createServer(app);
-  proxy.attachWs(server);
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const PORT = server.address().port;
   const BASE = `http://127.0.0.1:${PORT}`;
@@ -285,103 +246,48 @@ function isoLocal(ms, tz = 330) {
     `SELECT fact, valid FROM agent_memories WHERE user_id=$1 ORDER BY id`, [UID]);
   const validFacts = async () => (await facts()).filter((f) => Number(f.valid) === 1).map((f) => f.fact);
 
-  /* ---------------- the phone's side of a live call ---------------- */
-  async function openLive({ build = 118, tz = 330, token = JWT } = {}) {
-    const before = GOOGLE.conns.length;
-    const qs = new URLSearchParams({
-      token, tz: String(tz), platform: "android", build: String(build),
-      granted: "microphone,contacts,location,camera,phone,notifications,calendar",
-      denied: "",
-    });
-    const ws = new RealWs(`ws://127.0.0.1:${PORT}/live/ws?${qs}`);
-    const frames = [];
-    let closedCode = null;
-    ws.on("message", (d, isBinary) => {
-      if (isBinary) { frames.push({ type: "__audio", bytes: d.length }); return; }
-      try { frames.push(JSON.parse(String(d))); } catch (_) {}
-    });
-    ws.on("close", (code) => { closedCode = code; });
-    ws.on("error", () => {});
-    await new Promise((res, rej) => {
-      ws.once("open", res);
-      ws.once("unexpected-response", (_q, r) => rej(new Error(`upgrade refused: ${r.statusCode}`)));
-      ws.once("error", rej);
-    });
-    await until(() => GOOGLE.conns.length > before, "the proxy to dial Google");
-    const up = GOOGLE.conns[GOOGLE.conns.length - 1];
-    await until(() => up.msgs.some((m) => m.setup), "the setup message", 10000);
-    up.send({ setupComplete: {} });
-    await until(() => frames.some((f) => f.type === "ready"), "ready on the phone");
-    const s = {
-      ws, frames, up,
-      setup: up.msgs.find((m) => m.setup).setup,
-      closedCode: () => closedCode,
-      fromApp: (o) => ws.send(JSON.stringify(o)),
-      heard: (text) => up.send({ serverContent: { inputTranscription: { text } } }),
-      says: (text) => up.send({ serverContent: { outputTranscription: { text } } }),
-      turnDone: async () => {
-        const n = frames.filter((f) => f.type === "turn_complete").length;
-        up.send({ serverContent: { turnComplete: true } });
-        await until(() => frames.filter((f) => f.type === "turn_complete").length > n, "turn_complete on the phone");
-        await sleep(150); // anything the proxy sends Google after it
-      },
-      toolAnswer: (id) => up.msgs.filter((m) => m.toolResponse)
-        .flatMap((m) => m.toolResponse.functionResponses).find((r) => r.id === id),
-      call: async (id, name, args) => {
-        up.send({ toolCall: { functionCalls: [{ id, name, args }] } });
-        await until(() => s.toolAnswer(id), `the tool answer for ${name}`, 15000);
-        return s.toolAnswer(id);
-      },
-      notes: () => up.msgs.filter((m) => m.clientContent)
-        .map((m) => (m.clientContent.turns || []).map((t) => (t.parts || []).map((p) => p.text).join(" | ")).join(" ")),
-      close: async () => {
-        try { ws.close(); } catch (_) {}
-        await until(() => up.closed, "the Google side to close");
-      },
+  /* ---------------- the phone's side of a conversation ---------------- */
+  // What the app does for one turn: POST /ai/context, then /ai/tool for each
+  // tool its model calls, then /ai/turn with the reply. The model itself is
+  // the app's (Firebase AI Logic): here the test plays its part.
+  const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notifications", "calendar"];
+  function conversation({ build = 118, tz = 330, mode = "voice" } = {}) {
+    const s = { sessionId: null, turnId: null, last: null };
+    s.hear = async (text, extra = {}) => {
+      const r = await api("POST", "/ai/context", {
+        text, mode, sessionId: s.sessionId, build, tz, platform: "android",
+        caps: { granted: GRANTED, denied: [] }, ...extra,
+      });
+      assert.strictEqual(r.status, 200, "context: " + JSON.stringify(r.body));
+      s.sessionId = r.body.sessionId;
+      s.turnId = r.body.turnId;
+      s.text = text;
+      s.last = r.body;
+      return r.body;
+    };
+    s.call = async (name, args, extra = {}) => {
+      const r = await api("POST", "/ai/tool", {
+        sessionId: s.sessionId, turnId: s.turnId, name, args, userText: s.text, ...extra,
+      });
+      assert.strictEqual(r.status, 200, `${name}: ${JSON.stringify(r.body)}`);
+      return r.body;
+    };
+    s.says = async (reply, extra = {}) => {
+      const r = await api("POST", "/ai/turn", {
+        sessionId: s.sessionId, turnId: s.turnId, user: s.text, reply, engine: "cloud", mode, ...extra,
+      });
+      assert.strictEqual(r.status, 200, "turn: " + JSON.stringify(r.body));
+      return r.body;
     };
     return s;
-  }
-  const corrections = (s, from = 0) => s.notes().slice(from).filter((t) => /\[SYSTEM\] (CORRECTION|STOP)/.test(t));
-
-  /* ---------------- the classic loop's SSE stream ---------------- */
-  async function classicSession() {
-    const r = await api("POST", "/assistant/session", {});
-    assert.strictEqual(r.status, 200, "session: " + JSON.stringify(r.body));
-    const s = r.body;
-    const ac = new AbortController();
-    const res = await fetch(`${BASE}/assistant/stream/${s.sessionId}?token=${s.streamToken}`, { signal: ac.signal });
-    assert.strictEqual(res.status, 200);
-    const events = [];
-    (async () => {
-      const dec = new TextDecoder();
-      let buf = "";
-      try {
-        for await (const chunk of res.body) {
-          buf += dec.decode(chunk, { stream: true });
-          let i;
-          while ((i = buf.indexOf("\n\n")) >= 0) {
-            const block = buf.slice(0, i);
-            buf = buf.slice(i + 2);
-            const data = block.split("\n").find((l) => l.startsWith("data: "));
-            if (data) events.push(JSON.parse(data.slice(6)));
-          }
-        }
-      } catch (_) {}
-    })();
-    return {
-      sid: s.sessionId, events, stop: () => ac.abort(),
-      say: (text) => api("POST", `/assistant/${s.sessionId}/message`, { text }),
-      confirm: (approved) => api("POST", `/assistant/${s.sessionId}/confirm`, { approved }),
-      last: (type) => [...events].reverse().find((e) => e.type === type),
-    };
   }
 
   try {
     /* ================================================================ */
-    console.log("\nlive voice: what a new session is told");
+    console.log("\nthe app's conversation: what a new session is told");
     /* ================================================================ */
 
-    await atest("session start carries the profile, remembered facts and the earlier conversation — not its failures or titles", async () => {
+    await atest("a new session carries the profile, remembered facts and the earlier conversation — not its failures or titles", async () => {
       await registry.execute("remember_fact", { fact: "User is vegetarian" }, { userId: UID });
       const recent = require("../src/memory/recent");
       const old = { source: "live", sessionId: "live:g1-earlier", appBuild: 118 };
@@ -393,122 +299,75 @@ function isoLocal(ms, tz = 330) {
         `SELECT count(*)::int AS n FROM conversation_turns WHERE user_id=$1 AND session_id='live:g1-earlier'`,
         [UID])).n === 4, "the earlier turns to be written");
 
-      const s = await openLive();
-      try {
-        const sys = s.setup.systemInstruction.parts[0].text;
-        assert.match(sys, /name: Dhanush K/, "the profile");
-        assert.match(sys, /WHAT YOU REMEMBER ABOUT THIS USER[\s\S]*User is vegetarian/, "the remembered fact");
-        assert.match(sys, /User said: What's on my calendar tomorrow\?/);
-        assert.ok(sys.includes("You said: You have a meeting with Allen at 4 pm."),
-          "the earlier answer, title removed");
-        assert.ok(!/4 pm, Sir/.test(sys), "past replies do not teach the title");
-        assert.ok(!/couldn't set the timer/.test(sys), "a past failure is not carried as a lesson");
-        assert.match(sys, /This is a NEW conversation/, "the do-not-re-execute guard");
-        assert.match(sys, /Current date and time for the user: .* \(UTC\+05:30\)/);
-        const ready = s.frames.find((f) => f.type === "ready");
-        assert.strictEqual(ready.bargeIn, true, "build 118 may be interrupted");
-        assert.strictEqual(s.setup.realtimeInputConfig.automaticActivityDetection.silenceDurationMs, 600);
-        const names = s.setup.tools[0].functionDeclarations.map((d) => d.name);
-        for (const n of ["remember_fact", "recall_memory", "forget_memory", "remember_person_date",
-          "start_task", "schedule_task", "web_search", "deep_research", "add_finance_item",
-          "get_finance_plan", "plan_my_day", "start_focus", "momentum_status", "recall_conversation",
-          "check_recent_actions", "end_conversation", "stay_silent", "do_task_in_app"]) {
-          assert.ok(names.includes(n), `live model is offered ${n}`);
-        }
-        assert.ok(!names.includes("make_greeting_poster"), "build 119 cards are not offered to 118");
-      } finally {
-        await s.close();
+      const c = await conversation().hear("hmm okay");
+      const sys = c.system;
+      assert.match(sys, /name: Dhanush K/, "the profile");
+      assert.match(sys, /WHAT YOU REMEMBER ABOUT THIS USER[\s\S]*User is vegetarian/, "the remembered fact");
+      assert.match(sys, /User said: What's on my calendar tomorrow\?/);
+      assert.ok(sys.includes("You said: You have a meeting with Allen at 4 pm."),
+        "the earlier answer, title removed");
+      assert.ok(!/4 pm, Sir/.test(sys), "past replies do not teach the title");
+      assert.ok(!/couldn't set the timer/.test(sys), "a past failure is not carried as a lesson");
+      assert.match(sys, /This is a NEW conversation/, "the do-not-re-execute guard");
+      assert.match(sys, /Current date and time for the user: .* \(UTC\+05:30\)/);
+      const names = c.tools.map((d) => d.name);
+      for (const n of ["remember_fact", "recall_memory", "forget_memory", "remember_person_date",
+        "start_task", "schedule_task", "web_search", "deep_research", "add_finance_item",
+        "get_finance_plan", "plan_my_day", "start_focus", "momentum_status", "recall_conversation",
+        "check_recent_actions", "end_conversation", "stay_silent"]) {
+        assert.ok(names.includes(n), `the app's model is offered ${n}`);
       }
+      assert.ok(!names.includes("make_greeting_poster"), "build 119 cards are not offered to 118");
     });
 
-    await atest("an older build (110) keeps the half-duplex session and is not offered newer tools", async () => {
-      const s = await openLive({ build: 110 });
-      try {
-        assert.strictEqual(s.frames.find((f) => f.type === "ready").bargeIn, false);
-        assert.strictEqual(s.setup.realtimeInputConfig.activityHandling, "NO_INTERRUPTION");
-        const names = s.setup.tools[0].functionDeclarations.map((d) => d.name);
-        assert.ok(!names.includes("start_focus"), "start_focus needs build 111");
-        assert.ok(names.includes("do_task_in_app"), "do_task_in_app is build 104");
-      } finally {
-        await s.close();
-      }
+    await atest("an older build (110) is not offered newer tools", async () => {
+      const c = await conversation({ build: 110 }).hear("hmm okay");
+      const names = c.tools.map((d) => d.name);
+      assert.ok(!names.includes("start_focus"), "start_focus needs build 111");
+      assert.ok(names.includes("web_search"), "web_search is the live-data path");
     });
 
-    await atest("on the production live model (3.1): no googleSearch in setup, web_search is the live-data path", async () => {
-      process.env.GEMINI_LIVE_MODEL = "gemini-3.1-flash-live-preview";
-      let s;
-      try {
-        s = await openLive();
-      } finally {
-        delete process.env.GEMINI_LIVE_MODEL;
-      }
-      try {
-        assert.match(s.setup.model, /^models\/gemini-3\.1-flash-live-preview/);
-        assert.ok(!s.setup.tools.some((t) => t.googleSearch), "the 3.x live models reject googleSearch");
-        const decls = s.setup.tools[0].functionDeclarations;
-        assert.ok(decls.some((d) => d.name === "web_search"));
-        assert.ok(!decls.some((d) => d.behavior === "BLOCKING"), "3.1 is not a blocking-tools model");
-        assert.strictEqual(s.frames.find((f) => f.type === "ready").model, "gemini-3.1-flash-live-preview");
-      } finally {
-        await s.close();
-      }
-    });
-
-    await atest("a bad or missing token never opens a live session", async () => {
-      await assert.rejects(openLive({ token: "not-a-token" }), /upgrade refused: 401/);
-      const probe = await (await fetch(`${BASE}/live`)).json();
-      assert.strictEqual(probe.available, true);
+    await atest("a bad or missing token never opens a conversation", async () => {
+      const r = await api("POST", "/ai/context", { text: "hello", mode: "voice" }, { authorization: "Bearer not-a-token" });
+      assert.strictEqual(r.status, 401);
     });
 
     /* ================================================================ */
-    console.log("\nlive voice: memory round trip (remember -> recall -> forget)");
+    console.log("\nthe app's conversation: memory round trip (remember -> recall -> forget)");
     /* ================================================================ */
 
     await atest("remember, recall, then forget only after a spoken yes — and the next session no longer knows it", async () => {
-      const s = await openLive();
-      try {
-        s.heard("remember that my sister's name is Priya");
-        const a1 = await s.call("m1", "remember_fact", { fact: "User's sister is named Priya" });
-        assert.strictEqual(a1.response.ok, true, JSON.stringify(a1.response));
-        assert.ok(s.frames.some((f) => f.type === "tool_started" && f.tool === "remember_fact"));
-        assert.ok(s.frames.some((f) => f.type === "tool_completed" && f.tool === "remember_fact"));
-        assert.ok((await validFacts()).includes("User's sister is named Priya"));
-        const n0 = s.notes().length;
-        s.says("Got it, I'll remember that.");
-        await s.turnDone();
-        assert.deepStrictEqual(corrections(s, n0), [], "a true reply is not corrected");
-        assert.ok(s.frames.some((f) => f.type === "output_transcript" && /remember that/.test(f.text)),
-          "the caption reaches the phone");
+      const s = conversation();
+      await s.hear("remember that my sister's name is Priya");
+      const a1 = await s.call("remember_fact", { fact: "User's sister is named Priya" });
+      assert.strictEqual(a1.ok, true, JSON.stringify(a1));
+      assert.ok((await validFacts()).includes("User's sister is named Priya"));
+      const said1 = await s.says("Got it, I'll remember that.");
+      assert.strictEqual(said1.corrected, false, "a true reply is not corrected");
 
-        s.heard("what is my sister's name?");
-        const a2 = await s.call("m2", "recall_memory", { query: "sister name" });
-        assert.strictEqual(a2.response.ok, true);
-        assert.ok(a2.response.data.facts.some((f) => /Priya/.test(f.fact)), JSON.stringify(a2.response.data));
-        s.says("Your sister's name is Priya.");
-        await s.turnDone();
+      await s.hear("what is my sister's name?");
+      const a2 = await s.call("recall_memory", { query: "sister name" });
+      assert.strictEqual(a2.ok, true);
+      assert.ok(a2.result.data.facts.some((f) => /Priya/.test(f.fact)), JSON.stringify(a2.result.data));
+      await s.says("Your sister's name is Priya.");
 
-        s.heard("forget my sister's details");
-        const a3 = await s.call("m3", "forget_memory", { what: "sister Priya" });
-        assert.strictEqual(a3.response.ok, false);
-        assert.strictEqual(a3.response.needs_confirmation, true, "forgetting asks first");
-        assert.match(a3.response.result, /Forget: sister Priya/);
-        assert.ok((await validFacts()).includes("User's sister is named Priya"), "nothing forgotten yet");
-        // The model may not approve for them by calling again at once.
-        const a3b = await s.call("m3b", "forget_memory", { what: "sister Priya" });
-        assert.strictEqual(a3b.response.needs_confirmation, true, "no yes was spoken in between");
-        s.says("Shall I forget your sister's name?");
-        await s.turnDone();
+      await s.hear("forget my sister's details");
+      const a3 = await s.call("forget_memory", { what: "sister Priya" });
+      assert.strictEqual(a3.ok, false);
+      assert.strictEqual(a3.needsConfirmation, true, "forgetting asks first");
+      assert.match(a3.summary, /Forget: sister Priya/);
+      assert.ok((await validFacts()).includes("User's sister is named Priya"), "nothing forgotten yet");
+      // The model may not approve for them by calling again at once.
+      const a3b = await s.call("forget_memory", { what: "sister Priya" }, { approvalToken: a3.approvalToken });
+      assert.strictEqual(a3b.needsConfirmation, true, "no yes was spoken in between");
+      await s.says("Shall I forget your sister's name?");
 
-        s.heard("yes please");
-        const a4 = await s.call("m4", "forget_memory", { what: "sister Priya" });
-        assert.strictEqual(a4.response.ok, true, JSON.stringify(a4.response));
-        assert.ok(!(await validFacts()).includes("User's sister is named Priya"), "forgotten");
-        assert.ok((await validFacts()).includes("User is vegetarian"), "nothing else went with it");
-        s.says("Done, I've forgotten it.");
-        await s.turnDone();
-      } finally {
-        await s.close();
-      }
+      await s.hear("yes please");
+      const a4 = await s.call("forget_memory", { what: "sister Priya" }, { approvalToken: a3.approvalToken });
+      assert.strictEqual(a4.ok, true, JSON.stringify(a4));
+      assert.ok(!(await validFacts()).includes("User's sister is named Priya"), "forgotten");
+      assert.ok((await validFacts()).includes("User is vegetarian"), "nothing else went with it");
+      await s.says("Done, I've forgotten it.");
       const block = await require("../src/agents/memory").memoryBlock(UID);
       assert.ok(!/Priya/.test(block), "the next session's memory block no longer has it");
       assert.match(block, /User is vegetarian/);
@@ -521,87 +380,59 @@ function isoLocal(ms, tz = 330) {
           text: "Send Ravi the site report", owed_to: "Ravi", when: "tomorrow 5 pm",
           quote: "I'll send Ravi the site report by tomorrow 5 pm" }] }) },
       );
-      const s = await openLive();
-      try {
-        s.heard("I'm a civil engineer, and I'll send Ravi the site report by tomorrow 5 pm");
-        s.says("Nice, noted.");
-        await s.turnDone();
-        await until(async () => (await validFacts()).includes("User works as a civil engineer"), "the extracted fact");
-        await until(async () => (await db.query(
-          `SELECT 1 FROM commitments WHERE user_id=$1 AND text='Send Ravi the site report' AND status='open'`,
-          [UID])).length === 1, "the commitment");
-        const c = await db.one(`SELECT owed_to, due_at, source FROM commitments WHERE user_id=$1 AND text='Send Ravi the site report'`, [UID]);
-        assert.strictEqual(c.owed_to, "Ravi");
-        assert.strictEqual(c.source, "voice");
-        assert.ok(Number(c.due_at) > Date.now(), "a deadline in the future");
-      } finally {
-        await s.close();
-      }
+      const s = conversation();
+      await s.hear("I'm a civil engineer, and I'll send Ravi the site report by tomorrow 5 pm");
+      await s.says("Nice, noted.");
+      await until(async () => (await validFacts()).includes("User works as a civil engineer"), "the extracted fact");
+      await until(async () => (await db.query(
+        `SELECT 1 FROM commitments WHERE user_id=$1 AND text='Send Ravi the site report' AND status='open'`,
+        [UID])).length === 1, "the commitment");
+      const c = await db.one(`SELECT owed_to, due_at, source FROM commitments WHERE user_id=$1 AND text='Send Ravi the site report'`, [UID]);
+      assert.strictEqual(c.owed_to, "Ravi");
+      assert.strictEqual(c.source, "voice");
+      assert.ok(Number(c.due_at) > Date.now(), "a deadline in the future");
     });
 
     /* ================================================================ */
-    console.log("\nlive voice: the claim check");
+    console.log("\nthe app's conversation: the claim check");
     /* ================================================================ */
 
-    await atest("saying 'opening YouTube' with no tool behind it is corrected in the model's ear", async () => {
-      const s = await openLive();
-      try {
-        s.heard("open youtube");
-        const n0 = s.notes().length;
-        s.says("Opening YouTube for you now.");
-        await s.turnDone();
-        const c = corrections(s, n0);
-        assert.strictEqual(c.length, 1, JSON.stringify(s.notes().slice(n0)));
-        assert.match(c[0], /no such action ran/);
-      } finally {
-        await s.close();
-      }
+    await atest("saying 'opening YouTube' with no tool behind it is corrected before it is said", async () => {
+      const s = conversation();
+      await s.hear("open youtube");
+      const r = await s.says("Opening YouTube for you now.");
+      assert.strictEqual(r.corrected, true);
+      assert.ok(!/Opening YouTube for you now/.test(r.reply), r.reply);
     });
 
     await atest("DEFECT: a birthday that WAS saved is not called a failure (remember_person_date's own words)", async () => {
-      const s = await openLive();
-      try {
-        s.heard("Amma's birthday is on the 14th of March");
-        const a = await s.call("pd1", "remember_person_date", { person: "Amma", date: "03-14", label: "birthday" });
-        assert.strictEqual(a.response.ok, true, JSON.stringify(a.response));
-        const row = await db.one(
-          `SELECT pd.month, pd.day FROM person_dates pd JOIN clients c ON c.id=pd.person_id
-            WHERE pd.user_id=$1 AND lower(c.name)='amma'`, [UID]);
-        assert.deepStrictEqual([row.month, row.day], [3, 14], "the date is saved");
-        const n0 = s.notes().length;
-        // The model repeats the tool's own confirmation, word for word.
-        s.says(a.response.speak);
-        await s.turnDone();
-        assert.deepStrictEqual(corrections(s, n0), [],
-          `the tool's own line "${a.response.speak}" was answered with a CORRECTION ` +
-          "(claimCheck 'remind' family has no remember_person_date, and the tool is neither a " +
-          "world action nor a family tool, so it is never recorded as having run)");
-      } finally {
-        await s.close();
-      }
+      const s = conversation();
+      await s.hear("Amma's birthday is on the 14th of March");
+      const a = await s.call("remember_person_date", { person: "Amma", date: "03-14", label: "birthday" });
+      assert.strictEqual(a.ok, true, JSON.stringify(a));
+      const row = await db.one(
+        `SELECT pd.month, pd.day FROM person_dates pd JOIN clients c ON c.id=pd.person_id
+          WHERE pd.user_id=$1 AND lower(c.name)='amma'`, [UID]);
+      assert.deepStrictEqual([row.month, row.day], [3, 14], "the date is saved");
+      // The model repeats the tool's own confirmation, word for word.
+      const r = await s.says(a.speak);
+      assert.strictEqual(r.corrected, false,
+        `the tool's own line "${a.speak}" was corrected (claimCheck 'remind' family has no ` +
+        "remember_person_date, and the tool is neither a world action nor a family tool)");
     });
 
     await atest("DEFECT: an EMI that WAS saved is not called a failure ('I've saved your bike EMI')", async () => {
-      const s = await openLive();
-      try {
-        s.heard("I have a bike EMI of 3500 at 11 percent, it comes on the 5th");
-        const a = await s.call("fi1", "add_finance_item",
-          { kind: "emi", name: "Bike EMI", amount: 3500, interest_rate: 11, due_day: 5 });
-        assert.strictEqual(a.response.ok, true, JSON.stringify(a.response));
-        const n0 = s.notes().length;
-        s.says("I've saved your bike EMI of 3500 at 11 percent in your finance section.");
-        await s.turnDone();
-        const c = corrections(s, n0);
-        assert.deepStrictEqual(c, [],
-          "a true save was contradicted, and the correction tells the model to 'do it properly " +
-          "now with the right tool' — i.e. add the EMI a second time");
-      } finally {
-        await s.close();
-      }
+      const s = conversation();
+      await s.hear("I have a bike EMI of 3500 at 11 percent, it comes on the 5th");
+      const a = await s.call("add_finance_item",
+        { kind: "emi", name: "Bike EMI", amount: 3500, interest_rate: 11, due_day: 5 });
+      assert.strictEqual(a.ok, true, JSON.stringify(a));
+      const r = await s.says("I've saved your bike EMI of 3500 at 11 percent in your finance section.");
+      assert.strictEqual(r.corrected, false, "a true save was contradicted");
     });
 
     /* ================================================================ */
-    console.log("\nlive voice: finance, Momentum and plans reach the app's screens");
+    console.log("\nthe app's conversation: finance, Momentum and plans reach the app's screens");
     /* ================================================================ */
 
     await atest("finance: a voice-added EMI and an app-added salary make one plan, highest interest first", async () => {
@@ -625,27 +456,21 @@ function isoLocal(ms, tz = 330) {
     });
 
     await atest("Momentum: today's three said by voice are on the Momentum screen", async () => {
-      const s = await openLive();
-      try {
-        s.heard("my top three today are finish the report, call the bank and go for a walk");
-        const a = await s.call("mo1", "plan_my_day",
-          { priorities: ["Finish the report", "Call the bank", "Go for a walk"] });
-        assert.strictEqual(a.response.ok, true, JSON.stringify(a.response));
-        s.says(a.response.speak || "Done.");
-        await s.turnDone();
-      } finally {
-        await s.close();
-      }
+      const s = conversation();
+      await s.hear("my top three today are finish the report, call the bank and go for a walk");
+      const a = await s.call("plan_my_day", { priorities: ["Finish the report", "Call the bank", "Go for a walk"] });
+      assert.strictEqual(a.ok, true, JSON.stringify(a));
+      await s.says(a.speak || "Done.");
       const m = await api("GET", "/momentum");
       assert.strictEqual(m.status, 200, JSON.stringify(m.body));
       const titles = (m.body.priorities || []).map((p) => p.title);
       assert.deepStrictEqual(titles, ["Finish the report", "Call the bank", "Go for a walk"], JSON.stringify(m.body).slice(0, 300));
     });
 
-    await atest("start_task over live: planned without high-risk tools, run to completion, reported as it ran", async () => {
+    await atest("start_task from the app: planned without high-risk tools, run to completion, reported as it ran", async () => {
       AI.plans.push((opts) => {
         const sys = opts.system;
-        assert.ok(!/- forget_memory\(/.test(sys), "no high-risk tool in a live plan's catalogue");
+        assert.ok(!/- forget_memory\(/.test(sys), "no high-risk tool in a spoken plan's catalogue");
         assert.ok(!/- open_named_app\(/.test(sys), "no phone-side tool in a plan's catalogue");
         assert.match(sys, /- web_search\(/);
         return {
@@ -656,234 +481,144 @@ function isoLocal(ms, tz = 330) {
           ],
         };
       });
-      const s = await openLive();
-      try {
-        s.heard("find the best filter coffee in Indiranagar and remember it as my favourite cafe");
-        const a = await s.call("st1", "start_task", { goal: "Find the best filter coffee in Indiranagar and remember it as my favourite cafe" });
-        assert.strictEqual(a.response.ok, true, JSON.stringify(a.response));
-        assert.match(a.response.speak, /Done — all 2 steps finished/);
-        assert.strictEqual(a.response.data.status, "done");
-        const row = await db.one(`SELECT status, steps FROM agent_tasks WHERE id=$1`, [a.response.data.task_id]);
-        assert.strictEqual(row.status, "done");
-        assert.ok((await validFacts()).includes("User's favourite cafe in Indiranagar is Third Wave"));
-        const n0 = s.notes().length;
-        s.says("Done — I found it and I've saved Third Wave as your favourite.");
-        await s.turnDone();
-        assert.deepStrictEqual(corrections(s, n0), [], "steps that ran back the reply");
-      } finally {
-        await s.close();
-      }
+      const s = conversation();
+      await s.hear("find the best filter coffee in Indiranagar and remember it as my favourite cafe");
+      const a = await s.call("start_task", { goal: "Find the best filter coffee in Indiranagar and remember it as my favourite cafe" });
+      assert.strictEqual(a.ok, true, JSON.stringify(a));
+      assert.match(a.speak, /Done — all 2 steps finished/);
+      assert.strictEqual(a.result.data.status, "done");
+      const row = await db.one(`SELECT status FROM agent_tasks WHERE id=$1`, [a.result.data.task_id]);
+      assert.strictEqual(row.status, "done");
+      assert.ok((await validFacts()).includes("User's favourite cafe in Indiranagar is Third Wave"));
+      const r = await s.says("Done — I found it and I've saved Third Wave as your favourite.");
+      assert.strictEqual(r.corrected, false, "steps that ran back the reply");
     });
 
     /* ================================================================ */
-    console.log("\nlive voice: typed words, silence, farewell, a dropped session");
+    console.log("\nthe app's conversation: typed words, notes, silence, farewell, a new session");
     /* ================================================================ */
 
-    await atest("typed words go to the model as the owner's turn; the app's own notes stay notes", async () => {
-      const s = await openLive();
-      try {
-        const n0 = s.notes().length;
-        s.fromApp({ type: "text", text: "what's on my plate today?" });
-        await until(() => s.notes().length > n0, "the typed turn upstream");
-        assert.strictEqual(s.notes()[n0], "what's on my plate today?");
-        const turn = s.up.msgs.filter((m) => m.clientContent).slice(-1)[0];
-        assert.strictEqual(turn.clientContent.turnComplete, true);
-        const greeting = 'Say this greeting to me now, in my language: "Good morning Sir!"';
-        s.fromApp({ type: "text", text: greeting });
-        await until(() => s.notes().length > n0 + 1, "the greeting upstream");
-        assert.strictEqual(s.notes()[n0 + 1], greeting);
-      } finally {
-        await s.close();
-      }
+    await atest("typed words are the owner's turn; the app's own notes are not", async () => {
+      const s = conversation({ mode: "chat" });
+      await s.hear("what's on my plate today?");
+      await s.says("Three things: the report, the bank and a walk.");
+      const greeting = 'Say this greeting to me now, in my language: "Good morning Sir!"';
+      await s.hear(greeting);
+      await s.says("Good morning, Sir!");
+      await sleep(150);
+      const rows = await db.query(
+        `SELECT role, text FROM conversation_turns WHERE session_id=$1 ORDER BY id`, [s.sessionId]);
+      assert.deepStrictEqual(rows.map((r) => r.role), ["user", "assistant", "assistant"],
+        "the greeting the app asked for is not stored as the owner's words");
+      assert.strictEqual(rows[0].text, "what's on my plate today?");
     });
 
-    await atest("voice both ways: mic PCM goes up as 16 kHz audio, her PCM comes down as binary, a barge-in stops it", async () => {
-      const s = await openLive();
-      try {
-        const mic = Buffer.alloc(640, 7);
-        s.ws.send(mic, { binary: true });
-        await until(() => s.up.msgs.some((m) => m.realtimeInput && m.realtimeInput.audio), "mic audio upstream");
-        const a = s.up.msgs.find((m) => m.realtimeInput && m.realtimeInput.audio).realtimeInput.audio;
-        assert.strictEqual(a.mimeType, "audio/pcm;rate=16000");
-        assert.ok(Buffer.from(a.data, "base64").equals(mic), "the same bytes");
-        s.fromApp({ type: "audio_pause" });
-        await until(() => s.up.msgs.some((m) => m.realtimeInput && m.realtimeInput.audioStreamEnd), "audioStreamEnd");
-        const reply = Buffer.alloc(960, 3);
-        s.up.send({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: reply.toString("base64") } }] } } });
-        await until(() => s.frames.some((f) => f.type === "__audio" && f.bytes === 960), "her audio on the phone");
-        s.up.send({ serverContent: { interrupted: true } });
-        await until(() => s.frames.some((f) => f.type === "interrupted"), "interrupted on the phone");
-      } finally {
-        await s.close();
-      }
-    });
-
-    await atest("web research over live: web_search answers the model with the provider's results", async () => {
-      const s = await openLive();
-      try {
-        s.heard("what's the petrol price in Bengaluru today");
-        const a = await s.call("ws1", "web_search", { query: "petrol price Bengaluru today" });
-        assert.strictEqual(a.response.ok, true, JSON.stringify(a.response));
-        assert.ok(JSON.stringify(a.response).includes("Result for petrol price Bengaluru today"),
-          JSON.stringify(a.response).slice(0, 300));
-        assert.ok(s.frames.some((f) => f.type === "tool_started" && f.tool === "web_search"),
-          "the phone can show 'Searching…'");
-      } finally {
-        await s.close();
-      }
+    await atest("web research: web_search answers the model with the provider's results", async () => {
+      const s = conversation();
+      await s.hear("what's the petrol price in Bengaluru today");
+      const a = await s.call("web_search", { query: "petrol price Bengaluru today" });
+      assert.strictEqual(a.ok, true, JSON.stringify(a));
+      assert.ok(JSON.stringify(a.result).includes("Result for petrol price Bengaluru today"),
+        JSON.stringify(a.result).slice(0, 300));
     });
 
     await atest("what's pending: promises heard earlier and today's list come back when asked", async () => {
-      const s = await openLive();
-      try {
-        s.heard("what did I promise people?");
-        const c = await s.call("lp1", "list_my_commitments", {});
-        assert.strictEqual(c.response.ok, true);
-        assert.match(c.response.speak, /Send Ravi the site report to Ravi — due/, c.response.speak);
-        s.heard("how am I doing today?");
-        const m = await s.call("ms1", "momentum_status", {});
-        assert.strictEqual(m.response.ok, true);
-        assert.deepStrictEqual(m.response.data.today.left, ["Finish the report", "Call the bank", "Go for a walk"]);
-      } finally {
-        await s.close();
-      }
+      const s = conversation();
+      await s.hear("what did I promise people?");
+      const c = await s.call("list_my_commitments", {});
+      assert.strictEqual(c.ok, true);
+      assert.match(c.speak, /Send Ravi the site report to Ravi — due/, c.speak);
+      await s.hear("how am I doing today?");
+      const m = await s.call("momentum_status", {});
+      assert.strictEqual(m.ok, true);
+      assert.deepStrictEqual(m.result.data.today.left, ["Finish the report", "Call the bank", "Go for a walk"]);
     });
 
     await atest("stay_silent drops the rest of the turn; end_conversation reaches the phone", async () => {
-      const s = await openLive();
-      try {
-        s.heard("haan, main kal aa jaunga, tum chinta mat karo");
-        const a = await s.call("ss1", "stay_silent", {});
-        assert.match(a.response.result, /Stay silent/);
-        const before = s.frames.filter((f) => f.type === "output_transcript").length;
-        s.says("Okay.");
-        await s.turnDone();
-        assert.strictEqual(s.frames.filter((f) => f.type === "output_transcript").length, before,
-          "nothing of a silent turn is captioned");
-        s.heard("okay bye");
-        await s.call("ec1", "end_conversation", {});
-        await until(() => s.frames.some((f) => f.type === "end_conversation"), "end_conversation on the phone");
-      } finally {
-        await s.close();
-      }
+      const s = conversation();
+      await s.hear("haan, main kal aa jaunga, tum chinta mat karo");
+      const a = await s.call("stay_silent", {});
+      assert.match(a.result.result, /Stay silent/);
+      const r = await s.says("Okay.");
+      assert.strictEqual(r.reply, "", "nothing of a silent turn is said");
+      await s.hear("okay bye");
+      const e = await s.call("end_conversation", {});
+      assert.deepStrictEqual(e.deviceAction, { type: "end_conversation" });
     });
 
     await atest("a typed request is never silenced by stay_silent (a video playing near the phone)", async () => {
-      const s = await openLive();
-      try {
-        s.fromApp({ type: "text", text: "make a one page PDF with tips to save electricity", typed: true });
-        const a = await s.call("ts1", "stay_silent", {});
-        assert.strictEqual(a.response.ok, false);
-        assert.match(a.response.result, /TYPED/);
-        const before = s.frames.filter((f) => f.type === "output_transcript").length;
-        s.says("Sure, making that PDF now.");
-        await s.turnDone();
-        assert.ok(s.frames.filter((f) => f.type === "output_transcript").length > before,
-          "the answer to the typed request is captioned");
-        // Answered: room speech after it may be silenced again.
-        s.heard("that's why you're next year");
-        const b = await s.call("ts2", "stay_silent", {});
-        assert.match(b.response.result, /Stay silent/);
-      } finally {
-        await s.close();
-      }
+      const typed = conversation({ mode: "chat" });
+      await typed.hear("make a one page PDF with tips to save electricity");
+      const a = await typed.call("stay_silent", {});
+      assert.strictEqual(a.ok, false);
+      assert.match(a.result.result, /TYPED/);
+      const r = await typed.says("Sure, making that PDF now.");
+      assert.strictEqual(r.reply, "Sure, making that PDF now.", "the answer to the typed request is kept");
+      // Room speech afterwards may be silenced again.
+      const room = conversation();
+      await room.hear("that's why you're next year");
+      const b = await room.call("stay_silent", {});
+      assert.match(b.result.result, /Stay silent/);
     });
 
-    await atest("Google ends the session: the phone's socket closes (so the app reconnects) and the new session remembers", async () => {
-      const s = await openLive();
-      s.heard("book me a table at Truffles for Friday night");
-      s.says("Friday night at Truffles — how many people?");
-      await s.turnDone();
+    await atest("a new session remembers what the last one said", async () => {
+      const s = conversation();
+      await s.hear("book me a table at Truffles for Friday night");
+      await s.says("Friday night at Truffles — how many people?");
       await until(async () => (await db.query(
         `SELECT 1 FROM conversation_turns WHERE user_id=$1 AND text ILIKE '%Truffles%'`, [UID])).length >= 2,
       "both halves written");
-      s.up.ws.close(1000, "session limit");
-      await until(() => s.closedCode() !== null, "the phone's socket to close");
-      const s2 = await openLive();
-      try {
-        const sys = s2.setup.systemInstruction.parts[0].text;
-        assert.ok(sys.includes("User said: book me a table at Truffles for Friday night"), "the question");
-        assert.ok(sys.includes("You said: Friday night at Truffles — how many people?"), "the answer");
-      } finally {
-        await s2.close();
-      }
+      const next = await conversation().hear("hello again");
+      assert.ok(next.system.includes("User said: book me a table at Truffles for Friday night"), "the question");
+      assert.ok(next.system.includes("You said: Friday night at Truffles — how many people?"), "the answer");
     });
 
     /* ================================================================ */
-    console.log("\ntyped / classic loop (POST /assistant, SSE, real runtime)");
+    console.log("\ntyped (mode chat): the text agent's prompt, the real tools");
     /* ================================================================ */
 
     await atest("a typed 'remember…' runs the real tool and the model is handed memory, history and the clock", async () => {
-      let system = "";
-      AI.stream.push(
-        (opts) => {
-          system = opts.system;
-          return { functionCalls: [{ name: "remember_fact", args: { fact: "User is allergic to peanuts" } }] };
-        },
-        { text: "Got it — I'll remember that you're allergic to peanuts." },
-      );
-      const c = await classicSession();
-      try {
-        const r = await c.say("remember that I'm allergic to peanuts");
-        assert.strictEqual(r.status, 202);
-        await until(() => c.last("assistant_message"), "the reply");
-        assert.strictEqual(c.last("assistant_message").text, "Got it — I'll remember that you're allergic to peanuts.");
-        assert.ok(c.events.some((e) => e.type === "tool_started" && e.tool === "remember_fact"));
-        assert.ok(c.events.some((e) => e.type === "tool_completed" && e.tool === "remember_fact" && e.ok === true));
-        assert.ok((await validFacts()).includes("User is allergic to peanuts"));
-        assert.match(system, /name: Dhanush K/);
-        assert.match(system, /WHAT YOU REMEMBER ABOUT THIS USER[\s\S]*User is vegetarian/);
-        assert.match(system, /EARLIER CONVERSATION[\s\S]*Truffles/, "turns from the live sessions");
-        assert.match(system, /Current date and time for the user: .* \(UTC\+05:30\)/);
-      } finally {
-        c.stop();
-      }
+      const s = conversation({ mode: "chat" });
+      const c = await s.hear("remember that I'm allergic to peanuts");
+      const r = await s.call("remember_fact", { fact: "User is allergic to peanuts" });
+      assert.strictEqual(r.ok, true, JSON.stringify(r));
+      const said = await s.says("Got it — I'll remember that you're allergic to peanuts.");
+      assert.strictEqual(said.reply, "Got it — I'll remember that you're allergic to peanuts.");
+      assert.ok((await validFacts()).includes("User is allergic to peanuts"));
+      assert.match(c.system, /name: Dhanush K/);
+      assert.match(c.system, /WHAT YOU REMEMBER ABOUT THIS USER[\s\S]*User is vegetarian/);
+      assert.match(c.system, /EARLIER CONVERSATION[\s\S]*Truffles/, "turns from the earlier sessions");
+      assert.match(c.system, /Current date and time for the user: .* \(UTC\+05:30\)/);
     });
 
     await atest("DEFECT: typed 'Appa's birthday…' — the saved date is not replaced with 'That reminder wasn't saved'", async () => {
-      AI.stream.push(
-        { functionCalls: [{ name: "remember_person_date", args: { person: "Appa", date: "07-21", label: "birthday" } }] },
-        { text: "Saved — I'll remind you the day before Appa's birthday." },
-      );
-      const c = await classicSession();
-      try {
-        await c.say("Appa's birthday is on 21st July");
-        await until(() => c.last("assistant_message"), "the reply");
-        const said = c.last("assistant_message").text;
-        const row = await db.one(
-          `SELECT pd.month, pd.day FROM person_dates pd JOIN clients cl ON cl.id=pd.person_id
-            WHERE pd.user_id=$1 AND lower(cl.name)='appa'`, [UID]);
-        assert.deepStrictEqual([row.month, row.day], [7, 21], "the date IS saved");
-        assert.ok(!/wasn't saved/.test(said), `the user was told: "${said}"`);
-      } finally {
-        c.stop();
-      }
+      const s = conversation({ mode: "chat" });
+      await s.hear("Appa's birthday is on 21st July");
+      await s.call("remember_person_date", { person: "Appa", date: "07-21", label: "birthday" });
+      const r = await s.says("Saved — I'll remind you the day before Appa's birthday.");
+      const row = await db.one(
+        `SELECT pd.month, pd.day FROM person_dates pd JOIN clients cl ON cl.id=pd.person_id
+          WHERE pd.user_id=$1 AND lower(cl.name)='appa'`, [UID]);
+      assert.deepStrictEqual([row.month, row.day], [7, 21], "the date IS saved");
+      assert.ok(!/wasn't saved/.test(r.reply), `the user was told: "${r.reply}"`);
     });
 
-    await atest("typed 'forget…' raises the confirmation card; approving it forgets exactly that", async () => {
-      AI.stream.push({ functionCalls: [{ name: "forget_memory", args: { what: "allergic to peanuts" } }] });
-      const c = await classicSession();
-      try {
-        await c.say("forget that I'm allergic to peanuts");
-        await until(() => c.last("confirmation_request"), "the card");
-        assert.match(c.last("confirmation_request").question, /Forget: allergic to peanuts/);
-        assert.ok((await validFacts()).includes("User is allergic to peanuts"), "not before the tap");
-        const r = await c.confirm(true);
-        assert.strictEqual(r.status, 200);
-        await until(() => c.last("assistant_message"), "the result");
-        assert.strictEqual(c.last("assistant_message").text, "Forgotten.");
-        assert.ok(!(await validFacts()).includes("User is allergic to peanuts"));
-        assert.ok((await validFacts()).includes("User is vegetarian"));
-      } finally {
-        c.stop();
-      }
+    await atest("typed 'forget…' asks first; the owner's yes forgets exactly that", async () => {
+      const s = conversation({ mode: "chat" });
+      await s.hear("forget that I'm allergic to peanuts");
+      const asked = await s.call("forget_memory", { what: "allergic to peanuts" });
+      assert.strictEqual(asked.needsConfirmation, true);
+      assert.match(asked.summary, /Forget: allergic to peanuts/);
+      assert.ok((await validFacts()).includes("User is allergic to peanuts"), "not before the yes");
+      await s.says(`${asked.summary}?`);
+      await s.hear("yes");
+      const r = await s.call("forget_memory", { what: "allergic to peanuts" }, { approvalToken: asked.approvalToken });
+      assert.strictEqual(r.ok, true, JSON.stringify(r));
+      assert.ok(!(await validFacts()).includes("User is allergic to peanuts"));
+      assert.ok((await validFacts()).includes("User is vegetarian"));
     });
 
     await atest("typed multi-step request: start_task plans, runs every step, and the reply follows", async () => {
-      AI.stream.push(
-        { functionCalls: [{ name: "start_task", args: { goal: "Research monsoon trekking in Coorg and remember the best month" } }] },
-        { text: "Done — both steps finished; I noted that July is best." },
-      );
       AI.plans.push({
         steps: [
           { tool: "web_search", args_json: JSON.stringify({ query: "Coorg monsoon trekking best month" }), why: "research" },
@@ -891,20 +626,18 @@ function isoLocal(ms, tz = 330) {
             why: "keep it", dependsOn: [0] },
         ],
       });
-      const c = await classicSession();
-      try {
-        await c.say("research monsoon trekking in Coorg and remember the best month");
-        await until(() => c.last("assistant_message"), "the reply", 10000);
-        assert.ok(c.events.some((e) => e.type === "tool_completed" && e.tool === "start_task" && e.ok === true),
-          JSON.stringify(c.events.filter((e) => /tool/.test(e.type))));
-        const t = await db.one(
-          `SELECT status FROM agent_tasks WHERE user_id=$1 AND goal LIKE 'Research monsoon trekking%' ORDER BY id DESC LIMIT 1`, [UID]);
-        assert.strictEqual(t.status, "done");
-        assert.ok((await validFacts()).includes("User plans a Coorg monsoon trek in July"));
-      } finally {
-        c.stop();
-      }
+      const s = conversation({ mode: "chat" });
+      await s.hear("research monsoon trekking in Coorg and remember the best month");
+      const r = await s.call("start_task", { goal: "Research monsoon trekking in Coorg and remember the best month" });
+      assert.strictEqual(r.ok, true, JSON.stringify(r));
+      const t = await db.one(
+        `SELECT status FROM agent_tasks WHERE user_id=$1 AND goal LIKE 'Research monsoon trekking%' ORDER BY id DESC LIMIT 1`, [UID]);
+      assert.strictEqual(t.status, "done");
+      assert.ok((await validFacts()).includes("User plans a Coorg monsoon trek in July"));
+      const said = await s.says("Done — both steps finished; I noted that July is best.");
+      assert.strictEqual(said.corrected, false);
     });
+
 
     /* ================================================================ */
     console.log("\nmemory and plans, tool level");
@@ -1136,8 +869,6 @@ function isoLocal(ms, tz = 330) {
     await db.run(`DELETE FROM kv WHERE k LIKE $1 OR k LIKE $2 OR k LIKE $3`,
       [`morning:${UID}:%`, `pdate:${UID}:%`, `brief:${UID}:%`]).catch(() => {});
     try { fs.rmSync(DATA_DIR, { recursive: true, force: true }); } catch (_) {}
-    for (const c of GOOGLE.conns) { try { c.ws.terminate(); } catch (_) {} }
-    await new Promise((r) => googleWss.close(r));
     await new Promise((r) => server.close(r));
     global.fetch = realFetch;
   }

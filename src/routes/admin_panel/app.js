@@ -990,7 +990,8 @@ async function viewConversations() {
   const sel = (opts, onchange) =>
     h("select", { class: "input", style: "max-width:160px;", onchange: (e) => onchange(e.target.value) },
       ...opts.map(([v, l]) => h("option", { value: v }, l)));
-  const sourceSel = sel([["", "All surfaces"], ["live", "Live voice"], ["voice", "Voice / chat"],
+  const sourceSel = sel([["", "All surfaces"], ["ai-cloud", "App: cloud"], ["ai-nano", "App: on-device"],
+    ["ai-search", "App: search"], ["ai-shortcut", "App: shortcut"], ["live", "Live voice (old)"], ["voice", "Voice / chat (old)"],
     ["background", "Scheduled"]], (v) => { source = v; reload(); });
   const slowSel = sel([["0", "Any speed"], ["3000", "Slower than 3s"], ["6000", "Slower than 6s"],
     ["10000", "Slower than 10s"]], (v) => { minMs = parseInt(v, 10) || 0; reload(); });
@@ -1397,7 +1398,7 @@ function erasedSummary(id, r) {
     `Google access: ${(r.revoked && r.revoked.google) || "—"}.`,
   ];
   if (r.revoked && r.revoked.liveSessions > 0) {
-    lines.push(`Live calls in progress, ended: ${r.revoked.liveSessions}.`);
+    lines.push(`Conversations in progress, ended: ${r.revoked.liveSessions}.`);
   }
   if (rows.length) {
     lines.push("");

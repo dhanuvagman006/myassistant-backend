@@ -24,11 +24,11 @@
  * Without that the agent keeps talking over a person who is trying to
  * answer it, which on a real call reads as rude rather than robotic.
  *
- * DELIBERATELY SEPARATE FROM live/proxy.js. That file is the app's voice
- * path and the most load-bearing thing in the product; it is coupled to
- * the app's own JSON event protocol and device actions, none of which a
- * phone call has. Reusing it would have meant refactoring it, and a phone
- * feature is not worth the risk of breaking the microphone.
+ * DELIBERATELY SEPARATE FROM THE APP'S CONVERSATION. That was the Live
+ * proxy (live/proxy.js) when this was written, and is the app's own models
+ * talking to src/ai/ since 2026-09-29: both are coupled to the app's
+ * contract and device actions, none of which a phone call has, and a phone
+ * feature is not worth the risk of breaking the app's voice.
  */
 const WebSocket = require("ws");
 const callBrief = require("./callBrief");

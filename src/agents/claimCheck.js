@@ -111,8 +111,6 @@ const FAMILIES = [
       "pay_by_upi",
       // The camera for a card; the recorder for a meeting.
       "scan_business_card", "record_meeting",
-      // "Opening Swiggy and finding you a 4-star biryani…"
-      "do_task_in_app",
       // "Opening the uninstall screen for Instagram".
       "uninstall_app",
       // Opens Google Maps at what it just found — "showing them on the
@@ -139,6 +137,10 @@ const FAMILIES = [
       "run_shortcut", "continue_shortcut",
       // "Opening your focus timer" (Momentum, 2026-09-25).
       "start_focus",
+      // The shopping list (2026-09-29): "Opening Blinkit for the milk" —
+      // the shopping apps open with the list — and the share sheet or the
+      // chat app opened with it ready to send.
+      "shop_from_list", "share_shopping_list",
       // In-app panels the model announces the same way ("here's your
       // schedule", "pulling up the headlines"). Both were orphans — no
       // family backed them, so the assistant could apologise for a
@@ -306,7 +308,7 @@ const FAMILIES = [
             "add_standing_instruction", "remember_event", "remember_case",
             "update_my_profile",
             // "Saved your shortcut" (2026-09-27).
-            "create_shortcut", "update_shortcut", "delete_shortcut", "save_last_as_shortcut"],
+            "create_shortcut", "update_shortcut", "delete_shortcut"],
     claim: /\b(logged|recorded|noted it down|saved (it |that )?(to|in) your|saved (the|your) shortcut|filed under|i'?ve (written|saved)|written that down)\b/i,
     // सहेज/सेव/नोट कर…, ಉಳಿಸ/ಸೇವ್ ಮಾಡ…, சேமிக்க…, సేవ్ చేస…, സേവ് ചെയ്…
     claimIntl: /(सहेज|सेव\s*कर|नोट\s*कर|लिख\s*दिया|ಉಳಿಸ|ಸೇವ್\s*ಮಾಡ|ಬರೆದಿ|சேமிக்க|குறித்து|సేవ్\s*చేస|రాశా|സേവ്\s*ചെയ്|എഴുതി)/,

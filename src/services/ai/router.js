@@ -124,35 +124,13 @@ function envModel(name, fallback) {
 
 const chatModel = () => envModel("GEMINI_MODEL", DEFAULT_MODEL);
 
-// THE PHONE PLANNER'S OWN MODEL. A task on the phone used to share the
-// chat model — and its free daily allowance (gemini-3.5-flash: 20/day) —
-// with every conversation, so one long run could spend it and switch
-// family halfway through (audit, 2026-09-24). AUTOMATION_MODEL lets the
-// hands run on a model of their own.
-// UNSET, THE FAST MODEL (2026-09-27). Unset used to mean the chat model,
-// and gemini-3.5-flash spent the whole 12 s of a step with a screenshot
-// before the fast model was asked: 0 of 18 production runs finished, a
-// third of them "I couldn't reach my planner". The fast model answers
-// the same step in about 3 s. Set AUTOMATION_MODEL to plan on another.
-const automationModel = () => envModel("AUTOMATION_MODEL", automationFastModel());
-
-// THE PLANNER'S SECOND CHANCE: a model that answers fast. Measured
-// 2026-09-25 with the owner's key, one planner call on an Instagram Explore
-// screen with its ~260 KB screenshot: gemini-3.5-flash ran out the 12 s
-// and the run failed ("I couldn't reach my planner just now"), while
-// gemini-3.5-flash-lite answered in 2.9 s, gemini-3.1-flash-lite in 3.2 s
-// and gemini-flash-lite-latest in 3.7 s. When AUTOMATION_MODEL is slow,
-// failing or retired, the step is asked again on this one (planner.js).
-const automationFastModel = () => envModel("AUTOMATION_FAST_MODEL", "gemini-flash-lite-latest");
-
-// Per-call thinking (the phone planner: MINIMAL on a routine step, one
-// level higher right after a step failed, changed nothing or was
-// refused). Gemini 3 takes the level itself; 2.5 Flash takes a budget.
+// Per-call thinking (a caller may ask MINIMAL … HIGH for one call).
+// Gemini 3 takes the level itself; 2.5 Flash takes a budget.
 const LEVELS = ["MINIMAL", "LOW", "MEDIUM", "HIGH"];
 const BUDGET_25 = { MINIMAL: 0, LOW: 1024, MEDIUM: 4096, HIGH: 8192 };
 // "model:LEVEL" pairs the API refused. Only that pair is dropped — the
-// chat's own thinking level must never be switched off because the
-// planner asked one model for a level it does not have.
+// chat's own thinking level must never be switched off because one
+// caller asked one model for a level it does not have.
 const UNSUPPORTED_LEVELS = new Set();
 
 function thinkingFor(model, wanted) {
@@ -208,7 +186,7 @@ const fallbackModel = () => envModel("GEMINI_FALLBACK_MODEL", "gemini-flash-lite
  * which setting names the dead model, so somebody can change it.
  */
 const UNAVAILABLE = new Set();
-const MODEL_ENVS = ["GEMINI_MODEL", "AUTOMATION_MODEL", "AUTOMATION_FAST_MODEL", "GEMINI_FALLBACK_MODEL",
+const MODEL_ENVS = ["GEMINI_MODEL", "GEMINI_FALLBACK_MODEL",
   "GEMINI_STT_MODEL", "GEMINI_VISION_MODEL", "GEMINI_DOC_MODEL", "GEMINI_SEARCH_MODEL"];
 
 /** A 404 from a model endpoint: that model name is unusable for this key. */
@@ -283,17 +261,6 @@ function rejectsField(status, body, field) {
     /unknown name|invalid json payload|not supported|unrecognized/i.test(b);
 }
 
-// TTS must fail FAST, and the math has to respect the CLIENT: the app gives
-// up on /tts after 20s, so the server budget for (attempt + backoff +
-// attempt) must fit inside that or a slow synthesis wastes the whole wait
-// and the user hears nothing. Per-attempt cap 9s: 9 + 0.7 + 9 = 18.7s < 20s.
-// Env values above the cap are clamped, not honoured — a 25s setting would
-// otherwise guarantee the client aborts first.
-const TTS_TIMEOUT_MS = Math.min(
-  Number(process.env.GEMINI_TTS_TIMEOUT_MS) || 9_000,
-  9_000
-);
-
 // ---------------- GEMINI ----------------
 
 async function callGemini(messages, system = SYSTEM_PROMPT, _retry = false, _model = null) {
@@ -305,14 +272,13 @@ async function callGemini(messages, system = SYSTEM_PROMPT, _retry = false, _mod
  *
  * opts.timeoutMs — a HARD deadline for the whole call, key rotation
  *   included (the default is 30 s per request). opts.noRetry — no switch
- *   to the quota fallback model: a caller with its own budget (the phone
- *   planner, which must answer inside the phone's patience) would rather
- *   fail fast and say so than wait for a second model. opts.json — ask for
+ *   to the quota fallback model: a caller with its own deadline would
+ *   rather fail fast and say so than wait for a second model. opts.json — ask for
  *   a JSON reply (responseMimeType); dropped for good if the API rejects it.
  *
- * Per-call options for the phone planner (2026-09-24; each one dropped on
- * its own if the API refuses it, never taking chat down):
- *   opts.model — this model instead of GEMINI_MODEL (AUTOMATION_MODEL)
+ * Per-call options (2026-09-24; each one dropped on its own if the API
+ * refuses it, never taking chat down):
+ *   opts.model — this model instead of GEMINI_MODEL
  *   opts.thinking — MINIMAL | LOW | MEDIUM | HIGH for this call only
  *   opts.schema — responseSchema with json: every reply parses first time
  *   opts.mediaResolution — MEDIA_RESOLUTION_LOW | _MEDIUM for the picture
@@ -862,143 +828,6 @@ async function transcribeAudio(buffer, mimeType, opts = {}) {
   }
 }
 
-// ---------------- TEXT-TO-SPEECH ----------------
-// GEMINI, for every language. Sarvam used to sit in front of it for the
-// eleven Indian languages, but SARVAM_API_KEY was never set in production
-// so that branch had never once run — and it was removed outright on
-// 2026-09-21 at his instruction ("remove sarvam completely"). Returns WAV
-// the phone plays with a plain player.
-
-// ---- Gemini TTS config ----
-// Default voices per Gemini TTS: warm, natural, well-suited to an assistant.
-// Full list (30): Kore, Puck, Zephyr, Charon, Leda, Aoede, Callirrhoe, etc.
-// Fenrir by default — see the note in live/proxy.js.
-const TTS_DEFAULT_VOICE = envModel("GEMINI_TTS_VOICE", "Fenrir");
-const TTS_MODEL = envModel("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts");
-const TTS_SAMPLE_RATE = 24000;
-
-// Prebuilt Gemini voice names (validated so a bad env/body can't 400 us).
-const TTS_VOICES = new Set([
-  "Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede",
-  "Callirrhoe", "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba",
-  "Despina", "Erinome", "Algenib", "Rasalgethi", "Laomedeia", "Achernar",
-  "Alnilam", "Schedar", "Gacrux", "Pulcherrimo", "Achird", "Zubenelgenubi",
-  "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
-]);
-
-
-// Wrap raw PCM (s16le) in a minimal WAV container so any player accepts it.
-function pcmToWav(pcm, sampleRate = TTS_SAMPLE_RATE, channels = 1, bits = 16) {
-  const byteRate = (sampleRate * channels * bits) / 8;
-  const blockAlign = (channels * bits) / 8;
-  const header = Buffer.alloc(44);
-  header.write("RIFF", 0);
-  header.writeUInt32LE(36 + pcm.length, 4);
-  header.write("WAVE", 8);
-  header.write("fmt ", 12);
-  header.writeUInt32LE(16, 16); // PCM chunk size
-  header.writeUInt16LE(1, 20); // audio format = PCM
-  header.writeUInt16LE(channels, 22);
-  header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(byteRate, 28);
-  header.writeUInt16LE(blockAlign, 32);
-  header.writeUInt16LE(bits, 34);
-  header.write("data", 36);
-  header.writeUInt32LE(pcm.length, 40);
-  return Buffer.concat([header, pcm]);
-}
-
-// ---- Gemini TTS synthesizer ----
-
-/**
- * Synthesize [text] via Gemini native TTS. The original implementation —
- * kept intact as the fallback path.
- */
-async function synthesizeSpeechGemini(text, opts = {}) {
-  const key = requireKey();
-  const clean = String(text || "").trim();
-  if (!clean) throw new Error("tts: empty text");
-
-  const voice = TTS_VOICES.has(opts.voice) ? opts.voice : TTS_DEFAULT_VOICE;
-
-  // A light style prompt makes the assistant sound warm and unhurried
-  // instead of flat. The model needs an instruction verb ("Say"), else it
-  // may stay silent.
-  const prompt = `Say warmly and naturally, at a calm conversational pace: ${clean}`;
-
-  const speechConfig = {
-    voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } },
-  };
-  // A 2-letter code lets Gemini pick the right accent (e.g. "kn", "hi").
-  if (typeof opts.language === "string" && /^[a-z]{2}$/i.test(opts.language)) {
-    speechConfig.languageCode = opts.language.toLowerCase();
-  }
-
-  let r;
-  try {
-    r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${TTS_MODEL}:generateContent`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-goog-api-key": key },
-        signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: { responseModalities: ["AUDIO"], speechConfig },
-        }),
-      }
-    );
-  } catch (e) {
-    // Timeouts are as transient as 503s here — one quick retry.
-    if (!opts._retried && isTransient(0, e)) {
-      await sleep(700);
-      return synthesizeSpeechGemini(text, { ...opts, _retried: true });
-    }
-    throw e;
-  }
-  if (!r.ok) {
-    const body = await r.text().catch(() => "");
-    // 503 "high demand" / 429 are TRANSIENT: the model is busy, not broken.
-    // One quick retry usually succeeds and saves the user from dropping to
-    // the robotic on-device voice mid-reply.
-    if ((r.status === 503 || r.status === 429) && !opts._retried) {
-      await new Promise((res) => setTimeout(res, 700));
-      return synthesizeSpeechGemini(text, { ...opts, _retried: true });
-    }
-    throw new Error(`gemini tts ${r.status} ${body.slice(0, 300)}`);
-  }
-  const data = await r.json();
-  const part = data.candidates?.[0]?.content?.parts?.find(
-    (p) => p.inlineData?.data
-  );
-  const b64 = part?.inlineData?.data;
-  if (!b64) throw new Error("gemini tts: no audio returned");
-
-  // Gemini reports the rate in the mime type (e.g. "audio/L16;rate=24000").
-  const mime = part.inlineData.mimeType || "";
-  const rateMatch = /rate=(\d+)/.exec(mime);
-  const rate = rateMatch ? parseInt(rateMatch[1], 10) : TTS_SAMPLE_RATE;
-
-  const pcm = Buffer.from(b64, "base64");
-  return { wav: pcmToWav(pcm, rate), voice, sampleRate: rate, provider: "gemini" };
-}
-
-// ---- Public TTS entry point (provider chain) ----
-
-/**
- * Synthesize [text] to speech. Returns { wav, voice, sampleRate, provider }.
- *
- * Gemini native TTS, every language, the same API key as chat.
- *
- * [opts.voice] overrides the default voice; [opts.language] biases accent.
- */
-async function synthesizeSpeech(text, opts = {}) {
-  const clean = String(text || "").trim();
-  if (!clean) throw new Error("tts: empty text");
-  return synthesizeSpeechGemini(text, opts);
-}
-
-
 /**
  * One function-calling round trip.
  *
@@ -1237,10 +1066,7 @@ module.exports = {
   isGemini3,
   chatModel,
   fallbackModel,
-  automationModel,
-  automationFastModel,
   generateReply,
   generateReplyStream,
   transcribeAudio,
-  synthesizeSpeech,
 };

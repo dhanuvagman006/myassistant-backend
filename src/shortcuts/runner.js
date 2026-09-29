@@ -75,14 +75,10 @@ function stepCtxFor(run, shortcut, step, i, ctx, approved, resumed) {
     // in its ctx, and a spread would approve every step.
     approved: approved.has(i),
     shortcutRun: run.id,
-    shortcutReplay: undefined,
   };
   // A resumed run was judged on the turn that started it; the "yes" turn
   // (often one weak word) must not refuse the steps it did not approve.
   if (resumed) out.inputQuality = { quality: "clear", reason: "approved shortcut run", heard: "" };
-  if (step.tool === "do_task_in_app") {
-    out.shortcutReplay = { shortcutId: shortcut ? shortcut.id : run.shortcut_id, hint: shortcut ? shortcut.replay : null };
-  }
   return out;
 }
 
@@ -98,7 +94,6 @@ function phrase(step) {
   if (step.tool === "send_whatsapp_message") return `your message to ${a.to || "the chat you pick"} is ready to send`;
   if (step.tool === "send_agent_message") return `your message to ${a.contact_name} is on its way`;
   if (step.tool === "start_navigation") return `directions to ${a.destination} are opening`;
-  if (step.tool === "do_task_in_app") return "I'm starting the task on your phone";
   return step.label.replace(/\s*\(you tap Send\)$/, "").toLowerCase();
 }
 

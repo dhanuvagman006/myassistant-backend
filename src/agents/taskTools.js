@@ -80,10 +80,12 @@ function registerTaskTools() {
       }
 
       // ── PLAN ────────────────────────────────────────────────────────
-      // The live surface cannot carry a confirmation for one step of a
-      // plan (see planner.js) — so a plan made there contains no step
-      // that would stop to ask.
-      const onLive = ctx.source === "live";
+      // The conversational surface — the app's own model (source "ai"),
+      // as the live socket before it — cannot carry a confirmation for one
+      // step of a plan (see planner.js): its yes is spoken, and only ever
+      // re-runs the tool the model calls. So a plan made there contains no
+      // step that would stop to ask.
+      const onLive = ctx.source === "live" || ctx.source === "ai";
       const planned = await planner.plan(ctx.userId, goal, {
         ...ctx,
         excludeHighRisk: onLive,

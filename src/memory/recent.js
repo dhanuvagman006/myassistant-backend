@@ -102,6 +102,16 @@ function append(userId, role, text, meta = {}) {
 }
 
 /**
+ * Resolves once every append queued for this user so far has been written
+ * (or has failed). The app's cloud model reads the conversation back at
+ * the start of the next turn (POST /ai/context), which can arrive before a
+ * fire-and-forget append of the turn before it has landed.
+ */
+function settled(userId) {
+  return (writeChains.get(Number(userId)) || Promise.resolve()).catch(() => {});
+}
+
+/**
  * "Help improve" is OFF: keep only what the assistant itself reads — the
  * last `days` and at most `turns`. Called when the switch goes off and by
  * the daily sweep, never per turn, so append() stays as fast as it was.
@@ -349,4 +359,4 @@ async function turns(userId, { sessionId, sinceMs, role, match, limit = 20 } = {
 
 // migrate is exported for the erase suite's schema guard, which has to see
 // every table before it can say none was forgotten.
-module.exports = { migrate, append, recentBlock, turns, adminConversations, adminStats, withoutTitle, prunePrivate };
+module.exports = { migrate, append, settled, recentBlock, turns, adminConversations, adminStats, withoutTitle, prunePrivate };

@@ -104,11 +104,6 @@ const clean = (s, n) => String(s ?? "").trim().slice(0, n);
  */
 function targetOf(tool, args = {}) {
   const a = args || {};
-  // A phone task is the thing AND the app it runs in. "veg biryani" in
-  // Zomato, seconds after the Swiggy run found Swiggy missing, is the
-  // retry the phone asked for (build 117) — it was swallowed as a repeat
-  // of the first call and nothing ran (audit, 2026-09-27).
-  if (tool === "do_task_in_app" && a.app && a.query) return clean(`${a.query} in ${a.app}`, 120);
   const first =
     a.name || a.contact_name || a.client_name || a.business_name || a.to ||
     a.query || a.q || a.app || a.url || a.destination || a.dish ||

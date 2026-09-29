@@ -1,8 +1,7 @@
 /**
  * SHORTCUTS — PERSISTENCE.
  *
- *   shortcuts        one row per shortcut: its checked, ordered steps and
- *                    (for one learned from a phone task) the planner hint
+ *   shortcuts        one row per shortcut: its checked, ordered steps
  *   shortcut_names   EVERY way to say it, normalised; the primary key makes
  *                    "names are unique per user" a database fact
  *   shortcut_runs    one row per run: a snapshot of the steps, and while it
@@ -29,9 +28,7 @@ function migrate() {
         user_id      INTEGER NOT NULL,
         name         TEXT    NOT NULL,
         steps        JSONB   NOT NULL DEFAULT '[]'::jsonb,
-        replay       JSONB,
         source       TEXT    NOT NULL DEFAULT 'voice',
-        from_run_id  BIGINT,
         version      INTEGER NOT NULL DEFAULT 1,
         run_count    INTEGER NOT NULL DEFAULT 0,
         last_run_at  BIGINT  NOT NULL DEFAULT 0,
@@ -65,6 +62,14 @@ function migrate() {
         updated_at   BIGINT  NOT NULL
       );
       CREATE INDEX IF NOT EXISTS shortcut_runs_user ON shortcut_runs (user_id, id DESC);
+
+      -- The phone-task ("do it for me") feature was removed 2026-09-29: its
+      -- columns go, its steps go, and a shortcut left with no steps goes
+      -- (shortcut_names cascades).
+      ALTER TABLE shortcuts DROP COLUMN IF EXISTS replay;
+      ALTER TABLE shortcuts DROP COLUMN IF EXISTS from_run_id;
+      UPDATE shortcuts SET steps = (SELECT COALESCE(jsonb_agg(s), '[]'::jsonb) FROM jsonb_array_elements(steps) s WHERE s->>'tool' <> 'do_task_in_app') WHERE steps::text LIKE '%do_task_in_app%';
+      DELETE FROM shortcuts WHERE jsonb_array_length(steps) = 0;
     `).catch((e) => {
       migrated = null;
       throw e;
@@ -91,11 +96,6 @@ function hydrate(row, names = []) {
     other_names: mine.filter((n) => !n.is_primary).map((n) => n.said),
     version: Number(row.version),
     steps,
-    learned: row.source === "learned",
-    learned_at: row.source === "learned" ? Number(row.created_at) : null,
-    replay: row.replay || null,
-    source: row.source,
-    from_run_id: row.from_run_id === null ? null : Number(row.from_run_id),
     run_count: Number(row.run_count),
     last_run_at: Number(row.last_run_at),
     created_at: Number(row.created_at),
@@ -103,12 +103,11 @@ function hydrate(row, names = []) {
   };
 }
 
-/** The public shape (no hint lines: they are screen text, for the planner). */
+/** The public shape (steps trimmed to what the screen shows). */
 function publicShortcut(s) {
   if (!s) return null;
-  const { replay, source, from_run_id, ...rest } = s;
   return {
-    ...rest,
+    ...s,
     steps: s.steps.map((st) => ({ i: st.i, tool: st.tool, label: st.label, said: st.said, class: st.class, icon: st.icon })),
   };
 }
@@ -149,7 +148,7 @@ const pretty = (s) => {
   return t.charAt(0).toUpperCase() + t.slice(1);
 };
 
-async function create(userId, { name, otherNames = [], steps, source = "voice", replay = null, fromRunId = null }) {
+async function create(userId, { name, otherNames = [], steps }) {
   await migrate();
   const now = Date.now();
   const id = await tx(async (c) => {
@@ -158,10 +157,9 @@ async function create(userId, { name, otherNames = [], steps, source = "voice", 
     const n = await c.query("SELECT count(*)::int AS n FROM shortcuts WHERE user_id = $1", [userId]);
     if (n.rows[0].n >= S.MAX_SHORTCUTS) throw new ShortcutError("too_many_shortcuts", { max: S.MAX_SHORTCUTS });
     const row = await c.query(
-      `INSERT INTO shortcuts (user_id, name, steps, replay, source, from_run_id, created_at, updated_at)
-       VALUES ($1,$2,$3::jsonb,$4::jsonb,$5,$6,$7,$7) RETURNING id`,
-      [userId, pretty(name).slice(0, 40), JSON.stringify(steps), replay ? JSON.stringify(replay) : null,
-       source, fromRunId, now]);
+      `INSERT INTO shortcuts (user_id, name, steps, created_at, updated_at)
+       VALUES ($1,$2,$3::jsonb,$4,$4) RETURNING id`,
+      [userId, pretty(name).slice(0, 40), JSON.stringify(steps), now]);
     await setNames(c, userId, row.rows[0].id, name, otherNames);
     return row.rows[0].id;
   });
@@ -226,11 +224,6 @@ async function byNameKey(userId, key) {
   await migrate();
   const r = await one("SELECT shortcut_id FROM shortcut_names WHERE user_id = $1 AND name_key = $2", [userId, key]);
   return r ? get(userId, r.shortcut_id) : null;
-}
-
-async function byFromRun(userId, runId) {
-  await migrate();
-  return one("SELECT id, name FROM shortcuts WHERE user_id = $1 AND from_run_id = $2", [userId, Number(runId)]);
 }
 
 /* ---- runs ---- */
@@ -303,5 +296,5 @@ async function bumpRunCount(userId, id) {
 
 module.exports = {
   migrate, ShortcutError, publicShortcut, namesOf, setNames, create, get, list, update, remove,
-  byNameKey, byFromRun, countToday, createRun, getRun, saveRun, bumpRunCount, RUN_TTL_MS, KEEP_RUNS_MS,
+  byNameKey, countToday, createRun, getRun, saveRun, bumpRunCount, RUN_TTL_MS, KEEP_RUNS_MS,
 };

@@ -45,14 +45,14 @@ const CORE = new Set([
   // Disappointment rarely names the tool: "this is useless", "why can't
   // you…" must still reach the developer.
   "send_developer_feedback",
-  // "Do it for me" is phrased a hundred ways ("get me", "sort out",
-  // "book", "fill") — a miss here is a flat "I can't" for a flagship.
-  "do_task_in_app",
   // "delete Instagram", "get rid of this game", "remove the app".
   "uninstall_app",
   // "Any missed calls?", "did Ravi call?" — asked out of nowhere, and a
   // miss here is the assistant guessing call history (2026-09-24).
   "phone_calls",
+  // "Add this to my shopping list" — groceries, a dress, anything — must
+  // work in any ordinary conversation (the owner, 2026-09-29).
+  "shopping_list_add", "shopping_list_show",
 ]);
 
 /**
@@ -171,4 +171,43 @@ function selectForTurn(tools, text, { history = [], sessionId = "" } = {}) {
   return out.length ? out : null;
 }
 
-module.exports = { selectForTurn, CORE, MAX_TOOLS };
+/**
+ * THE TRIGGER VOCABULARY — the words that name a tool, for the app's
+ * router (GET /ai/config routing.toolWords). A request carrying one of
+ * these goes to the cloud model with the tools; everything else may be
+ * answered on the phone by Gemini Nano, which has none.
+ *
+ * Built from the tool NAMES (the same tokens selectForTurn scores highest),
+ * not their descriptions: a description holds a hundred ordinary words,
+ * and every one of them would send small talk to the cloud. The few name
+ * tokens that say nothing about intent ("get", "list", "end"…) are left
+ * out; the verbs people actually use arrive from the caller.
+ */
+const GENERIC = new Set(
+  ("get list end check update add find present text web info details data " +
+   "item items mode status result results run use show last new all any " +
+   "into about " +
+   // Common in small talk, and no sign of a tool on their own: a request
+   // that needs one and carries none of the other words is still handed
+   // on — Nano is told to answer [[CLOUD]] for anything it cannot do.
+   "day date make look out try old change complete continue enable under " +
+   "going stay recent current start stop remove improve associate analyze " +
+   "configure consult convert expiring theme story case service person id " +
+   "card screen entry entries amend lookup knowledge conversation assistant " +
+   "agent priority tracking outcomes usage errands morning brief silent read").split(" ")
+);
+function triggerWords(tools, extra = []) {
+  const out = new Set();
+  for (const t of tools || []) {
+    for (const w of words(String(t.name || "").replace(/_/g, " "))) {
+      if (!GENERIC.has(w) && !/^\d+$/.test(w)) out.add(w);
+    }
+  }
+  for (const w of extra) {
+    const k = String(w || "").toLowerCase().trim();
+    if (k) out.add(k);
+  }
+  return [...out].sort();
+}
+
+module.exports = { selectForTurn, triggerWords, CORE, MAX_TOOLS };

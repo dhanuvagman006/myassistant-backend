@@ -647,15 +647,18 @@ const tmpUploads = () => filesIn(os.tmpdir()).filter((f) => /^(avatar|note)-\d+-
       [PHONE.R]);
   });
 
-  await atest("the chat thread marks it as a video, and the live call leaves it for the popup", async () => {
+  await atest("the chat thread marks it as a video, and the conversation leaves it for the popup", async () => {
     const d = await (await call(R, `/chat/thread/${encodeURIComponent(PHONE.S)}`)).json();
     const item = d.items.find((x) => x.id === Number(delivered.message_id));
     assert.strictEqual(item.media, "video");
     assert.strictEqual(item.documentId, Number(delivered.document_id));
-    const proxy = fs.readFileSync(path.join(__dirname, "..", "src", "live", "proxy.js"), "utf8");
-    assert.match(proxy, /m\.status = 'unread' AND m\.to_phone_number = \$1\s+AND m\.media = ''/,
-      "the live session would read the note aloud and mark it read before the popup sees it");
-    assert.match(proxy, /send_video_note/, "the live prompt never routes video notes to the tool");
+    // The app's conversation (src/ai/, since 2026-09-29) passes unread
+    // messages on at a session's start — never a video note.
+    const ctx = fs.readFileSync(path.join(__dirname, "..", "src", "ai", "context.js"), "utf8");
+    assert.match(ctx, /m\.status = 'unread' AND m\.to_phone_number = \$1\s+AND m\.media = ''/,
+      "the conversation would read the note aloud and mark it read before the popup sees it");
+    const voice = fs.readFileSync(path.join(__dirname, "..", "src", "ai", "voicePrompt.js"), "utf8");
+    assert.match(voice, /send_video_note/, "the spoken prompt never routes video notes to the tool");
   });
 
   await atest("the chat thread says what an attachment IS (type, title), so a clip or PDF is not opened as a photo", async () => {

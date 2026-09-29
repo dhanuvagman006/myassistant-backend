@@ -37,12 +37,12 @@ if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
 
 const configRoute = require("./routes/config");
 const chatRoute = require("./routes/chat");
-const sttRoute = require("./routes/stt");
-const ttsRoute = require("./routes/tts");
 const regionRoute = require("./routes/region");
+// The app's old model routes answer 426 "update the app" (src/ai/gone.js).
+const { gone } = require("./ai/gone");
 const authRoute = require("./routes/auth");
 const db = require("./db");
-const { appAuth } = require("./middleware/auth");
+const { appAuth, appFnAuth } = require("./middleware/auth");
 
 // Safety guard: never boot in production with auth switched off.
 // This is what actually stops AUTH_DISABLED=true from leaking into prod.
@@ -165,9 +165,9 @@ const perUserLimit = rateLimit({
 });
 
 // PHOTO CARDS get their OWN per-user bucket (2026-09-26). perUserLimit is
-// one 30/min bucket shared by /assistant, /stt, /tts, /vision and /studio,
-// so a card screen fetching photos and saving edits would starve the
-// voice turns talking about that very card.
+// one 30/min bucket shared by /chat, /agent-call, /avatar-profile and
+// /studio, so a card screen fetching photos and saving edits would starve
+// the conversation talking about that very card.
 const posterLimit = rateLimit({
   windowMs: 60_000,
   max: 120,
@@ -182,6 +182,19 @@ const posterLimit = rateLimit({
 const shortcutLimit = rateLimit({
   windowMs: 60_000,
   max: 60,
+  standardHeaders: true,
+  keyGenerator: (req) => String(req.user?.sub || req.ip),
+});
+
+// THE CONVERSATION gets its own per-user bucket too (2026-09-29). Since
+// the app runs its models itself (Firebase AI Logic), one turn is several
+// small requests here — /ai/context, a /ai/tool per tool call, /ai/turn —
+// and none of them calls a model. In the shared 30/min bucket, beside the
+// app's own /chat polling, a lively voice conversation would meet 429s
+// mid-sentence.
+const aiLimit = rateLimit({
+  windowMs: 60_000,
+  max: 180,
   standardHeaders: true,
   keyGenerator: (req) => String(req.user?.sub || req.ip),
 });
@@ -217,16 +230,20 @@ app.use("/inbound", appAuth, inbound.router);
 // on one mount runs the middleware once and keeps the order (groups are
 // matched first; chat.js registers /thread/:phone, never a bare /:phone,
 // so nothing was ever at risk of being shadowed either way).
+// The assistant's own chat turns (POST /chat, /chat/stream, /chat/greeting)
+// are the app's model now: an old build that asks is told to update. The
+// human chat below (threads, send, groups) is unchanged.
+app.post("/chat", gone);
+app.all(["/chat/stream", "/chat/greeting"], gone);
 app.use("/chat", appAuth, perUserLimit, require("./routes/chatGroups"), chatRoute);
 
-// ASSISTANT — the realtime voice-loop module the app's home screen uses
-// (session + SSE event stream + mic-clip turns). The SSE stream route
-// authenticates with a per-session random token (?token=…) because
-// EventSource clients can't attach an Authorization header; every other
-// assistant route sits behind the normal appAuth like /chat does.
-const assistantRoutes = require("./assistant/routes");
-app.get("/assistant/stream/:sid", assistantRoutes.streamHandler);
-app.use("/assistant", appAuth, perUserLimit, assistantRoutes);
+// THE ASSISTANT (2026-09-29) — the app runs its models itself (Gemini Nano
+// on the phone, Gemini through Firebase AI Logic); this server is its tool
+// server and memory: context, tools, approvals and the record (src/ai/).
+app.use("/ai", appAuth, aiLimit, require("./ai/routes"));
+// The voice loop that came before it (session, SSE stream, audio and text
+// turns, confirmations) is gone: old builds are told to update.
+app.use("/assistant", gone);
 
 // Onboarding survey + profile view (feeds users table + agent memory).
 app.use("/profile", appAuth, require("./routes/profile"));
@@ -266,11 +283,6 @@ app.use("/payments", appAuth, paymentRoutes.router);
 // drafted follow-up. The user's own action items enter the commitment
 // tracker so they are nudged before they slip.
 app.use("/meetings", appAuth, require("./meetings/routes"));
-
-// "DO IT FOR ME" INSIDE OTHER APPS — the phone reads the screen, the
-// planner picks one checked step at a time, and payment, money, passwords
-// and sending stay the owner's (automation/guard.js).
-app.use("/automation", appAuth, require("./automation/routes"));
 
 // Reminders (voice-created via /chat intents + Today screen CRUD).
 app.use("/reminders", appAuth, require("./reminders/routes"));
@@ -349,13 +361,10 @@ app.get("/tools/astrology", appAuth, async (req, res) => {
   }
 });
 
-// Voice transcription (Gemini) — same auth as chat
-app.use("/stt", appAuth, perUserLimit, sttRoute);
-
-app.use("/tts", appAuth, perUserLimit, ttsRoute);
-
-// Group B — photos, documents, OCR, screenshot helper (Gemini vision).
-app.use("/vision", appAuth, perUserLimit, require("./routes/vision"));
+// Speech in, speech out and "what is this" with the camera are the app's
+// own now (on-device recognition, Gemini TTS and Nano/cloud vision through
+// Firebase AI Logic). Old builds are told to update.
+app.use(["/stt", "/tts", "/vision"], gone);
 
 // Group B+ — SAVED documents: hospital reports, receipts… Hari remembers
 // them and pulls them back up from a voice request (see routes/docs.js).
@@ -380,6 +389,23 @@ app.use("/studio", appAuth, perUserLimit, require("./routes/studio"));
 app.use("/posters", appAuth, posterLimit, require("./routes/posters"));
 // SHORTCUTS — "office mode": one word, several things (routes/shortcuts.js).
 app.use("/shortcuts", appAuth, shortcutLimit, require("./routes/shortcuts"));
+// THE SHOPPING LIST and THE KITCHEN (2026-09-29) — one list for anything
+// to buy; pantry, recipes and the week plan (src/shopping, src/kitchen).
+// Each has its own per-user bucket, so a list screen never starves a turn.
+const shopping = require("./shopping");
+const kitchen = require("./kitchen");
+app.use("/shopping", appAuth, shopping.limiter, shopping.router);
+app.use("/kitchen", appAuth, kitchen.limiter, kitchen.router);
+
+// ASSISTANT FUNCTIONS (2026-09-29) — Android AppFunctions: Gemini and other
+// system agents add to the list, set reminders, plan Today's 3 and log a
+// habit without the app open (src/appfunctions). The phone's background
+// service holds a narrow "appfn" key: minted and revoked here by a normal
+// session only, accepted on /appfunctions alone — appAuth refuses it on
+// every other route. Its own per-user bucket, 60 a minute.
+const appfunctions = require("./appfunctions");
+app.use("/appfunctions/token", appAuth, appfunctions.limiter, appfunctions.tokenRouter);
+app.use("/appfunctions", appFnAuth, appfunctions.limiter, appfunctions.router);
 
 // PROFESSIONAL MODE — per-client/patient case files (doctor, lawyer…):
 // profile + dated notes + linked documents, recalled by voice
@@ -410,9 +436,6 @@ app.use("/legal", require("./routes/legal"));
 // Regional language from the caller's IP (no app permissions needed)
 app.use("/region", regionRoute);
 
-// LIVE MODE (experimental): the probe route must register BEFORE the JSON
-// 404 catch-all below, or /live would always 404; the WS upgrade handler is
-// attached to the HTTP server after listen because it needs that handle.
 // MCP servers are per-user configuration, so the route sits behind the
 // same auth as the rest of the API.
 app.use("/mcp", appAuth, require("./mcp/routes"));
@@ -425,7 +448,8 @@ app.use("/mcp", appAuth, require("./mcp/routes"));
 // LIVE mode therefore declared ZERO tools to the model: no camera, no
 // agent-to-agent messages, no reminders. The assistant did not fail loudly —
 // it simply said it was unable to do those things, because as far as it knew
-// it was. Registering here makes the tool set identical on both paths.
+// it was. Registering here makes the tool set identical on every path — the
+// app's cloud model (/ai) and the server's background agent alike.
 require("./agents/runtime");
 // SEAL THE CONTRACT once every tool is registered: derive the safety sets
 // from what the tools declared about themselves, and report any list that
@@ -444,11 +468,12 @@ require("./agents/runtime");
   );
 }
 
-const live = require("./live/proxy");
-// Avatar routes mount FIRST: Express matches in order, and /live's probe
-// router would otherwise swallow /live/avatar/* before it gets here.
+// Avatar routes stay under /live (the app's avatar screen). The Live
+// speech-to-speech socket and its probe are gone (the app runs its models
+// itself): GET /live and a plain request to /live/ws say "update the app",
+// and so does the /live/ws upgrade (attached after listen, src/ai/gone.js).
 app.use("/live/avatar", appAuth, require("./avatar/routes").router());
-app.use("/live", live.probeRouter());
+app.all(["/live", "/live/ws"], gone);
 
 // Agent-level metrics (tool latency, job counts, agent turns). Mounted at
 // /metrics/agent because /metrics already serves Prometheus process
@@ -572,23 +597,25 @@ require("./db")
           ` stt=${process.env.GEMINI_STT_MODEL || "(same as chat)"}` +
           ` vision=${ai.envModel("GEMINI_VISION_MODEL", "gemini-flash-latest")}` +
           ` fallback=${ai.fallbackModel()}` +
-          ` planner=${ai.automationModel()} planner_fast=${ai.automationFastModel()}` +
-          ` tts=${process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts"}` +
           ` thinking=${process.env.GEMINI_THINKING_LEVEL || "low"}`
+      );
+      // What the APP is told to run (GET /ai/config): the conversation's
+      // models live on the phone and in Firebase AI Logic now.
+      const aiCfg = require("./ai/config");
+      console.log(
+        `  app models: cloud=${aiCfg.cloudModel()} fast=${aiCfg.cloudFastModel()}` +
+          ` tts=${aiCfg.ttsModel()} live=${aiCfg.liveModel()}` +
+          ` nano=${aiCfg.nanoEnabled() ? "on" : "off"}`
       );
       if (!process.env.GEMINI_API_KEY) {
         console.warn(
-          "WARNING: GEMINI_API_KEY not set — /vision and /docs analysis " +
-            "(Group B: photos, PDFs, OCR, screenshots) will return 503. " +
-            "Chat and voice will NOT work without it."
+          "WARNING: GEMINI_API_KEY not set — /docs analysis, meeting and " +
+            "call notes, and every background task will fail without it."
         );
       }
     });
-    // LIVE MODE: attach the /live/ws upgrade handler to the running server.
-    live.attachWs(server);
-    console.log(
-      `  live mode: model=${process.env.GEMINI_LIVE_MODEL || "gemini-2.5-flash-native-audio-preview"} at /live/ws (experimental)`
-    );
+    // The /live/ws upgrade an old build still tries answers 426.
+    require("./ai/gone").attachUpgrade(server);
 
     // Call recordings are pruned after every session, but a server that
     // sat idle over a weekend still holds expired ones. Sweep at boot and

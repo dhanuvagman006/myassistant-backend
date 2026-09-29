@@ -6,40 +6,21 @@
  * assistant should be aware of user location when he makes any requests",
  * and "don't send silent packets to my agent, trim it".
  *
- * No network: the geocoder and the search are scripted, and the live model
- * is a fake socket whose every message is read back.
+ * No network: the geocoder and the search are scripted. The app's
+ * conversation is driven through the real /ai routes (src/ai/): the Live
+ * socket these once drove is gone (2026-09-29), and with it the checks on
+ * its audio pauses and mid-call place notes — every turn now carries the
+ * phone's place and clock itself.
  */
 process.env.DATABASE_URL = process.env.DATABASE_URL ||
   "postgres://myassistant:localdev@127.0.0.1:55432/myassistant";
 process.env.NODE_ENV = process.env.NODE_ENV || "test";
-// The live socket's own auth tier for a dev session, so no token is needed.
-process.env.AUTH_DISABLED = "true";
 process.env.GEMINI_API_KEY = process.env.GEMINI_API_KEY || "test-key-never-sent";
 process.env.LIVE_RECORD = "0";
 
 const assert = require("assert");
-const EventEmitter = require("events");
 const fs = require("fs");
 
-/* ---- a fake Gemini Live socket, installed before the proxy loads ---- */
-const ups = [];
-const apps = [];
-class FakeUpstream extends EventEmitter {
-  constructor(url) { super(); this.url = url; this.readyState = 1; this.sent = []; ups.push(this); }
-  send(d) { this.sent.push(JSON.parse(String(d))); }
-  close() { this.readyState = 3; }
-}
-FakeUpstream.OPEN = 1;
-class FakeApp extends EventEmitter {
-  constructor() { super(); this.readyState = 1; this.out = []; }
-  send(d) { this.out.push(Buffer.isBuffer(d) ? { audio: d.length } : JSON.parse(String(d))); }
-  close() { this.readyState = 3; }
-}
-FakeUpstream.Server = class {
-  handleUpgrade(_req, _socket, _head, cb) { const a = new FakeApp(); apps.push(a); cb(a); }
-};
-const wsPath = require.resolve("ws");
-require.cache[wsPath] = { id: wsPath, filename: wsPath, loaded: true, exports: FakeUpstream };
 
 let passed = 0;
 async function t(name, fn) {
@@ -62,7 +43,6 @@ async function waitFor(fn, ms = 2000) {
   const builtins = require("../src/tools/builtins");
   const geo = require("../src/users/whereNow");
   const claimCheck = require("../src/agents/claimCheck");
-  const proxy = require("../src/live/proxy");
 
   // Scripted places, by latitude.
   builtins.reverseGeocode = async (lat) => {
@@ -258,7 +238,7 @@ async function waitFor(fn, ms = 2000) {
     assert.strictEqual(geo.areaChanged("Kadri, Mangaluru", "ಕದ್ರಿ, ಮಂಗಳೂರು"), true);
   });
 
-  await t("chat and live prompts carry the line with the owner's clock", async () => {
+  await t("chat and spoken prompts carry the line with the owner's clock", async () => {
     const u = await db.createUser({ email: `where-${Date.now()}@example.test`, name: "Test Owner", gender: "male" });
     try {
       const at = Date.UTC(2026, 8, 24, 9, 40);
@@ -272,159 +252,97 @@ async function waitFor(fn, ms = 2000) {
     const rt = fs.readFileSync(__dirname + "/../src/agents/runtime.js", "utf8");
     // (appBuild since shortcuts, 2026-09-27: the shortcut names are listed from build 120.)
     assert.match(rt, /contextBlock\(ctx\.userId, \{ lat: ctx\.lat, lng: ctx\.lng, tz: ctx\.tzOffsetMin(, appBuild: ctx\.appBuild)? \}\)/);
-    const px = fs.readFileSync(__dirname + "/../src/live/proxy.js", "utf8");
-    assert.match(px, /lat: deviceCtx\.lat, lng: deviceCtx\.lng, tz: deviceCtx\.tz, at: deviceCtx\.locAt/);
+    const ai = fs.readFileSync(__dirname + "/../src/ai/context.js", "utf8");
+    assert.match(ai, /lat: fix\.lat, lng: fix\.lng, tz, at: fix\.at, appBuild: build/);
   });
 
-  /* ============================ THE LIVE SOCKET ============================ */
+  /* ======================= THE APP'S CONVERSATION (/ai) ======================= */
+  // Until 2026-09-29 these drove the Live socket. The app runs its own
+  // models now and asks this server for each turn's context and tools
+  // (src/ai/): the phone's build, clock and place ride on POST /ai/context.
 
-  async function openLive(query) {
-    const server = new EventEmitter();
-    proxy.attachWs(server);
-    const nUp = ups.length;
-    const socket = { destroyed: false, on() {}, write() {}, destroy() { this.destroyed = true; } };
-    server.emit("upgrade", { url: `/live/ws?${query}` }, socket, Buffer.alloc(0));
-    await waitFor(() => ups.length > nUp);
-    const up = ups[ups.length - 1];
-    const app = apps[apps.length - 1];
-    up.emit("open");
-    await waitFor(() => up.sent.some((m) => m.setup));
-    const setup = up.sent.find((m) => m.setup).setup;
-    return {
-      up, app, setup,
-      ready: async () => {
-        up.emit("message", Buffer.from(JSON.stringify({ setupComplete: {} })));
-        await waitFor(() => app.out.some((m) => m.type === "ready"));
-      },
-      say: (m) => app.emit("message", Buffer.from(JSON.stringify(m)), false),
-      audio: () => app.emit("message", Buffer.alloc(640, 1), true),
-      model: (msg) => up.emit("message", Buffer.from(JSON.stringify(msg))),
-      notes: () => up.sent.filter((m) => m.clientContent &&
-        /The owner is now in/.test(m.clientContent.turns[0].parts[0].text)),
-    };
-  }
-  // Calls a tool the way Gemini would, and returns what went back to it.
-  async function toolCall(s, name, args) {
-    const id = `c${Math.random()}`;
-    s.model({ toolCall: { functionCalls: [{ id, name, args }] } });
-    await waitFor(() => s.up.sent.some((m) => m.toolResponse &&
-      m.toolResponse.functionResponses.some((r) => r.id === id)));
-    s.model({ serverContent: { turnComplete: true } }); // the turn ends
-    return s.up.sent.find((m) => m.toolResponse && m.toolResponse.functionResponses.some((r) => r.id === id))
-      .toolResponse.functionResponses.find((r) => r.id === id).response;
-  }
+  const express = require("express");
+  const app = express();
+  app.use(express.json());
+  let AS = 0;
+  app.use((req, _res, next) => { req.user = { sub: String(AS) }; next(); });
+  app.use("/ai", require("../src/ai/routes"));
+  const server = await new Promise((r) => { const s = app.listen(0, "127.0.0.1", () => r(s)); });
+  const BASE = `http://127.0.0.1:${server.address().port}/ai`;
+  const post = async (p, body) => {
+    const r = await fetch(BASE + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    return r.json();
+  };
+  const owner = await db.createUser({ email: `ctx-ai-${Date.now()}@example.test`, name: "Test Owner", gender: "male" });
+  AS = owner.id;
+  const turnAt = (body) => post("/context", { text: "hello", mode: "voice", platform: "android", ...body });
+  const toolIn = (c, name, args) => post("/tool", { sessionId: c.sessionId, turnId: c.turnId, name, args, userText: "please" });
 
-  await t("live prompt: build 107 gets phone_calls and its rule, build 106 keeps today's", async () => {
-    const s107 = await openLive("build=107&platform=android&tz=330");
-    const p107 = s107.setup.systemInstruction.parts[0].text;
-    assert.match(p107, /CALLS ON THIS PHONE: 'any missed calls\?'[^.]*→ phone_calls/);
-    assert.ok(!/you cannot see the phone's missed or recent calls/.test(p107));
-    assert.ok(s107.setup.tools[0].functionDeclarations.some((d) => d.name === "phone_calls"));
-    const s106 = await openLive("build=106&platform=android&tz=330");
-    const p106 = s106.setup.systemInstruction.parts[0].text;
-    assert.match(p106, /CALL HISTORY: you cannot see the phone's missed or recent calls/);
-    assert.ok(!/CALLS ON THIS PHONE/.test(p106));
-    assert.ok(!s106.setup.tools[0].functionDeclarations.some((d) => d.name === "phone_calls"));
+  await t("spoken prompt: build 107 gets phone_calls and its rule, build 106 keeps today's", async () => {
+    const s107 = await turnAt({ build: 107, tz: 330 });
+    assert.match(s107.system, /CALLS ON THIS PHONE: 'any missed calls\?'[^.]*→ phone_calls/);
+    assert.ok(!/you cannot see the phone's missed or recent calls/.test(s107.system));
+    assert.ok(s107.tools.some((d) => d.name === "phone_calls"));
+    const s106 = await turnAt({ build: 106, tz: 330 });
+    assert.match(s106.system, /CALL HISTORY: you cannot see the phone's missed or recent calls/);
+    assert.ok(!/CALLS ON THIS PHONE/.test(s106.system));
+    assert.ok(!s106.tools.some((d) => d.name === "phone_calls"));
   });
 
-  await t("live: the call-log request reaches the phone with its fixed sentence", async () => {
-    const s = await openLive("build=107&platform=android&tz=330");
-    await s.ready();
-    const res = await toolCall(s, "phone_calls", { filter: "missed", person: "Ravi" });
-    assert.strictEqual(res.result, "Checking your calls.");
-    assert.match(res.note, /\[SYSTEM\] line/);
-    const sent = s.app.out.find((m) => m.type === "call_log");
-    assert.deepStrictEqual(sent, { type: "call_log", filter: "missed", person: "Ravi", since_hours: 24, limit: 10 });
+  await t("the call-log request reaches the phone with its fixed sentence", async () => {
+    const c = await turnAt({ text: "any missed calls from Ravi?", build: 107, tz: 330 });
+    const res = await toolIn(c, "phone_calls", { filter: "missed", person: "Ravi" });
+    assert.strictEqual(res.result.result, "Checking your calls.");
+    assert.match(res.result.note, /\[SYSTEM\] line/);
+    assert.deepStrictEqual(res.deviceAction, { type: "call_log", filter: "missed", person: "Ravi", since_hours: 24, limit: 10 });
   });
 
-  await t("audio_pause ends the audio stream once; the next frame resumes it", async () => {
-    const s = await openLive("build=107&platform=android");
-    s.say({ type: "audio_pause" }); // before setup: nothing to end yet
-    await tick();
-    assert.ok(!s.up.sent.some((m) => m.realtimeInput && m.realtimeInput.audioStreamEnd));
-    await s.ready();
-    s.audio();
-    s.say({ type: "audio_pause" });
-    await tick();
-    const ends = s.up.sent.filter((m) => m.realtimeInput && m.realtimeInput.audioStreamEnd === true);
-    assert.strictEqual(ends.length, 1);
-    const before = s.up.sent.length;
-    s.audio();
-    await tick();
-    const next = s.up.sent.slice(before);
-    assert.strictEqual(next.length, 1);
-    assert.strictEqual(next[0].realtimeInput.audio.mimeType, "audio/pcm;rate=16000", "audio resumes as normal");
-  });
-
-  await t("a missing fix or timezone on the socket URL is absent, not 0", async () => {
-    const s = await openLive("build=107&platform=android");
+  await t("a missing fix or timezone is absent, not 0", async () => {
+    const c = await turnAt({ text: "find a chemist near me", build: 107 });
     // Number(null) is 0: no tz used to mean UTC, five and a half hours out.
-    assert.match(s.setup.systemInstruction.parts[0].text, /\(UTC\+05:30\)/);
-    await s.ready();
+    assert.match(c.system, /\(UTC\+05:30\)/);
+    assert.ok(!/WHERE THE OWNER IS NOW/.test(c.system), "no fix, no line");
     asked.length = 0;
     // ...and no fix used to be 0,0, which "near me" then searched around.
-    const res = await toolCall(s, "find_places_nearby", { query: "chemist", open_map: false });
+    const res = await toolIn(c, "find_places_nearby", { query: "chemist", open_map: false });
     assert.strictEqual(res.ok, false, JSON.stringify(res));
     assert.strictEqual(res.error, "no_location");
     assert.strictEqual(asked.length, 0, "nothing searched around the Gulf of Guinea");
   });
 
-  await t("live location: tools use the new fix at once; one quiet note when the area changes", async () => {
-    const s = await openLive("build=107&platform=android&tz=330&lat=12.8700&lng=74.8600");
-    await s.ready();
-    // A few hundred metres inside Kadri: tools move, the model is not told.
-    s.say({ type: "location", lat: 12.8712, lng: 74.8611, acc: 20 });
-    await tick(); await tick();
-    assert.strictEqual(s.notes().length, 0, "same area, no note");
-    // Nonsense is ignored.
-    s.say({ type: "location", lat: 0, lng: 0 });
-    s.say({ type: "location", lat: 200, lng: 74 });
-    s.say({ type: "location" });
-    // Manipal: a new area.
-    s.say({ type: "location", lat: 13.3525, lng: 74.7928, acc: 15 });
-    await waitFor(() => s.notes().length === 1);
-    const note = s.notes()[0].clientContent;
-    assert.strictEqual(note.turnComplete, false, "no reply is asked for");
-    assert.match(note.turns[0].parts[0].text, /^\[SYSTEM\] The owner is now in Manipal, Udupi\./);
+  await t("location: tools use the new fix at once, and the next turn says where they are now", async () => {
+    const c1 = await turnAt({ build: 107, tz: 330, lat: 12.8700, lng: 74.8600, acc: 20 });
+    assert.match(c1.system, /WHERE THE OWNER IS NOW: Kadri, Mangaluru/);
+    // Nonsense is ignored: the session keeps the fix it had.
+    const junk = await turnAt({ sessionId: c1.sessionId, build: 107, tz: 330, lat: 0, lng: 0 });
+    assert.match(junk.system, /WHERE THE OWNER IS NOW: Kadri, Mangaluru/);
+    const c2 = await turnAt({ sessionId: c1.sessionId, build: 107, tz: 330, lat: 13.3525, lng: 74.7928, acc: 15 });
+    assert.strictEqual(c2.sessionId, c1.sessionId);
+    assert.match(c2.system, /WHERE THE OWNER IS NOW: Manipal, Udupi/);
     asked.length = 0;
-    await toolCall(s, "web_search", { query: "hotel address" });
+    await toolIn(c2, "web_search", { query: "hotel address" });
     assert.strictEqual(asked[0], "hotel address Udupi", "the search uses where they are NOW");
-    // Back and forth inside Manipal: still one note.
-    s.say({ type: "location", lat: 13.3530, lng: 74.7930, acc: 15 });
-    await tick(); await tick();
-    assert.strictEqual(s.notes().length, 1);
   });
 
-  await t("live location: a note never lands over her voice — it waits for her turn to end", async () => {
-    const s = await openLive("build=107&platform=android&tz=330&lat=12.8700&lng=74.8600");
-    await s.ready();
-    s.model({ serverContent: { outputTranscription: { text: "Sure, the nearest one is " } } });
-    s.say({ type: "location", lat: 13.3525, lng: 74.7928, acc: 15 });
-    await tick(); await tick(); await tick();
-    assert.strictEqual(s.notes().length, 0, "held while she speaks");
-    s.model({ serverContent: { turnComplete: true } });
-    await waitFor(() => s.notes().length === 1);
-    assert.strictEqual(s.notes()[0].clientContent.turnComplete, false);
-  });
-
-  await t("live location: a coarse fix moves the tools but tells the model nothing", async () => {
-    const s = await openLive("build=107&platform=android&tz=330&lat=12.8700&lng=74.8600");
-    await s.ready();
-    s.say({ type: "location", lat: 13.3525, lng: 74.7928, acc: 5000 });
-    await tick(); await tick(); await tick();
-    assert.strictEqual(s.notes().length, 0);
+  await t("location: a coarse fix moves the tools but not the model's picture of the area", async () => {
+    const c1 = await turnAt({ build: 107, tz: 330, lat: 12.8700, lng: 74.8600, acc: 20 });
+    const c2 = await turnAt({ sessionId: c1.sessionId, build: 107, tz: 330, lat: 13.3525, lng: 74.7928, acc: 5000 });
+    assert.match(c2.system, /WHERE THE OWNER IS NOW: Kadri, Mangaluru/);
+    assert.ok(!/Manipal/.test(c2.system));
     asked.length = 0;
-    await toolCall(s, "web_search", { query: "hotel address" });
+    await toolIn(c2, "web_search", { query: "hotel address" });
     assert.strictEqual(asked[0], "hotel address Udupi");
   });
 
-  await t("live location: a session that started without a fix is told the first place", async () => {
-    const s = await openLive("build=107&platform=android&tz=330");
-    await s.ready();
-    s.say({ type: "location", lat: 12.8700, lng: 74.8600, acc: 30 });
-    await waitFor(() => s.notes().length === 1);
-    assert.match(s.notes()[0].clientContent.turns[0].parts[0].text, /now in Kadri, Mangaluru/);
+  await t("location: a session that started without a fix is told the first place", async () => {
+    const c1 = await turnAt({ build: 107, tz: 330 });
+    assert.ok(!/WHERE THE OWNER IS NOW/.test(c1.system));
+    const c2 = await turnAt({ sessionId: c1.sessionId, build: 107, tz: 330, lat: 12.8700, lng: 74.8600, acc: 30 });
+    assert.match(c2.system, /WHERE THE OWNER IS NOW: Kadri, Mangaluru/);
   });
+
+  server.close();
+  await require("../src/routes/privacy").deleteUserEverywhere(owner.id, { reason: "context-test cleanup" }).catch(() => {});
 
   console.log(`\n${passed} passed${process.exitCode ? ", SOME FAILED" : ""}`);
   process.exit(process.exitCode || 0);

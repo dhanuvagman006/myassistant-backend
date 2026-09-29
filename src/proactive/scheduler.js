@@ -512,11 +512,6 @@ async function sweepMomentum() {
 }
 
 async function sweep() {
-  // Phone tasks whose phone went silent are closed for EVERY user here,
-  // not only when that user starts another (automation/service.js).
-  const silentRuns = await require("../automation/service").sweep().catch(() => 0);
-  if (silentRuns) console.log(`proactive: ${silentRuns} silent phone task(s) closed`);
-
   // Calls whose result never came back (agentCall.closeStale): closed as
   // failed and the user told. On its own line — a failure here must not
   // cost the other sweeps.
