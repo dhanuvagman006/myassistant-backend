@@ -310,12 +310,18 @@ function isoLocal(ms, tz = 330) {
       assert.ok(!/couldn't set the timer/.test(sys), "a past failure is not carried as a lesson");
       assert.match(sys, /This is a NEW conversation/, "the do-not-re-execute guard");
       assert.match(sys, /Current date and time for the user: .* \(UTC\+05:30\)/);
+      // Words that name no tool get the core set (never the whole
+      // catalogue: 143 tools took the phone's model 72 s to start).
       const names = c.tools.map((d) => d.name);
-      for (const n of ["remember_fact", "recall_memory", "forget_memory", "remember_person_date",
-        "start_task", "schedule_task", "web_search", "deep_research", "add_finance_item",
-        "get_finance_plan", "plan_my_day", "start_focus", "momentum_status", "recall_conversation",
-        "check_recent_actions", "end_conversation", "stay_silent"]) {
+      for (const n of ["remember_fact", "recall_memory", "schedule_task", "web_search",
+        "recall_conversation", "check_recent_actions", "end_conversation", "stay_silent"]) {
         assert.ok(names.includes(n), `the app's model is offered ${n}`);
+      }
+      assert.ok(names.length <= require("../src/tools/relevance").PHONE_MAX);
+      // A request that names a tool is offered it.
+      const asks = await conversation().hear("forget that I am vegetarian, and plan my day");
+      for (const n of ["forget_memory", "plan_my_day"]) {
+        assert.ok(asks.tools.map((d) => d.name).includes(n), `asked for, ${n} is offered`);
       }
       assert.ok(!names.includes("make_greeting_poster"), "build 119 cards are not offered to 118");
     });

@@ -606,8 +606,7 @@ require("./db")
         `  app models: cloud=${aiCfg.cloudModel()} (${aiCfg.thinkingLevel()} thinking, fallback ${aiCfg.cloudFallbackModel()})` +
           ` fast=${aiCfg.cloudFastModel()}` +
           ` tts=${aiCfg.ttsModel()} (build ${aiCfg.EXPRESSIVE_BUILD}+: ${aiCfg.expressiveTtsModel()})` +
-          ` live=${aiCfg.liveModel()}` +
-          ` nano=${aiCfg.nanoEnabled() ? "on" : "off"}`
+          ` live=${aiCfg.liveModel()}`
       );
       if (!process.env.GEMINI_API_KEY) {
         console.warn(

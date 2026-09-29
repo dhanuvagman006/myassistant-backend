@@ -1,8 +1,9 @@
 /**
  * THE TOOL SERVER — `npm run test:ai`.
  *
- * Since 2026-09-29 the app runs its own models (Gemini Nano on the phone,
- * Gemini through Firebase AI Logic) and this server is its tool server and
+ * Since 2026-09-29 the app runs its own models (Gemini through Firebase
+ * AI Logic; Gemini Nano was removed the same night) and this server is its
+ * tool server and
  * memory: GET /ai/config, POST /ai/context, /ai/tool, /ai/turn and
  * /ai/firebase-token. The old model routes (/live/ws, /assistant, /stt,
  * /tts, /vision, the assistant's /chat turns) answer 426.
@@ -115,7 +116,6 @@ async function api(method, p, { token, body } = {}) {
   return { status: r.status, json, text };
 }
 
-const CLOUD_LINE = "If answering needs an action, the user's own data or live information, reply with exactly [[CLOUD]] and nothing else.";
 const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notifications", "calendar"];
 
 (async () => {
@@ -160,10 +160,10 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
       const r = await api("GET", "/ai/config", { token: A.token });
       assert.strictEqual(r.status, 200, r.text);
       const c = r.json;
-      assert.deepStrictEqual(Object.keys(c).sort(), ["limits", "models", "nano", "routing"]);
+      assert.deepStrictEqual(Object.keys(c).sort(), ["limits", "models", "routing"], "no Nano any more");
       assert.deepStrictEqual(Object.keys(c.models).sort(),
         ["cloud", "cloudFallback", "cloudFast", "live", "liveVoice", "thinking", "tts", "ttsLanguage", "ttsStyle", "ttsVoice"]);
-      assert.strictEqual(c.models.cloud, "gemini-3-flash-preview", "the phone's own conversation model");
+      assert.strictEqual(c.models.cloud, "gemini-3.5-flash-lite", "the phone's own conversation model");
       assert.strictEqual(c.models.cloudFallback, "gemini-flash-lite-latest");
       assert.strictEqual(c.models.thinking, "low");
       assert.strictEqual(c.models.ttsStyle, "warm, friendly and natural");
@@ -173,7 +173,6 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
       assert.strictEqual(c.models.ttsLanguage, "en-IN");
       assert.strictEqual(c.models.live, "gemini-live-2.5-flash-preview");
       assert.strictEqual(c.models.liveVoice, "Kore", "the same voice as speech");
-      assert.deepStrictEqual(c.nano, { enabled: true, maxPromptChars: 9000 });
       assert.deepStrictEqual(c.limits, { maxToolRounds: 6 });
       for (const w of ["remind", "call", "alarm", "weather", "my", "email", "reminder", "shortcut"]) {
         assert.ok(c.routing.toolWords.includes(w), `toolWords has ${w}`);
@@ -185,18 +184,17 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
       assert.deepStrictEqual(c.routing.shortcutNames, []);
     });
 
-    await atest("env and the user's own choices: models, Nano off, voice, speech language, live model", async () => {
+    await atest("env and the user's own choices: models, voice, speech language, live model", async () => {
       Object.assign(process.env, {
         GEMINI_MODEL: "gemini-3.5-flash", AI_CLOUD_FAST_MODEL: "gemini-3.5-flash-lite",
         GEMINI_TTS_MODEL: "gemini-3-tts", GEMINI_LIVE_MODEL: "gemini-3.1-flash-live-preview", AI_NANO: "off",
       });
       try {
         let c = (await api("GET", "/ai/config", { token: A.token })).json;
-        assert.strictEqual(c.models.cloud, "gemini-3-flash-preview", "GEMINI_MODEL is the server's own, not the phone's");
+        assert.strictEqual(c.models.cloud, "gemini-3.5-flash-lite", "GEMINI_MODEL is the server's own, not the phone's");
         assert.strictEqual(c.models.cloudFast, "gemini-3.5-flash-lite");
         assert.strictEqual(c.models.tts, "gemini-3-tts", "GEMINI_TTS_MODEL is the default");
         assert.strictEqual(c.models.live, "gemini-3.1-flash-live-preview", "GEMINI_LIVE_MODEL is the default");
-        assert.strictEqual(c.nano.enabled, false);
         Object.assign(process.env, { AI_CLOUD_MODEL: "gemini-4-flash", AI_TTS_MODEL: "gemini-4-tts",
           AI_LIVE_MODEL: "gemini-4-live", AI_TTS_VOICE: "Charon", AI_LIVE_VOICE: "Puck" });
         await db.run(`UPDATE users SET preferred_language='Kannada' WHERE id=$1`, [A.id]);
@@ -261,11 +259,11 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
 
     await registry.execute("remember_fact", { fact: "User is vegetarian" }, { userId: A.id });
     let chat;
-    await atest("typed: the text agent's prompt with profile, memory and clock; Nano's preamble; JSON Schema tools", async () => {
+    await atest("typed: the text agent's prompt with profile, memory and clock; JSON Schema tools", async () => {
       const r = await context(A, { text: "what should I cook for dinner tonight?" });
       assert.strictEqual(r.status, 200, r.text);
       chat = r.json;
-      assert.deepStrictEqual(Object.keys(chat).sort(), ["history", "nano", "route", "sessionId", "system", "tools", "turnId"]);
+      assert.deepStrictEqual(Object.keys(chat).sort(), ["history", "route", "sessionId", "system", "tools", "turnId"]);
       assert.match(chat.sessionId, /^ai:[0-9a-f-]{36}$/);
       assert.match(chat.turnId, /^[0-9a-f-]{36}$/);
       assert.deepStrictEqual(chat.route, { shortcut: null });
@@ -278,9 +276,6 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
       assert.match(sys, /WHAT YOU REMEMBER ABOUT THIS USER[\s\S]*User is vegetarian/);
       assert.match(sys, /Current date and time for the user: .* \(UTC\+05:30\)/);
       assert.ok(!/SOUND LIKE A PERSON, NOT A MACHINE/.test(sys), "the spoken rules are for voice");
-      assert.ok(chat.nano.length <= 4000, `nano is ${chat.nano.length} chars`);
-      assert.ok(chat.nano.endsWith(CLOUD_LINE), chat.nano.slice(-200));
-      assert.match(chat.nano, /"Sir" once/);
       assert.ok(Array.isArray(chat.tools) && chat.tools.length > 5);
       for (const t of chat.tools) {
         assert.strictEqual(typeof t.name, "string");
@@ -292,7 +287,7 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
     });
 
     let voice;
-    await atest("spoken: the voice rules — short, natural, the title once, no markdown in Nano", async () => {
+    await atest("spoken: the voice rules — short, natural, the title once", async () => {
       const r = await context(A, { text: "hello there", mode: "voice" });
       assert.strictEqual(r.status, 200, r.text);
       voice = r.json;
@@ -306,9 +301,6 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
       assert.match(sys, /HOW TO ADDRESS THEM — as "Sir"[^\n]*ONCE/);
       assert.match(sys, /WHAT YOU REMEMBER ABOUT THIS USER[\s\S]*User is vegetarian/);
       assert.match(sys, /Current date and time for the user: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \(UTC\+05:30\)/);
-      assert.match(voice.nano, /SPEAKING/);
-      assert.match(voice.nano, /no markdown/i);
-      assert.ok(voice.nano.endsWith(CLOUD_LINE));
       assert.ok(!/HOW YOU SOUND/.test(sys), "delivery marks only when the phone asks for them");
     });
 
@@ -359,13 +351,20 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
 
     await atest("tools are gated by build, platform and permissions exactly as the registry gates them", async () => {
       const names = (x) => x.json.tools.map((t) => t.name).sort();
-      // "hmm okay" carries no signal: the whole (gated) catalogue.
+      const relevance = require(path.join(BACKEND, "src/tools/relevance"));
+      const caps = (build) => ({ platform: "android", build, granted: GRANTED, denied: [] });
+      // "hmm okay" carries no signal: the core set, gated — never the whole
+      // catalogue (143 tools took the phone's model 72 s to start).
       const b110 = await context(A, { text: "hmm okay", build: 110 });
       const b118 = await context(A, { text: "hmm okay", build: 118 });
-      const caps = (build) => ({ platform: "android", build, granted: GRANTED, denied: [] });
-      assert.deepStrictEqual(names(b110), registry.declarations({ userId: A.id, deviceCaps: caps(110) }).map((d) => d.name).sort());
-      assert.deepStrictEqual(names(b118), registry.declarations({ userId: A.id, deviceCaps: caps(118) }).map((d) => d.name).sort());
-      assert.ok(!names(b110).includes("start_focus") && names(b118).includes("start_focus"), "start_focus needs build 111");
+      const gated = (build) => registry.declarations({ userId: A.id, deviceCaps: caps(build),
+        only: [...relevance.CORE, ...relevance.PHONE_ALWAYS] }).map((d) => d.name).sort();
+      assert.deepStrictEqual(names(b110), gated(110));
+      assert.deepStrictEqual(names(b118), gated(118));
+      assert.ok(names(b118).length <= relevance.PHONE_MAX);
+      const focus = await context(A, { text: "start a focus session", build: 110 });
+      const focus2 = await context(A, { text: "start a focus session", build: 118 });
+      assert.ok(!names(focus).includes("start_focus") && names(focus2).includes("start_focus"), "start_focus needs build 111");
       const b106 = await context(A, { text: "hmm okay", build: 106 });
       const b107 = await context(A, { text: "hmm okay", build: 107 });
       const ios = await context(A, { text: "hmm okay", build: 118, platform: "ios" });
@@ -374,14 +373,17 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
       const permTool = registry.list().find((t) => (t.requires || []).some((q) => q.kind === "os_permission"));
       assert.ok(permTool, "a tool that needs a permission");
       const perm = permTool.requires.find((q) => q.kind === "os_permission").id;
-      const denied = await context(A, { text: "hmm okay", build: 118, caps: { granted: [], denied: [perm] } });
+      const asks = `${permTool.name.replace(/_/g, " ")}`;
+      const denied = await context(A, { text: asks, build: 118, caps: { granted: [], denied: [perm] } });
+      const allowed = await context(A, { text: asks, build: 118 });
       assert.ok(!names(denied).includes(permTool.name), `${permTool.name} is hidden when ${perm} is denied`);
-      assert.ok(names(b118).includes(permTool.name));
+      assert.ok(names(allowed).includes(permTool.name));
       assert.match(denied.json.system, new RegExp(`${perm.toUpperCase()} permission is NOT granted`), "and the limit is said");
       // A clear request is narrowed to what it needs (relevance), CORE kept.
       const narrow = await context(A, { text: "set an alarm for 6 am tomorrow", build: 118 });
       assert.ok(names(narrow).includes("set_alarm"));
-      assert.ok(names(narrow).length < names(b118).length, "relevance-filtered for the text");
+      assert.ok(names(narrow).length <= relevance.PHONE_MAX, "relevance-filtered, and capped for the phone");
+      assert.ok(names(narrow).includes("web_search"), "the core set kept");
     });
 
     await atest("a turn that does not say the clock or place keeps the session's; UTC is a timezone; IST only when never said", async () => {
@@ -431,8 +433,6 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
       const c = (await context(A, { text: "con", mode: "voice" })).json;
       assert.match(c.system, /That transcript was not usable \("con"/);
       assert.match(c.system, /Say only this, in their language/);
-      assert.match(c.nano, /Say only this, in their language/);
-      assert.ok(c.nano.endsWith(CLOUD_LINE));
     });
 
     /* ============================================================ */
@@ -511,7 +511,6 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
 
       const c2 = (await context(A, { text: "yes please", mode: "voice", sessionId: s1.sessionId })).json;
       assert.match(c2.system, /WAITING ON THE OWNER'S YES: you asked "Forget: sister Priya\?"/, "the model is told what waits");
-      assert.match(c2.nano, /reply with exactly \[\[CLOUD\]\] and nothing else\.\nIf answering/, "Nano hands a pending yes to the cloud");
       const yes = await tool(A, { ...call, turnId: c2.turnId, userText: "yes please", approvalToken: asked.json.approvalToken });
       assert.strictEqual(yes.status, 200, yes.text);
       assert.strictEqual(yes.json.ok, true, yes.text);
@@ -649,7 +648,6 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
       const c = (await context(A, { text: "hello", mode: "voice" })).json;
       assert.match(c.system, /CRITICAL INSTRUCTION: Another person's assistant has passed you/);
       assert.match(c.system, /- From Dhanush K: "Dinner at 8, don't be late"/);
-      assert.match(c.nano, /For this message, reply with exactly \[\[CLOUD\]\]/);
       const st = sessions.get(A.id, c.sessionId).state;
       assert.strictEqual(registry.requiresConfirmation("send_agent_message", { session: st }), true, "their words taint the session");
       assert.strictEqual((await db.one(`SELECT status FROM agent_messages WHERE id=$1`, [row.id])).status, "unread");

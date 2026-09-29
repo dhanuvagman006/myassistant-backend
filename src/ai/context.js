@@ -12,14 +12,11 @@
  *                      the spoken-style prompt for voice (ai/voicePrompt.js),
  *                      each with the profile, the standing rules, memory,
  *                      the earlier conversation, the clock and the place
- *   nano               a short plain-text preamble for Gemini Nano on the
- *                      phone, which has no system instruction and no tools;
- *                      it ends by telling Nano to hand anything it cannot
- *                      do to the cloud ([[CLOUD]])
  *   tools              the tools this turn may use, as JSON Schema function
- *                      declarations: relevance-filtered for the text, and
- *                      gated by availability, app build and permissions
- *                      exactly as the server gated them before
+ *                      declarations: relevance-filtered for the text (never
+ *                      the whole catalogue — see phoneTools), and gated by
+ *                      availability, app build and permissions exactly as
+ *                      the server gated them before
  *   history            this session's last turns, from the server's memory
  *
  * No model is called here.
@@ -58,10 +55,6 @@ const NEW_CONVERSATION =
   "and failures are usually fixed. Never refuse a request because " +
   "a past attempt failed, and never say a feature is unavailable " +
   "without calling its tool THIS turn and seeing it fail.";
-
-const NANO_CLOUD =
-  "If answering needs an action, the user's own data or live information, " +
-  "reply with exactly [[CLOUD]] and nothing else.";
 
 /* ------------------------------------------------------------------ */
 
@@ -205,35 +198,6 @@ async function languageAskFor(uid, profile) {
   }
 }
 
-/** The compact preamble Gemini Nano gets on the phone (plain text). */
-function nanoPreamble({ assistantName, user, preferred, mode, tz, notes = [], forceCloud = false }) {
-  const title = require("../agents/owner").honorific(user || {});
-  const lines = [
-    `You are ${assistantName || "the assistant"}, a warm, quick-witted personal assistant from India, talking with your owner.`,
-    `Greet them as "${title}" once at the start of a conversation, then do not repeat it; never say their name.`,
-    `Reply in the language they used; if you cannot tell, use ${preferred || "English (Indian English)"}. ` +
-      "If they mix English into another language, mix it back the same way.",
-    mode === "voice"
-      ? "You are SPEAKING: one or two short, natural sentences, the way a friend talks on a phone call. " +
-        "No lists, no markdown, no emoji."
-      : "Keep it short: one to three plain sentences, no markdown headings.",
-    "Never mention being an AI unless asked, never tell them to do something themselves, and never lecture.",
-    nowLine(tz).split(". When passing")[0] + ".",
-    "You only talk: you cannot act, look anything up, see their messages, calendar or files, or remember anything.",
-    ...notes,
-    ...(forceCloud ? ["For this message, reply with exactly [[CLOUD]] and nothing else."] : []),
-    NANO_CLOUD,
-  ];
-  let text = lines.filter(Boolean).join("\n");
-  // Under the ~4000-character ceiling whatever the notes held: they are
-  // trimmed, never the rule that ends it.
-  if (text.length > 3900) {
-    const tail = "\n" + NANO_CLOUD;
-    text = text.slice(0, 3900 - tail.length) + tail;
-  }
-  return text;
-}
-
 /** A question answered no: the run or plan step waiting on it stops. */
 function declined(uid, asked) {
   const r = asked.resolved || {};
@@ -287,7 +251,6 @@ async function prepare(uid, body) {
   const turnId = sessions.openTurn(s, { text, owner, mode });
   const turnRec = sessions.turn(s, turnId);
   const notes = [];
-  let forceCloud = !owner;
   let shortcut = null;
 
   const shortcutKeys = Number(build) >= 120 && process.env.SHORTCUTS !== "off"
@@ -321,7 +284,6 @@ async function prepare(uid, body) {
         ok: true, world: false, decision: "saved", intent: text, surface: "ai",
         result: `preferred language ${wants.language}`,
       });
-      forceCloud = true;
     }
 
     // Is this safe to act on at all? A fragment ("con") or a bare number
@@ -409,11 +371,9 @@ async function prepare(uid, body) {
       `${a.tool} again with exactly the same arguments: ${JSON.stringify(a.args || {})}. ` +
       "If they say no, say it will not run. Never say it is done before the tool says so."
     );
-    forceCloud = true;
   }
   if (s.interpreter) {
     notes.push(`[SYSTEM] ${s.interpreter}`);
-    forceCloud = true;
   }
   const attachments = (Array.isArray(body.attachments) ? body.attachments : []).slice(0, 10)
     .map((a) => `${String((a && a.kind) || "file").slice(0, 10)}` +
@@ -432,7 +392,6 @@ async function prepare(uid, body) {
     unread = s.relay.rows;
     // Another person's words are now in the model's context.
     registry.markTurnUntrusted({ session: s.state });
-    forceCloud = true;
   }
   if (isNew) s.languageAsk = await languageAskFor(uid, profile);
   const languageAsk = !s.firstTurnDone ? s.languageAsk : "";
@@ -441,18 +400,19 @@ async function prepare(uid, body) {
   // ── TOOLS: what this turn plausibly needs (tools/relevance.js), gated
   // by availability, build and permissions (registry.declarations).
   const history = await historyFor(uid, s.id);
-  const only = require("../tools/relevance").selectForTurn(registry.list(), text, {
+  // Never the whole catalogue: measured through AI Logic on 2026-09-29, a
+  // spoken "hello" with all 143 tools took 72 s to start answering and
+  // with the core set 3 s (relevance.selectForPhone).
+  const only = require("../tools/relevance").selectForPhone(registry.list(), text, {
     history: history.map((h) => ({ content: h.text })),
     sessionId: s.id,
   });
-  if (Array.isArray(only)) {
-    // A user with shortcuts is always offered run_shortcut.
-    if (shortcutKeys.length) {
-      for (const n of ["run_shortcut", "continue_shortcut"]) if (!only.includes(n)) only.push(n);
-    }
-    // The tool a pending question is about must still be callable.
-    if (s.asked && !only.includes(s.asked.tool)) only.push(s.asked.tool);
+  // A user with shortcuts is always offered run_shortcut.
+  if (shortcutKeys.length) {
+    for (const n of ["run_shortcut", "continue_shortcut"]) if (!only.includes(n)) only.push(n);
   }
+  // The tool a pending question is about must still be callable.
+  if (s.asked && !only.includes(s.asked.tool)) only.push(s.asked.tool);
   const tools = registry.declarations({ userId: uid, deviceCaps: s.device.caps || null, only })
     .map((d) => ({ name: d.name, description: d.description, parameters: jsonSchema(d.parameters) }));
 
@@ -499,26 +459,14 @@ async function prepare(uid, body) {
   // only when both are true; an older build would show them).
   if (body.expressive === true) system += "\n\n" + EXPRESSIVE_SPEECH;
 
-  const nano = nanoPreamble({
-    assistantName,
-    user: profile && profile.user,
-    preferred,
-    mode,
-    tz,
-    // Nano is only ever handed what it can act on in words.
-    notes: notes.filter((n) => !/^WAITING ON|^\[SYSTEM\] (What follows|This message)|^The owner attached/.test(n)),
-    forceCloud,
-  });
-
   return {
     sessionId: s.id,
     turnId,
     route: { shortcut: shortcut ? shortcut.name : null },
     system,
-    nano,
     tools,
     history,
   };
 }
 
-module.exports = { prepare, nanoPreamble, jsonSchema, SHORTCUT_TOOLS, NANO_CLOUD, NO_RX };
+module.exports = { prepare, jsonSchema, SHORTCUT_TOOLS, NO_RX };

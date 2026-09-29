@@ -64,10 +64,12 @@ const FRESH_WORDS = [
 ];
 
 // The phone's conversation model. Not the server's GEMINI_MODEL: measured
-// through AI Logic on 2026-09-29, 3.5 Flash took 7–52 s a reply and threw
-// 5xx under load, 3 Flash 4–6 s with tools. The fallback answers when the
-// first model fails or has not started within the phone's wait.
-const cloudModel = () => envModel("AI_CLOUD_MODEL", "gemini-3-flash-preview");
+// through AI Logic on 2026-09-29 with the real voice prompt and tools, the
+// Flash models took 10–110 s and threw 5xx (3.5 Flash never answered in
+// 110 s; 3 Flash 9–63 s), the Flash-Lite ones 2–4 s. 3.5 Flash-Lite at low
+// thinking calls tools reliably (at minimal it claimed a reminder it never
+// set). The fallback answers when the first fails or stalls.
+const cloudModel = () => envModel("AI_CLOUD_MODEL", "gemini-3.5-flash-lite");
 const cloudFastModel = () => envModel("AI_CLOUD_FAST_MODEL", "gemini-flash-lite-latest");
 const cloudFallbackModel = () => envModel("AI_CLOUD_FALLBACK_MODEL", "gemini-flash-lite-latest");
 // How hard the conversation model thinks before answering (minimal, low,
@@ -84,7 +86,6 @@ const expressiveTtsModel = () => envModel("AI_TTS_EXPRESSIVE_MODEL", "gemini-3.8
 const ttsStyle = () => envModel("AI_TTS_STYLE", "warm, friendly and natural");
 const liveModel = () =>
   envModel("AI_LIVE_MODEL", envModel("GEMINI_LIVE_MODEL", "gemini-live-2.5-flash-preview"));
-const nanoEnabled = () => String(process.env.AI_NANO || "").trim().toLowerCase() !== "off";
 
 /**
  * The voice a user hears: theirs, their avatar's, or the deployment's. A
@@ -150,7 +151,6 @@ async function forUser(userId, { build } = {}) {
         return VOICES.has(voice) ? voice : "Kore";
       })(),
     },
-    nano: { enabled: nanoEnabled(), maxPromptChars: 9000 },
     routing: { toolWords, freshWords: FRESH_WORDS.slice(), shortcutNames },
     limits: { maxToolRounds: 6 },
   };
@@ -159,5 +159,5 @@ async function forUser(userId, { build } = {}) {
 module.exports = {
   forUser, voiceFor, speechLanguage, cloudModel, cloudFastModel, cloudFallbackModel,
   thinkingLevel, ttsModel, expressiveTtsModel, ttsStyle, liveModel,
-  nanoEnabled, VOICES, LIBRARY_VOICES, EXPRESSIVE_BUILD, TOOL_VERBS, FRESH_WORDS,
+  VOICES, LIBRARY_VOICES, EXPRESSIVE_BUILD, TOOL_VERBS, FRESH_WORDS,
 };

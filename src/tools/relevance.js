@@ -210,4 +210,30 @@ function triggerWords(tools, extra = []) {
   return [...out].sort();
 }
 
-module.exports = { selectForTurn, triggerWords, CORE, MAX_TOOLS };
+/**
+ * The phone's cloud model (Firebase AI Logic) is slow in proportion to the
+ * tools it is handed: never the whole catalogue there. A readable turn gets
+ * selectForTurn's pick, capped at PHONE_MAX; an unreadable one ("hello",
+ * "how are you") the core set plus what this session was using.
+ * @returns {string[]} names to offer
+ */
+const PHONE_MAX = 40;
+// Always on the phone besides CORE: the spoken prompt tells the model to
+// call stay_silent for talk that was not meant for it.
+const PHONE_ALWAYS = ["stay_silent"];
+function selectForPhone(tools, text, opts = {}) {
+  const live = new Set(Array.isArray(tools) ? tools.map((t) => t.name) : []);
+  let picked = selectForTurn(tools, text, opts);
+  if (!Array.isArray(picked)) {
+    picked = [...new Set([...CORE, ...carried(opts.sessionId || "")])].filter((n) => live.has(n));
+    remember(opts.sessionId || "", picked);
+  }
+  const always = PHONE_ALWAYS.filter((n) => live.has(n));
+  const kept = new Set([...CORE, ...always]);
+  const out = [...new Set([...always, ...picked])];
+  if (out.length <= PHONE_MAX) return out;
+  // Past the cap the core set stays and the best-scored rest fill it.
+  return [...out.filter((n) => kept.has(n)), ...out.filter((n) => !kept.has(n))].slice(0, PHONE_MAX);
+}
+
+module.exports = { selectForTurn, selectForPhone, triggerWords, CORE, MAX_TOOLS, PHONE_MAX, PHONE_ALWAYS };
