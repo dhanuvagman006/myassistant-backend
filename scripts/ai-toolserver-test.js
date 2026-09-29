@@ -162,8 +162,11 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
       const c = r.json;
       assert.deepStrictEqual(Object.keys(c).sort(), ["limits", "models", "nano", "routing"]);
       assert.deepStrictEqual(Object.keys(c.models).sort(),
-        ["cloud", "cloudFast", "live", "liveVoice", "tts", "ttsLanguage", "ttsVoice"]);
-      assert.strictEqual(c.models.cloud, ai.chatModel(), "the chat model the server already uses");
+        ["cloud", "cloudFallback", "cloudFast", "live", "liveVoice", "thinking", "tts", "ttsLanguage", "ttsStyle", "ttsVoice"]);
+      assert.strictEqual(c.models.cloud, "gemini-3-flash-preview", "the phone's own conversation model");
+      assert.strictEqual(c.models.cloudFallback, "gemini-flash-lite-latest");
+      assert.strictEqual(c.models.thinking, "low");
+      assert.strictEqual(c.models.ttsStyle, "warm, friendly and natural");
       assert.strictEqual(c.models.cloudFast, "gemini-flash-lite-latest");
       assert.strictEqual(c.models.tts, "gemini-2.5-flash-preview-tts");
       assert.strictEqual(c.models.ttsVoice, "Kore");
@@ -189,7 +192,7 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
       });
       try {
         let c = (await api("GET", "/ai/config", { token: A.token })).json;
-        assert.strictEqual(c.models.cloud, "gemini-3.5-flash");
+        assert.strictEqual(c.models.cloud, "gemini-3-flash-preview", "GEMINI_MODEL is the server's own, not the phone's");
         assert.strictEqual(c.models.cloudFast, "gemini-3.5-flash-lite");
         assert.strictEqual(c.models.tts, "gemini-3-tts", "GEMINI_TTS_MODEL is the default");
         assert.strictEqual(c.models.live, "gemini-3.1-flash-live-preview", "GEMINI_LIVE_MODEL is the default");
@@ -213,6 +216,34 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
         for (const k of ["GEMINI_MODEL", "AI_CLOUD_FAST_MODEL", "GEMINI_TTS_MODEL", "GEMINI_LIVE_MODEL", "AI_NANO",
           "AI_CLOUD_MODEL", "AI_TTS_MODEL", "AI_LIVE_MODEL", "AI_TTS_VOICE", "AI_LIVE_VOICE"]) delete process.env[k];
         await db.run(`UPDATE users SET preferred_language='' WHERE id=$1`, [A.id]);
+        await db.run(`UPDATE assistant_profiles SET voice='' WHERE user_id=$1`, [A.id]).catch(() => {});
+      }
+    });
+
+    await atest("build 126+: Fola on the expressive speech model; Live and older builds keep prebuilt voices", async () => {
+      const cfg = async (build) => (await api("GET", `/ai/config?build=${build}`, { token: A.token })).json.models;
+      let m = await cfg(126);
+      assert.strictEqual(m.tts, "gemini-3.8-flash-tts");
+      assert.strictEqual(m.ttsVoice, "Fola");
+      assert.strictEqual(m.liveVoice, "Kore", "the Live API takes prebuilt voices only");
+      m = await cfg(125);
+      assert.strictEqual(m.tts, "gemini-2.5-flash-preview-tts", "an older build keeps the model it can play");
+      assert.strictEqual(m.ttsVoice, "Kore");
+      const profiles = require(path.join(BACKEND, "src/users/context"));
+      await profiles.setAssistantProfile(A.id, { voice: "Fola" });
+      try {
+        assert.strictEqual((await cfg(126)).ttsVoice, "Fola", "chosen in Settings");
+        assert.strictEqual((await cfg(125)).ttsVoice, "Kore", "a library voice never reaches an older build");
+        await profiles.setAssistantProfile(A.id, { voice: "Aoede" });
+        assert.strictEqual((await cfg(126)).ttsVoice, "Aoede", "their own prebuilt choice still wins");
+        process.env.AI_CLOUD_THINKING = "HIGH";
+        assert.strictEqual((await cfg(126)).thinking, "high");
+        process.env.AI_CLOUD_THINKING = "loud";
+        assert.strictEqual((await cfg(126)).thinking, "low", "an unknown level falls back");
+        process.env.AI_TTS_EXPRESSIVE_MODEL = "gemini-4-tts";
+        assert.strictEqual((await cfg(126)).tts, "gemini-4-tts");
+      } finally {
+        for (const k of ["AI_CLOUD_THINKING", "AI_TTS_EXPRESSIVE_MODEL"]) delete process.env[k];
         await db.run(`UPDATE assistant_profiles SET voice='' WHERE user_id=$1`, [A.id]).catch(() => {});
       }
     });
@@ -278,6 +309,19 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
       assert.match(voice.nano, /SPEAKING/);
       assert.match(voice.nano, /no markdown/i);
       assert.ok(voice.nano.endsWith(CLOUD_LINE));
+      assert.ok(!/HOW YOU SOUND/.test(sys), "delivery marks only when the phone asks for them");
+    });
+
+    await atest("expressive: the phone that will speak the reply gets the tone and vocal-expression guide", async () => {
+      for (const mode of ["voice", "chat"]) {
+        const sys = (await context(A, { text: "I lost my wallet today", mode, expressive: true })).json.system;
+        assert.match(sys, /HOW YOU SOUND/, mode);
+        assert.match(sys, /<tone: warm and deeply empathetic>/);
+        assert.match(sys, /<sigh>/);
+        assert.match(sys, /<short pause>/);
+        assert.ok(!/<moan>|<scream>|<sob>/.test(sys), "no expressions that are wrong from an assistant");
+        assert.ok(!/<tone:/.test((await context(A, { text: "hi", mode, expressive: "yes" })).json.system), "only true asks");
+      }
     });
 
     await atest("a turn is recorded, and the next turn's history and memory carry it", async () => {

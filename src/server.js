@@ -603,8 +603,10 @@ require("./db")
       // models live on the phone and in Firebase AI Logic now.
       const aiCfg = require("./ai/config");
       console.log(
-        `  app models: cloud=${aiCfg.cloudModel()} fast=${aiCfg.cloudFastModel()}` +
-          ` tts=${aiCfg.ttsModel()} live=${aiCfg.liveModel()}` +
+        `  app models: cloud=${aiCfg.cloudModel()} (${aiCfg.thinkingLevel()} thinking, fallback ${aiCfg.cloudFallbackModel()})` +
+          ` fast=${aiCfg.cloudFastModel()}` +
+          ` tts=${aiCfg.ttsModel()} (build ${aiCfg.EXPRESSIVE_BUILD}+: ${aiCfg.expressiveTtsModel()})` +
+          ` live=${aiCfg.liveModel()}` +
           ` nano=${aiCfg.nanoEnabled() ? "on" : "off"}`
       );
       if (!process.env.GEMINI_API_KEY) {

@@ -593,6 +593,37 @@ function voiceSystemPrompt(assistantName = "Assistant", unreadMessages = [], per
   return prompt;
 }
 
+// How a spoken reply should SOUND (build 126+, which asks for it with
+// expressive: true). The phone voices it with Gemini 3.8 Flash TTS, which
+// acts on a delivery note and on inline vocal tags; the phone strips both
+// before the reply is shown or remembered.
+const SPEECH_TONES = [
+  "bright and sunny", "warm and deeply empathetic", "confident and efficient",
+  "calm and reassuring", "playful and witty", "gentle and soft",
+  "excited and celebratory", "serious and focused", "curious and engaged",
+  "sincere and apologetic", "encouraging and motivating", "relaxed and conversational",
+];
+
+// The vocal expressions offered. Left out on purpose, as wrong from an
+// assistant: scream, shriek, moan, growl, grunt, hiss, grr, argh, cackle,
+// sob, cry, whimper, snort, sneeze, cough, pant, heavy breath.
+const SPEECH_EXPRESSIONS = [
+  "<sigh>", "<chuckles>", "<laugh>", "<giggle>", "<snicker>", "<gasp>", "<phew>",
+  "<breath>", "<exhales>", "<short pause>", "<long pause>", "<whispers>",
+  "<tsk>", "<cheer>", "<yawn>", "<throat-clearing>", "<pff>",
+];
+
+const EXPRESSIVE_SPEECH = [
+  "HOW YOU SOUND (this reply is spoken aloud in your own natural voice):",
+  "- Begin the reply with ONE delivery note that fits this moment, written exactly as <tone: …>: " +
+    SPEECH_TONES.map((t) => `<tone: ${t}>`).join(", ") +
+    ". Match the moment: good news bright, a problem or worry warm and empathetic or calm, a finished task confident, a joke playful.",
+  "- Where a person naturally would, you may add a vocal expression, written exactly as one of: " +
+    SPEECH_EXPRESSIONS.join(" ") +
+    ". At most two in a reply and none in most short ones; between words, never inside a number, name, address, link or code. Never laugh at bad news: a soft <sigh> or a <short pause> suits sad or serious moments.",
+  "- Write nothing else in angle brackets. The note and the expressions are heard, never shown; the rest of your words are shown exactly as written.",
+].join("\n");
+
 module.exports = {
   voiceSystemPrompt,
   unreadBlock,
@@ -600,4 +631,7 @@ module.exports = {
   RELAYED_MESSAGE_NOTE,
   RELAYED_MESSAGE_FRAME,
   APP_NOTE,
+  EXPRESSIVE_SPEECH,
+  SPEECH_TONES,
+  SPEECH_EXPRESSIONS,
 };

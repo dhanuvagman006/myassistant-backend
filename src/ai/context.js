@@ -29,7 +29,7 @@ const sessionState = require("../agents/sessionState");
 const inputQuality = require("../agents/inputQuality");
 const claimCheck = require("../agents/claimCheck");
 const sessions = require("./sessions");
-const { voiceSystemPrompt, unreadBlock, nowLine, RELAYED_MESSAGE_NOTE, RELAYED_MESSAGE_FRAME, APP_NOTE } =
+const { voiceSystemPrompt, unreadBlock, nowLine, RELAYED_MESSAGE_NOTE, RELAYED_MESSAGE_FRAME, APP_NOTE, EXPRESSIVE_SPEECH } =
   require("./voicePrompt");
 
 const TOKEN_TTL_MS = require("./approval").TTL_MS;
@@ -495,6 +495,9 @@ async function prepare(uid, body) {
       { appBuild: build }
     ) + thisTurn;
   }
+  // The phone will SPEAK this reply and can read delivery marks (it asks
+  // only when both are true; an older build would show them).
+  if (body.expressive === true) system += "\n\n" + EXPRESSIVE_SPEECH;
 
   const nano = nanoPreamble({
     assistantName,

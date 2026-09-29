@@ -9,7 +9,7 @@
  * runs; nothing here is secret (the app never sees an API key — Firebase
  * AI Logic holds it, behind App Check and the user's Firebase sign-in).
  */
-const { envModel, chatModel } = require("../services/ai/router");
+const { envModel } = require("../services/ai/router");
 
 // Gemini's prebuilt voices (the names SpeechConfig accepts). A stored
 // voice outside this list is ignored rather than handed to the phone.
@@ -17,9 +17,19 @@ const VOICES = new Set([
   "Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede",
   "Callirrhoe", "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba",
   "Despina", "Erinome", "Algenib", "Rasalgethi", "Laomedeia", "Achernar",
-  "Alnilam", "Schedar", "Gacrux", "Pulcherrimo", "Achird", "Zubenelgenubi",
+  "Alnilam", "Schedar", "Gacrux", "Pulcherrima", "Achird", "Zubenelgenubi",
   "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
 ]);
+
+// Voices from Gemini TTS's extended voice library, which only the
+// expressive speech model (3.8 Flash TTS) takes; the Live API does not.
+// Fola is the assistant's own voice (the owner's choice, 2026-09-29).
+const LIBRARY_VOICES = new Set(["Fola"]);
+
+// From this build the phone speaks with the expressive model: it reads a
+// WAV reply, acts on the tone note and vocal tags the model writes, and
+// strips them from what is shown (context.js adds the guide when asked).
+const EXPRESSIVE_BUILD = 126;
 
 // The languages the assistant speaks (agents/language.js), as BCP-47 for
 // the speech engine. Tulu is written in Kannada script; Konkani is left
@@ -53,24 +63,45 @@ const FRESH_WORDS = [
   "stock", "share price", "gold rate", "petrol price",
 ];
 
-const cloudModel = () => envModel("AI_CLOUD_MODEL", chatModel());
+// The phone's conversation model. Not the server's GEMINI_MODEL: measured
+// through AI Logic on 2026-09-29, 3.5 Flash took 7–52 s a reply and threw
+// 5xx under load, 3 Flash 4–6 s with tools. The fallback answers when the
+// first model fails or has not started within the phone's wait.
+const cloudModel = () => envModel("AI_CLOUD_MODEL", "gemini-3-flash-preview");
 const cloudFastModel = () => envModel("AI_CLOUD_FAST_MODEL", "gemini-flash-lite-latest");
+const cloudFallbackModel = () => envModel("AI_CLOUD_FALLBACK_MODEL", "gemini-flash-lite-latest");
+// How hard the conversation model thinks before answering (minimal, low,
+// medium, high). Gemini 3's own default is high, far too slow to talk to.
+const THINKING = new Set(["minimal", "low", "medium", "high"]);
+const thinkingLevel = () => {
+  const v = envModel("AI_CLOUD_THINKING", "low").toLowerCase();
+  return THINKING.has(v) ? v : "low";
+};
 const ttsModel = () =>
   envModel("AI_TTS_MODEL", envModel("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts"));
+const expressiveTtsModel = () => envModel("AI_TTS_EXPRESSIVE_MODEL", "gemini-3.8-flash-tts");
+// The delivery a spoken reply gets when its model gave no tone of its own.
+const ttsStyle = () => envModel("AI_TTS_STYLE", "warm, friendly and natural");
 const liveModel = () =>
   envModel("AI_LIVE_MODEL", envModel("GEMINI_LIVE_MODEL", "gemini-live-2.5-flash-preview"));
 const nanoEnabled = () => String(process.env.AI_NANO || "").trim().toLowerCase() !== "off";
 
-/** The voice a user hears: theirs, their avatar's, or the deployment's. */
-function voiceFor(profile) {
+/**
+ * The voice a user hears: theirs, their avatar's, or the deployment's. A
+ * library voice (Fola) only reaches a phone that speaks with the
+ * expressive model; an older one keeps a prebuilt voice.
+ */
+function voiceFor(profile, { expressive = false } = {}) {
+  const ok = (v) => Boolean(v) && (VOICES.has(v) || (expressive && LIBRARY_VOICES.has(v)));
   const chosen = profile && profile.assistant && profile.assistant.voice;
-  if (chosen && VOICES.has(chosen)) return chosen;
+  if (ok(chosen)) return chosen;
   try {
     const face = require("../avatar/heygen").voiceForFace(profile && profile.assistant && profile.assistant.avatar_id);
-    if (face && VOICES.has(face)) return face;
+    if (ok(face)) return face;
   } catch (_) {}
-  const env = envModel("AI_TTS_VOICE", "Kore");
-  return VOICES.has(env) ? env : "Kore";
+  const env = envModel("AI_TTS_VOICE", expressive ? "Fola" : "Kore");
+  if (ok(env)) return env;
+  return expressive ? "Fola" : "Kore";
 }
 
 /** BCP-47 for a stored preferred language ("Kannada", "ಕನ್ನಡ", "kn"…). */
@@ -99,18 +130,24 @@ async function forUser(userId, { build } = {}) {
   if (process.env.SHORTCUTS !== "off" && !(Number.isFinite(b) && b > 0 && b < 120)) {
     shortcutNames = [...new Set(await require("../shortcuts/match").keysFor(uid).catch(() => []))];
   }
-  const voice = voiceFor(profile);
+  const expressive = Number.isFinite(b) && b >= EXPRESSIVE_BUILD;
+  const voice = voiceFor(profile, { expressive });
   return {
     models: {
       cloud: cloudModel(),
       cloudFast: cloudFastModel(),
-      tts: ttsModel(),
+      cloudFallback: cloudFallbackModel(),
+      thinking: thinkingLevel(),
+      tts: expressive ? expressiveTtsModel() : ttsModel(),
       ttsVoice: voice,
+      ttsStyle: ttsStyle(),
       ttsLanguage: speechLanguage(profile && profile.user && profile.user.preferred_language),
       live: liveModel(),
+      // The Live API takes prebuilt voices only.
       liveVoice: (() => {
         const v = envModel("AI_LIVE_VOICE", "");
-        return v && VOICES.has(v) ? v : voice;
+        if (v && VOICES.has(v)) return v;
+        return VOICES.has(voice) ? voice : "Kore";
       })(),
     },
     nano: { enabled: nanoEnabled(), maxPromptChars: 9000 },
@@ -120,6 +157,7 @@ async function forUser(userId, { build } = {}) {
 }
 
 module.exports = {
-  forUser, voiceFor, speechLanguage, cloudModel, cloudFastModel, ttsModel, liveModel,
-  nanoEnabled, VOICES, TOOL_VERBS, FRESH_WORDS,
+  forUser, voiceFor, speechLanguage, cloudModel, cloudFastModel, cloudFallbackModel,
+  thinkingLevel, ttsModel, expressiveTtsModel, ttsStyle, liveModel,
+  nanoEnabled, VOICES, LIBRARY_VOICES, EXPRESSIVE_BUILD, TOOL_VERBS, FRESH_WORDS,
 };
