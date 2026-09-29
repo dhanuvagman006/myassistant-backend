@@ -1268,8 +1268,10 @@ let analysisReply = () => "{}";
     const weatherMod = require("../src/services/tools/weather");
     const realNews = newsMod.getHeadlines;
     const realWeather = weatherMod.getWeather;
+    const realOutlook = weatherMod.hourlyOutlook;
     newsMod.getHeadlines = async () => [];
     weatherMod.getWeather = async () => null;
+    weatherMod.hourlyOutlook = async () => null;
     const midnight = (offset) => {
       const l = new Date(Date.now() + 330 * 60e3);
       return Date.UTC(l.getUTCFullYear(), l.getUTCMonth(), l.getUTCDate() + offset) - 330 * 60e3;
@@ -1353,9 +1355,23 @@ let analysisReply = () => "{}";
         assert.strictEqual(seen[0].lng, 77.5946);
         assert.strictEqual(seen[0].city, undefined, "the phone's own fix, not the profile's city");
       });
+      await atest("GET /brief warns of rain on its way, and says nothing on an ordinary day", async () => {
+        const hours = [{ hour: 14, feelsC: 30, uv: 5 }, { hour: 15, feelsC: 31, uv: 4 }];
+        weatherMod.hourlyOutlook = async () => ({ hours, maxUv: 5,
+          rainWindow: { from: "17:00", to: "19:00", peak: 70 } });
+        let b = (await api("GET", "/brief")).json;
+        assert.deepStrictEqual(b.weather_note, { kind: "rain", text: "Rain likely 5 pm to 7 pm", from: "17:00" });
+        weatherMod.hourlyOutlook = async () => ({ hours, maxUv: 5, rainWindow: null });
+        b = (await api("GET", "/brief")).json;
+        assert.strictEqual(b.weather_note, null, "an ordinary day is not a card");
+        weatherMod.hourlyOutlook = async () => ({ hours: [{ hour: 14, feelsC: 41.2, uv: 9 }], maxUv: 9, rainWindow: null });
+        b = (await api("GET", "/brief")).json;
+        assert.deepStrictEqual(b.weather_note, { kind: "heat", text: "Very hot later — feels like 41°C" });
+      });
     } finally {
       newsMod.getHeadlines = realNews;
       weatherMod.getWeather = realWeather;
+      weatherMod.hourlyOutlook = realOutlook;
     }
 
     await atest("no request left the machine except to the stubs", () => {

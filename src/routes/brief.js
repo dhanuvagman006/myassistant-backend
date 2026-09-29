@@ -14,7 +14,7 @@ router.get("/", async (req, res) => {
     // Dev/appKey sessions have no user row — an EMPTY brief, not an error,
     // so the home screen renders its calm state instead of a banner.
     return res.json({
-      name: null, weather_line: null, agenda: [], tomorrow: [], dates: [],
+      name: null, weather_line: null, weather_note: null, agenda: [], tomorrow: [], dates: [],
       promises: [], messages: [], people: [], people_count: 0, headlines: [],
     });
   }

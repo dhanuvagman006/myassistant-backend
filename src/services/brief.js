@@ -8,6 +8,8 @@
  *   • tomorrow  — tomorrow's timed reminders and meetings (Home shows them
  *                 once today is done)
  *   • dates     — birthdays and bills today or tomorrow (Home's cards)
+ *   • weather_note — one line worth knowing about the next hours (rain on
+ *                 its way, a very hot or strong-sun afternoon), else null
  *   • promises  — open commitments Hari heard the user make
  *   • messages  — UNREAD agent-to-agent messages (preview only: they are
  *                 marked read exclusively when a live session speaks them,
@@ -270,6 +272,44 @@ async function weatherLineOf({ lat, lng, city }) {
   }
 }
 
+/// "5 pm" from "17:00" (24:00 is midnight).
+function hourLabel(hhmm) {
+  const n = Number(String(hhmm).slice(0, 2)) % 24;
+  return `${n % 12 === 0 ? 12 : n % 12} ${n < 12 ? "am" : "pm"}`;
+}
+
+/// THE WEATHER WORTH A CARD (2026-09-30): rain on its way, a very hot or
+/// strong-sun stretch in the next ten hours — the kind of thing that
+/// changes what someone takes or does. Null on an ordinary day: the
+/// header already says what it is like now, and a card saying "cloudy"
+/// would be filler.
+async function weatherNoteOf({ lat, lng, city }) {
+  try {
+    const weather = require("./tools/weather");
+    const o = await weather.hourlyOutlook({ lat, lng, city }, 10);
+    if (!o || !Array.isArray(o.hours)) return null;
+    if (o.rainWindow) {
+      const w = o.rainWindow;
+      return {
+        kind: "rain",
+        text: `Rain likely ${hourLabel(w.from)} to ${hourLabel(w.to)}`,
+        from: w.from,
+      };
+    }
+    const feels = o.hours.map((h) => Number(h.feelsC)).filter(Number.isFinite);
+    const hottest = feels.length ? Math.max(...feels) : -Infinity;
+    if (hottest >= 38) {
+      return { kind: "heat", text: `Very hot later — feels like ${Math.round(hottest)}°C` };
+    }
+    if (Number(o.maxUv) >= 8) {
+      return { kind: "sun", text: `Strong sun today — UV ${Math.round(Number(o.maxUv))}` };
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
 async function headlinesOf() {
   try {
     const news = require("./tools/news");
@@ -330,7 +370,7 @@ async function buildBrief(uid, opts = {}) {
     ]);
 
   const practice = await boxed(practiceOf(uid, tz), 2500, null);
-  const [days, promises, messages, people, weather_line, headlines, screen_time, dates] =
+  const [days, promises, messages, people, weather_line, headlines, screen_time, dates, weather_note] =
     await Promise.all([
       boxed(daysOf(uid, tz), 3000, { today: [], tomorrow: [] }),
       boxed(promisesOf(uid, tz), 2500, []),
@@ -340,11 +380,13 @@ async function buildBrief(uid, opts = {}) {
       boxed(headlinesOf(), 2000, []),
       boxed(screenTimeOf(uid), 2000, null),
       boxed(datesOf(uid, tz), 2000, []),
+      boxed(weatherNoteOf({ lat: opts.lat, lng: opts.lng, city }), 2000, null),
     ]);
 
   return {
     name: profile?.user?.name ? String(profile.user.name).split(" ")[0] : null,
     weather_line,
+    weather_note,
     agenda: days.today,
     tomorrow: days.tomorrow,
     dates,
