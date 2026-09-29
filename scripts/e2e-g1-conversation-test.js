@@ -319,8 +319,8 @@ function isoLocal(ms, tz = 330) {
       }
       assert.ok(names.length <= require("../src/tools/relevance").PHONE_MAX);
       // A request that names a tool is offered it.
-      const asks = await conversation().hear("forget that I am vegetarian, and plan my day");
-      for (const n of ["forget_memory", "plan_my_day"]) {
+      const asks = await conversation().hear("forget that I am vegetarian, and set an alarm for 6 am");
+      for (const n of ["forget_memory", "set_alarm"]) {
         assert.ok(asks.tools.map((d) => d.name).includes(n), `asked for, ${n} is offered`);
       }
       assert.ok(!names.includes("make_greeting_poster"), "build 119 cards are not offered to 118");
@@ -461,16 +461,15 @@ function isoLocal(ms, tz = 330) {
       assert.match(text, /total debt outstanding ₹40000/);
     });
 
-    await atest("Momentum: today's three said by voice are on the Momentum screen", async () => {
+    await atest("Momentum is gone: its tools are not offered and cannot be called", async () => {
       const s = conversation();
-      await s.hear("my top three today are finish the report, call the bank and go for a walk");
-      const a = await s.call("plan_my_day", { priorities: ["Finish the report", "Call the bank", "Go for a walk"] });
-      assert.strictEqual(a.ok, true, JSON.stringify(a));
-      await s.says(a.speak || "Done.");
-      const m = await api("GET", "/momentum");
-      assert.strictEqual(m.status, 200, JSON.stringify(m.body));
-      const titles = (m.body.priorities || []).map((p) => p.title);
-      assert.deepStrictEqual(titles, ["Finish the report", "Call the bank", "Go for a walk"], JSON.stringify(m.body).slice(0, 300));
+      const c = await s.hear("my top three today are finish the report, call the bank and go for a walk");
+      assert.ok(!c.tools.map((d) => d.name).includes("plan_my_day"), "not offered");
+      const r = await api("POST", "/ai/tool", {
+        sessionId: s.sessionId, turnId: s.turnId, name: "plan_my_day",
+        args: { priorities: ["Finish the report"] }, userText: s.text,
+      });
+      assert.notStrictEqual(r.status, 200, "and not callable: " + JSON.stringify(r.body).slice(0, 200));
     });
 
     await atest("start_task from the app: planned without high-risk tools, run to completion, reported as it ran", async () => {
@@ -528,16 +527,12 @@ function isoLocal(ms, tz = 330) {
         JSON.stringify(a.result).slice(0, 300));
     });
 
-    await atest("what's pending: promises heard earlier and today's list come back when asked", async () => {
+    await atest("what's pending: promises heard earlier come back when asked", async () => {
       const s = conversation();
       await s.hear("what did I promise people?");
       const c = await s.call("list_my_commitments", {});
       assert.strictEqual(c.ok, true);
       assert.match(c.speak, /Send Ravi the site report to Ravi — due/, c.speak);
-      await s.hear("how am I doing today?");
-      const m = await s.call("momentum_status", {});
-      assert.strictEqual(m.ok, true);
-      assert.deepStrictEqual(m.result.data.today.left, ["Finish the report", "Call the bank", "Go for a walk"]);
     });
 
     await atest("stay_silent drops the rest of the turn; end_conversation reaches the phone", async () => {

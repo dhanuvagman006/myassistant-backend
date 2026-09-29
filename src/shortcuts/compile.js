@@ -52,7 +52,7 @@ function parseTime(s) {
   return { hour: h, minute: min };
 }
 
-const SCREENS = { momentum: "momentum", "focus timer": "focus", reminders: "reminders", "my reminders": "reminders", documents: "documents", "my documents": "documents" };
+const SCREENS = { "focus timer": "focus", reminders: "reminders", "my reminders": "reminders", documents: "documents", "my documents": "documents" };
 
 /**
  * The rules-first parser: {tool, args, said, when?} or null. English only;

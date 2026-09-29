@@ -181,6 +181,8 @@ function statusLine(s, title) {
 function registerMomentumTools(registry) {
   registry.register({
     name: "plan_my_day",
+    // Momentum was removed from the product (owner, 2026-09-29).
+    available: () => false,
     description:
       "TODAY'S 3 — set the user's top priorities for today, the three wins that would make " +
       "the day count: 'my top three today are…', 'today I want to finish the report, call " +
@@ -283,6 +285,8 @@ function registerMomentumTools(registry) {
 
   registry.register({
     name: "complete_priority",
+    // Momentum was removed from the product (owner, 2026-09-29).
+    available: () => false,
     description:
       "Tick off one of TODAY'S 3 priorities — 'I finished the report', 'done with the first " +
       "one', 'tick off the bank call', 'mark number two done', 'I did all three'. `which` is " +
@@ -352,6 +356,8 @@ function registerMomentumTools(registry) {
 
   registry.register({
     name: "add_habit",
+    // Momentum was removed from the product (owner, 2026-09-29).
+    available: () => false,
     description:
       "Start tracking a small DAILY HABIT — 'track drinking water', 'add a habit to walk 20 " +
       "minutes', 'I want to read 10 pages every day', 'help me build a habit of meditating, " +
@@ -418,6 +424,8 @@ function registerMomentumTools(registry) {
 
   registry.register({
     name: "check_habit",
+    // Momentum was removed from the product (owner, 2026-09-29).
+    available: () => false,
     description:
       "Tick off one of the user's HABITS for today — 'I drank my water', 'done my walk', " +
       "'mark reading done', 'I meditated'. `habit` is words from the habit's name. done " +
@@ -508,6 +516,8 @@ function registerMomentumTools(registry) {
 
   registry.register({
     name: "momentum_status",
+    // Momentum was removed from the product (owner, 2026-09-29).
+    available: () => false,
     description:
       "How the user is doing — their STREAK, today's 3, focus time, habits and the week: " +
       "'how am I doing this week?', 'what's my streak?', 'how productive was I today?', " +

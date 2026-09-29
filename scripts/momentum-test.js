@@ -211,7 +211,9 @@ const back = (base, k) => S.addDays(base, -k);
     priorities: { total: 3, done: 2 }, streak: { current: 5, activeToday: true },
     week: { wins: 0, focusMin: 0, habitsKept: 0, bestDay: null },
   };
-  const env = { QUIET_HOURS_START: "22", QUIET_HOURS_END: "7" };
+  // Off by default since Momentum left the app (2026-09-29): the rules are
+  // tested with the switch on.
+  const env = { QUIET_HOURS_START: "22", QUIET_HOURS_END: "7", MOMENTUM_NUDGES: "on" };
 
   await atest("8 pm: today's list is not all done", () => {
     const n = nudges.pickNudge(base, env);
@@ -249,7 +251,7 @@ const back = (base, k) => S.addDays(base, -k);
     assert.strictEqual(nudges.pickNudge({ ...base, usedRecently: false }, env), null);
     assert.strictEqual(nudges.pickNudge(base, { ...env, QUIET_HOURS_START: "20" }), null);
     assert.strictEqual(nudges.pickNudge(base, { ...env, MOMENTUM_NUDGES: "off" }), null);
-    assert.strictEqual(nudges.enabled({}), true, "on by default");
+    assert.strictEqual(nudges.enabled({}), false, "off by default: Momentum left the app");
     assert.strictEqual(nudges.pickNudge({ ...base, hour: 15 }, env), null);
   });
 
@@ -656,7 +658,7 @@ const back = (base, k) => S.addDays(base, -k);
     const names = (build) => registry.declarations({ deviceCaps: { build } }).map((d) => d.name);
     assert.ok(!names(110).includes("start_focus"), "an older app is not offered it");
     assert.ok(names(111).includes("start_focus"));
-    assert.ok(names(110).includes("plan_my_day"), "the list itself works on any build");
+    assert.ok(!names(111).includes("plan_my_day"), "Momentum's own tools are no longer offered (2026-09-29)");
   });
 
   await atest("momentum_status: streak, today and the week, gently", async () => {
@@ -679,12 +681,14 @@ const back = (base, k) => S.addDays(base, -k);
       "Sir, one small win today starts a streak. No list for today yet — tell me three wins you want.");
   });
 
-  await atest("open_app_screen opens Momentum and Focus on build 111, not before", async () => {
+  await atest("open_app_screen opens Focus on build 111, not before; Momentum is gone", async () => {
     const tool = registry.get("open_app_screen");
-    assert.ok(tool.inputSchema.properties.screen.enum.includes("momentum"));
+    assert.ok(!tool.inputSchema.properties.screen.enum.includes("momentum"), "removed 2026-09-29");
     assert.ok(tool.inputSchema.properties.screen.enum.includes("focus"));
-    const ok = await tool.execute({ screen: "momentum" }, { appBuild: 111 });
-    assert.deepStrictEqual(ok.deviceAction, { type: "open_app_screen", screen: "momentum" });
+    const gone = await tool.execute({ screen: "momentum" }, { appBuild: 128 });
+    assert.strictEqual(gone.ok, false);
+    const ok = await tool.execute({ screen: "focus" }, { appBuild: 111 });
+    assert.deepStrictEqual(ok.deviceAction, { type: "open_app_screen", screen: "focus" });
     const old = await tool.execute({ screen: "focus" }, { appBuild: 109 });
     assert.strictEqual(old.ok, false);
     assert.match(old.error, /update/);

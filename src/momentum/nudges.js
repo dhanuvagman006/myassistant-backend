@@ -34,8 +34,10 @@ const GUARD_HOUR = 21;
 const WEEKLY_HOUR = 19;
 const GUARD_MIN_STREAK = 3;
 
+// Off since Momentum left the app (2026-09-29); MOMENTUM_NUDGES=on brings
+// them back.
 function enabled(env = process.env) {
-  return !/^(off|0|false|no)$/i.test(String(env.MOMENTUM_NUDGES || "on").trim());
+  return /^(on|1|true|yes)$/i.test(String(env.MOMENTUM_NUDGES || "off").trim());
 }
 
 /** Same window as the proactive scheduler's quiet hours (default 22–7). */

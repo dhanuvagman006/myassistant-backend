@@ -237,7 +237,7 @@ const stepCalls = (from) => calls.slice(from).filter((c) => S.STEP_TOOLS[c.name]
       ["WhatsApp Ravi: I'm leaving", "send_whatsapp_message", { to: "Ravi", message: "I'm leaving" }],
       ["whatsapp Priya that I'll be late", "send_whatsapp_message", { to: "Priya", message: "I'll be late" }],
       ["message Ravi on WhatsApp saying on my way", "send_whatsapp_message", { to: "Ravi", message: "on my way" }],
-      ["open momentum", "open_app_screen", { screen: "momentum" }],
+      ["open focus timer", "open_app_screen", { screen: "focus" }],
       ["open Maps", "open_named_app", { app: "Maps" }],
       ["play morning bhajans", "play_music", { query: "morning bhajans" }],
       ["alarm at 6:30 am", "set_alarm", { hour: 6, minute: 30 }],

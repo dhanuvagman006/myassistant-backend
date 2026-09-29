@@ -5070,13 +5070,12 @@ function registerBuiltins() {
             "settings", "home", "hub", "chat",
             "documents", "clients", "finance", "stocks",
             "diagnostics", "mcp", "meetings", "reminders", "call_notes",
-            "news", "momentum", "focus", "avatar_identity", "connected_apps", "shortcuts",
+            "news", "focus", "avatar_identity", "connected_apps", "shortcuts",
             "bills_email", "shopping_list",
           ],
           description:
             "settings = the assistant's own settings (voice, name, theme). " +
-            "home/hub/chat are the main tabs. momentum = streak, today's 3, " +
-            "habits and the week; focus = the focus timer. " +
+            "home/hub/chat are the main tabs. focus = the focus timer. " +
             "news = the News screen, only when they ask to OPEN it — for " +
             "'what's the news' use show_news. avatar_identity = Send " +
             "messages as you (their recorded video for video notes). " +
@@ -5095,17 +5094,18 @@ function registerBuiltins() {
       const ALLOWED = [
         "settings", "home", "hub", "chat", "documents", "clients",
         "finance", "stocks", "diagnostics", "mcp", "meetings", "reminders",
-        "call_notes", "news", "momentum", "focus", "avatar_identity", "connected_apps", "shortcuts",
+        "call_notes", "news", "focus", "avatar_identity", "connected_apps", "shortcuts",
         "bills_email", "shopping_list",
       ];
       if (!ALLOWED.includes(screen)) {
         return { ok: false, error: `I don't have a screen called "${args.screen}"` };
       }
-      // Momentum's screens arrive in app build 111; an older app would
-      // report "not available" after hearing that it was opening.
+      // Focus arrives in app build 111; an older app would report "not
+      // available" after hearing that it was opening. (Momentum — the
+      // streak, Today's 3, habits — was removed on 2026-09-29.)
       const build = Number(ctx.appBuild) || 0;
-      if ((screen === "momentum" || screen === "focus") && build && build < 111) {
-        return { ok: false, error: "that screen needs the latest app update — say so, and offer momentum_status instead" };
+      if (screen === "focus" && build && build < 111) {
+        return { ok: false, error: "that screen needs the latest app update — say so" };
       }
       // The video recorder for "Send messages as you" arrives in build 118.
       // The Shortcuts screen arrives in build 120.
