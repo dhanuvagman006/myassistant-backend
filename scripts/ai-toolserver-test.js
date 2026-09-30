@@ -683,9 +683,9 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
       const cfg = async (q) => (await api("GET", `/ai/config${q}`, { token: A.token })).json;
       let c = await cfg("?build=135");
       assert.deepStrictEqual(c.live, {
-        on: true, model: "gemini-3.8-live", voice: "Callirrhoe", silenceMs: 500, prefixMs: 100,
-        startSensitivity: "high", endSensitivity: "high", idleCloseSec: 60,
-        voices: ["Callirrhoe", "Achernar", "Aoede", "Vindemiatrix", "Sulafat", "Kore", "Charon", "Achird"],
+        on: true, model: "gemini-3.8-live", voice: "Sulafat", silenceMs: 500, prefixMs: 100,
+        startSensitivity: "high", endSensitivity: "high", idleCloseSec: 180, affectiveDialog: false,
+        voices: ["Sulafat", "Callirrhoe", "Achernar", "Aoede", "Vindemiatrix", "Kore", "Charon", "Achird"],
       });
       assert.ok(c.models.live && c.models.liveVoice, "the old fields stay, harmless");
       assert.strictEqual((await cfg("?build=134")).live, undefined);

@@ -238,6 +238,12 @@ const PINS = [
     rx: /\baddress(es)?\b|\blives?\b|\bstays?\b|\bwhere does\b|\bhouse\b|\bhome\b|\boffice\b|\b(remember|save|note)\s+(that|this|it)\b/i,
     tools: ["remember_address", "show_address"],
   },
+  // "Open my calendar / the news", "what's on my calendar": this app's own
+  // screens and schedule, never a Google-only answer (2026-09-30).
+  {
+    rx: /\bcalendar\b|\bdiary\b|\bagenda\b|\bschedule\b|\bnews\b|\bopen\b|\bshow me\b/i,
+    tools: ["open_app_screen", "show_schedule"],
+  },
 ];
 function pinnedFor(text, live) {
   const t = String(text || "");

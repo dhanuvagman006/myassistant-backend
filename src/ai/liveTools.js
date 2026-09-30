@@ -29,7 +29,9 @@ const LIVE_ORDER = [
   // Live speaks the brief itself in its own voice, faster than the
   // play_daily_brief player.
   "prepare_meeting", "create_event_poster", "generate_image",
-  "open_named_app", "phone_control", "play_music",
+  // "Open the news / my calendar": this app's own screens (2026-09-30,
+  // it was past the cap, so Live opened other apps or said "not connected").
+  "open_app_screen", "open_named_app", "phone_control", "play_music",
   "remember_fact", "recall_memory",
   // "Remember Ravi's house address" / "what's Ravi's address" (2026-09-30).
   "remember_address", "show_address",

@@ -5191,9 +5191,12 @@ function registerBuiltins() {
   registry.register({
     name: "open_app_screen",
     description:
-      "Open a screen INSIDE this assistant app — 'open my settings', 'show " +
-      "my documents', 'open my clients', 'show my finances', 'open " +
-      "diagnostics'. Use this for the app's OWN screens.\n" +
+      "Open a screen INSIDE this assistant app — 'open the news', 'open my " +
+      "calendar', 'open my reminders', 'open my settings', 'show my " +
+      "documents', 'open my shopping list'. Use this for the app's OWN " +
+      "screens, and FIRST whenever 'open X' names one of them: 'open the " +
+      "calendar' is THIS app's calendar (never Google Calendar, never a " +
+      "calendar app, never 'not connected').\n" +
       "Not for other apps on the phone (use open_named_app or open_app), " +
       "and not for the phone's system settings (use phone_control).",
     risk: "low",
@@ -5208,7 +5211,7 @@ function registerBuiltins() {
             "documents", "clients", "finance", "stocks",
             "diagnostics", "mcp", "meetings", "reminders", "call_notes",
             "news", "focus", "avatar_identity", "connected_apps", "shortcuts",
-            "bills_email", "shopping_list",
+            "bills_email", "shopping_list", "calendar",
           ],
           description:
             "settings = the assistant's own settings (voice, name, theme). " +
@@ -5220,7 +5223,8 @@ function registerBuiltins() {
             "shortcuts = their saved shortcuts (build 120). " +
             "bills_email = Bills by email (their private address for " +
             "forwarding bills). shopping_list = their shopping list " +
-            "(build 124). The " +
+            "(build 124). calendar = this app's calendar: their events, " +
+            "reminders and holidays (build 140). The " +
             "rest are feature screens.",
         },
       },
@@ -5232,7 +5236,7 @@ function registerBuiltins() {
         "settings", "home", "hub", "chat", "documents", "clients",
         "finance", "stocks", "diagnostics", "mcp", "meetings", "reminders",
         "call_notes", "news", "focus", "avatar_identity", "connected_apps", "shortcuts",
-        "bills_email", "shopping_list",
+        "bills_email", "shopping_list", "calendar",
       ];
       if (!ALLOWED.includes(screen)) {
         return { ok: false, error: `I don't have a screen called "${args.screen}"` };
@@ -5261,6 +5265,10 @@ function registerBuiltins() {
         return { ok: false, error: "that screen needs the latest app update — say so" };
       }
       // The shopping list screen arrives in build 124; an unknown build counts as old.
+      // The calendar screen opens by voice from build 140.
+      if (screen === "calendar" && build < 140) {
+        return { ok: false, error: "that screen needs the latest app update — say so" };
+      }
       if (screen === "shopping_list" && build < require("../shopping").APP_BUILD) {
         return { ok: false, error: "that screen needs the latest app update — say so" };
       }
@@ -5298,6 +5306,7 @@ function registerBuiltins() {
         shortcuts: "your shortcuts",
         bills_email: "Bills by email",
         shopping_list: "your shopping list",
+        calendar: "your calendar",
       };
       return {
         ok: true,
@@ -5312,7 +5321,10 @@ function registerBuiltins() {
     description:
       "OPEN ANY APP INSTALLED ON THE USER'S PHONE, by the name they used — " +
       "'open Swiggy', 'open BigBasket', 'open Uber', 'open PhonePe', 'open " +
-      "my banking app'. USE THIS FIRST for any plain 'open X' request.\n" +
+      "my banking app'. USE THIS FIRST for any plain 'open X' request — " +
+      "EXCEPT when X is one of this assistant's own screens (news, " +
+      "calendar, reminders, shopping list, documents, meetings, settings, " +
+      "clients, finances, focus, shortcuts): those are open_app_screen.\n" +
       "THERE IS NO LIST. The phone looks up what it actually has installed " +
       "and opens it, so do NOT refuse because an app sounds unfamiliar — " +
       "pass the name through and let the phone answer. Only if it comes " +
@@ -5357,6 +5369,19 @@ function registerBuiltins() {
       const deeplinks = require("../fulfillment/deeplinks");
       const asked = String(args.app || "").trim();
       if (!asked) return { ok: false, error: "no app was named" };
+
+      // "OPEN THE CALENDAR / THE NEWS" is this app's own screen, unless they
+      // name another app (owner, 2026-09-30: it opened other apps, or said
+      // Google Calendar was not connected).
+      const own = {
+        calendar: "calendar", diary: "calendar", schedule: "calendar", agenda: "calendar",
+        news: "news", headlines: "news", reminders: "reminders",
+        "shopping list": "shopping_list", documents: "documents", meetings: "meetings",
+      };
+      const plain = asked.toLowerCase().replace(/^(my|the)\s+/, "").replace(/\s+(app|screen|page)$/, "");
+      if (own[plain] && Number(ctx.appBuild) >= 140) {
+        return registry.get("open_app_screen").execute({ screen: own[plain] }, ctx);
+      }
 
       // "DOWNLOAD SWIGGY" MUST NEVER TAKE THE DEEP LINK.
       //

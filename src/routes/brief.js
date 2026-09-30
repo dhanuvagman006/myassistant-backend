@@ -114,7 +114,7 @@ router.get("/calendar", async (req, res) => {
       if (r.done) continue;
       const due = Number(r.due_at);
       const d = Number.isFinite(due) && due > 0 ? dayOf(due) : null;
-      if (d) add(d, "reminder", r.text, { id: r.id, del: "reminders" });
+      if (d) add(d, "reminder", r.text, { id: r.id, del: "reminders", at: due });
     }
   } catch (_) {}
 
@@ -130,6 +130,7 @@ router.get("/calendar", async (req, res) => {
         add(d, "promise", (c.owed_to ? `To ${c.owed_to}: ` : "") + c.text, {
           id: c.id,
           del: "commitments",
+          at: due,
         });
       }
     }
@@ -174,7 +175,9 @@ router.get("/calendar", async (req, res) => {
     for (const e of events || []) {
       const at = Date.parse(e.start);
       const d = Number.isFinite(at) ? dayOf(at) : null;
-      if (d) add(d, "meeting", e.title || "Meeting");
+      // [at] (epoch ms) lets the Calendar screen show the time; all-day
+      // events and finance days carry none. Older apps ignore it.
+      if (d) add(d, "meeting", e.title || "Meeting", e.allDay ? {} : { at });
     }
   } catch (_) {}
 

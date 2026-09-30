@@ -359,6 +359,12 @@ app.get("/tools/weather/forecast", appAuth, async (req, res) => {
     res.status(502).json({ error: "weather unavailable" });
   }
 });
+// Holidays (India + Kerala), festivals, world days and global events for
+// the Calendar screen: ?from=&to= (≤ 93 days) or ?y=&m=, region from
+// ?region=IN|IN-KL or the X-Geo headers. Curated data; never a 5xx.
+app.get("/tools/calendar/extras", appAuth, (req, res) =>
+  require("./services/tools/calendarExtras").handler(req, res)
+);
 app.get("/tools/news", appAuth, async (req, res) => {
   try {
     res.json({

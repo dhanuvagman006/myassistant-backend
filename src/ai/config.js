@@ -106,7 +106,9 @@ const liveModel = () =>
 // stays open. AI_LIVE=off turns it off (the app keeps the cascade);
 // AI_LIVE_MODEL, AI_LIVE_VOICE and AI_LIVE_SILENCE_MS override.
 const LIVE_BUILD = 135;
-const LIVE_VOICES = ["Callirrhoe", "Achernar", "Aoede", "Vindemiatrix", "Sulafat", "Kore", "Charon", "Achird"];
+// Sulafat first (the client, 2026-09-30: "best voice as default" — the
+// warm one); the rest as before.
+const LIVE_VOICES = ["Sulafat", "Callirrhoe", "Achernar", "Aoede", "Vindemiatrix", "Kore", "Charon", "Achird"];
 const liveOn = () => !/^(off|0|false|no)$/i.test(String(process.env.AI_LIVE || "on").trim());
 function liveSilenceMs() {
   const n = Math.round(Number(process.env.AI_LIVE_SILENCE_MS));
@@ -118,12 +120,18 @@ function liveBlock() {
     on: liveOn(),
     model: envModel("AI_LIVE_MODEL", "gemini-3.8-live"),
     // Live takes prebuilt voices only (never the library's Fola).
-    voice: VOICES.has(v) ? v : "Callirrhoe",
+    voice: VOICES.has(v) ? v : "Sulafat",
     silenceMs: liveSilenceMs(),
     prefixMs: 100,
     startSensitivity: "high",
     endSensitivity: "high",
-    idleCloseSec: 60,
+    idleCloseSec: 180, // a session warmed on app-open lasts a look around the app
+    // Live's affective dialog: her tone follows the feeling in their voice
+    // and her words (the client, 2026-09-30). OFF: the Firebase Live
+    // endpoint refused the setup with it on (2026-09-30, "closed before
+    // setup"); the feeling comes from LIVE_RULES instead. Flip when the
+    // endpoint takes it — the app sends whatever is here.
+    affectiveDialog: false,
     voices: LIVE_VOICES.slice(),
   };
 }

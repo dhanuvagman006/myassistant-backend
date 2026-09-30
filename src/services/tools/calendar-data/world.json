@@ -1,0 +1,46 @@
+{
+  "_about": [
+    "International days (UN observances and widely kept days) for the Calendar screen (2026-09-30).",
+    "recurring: every year on MM-DD. nth: the nth weekday (1=Mon..7=Sun) of a month, every year.",
+    "events: dated global events (sport, summits). tentative until the organiser confirms."
+  ],
+  "recurring": [
+    { "md": "01-01", "title": "New Year's Day" },
+    { "md": "02-04", "title": "World Cancer Day" },
+    { "md": "02-14", "title": "Valentine's Day" },
+    { "md": "02-21", "title": "International Mother Language Day" },
+    { "md": "03-08", "title": "International Women's Day" },
+    { "md": "03-15", "title": "World Consumer Rights Day" },
+    { "md": "03-20", "title": "International Day of Happiness" },
+    { "md": "03-22", "title": "World Water Day" },
+    { "md": "04-07", "title": "World Health Day" },
+    { "md": "04-22", "title": "Earth Day" },
+    { "md": "05-01", "title": "International Workers' Day" },
+    { "md": "05-31", "title": "World No Tobacco Day" },
+    { "md": "06-05", "title": "World Environment Day" },
+    { "md": "06-21", "title": "International Yoga Day" },
+    { "md": "07-11", "title": "World Population Day" },
+    { "md": "08-12", "title": "International Youth Day" },
+    { "md": "09-21", "title": "International Day of Peace" },
+    { "md": "09-27", "title": "World Tourism Day" },
+    { "md": "10-01", "title": "International Day of Older Persons" },
+    { "md": "10-10", "title": "World Mental Health Day" },
+    { "md": "10-16", "title": "World Food Day" },
+    { "md": "10-24", "title": "United Nations Day" },
+    { "md": "11-14", "title": "World Diabetes Day" },
+    { "md": "12-01", "title": "World AIDS Day" },
+    { "md": "12-10", "title": "Human Rights Day" },
+    { "md": "12-31", "title": "New Year's Eve" }
+  ],
+  "nth": [
+    { "month": 5, "nth": 2, "weekday": 7, "title": "Mother's Day" },
+    { "month": 6, "nth": 3, "weekday": 7, "title": "Father's Day" }
+  ],
+  "events": [
+    { "date": "2026-09-19", "end": "2026-10-04", "title": "Asian Games, Aichi-Nagoya", "note": "Japan" },
+    { "date": "2026-11-09", "end": "2026-11-20", "title": "COP31 climate summit, Antalya", "note": "Türkiye" },
+    { "date": "2027-06-24", "end": "2027-07-25", "title": "FIFA Women's World Cup", "note": "Brazil", "tentative": true },
+    { "date": "2027-10-01", "end": "2027-11-13", "title": "Rugby World Cup", "note": "Australia", "tentative": true },
+    { "date": "2027-10-04", "end": "2027-11-21", "title": "ICC Men's Cricket World Cup", "note": "South Africa, Zimbabwe and Namibia", "tentative": true }
+  ]
+}
