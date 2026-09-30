@@ -37,6 +37,42 @@ router.get("/", async (req, res) => {
 });
 
 /**
+ * GET|POST /brief/script — "Play my morning" (2026-09-30): the brief as a
+ * 45–75 second spoken script (services/briefScript.js). POST may carry
+ * the phone's missed calls, which the server never sees otherwise:
+ *   { missedCalls: [{ name, count }] }
+ * → { part, title, greeting, script, sentences[], seconds,
+ *     offer: { kind, say, label, request, meetingId? }, source, empty }
+ * Same location headers and X-TZ-Offset as GET /brief.
+ */
+async function script(req, res) {
+  const uid = Number(req.user?.sub);
+  const briefScript = require("../services/briefScript");
+  const tzOffsetMin = tzFromReq(req);
+  const missedCalls = briefScript.missedFromBody(req.body);
+  if (!Number.isInteger(uid) || uid <= 0) {
+    // Dev/appKey sessions: the calm, empty day — never an error.
+    const empty = { agenda: [], tomorrow: [], dates: [], promises: [], messages: [] };
+    return res.json(await briefScript.scriptFor(0, empty, { tzOffsetMin, missedCalls }));
+  }
+  let lat = parseFloat(req.query.lat);
+  let lng = parseFloat(req.query.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    lat = parseFloat(req.get("X-Geo-Lat"));
+    lng = parseFloat(req.get("X-Geo-Lng"));
+  }
+  try {
+    const brief = await buildBrief(uid, { lat, lng, tzOffsetMin });
+    res.json(await briefScript.scriptFor(uid, brief, { tzOffsetMin, missedCalls }));
+  } catch (e) {
+    console.error("brief script failed:", e.message);
+    res.status(500).json({ error: "brief script failed" });
+  }
+}
+router.get("/script", script);
+router.post("/script", script);
+
+/**
  * GET /brief/calendar?y=2026&m=9 — one month of commitments for the home
  * calendar: reminders, promises, recurring finance due-days, and Google
  * Calendar meetings when linked. Day-keyed so the client just paints.

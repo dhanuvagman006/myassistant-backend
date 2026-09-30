@@ -39,13 +39,19 @@ function userOf(req, res) {
 router.get("/config", async (req, res) => {
   const uid = userOf(req, res);
   if (!uid) return;
-  res.json(await require("./config").forUser(uid, { build: req.query.build }));
+  res.json(await require("./config").forUser(uid, { build: req.query.build, live: req.query.live }));
 });
 
 router.post("/context", async (req, res) => {
   const uid = userOf(req, res);
   if (!uid) return;
   const body = req.body && typeof req.body === "object" ? req.body : {};
+  // A LIVE SESSION HAS NO WORDS YET (2026-09-30): the app opens the session
+  // and each turn before the transcript is final, so an empty text is an
+  // app note, not a mistake.
+  if (body.mode === "live" && (typeof body.text !== "string" || !body.text.trim())) {
+    body.text = body.turnOnly ? "[SYSTEM] Live turn" : "[SYSTEM] Live session starting";
+  }
   if (typeof body.text !== "string" || !body.text.trim()) {
     return res.status(400).json({ error: "text required" });
   }

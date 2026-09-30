@@ -45,6 +45,13 @@ Auth column: **none** = public · **JWT** = `Authorization: Bearer <token>` from
 | `POST /avatar/*` | JWT | Tavus human-avatar video sessions |
 | `GET /places` · `GET /tools/weather` · `GET /tools/news` | JWT | Live data for the Today screen |
 | `GET /region` | none | Regional language guess from the caller's IP |
+| `GET /ai/config` | JWT | App AI contract; builds ≥135 also get the `live` block (model, voice, silence/sensitivity, voice list) |
+| `POST /ai/context` | JWT | Per-turn system prompt + tools. `mode:"live"` = Live rules, ≤32 fixed tools; `turnOnly:true` opens a turn cheaply (`notes` only) |
+| `POST /ai/turn` | JWT | Records a turn; accepts `engine/mode:"live"`, `latency:{endToFirstAudioMs,endToPlayMs,toolMs}`, `cutOffAfter` (stores only the heard part) |
+| `POST /posters/ai/design` | JWT | Poster Studio words: `{request, format?, brand?}` → `design` (no invented facts; `missing[]`) |
+| `POST /posters/ai/background` · `GET /posters/ai/background/jobs/:jobId` | JWT | Text-free poster background (stored as a doc) · poll a running job |
+| `GET\|POST /brief/script` | JWT | Spoken "Play my morning" script + one offer |
+| `GET /meetings/prep?id=` | JWT | Prep for the next (or given) meeting in the next 24 h |
 | `/admin/*` | `ADMIN_KEY` | Read-only ops stats + APK publish |
 
 ### Getting things done in the real world (fulfillment)
@@ -328,6 +335,22 @@ intents and drives them end-to-end; the app just renders the streamed events:
   into document memory with the user's words as the note, and confirms. A
   spoken *fact* ("remember that mom's birthday is in May") is left for the AI.
 
+### Live voice, Poster Studio, morning brief, meeting prep (2026-09-30, app build ≥135)
+- **Live voice** — the app talks to Gemini 3.8 Live itself; the backend stays
+  the tool server. `/ai/context` puts the static rules first (byte-identical
+  turn to turn, for caching) and the changing parts last, adds **LAST RESULTS**
+  (~400 chars per tool from the last 2 turns; email/web/MCP content withheld)
+  and picks ~15 memories scored against the user's words (`src/ai/lastResults.js`,
+  `src/ai/liveTools.js`, `src/agents/memory.js`). Run `npm run test:ai`, `test:live`.
+- **Images** — `src/services/imagegen.js` tries providers by quality: Gemini
+  (only when billed) → fal → Cloudflare FLUX.2 klein → schnell → HF/Together →
+  Pollinations; prompt rewrite, fal upscale, one ffmpeg finish.
+- **New tools:** `create_event_poster` (opens the app's Poster Studio with
+  the design + background), `edit_my_photo` (background removal / edits; faces
+  never changed, identity edits refused, original kept), `play_daily_brief`,
+  `prepare_meeting`. Offered only to builds ≥135. Run `npm run test:imagegen`
+  and `npm run test:brief`.
+
 ## The update switchboard
 `src/config/remoteConfig.js` controls what every installed app sees on launch:
 feature flags, announcements, version prompts, and the OTA APK url/hash. Edit +
@@ -365,6 +388,23 @@ server refuses to boot with this in production), `GOOGLE_WEB_CLIENT_ID`,
 Integrations: `GOOGLE_PLACES_API_KEY`, `TAVUS_API_KEY`, `TAVUS_FACE_ID`,
 `TAVUS_PAL_ID`, `TAVUS_MAX_CALL_SECONDS`.
 Ops: `ADMIN_KEY`, `METRICS_TOKEN`, `NODE_ENV`.
+Live voice (all optional): `AI_LIVE` (on; `off` kills it), `AI_LIVE_MODEL`
+(`gemini-3.8-live`), `AI_LIVE_VOICE` (`Callirrhoe`), `AI_LIVE_SILENCE_MS` (500),
+`AI_MEMORY_SCORING` (on), `AI_MEMORY_PICK` (15), `AI_LAST_RESULTS` (on),
+`AI_CONTEXT_TIMING`, `AI_TURN_LOG` (log lines, on).
+Images: `GEMINI_IMAGE_BILLING` (`on`/`auto`/`off`, default auto),
+`GEMINI_IMAGE_API_KEY`, `FAL_KEY`, `FAL_IMAGES`, `FAL_*_MODEL`, `FAL_MAX_EDGE`,
+`CF_ACCOUNT_ID`, `CF_API_TOKEN`, `CF_IMAGE_MODEL`, `CF_FALLBACK_IMAGE_MODEL`,
+`CF_IMAGE_MAX_EDGE`, `IMAGE_PROVIDER_ORDER`, `IMAGE_PROVIDER_TIMEOUT_MS`,
+`IMAGE_TOTAL_BUDGET_MS`, `IMAGE_KEYLESS`, `IMAGE_AI_UPSCALE`, `IMAGE_PROMPT_*`,
+`HF_IMAGE_MODEL`/`TOGETHER_IMAGE_MODEL` (now required to use those providers).
+Posters: `POSTER_AI`, `POSTER_AI_DESIGNS_PER_DAY` (60),
+`POSTER_AI_BACKGROUNDS_PER_DAY` (30), `POSTER_DESIGN_MODEL`,
+`POSTER_DESIGN_TIMEOUT_MS`, `POSTER_STUDIO_MIN_BUILD` (135), `POSTER_TOOL_WAIT_MS`.
+Brief + meeting prep: `BRIEF_SCRIPT_AI`, `BRIEF_SCRIPT_MODEL`,
+`BRIEF_SCRIPT_TIMEOUT_MS`, `BRIEF_SCRIPT_CACHE_MIN`, `MEETING_PREP_AI`,
+`MEETING_PREP_MODEL`, `MEETING_PREP_TIMEOUT_MS`, `MEETING_PREP_CACHE_MIN`,
+`BRIEF_TOOLS_MIN_BUILD` (135). Defaults are in `.env.example` and DEPLOYMENT.md.
 
 ## Deploy
 Deploy to an **India region** (AWS ap-south-1 Mumbai / GCP asia-south1) per the

@@ -19,6 +19,13 @@
  *                      the server gated them before
  *   history            this session's last turns, from the server's memory
  *
+ * mode "live" (2026-09-30, build 135+): the Gemini Live session's fixed
+ * instruction (the spoken rules plus LIVE_RULES, never delivery marks) and
+ * one fixed tool set of at most 32 (ai/liveTools.js), asked for once when
+ * the session opens. Each later turn is opened with turnOnly: true — the
+ * owner's words through the same gates, a turnId for /ai/tool and
+ * /ai/turn, and `notes` (this turn's instructions) instead of a prompt.
+ *
  * No model is called here.
  */
 const registry = require("../tools/registry");
@@ -26,8 +33,34 @@ const sessionState = require("../agents/sessionState");
 const inputQuality = require("../agents/inputQuality");
 const claimCheck = require("../agents/claimCheck");
 const sessions = require("./sessions");
-const { voiceSystemPrompt, unreadBlock, nowLine, RELAYED_MESSAGE_NOTE, RELAYED_MESSAGE_FRAME, APP_NOTE, EXPRESSIVE_SPEECH } =
-  require("./voicePrompt");
+const { voiceRules, voiceTail, liveRules, unreadBlock, RELAYED_MESSAGE_NOTE, RELAYED_MESSAGE_FRAME, APP_NOTE,
+  EXPRESSIVE_SPEECH, RESOLVE_REFERENCES } = require("./voicePrompt");
+const MODES = new Set(["voice", "live", "chat"]);
+// A Live session opening has no words to choose memories by: it gets the
+// most important and recent ones, a few more than a turn's ~15.
+const LIVE_MEMORIES = 20;
+const timingOn = () => !/^(off|0|false|no)$/i.test(String(process.env.AI_CONTEXT_TIMING || "on").trim());
+
+/**
+ * HOW LONG EACH PART TOOK (2026-09-30): /ai/context sits in front of every
+ * reply and nothing said where its 0.3–1 s went. One log line per turn:
+ * "ai: context voice 412ms — mcp 120, profile 15, …" (AI_CONTEXT_TIMING=off
+ * stops it).
+ */
+function stopwatch() {
+  const t0 = Date.now();
+  let last = t0;
+  const parts = [];
+  return {
+    mark(name) { const now = Date.now(); parts.push(`${name} ${now - last}`); last = now; },
+    timed(name, p) {
+      const t = Date.now();
+      return Promise.resolve(p).finally(() => parts.push(`${name} ${Date.now() - t}`));
+    },
+    reset() { last = Date.now(); },
+    line() { return `${Date.now() - t0}ms — ${parts.join(", ")}`; },
+  };
+}
 
 const TOKEN_TTL_MS = require("./approval").TTL_MS;
 // A yes must follow the question: past this the model is no longer told a
@@ -215,8 +248,13 @@ function declined(uid, asked) {
  * The turn. `body` is the request body; returns the response object.
  */
 async function prepare(uid, body) {
+  const tm = stopwatch();
   const text = String(body.text == null ? "" : body.text).slice(0, 4000);
-  const mode = body.mode === "voice" ? "voice" : "chat";
+  const mode = MODES.has(body.mode) ? body.mode : "chat";
+  // A Live session takes its instruction and tools once, at the start; each
+  // turn after that only needs opening (the owner's words through the same
+  // gates, a turn id for /ai/tool and /ai/turn, this turn's notes).
+  const turnOnly = body.turnOnly === true;
 
   let s = sessions.get(uid, body.sessionId);
   const isNew = !s;
@@ -228,11 +266,15 @@ async function prepare(uid, body) {
 
   // This user's MCP tools after a restart, and whether Notion is offered —
   // both before the declarations are built, as every surface did.
-  await Promise.all([
-    require("../mcp/routes").ensureConnectedWithin(uid).catch(() => {}),
-    require("../connectors/notion/store").prime(uid).catch(() => {}),
-  ]);
+  if (!turnOnly) {
+    await Promise.all([
+      tm.timed("mcp", require("../mcp/routes").ensureConnectedWithin(uid).catch(() => {})),
+      tm.timed("notion", require("../connectors/notion/store").prime(uid).catch(() => {})),
+    ]);
+  }
+  tm.reset();
   const profile = await require("../users/context").getProfile(uid).catch(() => null);
+  tm.mark("profile");
   const assistantName = (profile && profile.assistant && profile.assistant.name) || "Assistant";
   let preferred = String((profile && profile.user && profile.user.preferred_language) || "").slice(0, 40);
   s.userName = profile && profile.user && profile.user.name
@@ -250,6 +292,8 @@ async function prepare(uid, body) {
 
   const turnId = sessions.openTurn(s, { text, owner, mode });
   const turnRec = sessions.turn(s, turnId);
+  // Someone else's words: never repeated back as LAST RESULTS.
+  turnRec.untrusted = relayed || body.untrusted === true;
   const notes = [];
   let shortcut = null;
 
@@ -396,77 +440,118 @@ async function prepare(uid, body) {
   if (isNew) s.languageAsk = await languageAskFor(uid, profile);
   const languageAsk = !s.firstTurnDone ? s.languageAsk : "";
   s.firstTurnDone = true;
+  const route = { shortcut: shortcut ? shortcut.name : null };
+  tm.mark("gates");
+
+  // ── A LIVE TURN, OPENED ── no instruction or tools (the session has
+  // them); this turn's notes come back for the phone to hand the model.
+  if (turnOnly) {
+    if (timingOn()) console.log(`ai: context ${mode} turn ${tm.line()}`);
+    return { sessionId: s.id, turnId, route, system: "", tools: [], history: [], notes: notes.join("\n") };
+  }
 
   // ── TOOLS: what this turn plausibly needs (tools/relevance.js), gated
   // by availability, build and permissions (registry.declarations).
   const history = await historyFor(uid, s.id);
-  // Never the whole catalogue: measured through AI Logic on 2026-09-29, a
-  // spoken "hello" with all 143 tools took 72 s to start answering and
-  // with the core set 3 s (relevance.selectForPhone).
-  const only = require("../tools/relevance").selectForPhone(registry.list(), text, {
-    history: history.map((h) => ({ content: h.text })),
-    sessionId: s.id,
-  });
+  tm.mark("history");
+  const must = [];
   // A user with shortcuts is always offered run_shortcut.
-  if (shortcutKeys.length) {
-    for (const n of ["run_shortcut", "continue_shortcut"]) if (!only.includes(n)) only.push(n);
-  }
+  if (shortcutKeys.length) must.push("run_shortcut", "continue_shortcut");
   // The tool a pending question is about must still be callable.
-  if (s.asked && !only.includes(s.asked.tool)) only.push(s.asked.tool);
-  const tools = registry.declarations({ userId: uid, deviceCaps: s.device.caps || null, only })
-    .map((d) => ({ name: d.name, description: d.description, parameters: jsonSchema(d.parameters) }));
+  if (s.asked) must.push(s.asked.tool);
+  let decls;
+  if (mode === "live") {
+    // Live fixes its tools when the session opens: one set, at most 32.
+    const live = require("./liveTools");
+    const names = live.liveNames(registry.list(), { must });
+    decls = live.capDeclarations(
+      registry.declarations({ userId: uid, deviceCaps: s.device.caps || null, only: names }), names);
+  } else {
+    // Never the whole catalogue: measured through AI Logic on 2026-09-29, a
+    // spoken "hello" with all 143 tools took 72 s to start answering and
+    // with the core set 3 s (relevance.selectForPhone).
+    const only = require("../tools/relevance").selectForPhone(registry.list(), text, {
+      history: history.map((h) => ({ content: h.text })),
+      sessionId: s.id,
+    });
+    for (const n of must) if (!only.includes(n)) only.push(n);
+    decls = registry.declarations({ userId: uid, deviceCaps: s.device.caps || null, only });
+  }
+  const tools = decls.map((d) => ({ name: d.name, description: d.description, parameters: jsonSchema(d.parameters) }));
+  tm.mark("tools");
 
-  // ── THE SYSTEM INSTRUCTION ──
+  // ── THE SYSTEM INSTRUCTION ── the static rules FIRST and unchanged from
+  // turn to turn, what changes LAST (2026-09-30): Gemini caches a prompt's
+  // unchanged prefix, and a clock or a memory list near the top meant it
+  // never could. Content as before; only the order moved.
   const fix = s.promptFix || {};
   const thisTurn = notes.length ? "\n\nTHIS TURN:\n" + notes.join("\n") : "";
+  // Memories chosen by the owner's own words (an app note has none).
+  const words = owner ? text : "";
+  const memOpts = mode === "live" && !words.trim() ? { words, limit: LIVE_MEMORIES } : { words };
+  // The phone will SPEAK this reply and can read delivery marks (it asks
+  // only when both are true; an older build would show them). Never Live:
+  // it speaks natively, and a mark would be read out.
+  const expressive = body.expressive === true && mode !== "live";
+  const lastResults = tm.timed("last", require("./lastResults").block(uid, s, turnId).catch(() => ""));
   let system;
-  if (mode === "voice") {
+  if (mode === "voice" || mode === "live") {
     // The same personal layer the live socket gave its model: profile,
     // standing rules, memory, the earlier conversation.
-    const [ctxBlock, memBlock, recentBlock] = await Promise.all([
-      require("../users/context").contextBlock(uid, {
+    const [ctxBlock, memBlock, recentBlock, last] = await Promise.all([
+      tm.timed("context", require("../users/context").contextBlock(uid, {
         lat: fix.lat, lng: fix.lng, tz, at: fix.at, appBuild: build,
-      }).catch(() => ""),
-      require("../agents/memory").memoryBlock(uid).catch(() => ""),
-      require("../memory/recent").recentBlock(uid, { excludeSessionId: s.id }).catch(() => ""),
+      }).catch(() => "")),
+      tm.timed("memory", require("../agents/memory").memoryBlock(uid, memOpts).catch(() => "")),
+      tm.timed("recent", require("../memory/recent").recentBlock(uid, { excludeSessionId: s.id }).catch(() => "")),
+      lastResults,
     ]);
+    tm.reset();
     let personalContext = [ctxBlock, memBlock, recentBlock].filter(Boolean).join("\n");
     if (recentBlock) personalContext += NEW_CONVERSATION;
     const here = require("../agents/runtime").sessionLines(s.state);
     if (here.length) personalContext += "\n" + here.join("\n");
+    if (last) personalContext += "\n\n" + last;
     // The honest limits of THIS phone, and Notion when they could connect it.
     const limits = registry.limitsBlock(s.device.caps);
     const notion = require("../connectors/notion/tools").notionHintFor(uid, build);
     system =
-      voiceSystemPrompt(assistantName, unread, personalContext, tz, preferred, languageAsk, build) +
+      (mode === "live" ? liveRules(assistantName, preferred, build) : voiceRules(assistantName, preferred, build)) +
+      "\n\n" + RESOLVE_REFERENCES +
+      (expressive ? "\n\n" + EXPRESSIVE_SPEECH : "") +
       (limits ? "\n\n" + limits : "") +
       (notion ? "\n\n" + notion : "") +
+      voiceTail({ unreadMessages: unread, personalContext, tzOffsetMin: tz, languageAsk }) +
       thisTurn;
   } else {
     const runtime = require("../agents/runtime");
-    const extra = await runtime.contextExtra({
-      userId: uid, lat: fix.lat, lng: fix.lng, tzOffsetMin: tz, appBuild: build,
-      sessionId: s.id, deviceCaps: s.device.caps || null,
-    }, s.state).catch(() => "");
+    const [extra, last] = await Promise.all([
+      tm.timed("personal", runtime.contextExtra({
+        userId: uid, lat: fix.lat, lng: fix.lng, tzOffsetMin: tz, appBuild: build,
+        sessionId: s.id, deviceCaps: s.device.caps || null, memoryWords: words,
+      }, s.state).catch(() => "")),
+      lastResults,
+    ]);
+    tm.reset();
     const notion = /\bnotion\b/i.test(text)
       ? require("../connectors/notion/tools").notionHintFor(uid, build) : "";
     system = runtime.systemPrompt(
-      "\n\n" + [extra, notion, languageAsk, unreadBlock(unread).trim()].filter(Boolean).join("\n"),
+      "\n\n" + [RESOLVE_REFERENCES, expressive ? EXPRESSIVE_SPEECH : "", extra, notion, last, languageAsk,
+        unreadBlock(unread).trim()].filter(Boolean).join("\n"),
       { appBuild: build }
     ) + thisTurn;
   }
-  // The phone will SPEAK this reply and can read delivery marks (it asks
-  // only when both are true; an older build would show them).
-  if (body.expressive === true) system += "\n\n" + EXPRESSIVE_SPEECH;
+  tm.mark("assemble");
+  if (timingOn()) console.log(`ai: context ${mode} ${tm.line()} (${tools.length} tools, ${system.length} chars)`);
 
   return {
     sessionId: s.id,
     turnId,
-    route: { shortcut: shortcut ? shortcut.name : null },
+    route,
     system,
     tools,
     history,
   };
 }
 
-module.exports = { prepare, jsonSchema, SHORTCUT_TOOLS, NO_RX };
+module.exports = { prepare, jsonSchema, SHORTCUT_TOOLS, NO_RX, LIVE_MEMORIES };

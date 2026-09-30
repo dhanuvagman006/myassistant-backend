@@ -250,7 +250,10 @@ let preferredShape = null;      // 'interactions' | 'generateContent'
 
 function geminiModels() {
   const raw = process.env.GEMINI_EDIT_MODELS || "gemini-3-pro-image,gemini-3.1-flash-image";
-  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+  // gemini-2.5-flash-image shuts down on 2026-10-02 (2026-09-30): an env
+  // list still naming it must not spend a round-trip on a 404 per edit.
+  const list = raw.split(",").map((s) => s.trim()).filter((m) => m && !/gemini-2\.5-flash-image/i.test(m));
+  return list.length ? list : ["gemini-3.1-flash-image"];
 }
 
 function geminiAspect(aspect) {
@@ -566,7 +569,7 @@ module.exports = {
   // Exported for the regression tests: the response shape these two walk
   // is the one fact about this integration the documentation would not
   // pin down, so it is the one that must be tested rather than trusted.
-  harvestImage, harvestText, geminiAspect,
+  harvestImage, harvestText, geminiAspect, geminiModels,
 };
 
 // Optional keyed providers register themselves. Each module is a no-op

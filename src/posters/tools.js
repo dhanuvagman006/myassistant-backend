@@ -602,6 +602,33 @@ function splitChange(partial) {
  */
 function posterRule(appBuild, { voice = "user" } = {}) {
   if (!(Number(appBuild) >= POSTER_MIN_BUILD)) return "";
+  return cardRule(voice) + studioRule(appBuild, voice);
+}
+
+/**
+ * The AI Poster Studio (2026-09-30), only for builds with its screen: an
+ * EVENT poster's words are facts set in real fonts, so it never goes to
+ * generate_image; photo edits go to edit_my_photo.
+ */
+function studioRule(appBuild, voice) {
+  if (!(Number(appBuild) >= require("./studioTools").studioMinBuild())) return "";
+  if (voice === "me") {
+    return "EVENT POSTERS WITH WORDS — 'make a poster for our event tomorrow', 'a flyer for our " +
+      "sale on Saturday', 'a banner for the meeting' — go to create_event_poster with my own " +
+      "words, NEVER generate_image (it misspells words): the studio opens with the words in real " +
+      "fonts; read back what is on it and ask for what is missing — never invent a venue, a " +
+      "price, a number or a time. 'Remove the background', 'change the colour', 'make this photo " +
+      "look professional' on a photo I shared go to edit_my_photo. ";
+  }
+  return "- EVENT POSTERS WITH WORDS — 'make a poster for our event tomorrow', 'a flyer for our " +
+    "sale on Saturday', 'a banner for the meeting' → create_event_poster with the user's own " +
+    "words, NEVER generate_image (it misspells words): the studio opens with the words in real " +
+    "fonts; read back what is on it and ask for what is missing — never invent a venue, a price, " +
+    "a number or a time. 'Remove the background', 'change the colour', 'make this photo look " +
+    "professional' on a photo they shared → edit_my_photo.\n";
+}
+
+function cardRule(voice) {
   if (voice === "me") {
     return "GREETING CARDS WITH A REAL PHOTO, MY OWN WORDS OR MY SIGNATURE — 'make a birthday " +
       "card for my daughter with her old photo', 'an anniversary card from us', 'put my " +

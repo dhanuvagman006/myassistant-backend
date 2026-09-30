@@ -73,7 +73,9 @@ function create(uid, { build = 0 } = {}) {
     // moves the tools, not the model's picture of the area.
     promptFix: null,
     devicesSaved: "",
-    // turnId -> { id, text, owner, mode, shortcut, at }
+    // turnId -> { id, text, owner, mode ("chat" | "voice" | "live"),
+    // shortcut, untrusted (someone else's words — kept out of LAST
+    // RESULTS), at }
     turns: new Map(),
     turnId: "",
     // The owner's latest words and how clearly they came through: what

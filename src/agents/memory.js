@@ -36,13 +36,105 @@ async function listMemories(userId) {
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* Relevance (2026-09-30)                                              */
+/* ------------------------------------------------------------------ */
+
+// RELEVANT, NOT ALL (voice audit, 2026-09-30): every turn carried up to 60
+// facts by importance, whatever was asked — a long, changing block in
+// every prompt, and the one fact that mattered buried among the rest. A
+// turn now gets ~15 facts scored against the user's own words (the words
+// they share, a name they said, how recent, how important). With no words
+// (a Live session opening) it gets the top ~20 by importance and recency.
+// AI_MEMORY_SCORING=off sends every fact again.
+const scoringOn = () => !/^(off|0|false|no)$/i.test(String(process.env.AI_MEMORY_SCORING || "on").trim());
+const pickCount = () => {
+  const n = Math.floor(Number(process.env.AI_MEMORY_PICK));
+  return Number.isFinite(n) && n >= 1 && n <= MAX_MEMORIES ? n : 15;
+};
+
+const MEM_STOP = new Set((
+  "the and for with that this from have has had was were are you your our their his her its " +
+  "him she they them what which who whom when where how why can will would should could " +
+  "not but about into just please okay yes yeah also some any all very user user's users " +
+  "me my mine i'm im is it to of in on at by an as be do does did a or so if no up"
+).split(" "));
+
+/** Lowercase word stems, stop words out ("sisters" and "sister" meet). */
+function memTokens(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/'s\b/g, "")
+    .replace(/[^a-z0-9ऀ-෿\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !MEM_STOP.has(w))
+    .map(stem);
+}
+
+function stem(w) {
+  if (w.length > 4 && w.endsWith("ies")) return w.slice(0, -3) + "y";
+  if (w.length > 5 && w.endsWith("ing")) return w.slice(0, -3);
+  if (w.length > 4 && w.endsWith("ed")) return w.slice(0, -2);
+  if (w.length > 3 && w.endsWith("s") && !w.endsWith("ss")) return w.slice(0, -1);
+  return w;
+}
+
+/** The names in a fact (capitalised words that are not "User"). */
+function entitiesOf(fact) {
+  return (String(fact || "").match(/\b[A-Z][a-zA-Z]{2,}\b/g) || [])
+    .map((w) => w.toLowerCase())
+    .filter((w) => w !== "user");
+}
+
+const DAY_MS = 86_400_000;
+function recencyBonus(row, now) {
+  const age = now - Number(row.created_at || 0);
+  if (!(age >= 0)) return 0;
+  return age < 7 * DAY_MS ? 1 : age < 30 * DAY_MS ? 0.5 : 0;
+}
+
+/**
+ * The facts worth sending for these words: the relevant ones first (score
+ * = shared words ×2 + a name they said ×3 + recency + importance/2), then
+ * the most important and recent to fill up to `limit`. No words → the top
+ * `limit` by importance and recency. Rows as listMemories returns them.
+ */
+function pickMemories(rows, { words = "", limit = 15, now = Date.now() } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  const base = (r) => Number(r.importance || 0) + recencyBonus(r, now);
+  const byBase = list
+    .map((r, i) => ({ r, i, b: base(r) }))
+    .sort((x, y) => y.b - x.b || x.i - y.i);
+  const q = new Set(memTokens(words));
+  if (!q.size) return byBase.slice(0, limit).map((x) => x.r);
+  const said = new Set(String(words).toLowerCase().replace(/'s\b/g, "").split(/[^a-zऀ-෿]+/));
+  const scored = byBase.map((x) => {
+    const toks = new Set(memTokens(x.r.fact));
+    let hit = 0;
+    for (const t of toks) if (q.has(t)) hit += 2;
+    for (const e of new Set(entitiesOf(x.r.fact))) if (said.has(e)) hit += 3;
+    return { ...x, hit, s: hit ? hit + recencyBonus(x.r, now) + Number(x.r.importance || 0) / 2 : 0 };
+  });
+  const relevant = scored.filter((x) => x.hit > 0).sort((a, b) => b.s - a.s || b.b - a.b || a.i - b.i);
+  const rest = scored.filter((x) => x.hit === 0);
+  return [...relevant, ...rest].slice(0, limit).map((x) => x.r);
+}
+
 /**
  * The block injected into system prompts. Empty string when there is
  * nothing remembered (or no signed-in user) — prompts stay clean.
+ *
+ * With `opts` (POST /ai/context since 2026-09-30) only the facts that fit
+ * the turn are sent: { words } — the user's words this turn ("" when they
+ * said nothing yet) — and { limit } (default AI_MEMORY_PICK, 15). Without
+ * `opts` every fact is sent, as every other caller always had.
  */
-async function memoryBlock(userId) {
-  const rows = await listMemories(userId).catch(() => []);
+async function memoryBlock(userId, opts) {
+  let rows = await listMemories(userId).catch(() => []);
   if (!rows.length) return "";
+  if (opts && scoringOn()) {
+    rows = pickMemories(rows, { words: opts.words || "", limit: Number(opts.limit) > 0 ? Number(opts.limit) : pickCount() });
+  }
   const facts = rows.map((r) => "- " + r.fact).join("\n");
   return (
     "\n\nWHAT YOU REMEMBER ABOUT THIS USER (from earlier conversations; " +
@@ -182,6 +274,8 @@ function extractAndStore(userId, userText) {
 module.exports = {
   listMemories,
   memoryBlock,
+  pickMemories,
+  memTokens,
   saveMemory,
   deleteAllMemories,
   deleteFactsContaining,

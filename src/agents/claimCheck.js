@@ -123,6 +123,8 @@ const FAMILIES = [
       // These open an app or a screen too, and say so in the same words.
       "enable_usage_tracking", "order_food", "book_ride", "book_movie_tickets",
       "try_a_look", "present_text", "generate_image", "generate_video",
+      // Poster Studio, photo edits and meeting prep open a screen (2026-09-30).
+      "create_event_poster", "edit_my_photo", "prepare_meeting",
       // Screens inside this app. "Opening your settings" is the same claim.
       "open_app_screen", "set_app_theme",
       // Bills by email opens its own screen ("Your address is on screen").
@@ -244,7 +246,8 @@ const FAMILIES = [
   },
   {
     id: "play",
-    tools: ["play_music"],
+    // "Playing your morning brief" (2026-09-30).
+    tools: ["play_music", "play_daily_brief"],
     claim: /\b(playing|now playing|started playing)\b/i,
     // बजा/चला रहा…, ಪ್ಲೇ ಮಾಡ…, இசைக்க…, ప్లే చేస…, പ്ലേ ചെയ്യ…
     claimIntl: /(बजा\s*रहा|चला\s*रहा|प्ले\s*कर|ಪ್ಲೇ\s*ಮಾಡ|ಹಾಡು\s*ಹಾಕ|இசைக்கிற|பிளே\s*செய்|ప్లే\s*చేస|പ്ലേ\s*ചെയ്)/,
@@ -276,7 +279,9 @@ const FAMILIES = [
             // "the card is saved in your documents, WhatsApp is open" is
             // true after it — and was being rewritten into "nothing was
             // saved" (review, 2026-09-26).
-            "share_poster"],
+            "share_poster",
+            // "I've made your poster" / "your edited photo is ready" (2026-09-30).
+            "create_event_poster", "edit_my_photo"],
     // A "card" is a greeting card here, never a business, ID or bank
     // card: "done, the business card is in your contacts" belongs to the
     // scanner, and must not be read as a claim to have made something.

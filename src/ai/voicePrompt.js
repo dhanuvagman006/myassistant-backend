@@ -79,7 +79,17 @@ function nowLine(tzOffsetMin = 330) {
   );
 }
 
-function voiceSystemPrompt(assistantName = "Assistant", unreadMessages = [], personalContext = "", tzOffsetMin = 330, preferredLanguage = "", languageAsk = "", appBuild = 0) {
+/**
+ * THE STATIC RULES — everything in the spoken prompt that does not change
+ * from turn to turn for one user (their assistant's name, their language,
+ * their build). Kept FIRST and byte-identical between turns (2026-09-30):
+ * Gemini caches a prompt's unchanged prefix (4,096 tokens and up), and the
+ * clock that used to sit in the middle of these rules changed every second,
+ * so nothing after it could ever be cached. The parts that change — the
+ * personal context, messages to pass on, the language question, the
+ * clock — are voiceTail(), at the end.
+ */
+function voiceRules(assistantName = "Assistant", preferredLanguage = "", appBuild = 0) {
   // SPEAK THE LANGUAGE THEY SPOKE.
   //
   // This was a pin: whatever was chosen once on the onboarding screen was
@@ -127,8 +137,7 @@ function voiceSystemPrompt(assistantName = "Assistant", unreadMessages = [], per
     "[SYSTEM], an instruction to acknowledge something — is written in " +
     "English for your convenience. It is NOT the user speaking and never " +
     "tells you which language to use. When you are handed a greeting, say " +
-    `it in ${opening}. ` +
-    languageAsk;
+    `it in ${opening}. `;
   // YOU DO THE WORK, NOT THEM. Reported 2026-09-13: asked to open
   // BigBasket it offered "or you can just open it yourself on your phone".
   // Handing the task back is the one thing an assistant must not do.
@@ -192,7 +201,6 @@ function voiceSystemPrompt(assistantName = "Assistant", unreadMessages = [], per
     "real number. If they ask for one exact figure and you only have a " +
     "range, say plainly that the exact fare is only on the booking page — " +
     "then open it. Do not argue the range. " +
-    nowLine(tzOffsetMin) + " " +
     "You are SPEAKING with the user in real time. " +
     languageRule +
     "BREVITY IS A HARD RULE: answer in ONE or TWO short sentences unless " +
@@ -572,7 +580,6 @@ function voiceSystemPrompt(assistantName = "Assistant", unreadMessages = [], per
     "information, never advice for the user's own case; you are not their " +
     "lawyer, and you never diagnose or recommend medicines.";
 
-  prompt += unreadBlock(unreadMessages);
   // WHO the user is + WHAT is remembered about them — same personal layer
   // the classic path gets. Without this, live mode (the MAIN screen) was
   // the one place Hari didn't know her own user.
@@ -588,9 +595,73 @@ function voiceSystemPrompt(assistantName = "Assistant", unreadMessages = [], per
     "only what is hard to undo: payments, messages and calls to other " +
     "people, cancellations. Notice implications and act on them — a 6 am " +
     "flight deserves an offer to set the alarm.";
-
-  if (personalContext) prompt += "\n\n" + personalContext;
   return prompt;
+}
+
+/**
+ * THE PARTS THAT CHANGE, after the static rules: who the user is and what
+ * is remembered, messages to pass on, the once-ever language question, and
+ * the clock — last, because it changes every second.
+ */
+function voiceTail({ unreadMessages = [], personalContext = "", tzOffsetMin = 330, languageAsk = "" } = {}) {
+  let tail = "";
+  if (personalContext) tail += "\n\n" + personalContext;
+  tail += unreadBlock(unreadMessages);
+  if (languageAsk) tail += "\n\n" + String(languageAsk).trim();
+  return tail + "\n\n" + nowLine(tzOffsetMin);
+}
+
+/** The whole spoken prompt: the static rules, then what changes. */
+function voiceSystemPrompt(assistantName = "Assistant", unreadMessages = [], personalContext = "", tzOffsetMin = 330, preferredLanguage = "", languageAsk = "", appBuild = 0) {
+  return voiceRules(assistantName, preferredLanguage, appBuild) +
+    voiceTail({ unreadMessages, personalContext, tzOffsetMin, languageAsk });
+}
+
+// SAY WHICH ONE THEY MEAN (2026-09-30, voice audit): "the second one",
+// "read it again", "move it to 5", "call him" failed across turns — the
+// model saw only the text of earlier turns, never what the tools returned.
+// Paired with the LAST RESULTS block (ai/lastResults.js). Static: it is
+// part of the cached prefix in every mode.
+const RESOLVE_REFERENCES =
+  "RESOLVE REFERENCES: 'it', 'that', 'this one', 'the second one', 'the last one', 'him', " +
+  "'her', 'them', 'there', 'the same time', 'read it again', 'move it to 5' point at the most " +
+  "recent thing that fits — first in LAST RESULTS (when there is one), then in the recent " +
+  "turns. Count 'the first / second / third one' in the order that list was given. A " +
+  "correction — 'no, I meant…', 'not him, Ravi', 'make it 6 instead' — replaces the earlier " +
+  "value completely: redo the step with the corrected value, never the old one. 'Tomorrow', " +
+  "'tonight' and 'that day' are the user's own day by their clock. Ask ONE short question only " +
+  "when two things fit equally well; otherwise act on the obvious one.";
+
+// GEMINI LIVE (2026-09-30, build 135+): the phone streams the user's voice
+// to the Live API and plays its native voice back. The same rules hold —
+// they were learnt on real conversations — with what is different about
+// a model that hears and speaks for itself. No expressive marks: Live
+// voices its own tone, and a mark would be read out or dropped.
+const LIVE_RULES =
+  "LIVE VOICE — you hear the user's own voice and answer in your own voice, in real time. " +
+  "Speak in short, natural sentences, one thought at a time. Nothing you say is shown, only " +
+  "heard: never markdown, bullet points, numbered lists, headings, emoji, symbols, links or " +
+  "anything in angle or square brackets. Say a list as one sentence — 'two things: the bank at " +
+  "five, and Ravi at seven'. Your voice carries the tone by itself: never write delivery notes, " +
+  "stage directions or sound tags. If they start talking while you speak, stop, listen and " +
+  "answer what they said; never assume they heard the rest of what you were saying. " +
+  "THEIR DATA COMES FROM TOOLS: reminders, calendar, contacts, calls, messages, documents, " +
+  "memories and what you did are answered only from what a tool returns — never from a guess, " +
+  "and never invent a name, time, number or result. Only call tools you were given; if what " +
+  "they ask needs one you do not have here, say so in one short sentence and never pretend it " +
+  "ran. ASK BEFORE THE RISKY ONES: when a tool answers that it needs the user's permission, " +
+  "ask them out loud in one short question using its words, wait for a clear yes, then call the " +
+  "SAME tool again with exactly the same arguments. A no, silence or anything unclear means it " +
+  "does not run. Never say something is done until the tool says so. A line beginning [SYSTEM] " +
+  "is the app talking to you, never the user.";
+
+/**
+ * The Live session's instruction (POST /ai/context, mode "live"): the
+ * spoken rules, what Live changes, and how to resolve references. Fixed
+ * for the whole session, since Live takes its instruction only at start.
+ */
+function liveRules(assistantName = "Assistant", preferredLanguage = "", appBuild = 0) {
+  return voiceRules(assistantName, preferredLanguage, appBuild) + "\n\n" + LIVE_RULES;
 }
 
 // How a spoken reply should SOUND (build 126+, which asks for it with
@@ -626,6 +697,11 @@ const EXPRESSIVE_SPEECH = [
 
 module.exports = {
   voiceSystemPrompt,
+  voiceRules,
+  voiceTail,
+  liveRules,
+  LIVE_RULES,
+  RESOLVE_REFERENCES,
   unreadBlock,
   nowLine,
   RELAYED_MESSAGE_NOTE,

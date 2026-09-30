@@ -1,35 +1,57 @@
 /**
  * IMAGE GENERATION — "make me a picture of ...".
  *
- * Provider chain, best first:
- *   1. Gemini image models (nano-banana family) — top quality, but Google
- *      removed image generation from the FREE tier entirely (Aug 2026:
- *      every *-image model 429s with "limit: 0"). The call is attempted
- *      so the feature upgrades itself the day billing is enabled, and a
- *      quota answer puts Gemini on a cooldown so day-to-day requests
- *      don't pay a wasted round-trip.
- *   2. Pollinations (image.pollinations.ai) — free, keyless, flux-based,
- *      measured ~3-8s for 1024². This is what actually serves today.
+ * PROVIDER CHAIN (rebuilt 2026-09-30). Every provider is inert until its
+ * key exists, and the chain is ordered by QUALITY among the ones that are
+ * actually available, per purpose:
  *
- * Returns { buffer, mime, provider }. Throws only when EVERY provider
- * failed — callers turn that into a spoken apology.
+ *   photo / illustration: gemini → fal z-image → cloudflare klein → fal qwen
+ *   words in the picture: gemini → fal qwen-image → cloudflare klein → fal z-image
+ *   then (all purposes):  cloudflare schnell → HF / Together (opt-in only)
+ *                         → Pollinations, the keyless last resort
  *
- * QUALITY, without a paid key. Three things were costing visible quality
- * and none of them needed billing: everything came out 1024×1024 square,
- * so a poster, a card and a phone wallpaper were all cropped into a box;
- * the provider's own prompt enhancer was never switched on; and a
- * half-written response counted as success. The honest ceiling is still
- * the free flux model — the real jump is Gemini's image model, which this
- * file already tries first and which needs billing enabled on the key.
+ *   • gemini — gemini-3.1-flash-image. No free tier for image OUTPUT on any
+ *     model (Google pricing, 2026-09-24): GEMINI_IMAGE_BILLING=on says the
+ *     key's project has billing; 'auto' (default) probes and cools down 6 h
+ *     on a quota answer; 'off' never calls it. responseModalities ['IMAGE']
+ *     and imageConfig.aspectRatio are sent, so the shape is honoured.
+ *   • fal (FAL_KEY) — qwen-image-2512 ($0.02, the best open model at
+ *     words) and z-image turbo (~$0.005/MP, photoreal). Results are
+ *     downloaded; fal's CDN copy is temporary.
+ *   • cloudflare (CF_ACCOUNT_ID + CF_API_TOKEN) — FLUX.2 klein 4B on the
+ *     free 10k neurons a day (~95 images). Multipart form, width/height
+ *     honoured. flux-1-schnell (JSON) stays behind it as a fallback.
+ *   • HF / Together — the old FLUX.1-schnell defaults were dead (HF's
+ *     hf-inference went mostly CPU in 2025; Together dropped the Free
+ *     model), so they run only when HF_IMAGE_MODEL / TOGETHER_IMAGE_MODEL
+ *     name a model on purpose.
+ *   • pollinations — keyless, ≤1024 px, what served every image until now.
+ *
+ * NO MULTI-MINUTE WORST CASE. Each keyed provider gets at most
+ * IMAGE_PROVIDER_TIMEOUT_MS (40 s) and the whole call IMAGE_TOTAL_BUDGET_MS
+ * (75 s, prompt writing included), with time held back for the keyless
+ * tier. It used to be 45+90+120+120+150 s plus a retry.
+ *
+ * AFTER THE PROVIDER (imagePost.finish): cropped and scaled to the exact
+ * target shape (lanczos + mild unsharp; fal esrgan first when FAL_KEY and
+ * the image is far too small), tags stripped, JPEG q≈90.
+ *
+ * Returns { buffer, mime, provider, width, height, prompt, enhanced }.
+ * Throws only when EVERY provider failed — callers turn that into a
+ * spoken apology.
  */
 
-/** Pixel sizes per shape. Larger than 1024 on the long edge is where the
- *  free model starts showing real detail; past ~1536 it mostly gets slow. */
+const imagePrompt = require("./imagePrompt");
+
+/** Pixel sizes per shape — the size the image is FOR. poster and story
+ *  are the photo cards' 4:5 and 9:16 (posters/spec.js FORMATS). */
 const SHAPES = {
-  square: { width: 1440, height: 1440 },
-  portrait: { width: 1152, height: 1536 }, // posters, cards, phone wallpaper
-  landscape: { width: 1536, height: 1024 }, // banners, scenes, wallpapers
-  wide: { width: 1536, height: 864 }, // 16:9 — video frames, headers
+  square: { width: 1440, height: 1440, ratio: "1:1" },
+  portrait: { width: 1152, height: 1536, ratio: "3:4" }, // cards, phone wallpaper
+  landscape: { width: 1536, height: 1024, ratio: "3:2" }, // banners, scenes
+  wide: { width: 1536, height: 864, ratio: "16:9" }, // video frames, headers
+  poster: { width: 1080, height: 1350, ratio: "4:5" }, // feed post, poster card
+  story: { width: 1080, height: 1920, ratio: "9:16" }, // WhatsApp status, reels
 };
 
 /**
@@ -56,81 +78,417 @@ function jpegSize(buf) {
   return null;
 }
 
-function shapeOf(aspect) {
-  const a = String(aspect || "").toLowerCase();
-  if (a.startsWith("port") || a === "9:16" || a === "3:4") return SHAPES.portrait;
-  if (a === "wide" || a === "16:9") return SHAPES.wide;
-  if (a.startsWith("land") || a === "4:3" || a === "3:2") return SHAPES.landscape;
-  return SHAPES.square;
+/** JPEG, PNG or WebP. */
+function sizeOf(buf) {
+  return jpegSize(buf) || require("./imageEdit").imageSize(buf);
 }
 
+function shapeName(aspect) {
+  const a = String(aspect || "").toLowerCase();
+  if (a === "poster" || a === "4:5") return "poster";
+  if (a === "story" || a === "9:16" || a === "tall") return "story";
+  if (a.startsWith("port") || a === "3:4" || a === "2:3") return "portrait";
+  if (a === "wide" || a === "16:9") return "wide";
+  if (a.startsWith("land") || a === "4:3" || a === "3:2") return "landscape";
+  return "square";
+}
+
+function shapeOf(aspect) {
+  return SHAPES[shapeName(aspect)];
+}
+
+/** A shape scaled so its long edge is at most `maxEdge`, in multiples of
+ *  16 — rounded UP, so an unscaled size is never a few pixels short. */
+function fitEdge(shape, maxEdge) {
+  const scale = Math.min(1, maxEdge / Math.max(shape.width, shape.height));
+  const r16 = (n) => Math.max(256, Math.ceil(Math.round(n * scale) / 16) * 16);
+  return { width: r16(shape.width), height: r16(shape.height) };
+}
+
+/* ------------------------------------------------------------------ */
+/* TIME                                                                */
+/* ------------------------------------------------------------------ */
+
+function envMs(name, fallback, { min = 1000, max = 600_000 } = {}) {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n >= min ? Math.min(n, max) : fallback;
+}
+
+/** Time held back for the keyless tier, so a slow keyed provider can
+ *  never leave the last resort with nothing. */
+const KEYLESS_RESERVE_MS = 25_000;
+
+function budget() {
+  const started = Date.now();
+  const total = envMs("IMAGE_TOTAL_BUDGET_MS", 75_000);
+  const per = envMs("IMAGE_PROVIDER_TIMEOUT_MS", 40_000);
+  return {
+    left: () => total - (Date.now() - started),
+    /** The timeout for one keyed provider: never past the reserve. */
+    keyed() { return Math.min(per, this.left() - KEYLESS_RESERVE_MS); },
+    keyless() { return Math.min(60_000, this.left()); },
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* GEMINI                                                              */
+/* ------------------------------------------------------------------ */
+
+const GEMINI_IMAGE_DEFAULT = "gemini-3.1-flash-image";
 const GEMINI_COOLDOWN_MS = 6 * 3600_000;
 let geminiBlockedUntil = 0; // module-level: one quota hit quiets it for hours
+let geminiImageConfigOk = true; // off for good if the API rejects the field
 
-async function tryGemini(prompt) {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key || Date.now() < geminiBlockedUntil) return null;
-  const model = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";
-  try {
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
-        signal: AbortSignal.timeout(45_000),
-      }
-    );
+/** 'on' | 'auto' | 'off' — see the header. */
+function geminiImageMode() {
+  const v = String(process.env.GEMINI_IMAGE_BILLING || "auto").toLowerCase();
+  return v === "on" || v === "off" ? v : "auto";
+}
+
+function geminiImageKey() {
+  return process.env.GEMINI_IMAGE_API_KEY || process.env.GEMINI_API_KEY || "";
+}
+
+/** gemini-2.5-flash-image shuts down on 2026-10-02: never a default, and
+ *  an env var still naming it is replaced rather than left to 404. */
+function geminiImageModel() {
+  const m = String(process.env.GEMINI_IMAGE_MODEL || "").trim();
+  if (!m) return GEMINI_IMAGE_DEFAULT;
+  if (/gemini-2\.5-flash-image/i.test(m)) {
+    console.warn(`imagegen: GEMINI_IMAGE_MODEL=${m} is retired (2026-10-02) — using ${GEMINI_IMAGE_DEFAULT}`);
+    return GEMINI_IMAGE_DEFAULT;
+  }
+  return m;
+}
+
+function geminiBody(prompt, ratio, withConfig) {
+  const body = { contents: [{ role: "user", parts: [{ text: prompt }] }] };
+  body.generationConfig = { responseModalities: ["IMAGE"] };
+  if (withConfig) body.generationConfig.imageConfig = { aspectRatio: ratio };
+  return body;
+}
+
+function geminiAvailable() {
+  return geminiImageMode() !== "off" && !!geminiImageKey() && Date.now() >= geminiBlockedUntil;
+}
+
+async function tryGemini(prompt, { shape, timeoutMs = 40_000 } = {}) {
+  if (!geminiAvailable()) return null;
+  const model = geminiImageModel();
+  const ratio = (shape || SHAPES.square).ratio;
+  for (const withConfig of geminiImageConfigOk ? [true, false] : [false]) {
+    let r;
+    try {
+      r = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": geminiImageKey() },
+          body: JSON.stringify(geminiBody(prompt, ratio, withConfig)),
+          signal: AbortSignal.timeout(Math.max(1000, timeoutMs)),
+        }
+      );
+    } catch (e) {
+      console.warn("imagegen gemini:", e.message);
+      return null;
+    }
     if (r.status === 429 || r.status === 403) {
-      geminiBlockedUntil = Date.now() + GEMINI_COOLDOWN_MS;
+      // 'on' means billing exists, so a 429 is a real rate limit: minutes.
+      const on = geminiImageMode() === "on" && r.status === 429;
+      geminiBlockedUntil = Date.now() + (on ? 10 * 60_000 : GEMINI_COOLDOWN_MS);
       console.warn(`imagegen: ${model} quota-blocked (${r.status}), cooling down`);
       return null;
     }
-    if (!r.ok) return null;
-    const d = await r.json();
-    const parts = d?.candidates?.[0]?.content?.parts || [];
-    for (const p of parts) {
-      if (p.inlineData?.data) {
-        return {
-          buffer: Buffer.from(p.inlineData.data, "base64"),
-          mime: p.inlineData.mimeType || "image/png",
-          provider: "gemini",
-        };
+    if (r.status === 400 && withConfig) {
+      const t = await r.text().catch(() => "");
+      if (/imageConfig|aspectRatio|Unknown name/i.test(t)) {
+        geminiImageConfigOk = false;
+        continue; // once more without the shape
       }
+      return null;
     }
-    return null;
+    if (!r.ok) return null;
+    const d = await r.json().catch(() => null);
+    const img = require("./imageEdit").harvestImage(d);
+    if (!img) return null;
+    return { ...img, provider: `gemini:${model}` };
+  }
+  return null;
+}
+
+/* ------------------------------------------------------------------ */
+/* FAL                                                                 */
+/* ------------------------------------------------------------------ */
+
+const fal = require("./fal");
+
+function falModelFor(kind) {
+  return kind === "text"
+    ? process.env.FAL_TEXT_IMAGE_MODEL || "fal-ai/qwen-image-2512"
+    : process.env.FAL_IMAGE_MODEL || "fal-ai/z-image/turbo";
+}
+
+async function tryFal(prompt, { kind = "photo", shape, seed, negative, timeoutMs = 40_000 } = {}) {
+  if (!fal.falReady()) return null;
+  const model = falModelFor(kind);
+  const size = fitEdge(shape || SHAPES.square, Number(process.env.FAL_MAX_EDGE) || 1536);
+  const input = {
+    prompt: prompt.slice(0, 2000),
+    image_size: size,
+    num_images: 1,
+    output_format: "jpeg",
+    enable_safety_checker: true,
+  };
+  if (Number.isFinite(seed)) input.seed = Math.abs(Math.trunc(seed)) % 2147483647;
+  // qwen-image documents a negative prompt; z-image turbo does not.
+  if (negative && /qwen/i.test(model)) input.negative_prompt = negative;
+  try {
+    const j = await fal.falRun(model, input, { timeoutMs });
+    if (j.has_nsfw_concepts && j.has_nsfw_concepts[0]) {
+      console.warn(`imagegen fal ${model}: flagged by the safety checker`);
+      return null;
+    }
+    const ref = fal.firstImage(j);
+    if (!ref) return null;
+    const out = await fal.download(ref, { timeoutMs: 20_000 });
+    if (out.buffer.length < 10 * 1024) return null;
+    const real = sizeOf(out.buffer);
+    return {
+      buffer: out.buffer, mime: out.mime, provider: `fal:${model}`,
+      width: real ? real.width : size.width,
+      height: real ? real.height : size.height,
+    };
   } catch (e) {
-    console.warn("imagegen gemini:", e.message);
+    console.warn("imagegen fal:", e.message);
     return null;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* CLOUDFLARE WORKERS AI                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * FLUX.2 klein 4B (default) or flux-1-schnell on the free neuron allowance.
+ *
+ * The two take DIFFERENT request shapes, per Cloudflare's model pages:
+ *  • klein: multipart/form-data — prompt, width, height, seed (steps is
+ *    fixed at 4). Size is honoured, capped by CF_IMAGE_MAX_EDGE (1280)
+ *    because every 512² tile costs neurons.
+ *  • schnell: JSON {prompt, steps ≤ 8, seed} — NOTHING else; width and
+ *    height are a validation error. One fixed size, shaped afterwards.
+ * Either can answer {"result":{"image":"<base64>"},"success":true} or the
+ * raw bytes, so both are read; the envelope was checked against the docs,
+ * not a live call, hence the defensive parse.
+ */
+let cfBlockedUntil = 0;
+
+function cfAvailable() {
+  return !!(process.env.CF_ACCOUNT_ID && process.env.CF_API_TOKEN) && Date.now() >= cfBlockedUntil;
+}
+
+function cfIsMultipart(model) {
+  return /flux-2|klein/i.test(model);
+}
+
+function cfDecode(j) {
+  if (!j || typeof j !== "object") return null;
+  const cands = [j.result && j.result.image, j.image, j.result && j.result.images && j.result.images[0],
+    typeof j.result === "string" ? j.result : null];
+  for (const c of cands) {
+    if (typeof c === "string" && c.length > 100) {
+      return Buffer.from(c.replace(/^data:[^;]+;base64,/, ""), "base64");
+    }
+  }
+  return null;
+}
+
+async function tryCloudflare(prompt, { shape, seed, timeoutMs = 40_000 } = {}, model = null) {
+  const acct = process.env.CF_ACCOUNT_ID;
+  const token = process.env.CF_API_TOKEN;
+  if (!acct || !token || Date.now() < cfBlockedUntil) return null;
+  const m = model || process.env.CF_IMAGE_MODEL || "@cf/black-forest-labs/flux-2-klein-4b";
+  const multipart = cfIsMultipart(m);
+  const s = Number.isFinite(seed) ? Math.abs(Math.trunc(seed)) % 4294967295 : null;
+  let body;
+  let headers = { authorization: `Bearer ${token}` };
+  let asked = null;
+  if (multipart) {
+    asked = fitEdge(shape || SHAPES.square, Number(process.env.CF_IMAGE_MAX_EDGE) || 1280);
+    body = new FormData();
+    body.append("prompt", prompt.slice(0, 2000));
+    body.append("width", String(asked.width));
+    body.append("height", String(asked.height));
+    if (s !== null) body.append("seed", String(s));
+    // No content-type header: fetch writes the multipart boundary itself.
+  } else {
+    const steps = Math.min(Math.max(Number(process.env.CF_IMAGE_STEPS) || 8, 1), 8);
+    const b = { prompt: prompt.slice(0, 2000), steps };
+    if (s !== null) b.seed = s;
+    body = JSON.stringify(b);
+    headers["content-type"] = "application/json";
+  }
+  try {
+    const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${acct}/ai/run/${m}`, {
+      method: "POST", headers, body, signal: AbortSignal.timeout(Math.max(1000, timeoutMs)),
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      // A token without Workers AI rights (401/403) is not fixed by the
+      // next request; the day's allowance spent (429) is back tomorrow.
+      if (r.status === 401 || r.status === 403) cfBlockedUntil = Date.now() + 6 * 3600_000;
+      else if (r.status === 429) cfBlockedUntil = Date.now() + 30 * 60_000;
+      console.warn(`imagegen cloudflare ${m}: ${r.status} ${t.replace(/\s+/g, " ").slice(0, 160)}`);
+      return null;
+    }
+    const type = String(r.headers.get("content-type") || "");
+    let buffer;
+    let mime = "image/jpeg";
+    if (type.startsWith("image/")) {
+      buffer = Buffer.from(await r.arrayBuffer());
+      mime = type.split(";")[0];
+    } else {
+      const j = await r.json().catch(() => null);
+      if (j && j.success === false) {
+        console.warn(`imagegen cloudflare ${m}: ${JSON.stringify(j.errors || []).slice(0, 160)}`);
+        return null;
+      }
+      buffer = cfDecode(j);
+      if (!buffer) return null;
+      if (buffer[0] === 0x89 && buffer[1] === 0x50) mime = "image/png";
+    }
+    if (buffer.length < 20 * 1024) return null;
+    const real = sizeOf(buffer);
+    return {
+      buffer, mime, provider: `cloudflare:${m.split("/").pop()}`,
+      width: real ? real.width : asked ? asked.width : 0,
+      height: real ? real.height : asked ? asked.height : 0,
+    };
+  } catch (e) {
+    console.warn(`imagegen cloudflare ${m}:`, e.message);
+    return null;
+  }
+}
+
+/** schnell behind klein: klein's multipart shape is the newer one, and a
+ *  validation answer from it should not cost the free tier. */
+function cfFallbackModel() {
+  const m = String(process.env.CF_FALLBACK_IMAGE_MODEL || "@cf/black-forest-labs/flux-1-schnell").trim();
+  return m.toLowerCase() === "off" ? null : m;
+}
+
+async function tryCloudflareFallback(prompt, opts) {
+  const m = cfFallbackModel();
+  const primary = process.env.CF_IMAGE_MODEL || "@cf/black-forest-labs/flux-2-klein-4b";
+  if (!m || m === primary) return null;
+  return tryCloudflare(prompt, opts, m);
+}
+
+/* ------------------------------------------------------------------ */
+/* HUGGING FACE / TOGETHER — STRICTLY OPT-IN                           */
+/* ------------------------------------------------------------------ */
+
+/** Hugging Face Inference — only with HF_TOKEN AND HF_IMAGE_MODEL. */
+async function tryHuggingFace(prompt, { shape, timeoutMs = 40_000 } = {}) {
+  const token = process.env.HF_TOKEN;
+  const model = process.env.HF_IMAGE_MODEL;
+  if (!token || !model) return null;
+  const { width, height } = fitEdge(shape || SHAPES.square, 1536);
+  try {
+    const r = await fetch(`https://router.huggingface.co/hf-inference/models/${model}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ inputs: prompt.slice(0, 1400), parameters: { width, height } }),
+      signal: AbortSignal.timeout(Math.max(1000, timeoutMs)),
+    });
+    if (!r.ok) {
+      console.warn(`imagegen huggingface: ${r.status}`);
+      return null;
+    }
+    const mime = String(r.headers.get("content-type") || "image/jpeg").split(";")[0];
+    if (!mime.startsWith("image/")) return null;
+    const buffer = Buffer.from(await r.arrayBuffer());
+    if (buffer.length < 20 * 1024) return null;
+    const real = sizeOf(buffer);
+    return {
+      buffer, mime, provider: "huggingface",
+      width: real ? real.width : width,
+      height: real ? real.height : height,
+    };
+  } catch (e) {
+    console.warn("imagegen huggingface:", e.message);
+    return null;
+  }
+}
+
+/** Together AI — only with TOGETHER_API_KEY AND TOGETHER_IMAGE_MODEL. */
+async function tryTogether(prompt, { shape, timeoutMs = 40_000 } = {}) {
+  const key = process.env.TOGETHER_API_KEY;
+  const model = process.env.TOGETHER_IMAGE_MODEL;
+  if (!key || !model) return null;
+  const { width, height } = fitEdge(shape || SHAPES.square, 1536);
+  try {
+    const r = await fetch("https://api.together.xyz/v1/images/generations", {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model, prompt: prompt.slice(0, 1400), width, height, steps: 4, n: 1,
+        response_format: "b64_json",
+      }),
+      signal: AbortSignal.timeout(Math.max(1000, timeoutMs)),
+    });
+    if (!r.ok) {
+      console.warn(`imagegen together: ${r.status}`);
+      return null;
+    }
+    const j = await r.json();
+    const b64 = j?.data?.[0]?.b64_json;
+    if (!b64) return null;
+    const buffer = Buffer.from(b64, "base64");
+    if (buffer.length < 20 * 1024) return null;
+    const real = sizeOf(buffer);
+    return {
+      buffer, mime: "image/jpeg", provider: "together",
+      width: real ? real.width : width,
+      height: real ? real.height : height,
+    };
+  } catch (e) {
+    console.warn("imagegen together:", e.message);
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* POLLINATIONS — keyless, the last resort                             */
+/* ------------------------------------------------------------------ */
 
 /**
  * The keyless tier's real ceiling, measured rather than documented:
  * asking for 1536x864 returns 1024x576 and asking for 1152x1536 returns
  * 665x886. Requesting more than this buys nothing and costs up to forty
  * extra seconds per image, so the request is capped to what will actually
- * come back. SHAPES stays at the ideal size for a provider that honours it.
+ * come back. finish() takes it to the real size afterwards.
  */
 const KEYLESS_LONG_EDGE = 1024;
 
-async function tryPollinations(prompt, { aspect, seed } = {}) {
+async function tryPollinations(prompt, { aspect, shape, seed, ownPrompt = false, timeoutMs = 60_000 } = {}) {
   // Unkeyed GET; seed keeps "another one" from returning the same image.
   const s = Number.isFinite(seed) ? seed : Math.floor(Math.random() * 1e9);
-  const ideal = shapeOf(aspect);
+  const ideal = shape || shapeOf(aspect);
   const scale = Math.min(1, KEYLESS_LONG_EDGE / Math.max(ideal.width, ideal.height));
   const width = Math.round(ideal.width * scale);
   const height = Math.round(ideal.height * scale);
+  // The provider's own prompt expander: measurably better on a short
+  // prompt — and switched off when ours already wrote the prompt, because
+  // its rewrite drops the no-text rule a poster background depends on.
+  const expander = ownPrompt ? "enhance=false" : "enhance=true";
   const url =
     "https://image.pollinations.ai/prompt/" +
     encodeURIComponent(prompt.slice(0, 1400)) +
     `?width=${width}&height=${height}&nologo=true&model=flux` +
-    // The provider's own prompt expander. Measurably better composition
-    // and lighting on short prompts, and harmless on long ones.
-    `&enhance=true&seed=${s}`;
+    `&${expander}&seed=${s}`;
   const r = await fetch(url, {
-    // Bigger frames take longer; the old 90s was tuned for 1024².
-    signal: AbortSignal.timeout(150_000),
+    signal: AbortSignal.timeout(Math.max(1000, timeoutMs)),
     headers: { "User-Agent": "hari-assistant" },
   });
   const mime = r.headers.get("content-type") || "";
@@ -144,10 +502,7 @@ async function tryPollinations(prompt, { aspect, seed } = {}) {
   if (buffer.length < 20 * 1024) {
     throw new Error(`pollinations returned ${buffer.length} bytes`);
   }
-  // WHAT WE ASKED FOR IS NOT WHAT WE GOT. Measured against the live free
-  // tier: 1536x864 comes back 1024x576 and 1152x1536 comes back 665x886.
-  // Reporting the requested size made the logs and the ledger claim a
-  // resolution the user never received.
+  // WHAT WE ASKED FOR IS NOT WHAT WE GOT: report the size that came back.
   const real = jpegSize(buffer);
   return {
     buffer,
@@ -162,234 +517,68 @@ async function tryPollinations(prompt, { aspect, seed } = {}) {
 }
 
 /* ------------------------------------------------------------------ */
-/* KEYED PROVIDERS — all optional, all inert until a key exists.       */
-/*                                                                     */
-/* The keyless tier is Sana at ~1024px with someone else's watermark.  */
-/* Every provider below is a real step up and none of them requires    */
-/* billing: each issues an API key on a free account. They are tried   */
-/* in order and skipped silently when their key is absent, so adding   */
-/* one is a single environment variable and nothing else changes.      */
-/*                                                                     */
-/* UNVERIFIED UNTIL A KEY EXISTS. These request shapes come from each  */
-/* provider's documentation, not from a call that was actually made —  */
-/* there is no key here to make one with. The first real call may need */
-/* a correction; the chain is built so that a provider which fails or  */
-/* 4xxs simply falls through to the next one rather than breaking      */
-/* image generation.                                                   */
+/* THE CHAIN                                                           */
 /* ------------------------------------------------------------------ */
 
-/**
- * Cloudflare Workers AI — flux-1-schnell on the free neuron allowance.
- *
- * 10,000 neurons a day at no charge and no card. At 8 steps an image
- * costs about 96 neurons, so roughly a hundred a day free — and it is
- * FLUX rather than Sana, at full resolution, with nobody's watermark.
- *
- * TWO THINGS THE DOCS ARE SPECIFIC ABOUT, both of which the first draft
- * of this function got wrong:
- *  • it accepts prompt, steps and seed, and NOTHING ELSE. Sending width
- *    and height is a validation error, not a hint — the output size is
- *    fixed and the shape is cropped afterwards instead.
- *  • steps maxes out at 8. That is the quality dial, so it is pinned to
- *    the top: the free allowance is far larger than this app will use.
- */
-async function tryCloudflare(prompt, { aspect, seed } = {}) {
-  const acct = process.env.CF_ACCOUNT_ID;
-  const token = process.env.CF_API_TOKEN;
-  if (!acct || !token) return null;
-  const model = process.env.CF_IMAGE_MODEL || "@cf/black-forest-labs/flux-1-schnell";
-  const steps = Math.min(Math.max(Number(process.env.CF_IMAGE_STEPS) || 8, 1), 8);
-  try {
-    const body = { prompt: prompt.slice(0, 2000), steps };
-    // The video path fixes a seed so every keyframe is the same subject.
-    if (Number.isFinite(seed)) body.seed = Math.abs(Math.trunc(seed)) % 4294967295;
-    const r = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${acct}/ai/run/${model}`,
-      {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${token}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(90_000),
-      }
-    );
-    if (!r.ok) {
-      console.warn(`imagegen cloudflare: ${r.status}`);
-      return null;
-    }
-    const type = String(r.headers.get("content-type") || "");
-    // flux-1-schnell answers with base64 in JSON; the SDXL models answer
-    // with raw image bytes. Handle both rather than assuming one.
-    let buffer;
-    let mime = "image/jpeg";
-    if (type.includes("application/json")) {
-      const j = await r.json();
-      const b64 = j?.result?.image;
-      if (!b64) return null;
-      buffer = Buffer.from(b64, "base64");
-    } else if (type.startsWith("image/")) {
-      buffer = Buffer.from(await r.arrayBuffer());
-      mime = type.split(";")[0];
-    } else {
-      return null;
-    }
-    if (buffer.length < 20 * 1024) return null;
-    // The model returns ONE fixed shape, so the aspect the caller asked
-    // for is produced by cropping rather than by requesting it. A poster
-    // that arrives square and gets used square was the original
-    // complaint; cropping a FLUX frame still beats a native Sana one.
-    const shaped = await cropToAspect(buffer, mime, aspect);
-    const real = jpegSize(shaped.buffer) || jpegSize(buffer);
-    return {
-      buffer: shaped.buffer,
-      mime: shaped.mime,
-      provider: "cloudflare",
-      width: real ? real.width : 0,
-      height: real ? real.height : 0,
-    };
-  } catch (e) {
-    console.warn("imagegen cloudflare:", e.message);
-    return null;
-  }
-}
+/** name → {available(), run(prompt, opts)}. */
+const PROVIDERS = {
+  gemini: { available: geminiAvailable, run: tryGemini },
+  "fal-zimage": {
+    available: () => fal.falReady() && !fal.coolingDown(),
+    run: (p, o) => tryFal(p, { ...o, kind: "photo" }),
+  },
+  "fal-qwen": {
+    available: () => fal.falReady() && !fal.coolingDown(),
+    run: (p, o) => tryFal(p, { ...o, kind: "text" }),
+  },
+  "cf-klein": {
+    available: cfAvailable,
+    run: (p, o) => tryCloudflare(p, o),
+  },
+  "cf-schnell": {
+    available: () => cfAvailable() && !!cfFallbackModel(),
+    run: tryCloudflareFallback,
+  },
+  huggingface: { available: () => !!(process.env.HF_TOKEN && process.env.HF_IMAGE_MODEL), run: tryHuggingFace },
+  together: { available: () => !!(process.env.TOGETHER_API_KEY && process.env.TOGETHER_IMAGE_MODEL), run: tryTogether },
+};
+
+/** Best first, per purpose. Background is a photo-like scene with no words. */
+const QUALITY_ORDER = {
+  photo: ["gemini", "fal-zimage", "cf-klein", "fal-qwen", "cf-schnell", "huggingface", "together"],
+  text: ["gemini", "fal-qwen", "cf-klein", "fal-zimage", "cf-schnell", "huggingface", "together"],
+};
+QUALITY_ORDER.background = QUALITY_ORDER.photo;
 
 /**
- * Centre-crop an image to the requested shape with ffmpeg, which is in
- * the runtime image for video generation anyway. Never throws: an image
- * in the wrong shape is far better than no image, so any failure returns
- * the original untouched.
+ * The keyed providers to try, in order, that are available right now.
+ * IMAGE_PROVIDER_ORDER (comma list of the names above) overrides the
+ * quality order, e.g. "cf-klein,fal-zimage" to put the free tier first.
  */
-async function cropToAspect(buffer, mime, aspect) {
-  const want = shapeOf(aspect);
-  const ratio = want.width / want.height;
-  const got = jpegSize(buffer);
-  if (!got || Math.abs(got.width / got.height - ratio) < 0.02) {
-    return { buffer, mime };
-  }
-  const fs = require("fs");
-  const os = require("os");
-  const path = require("path");
-  const { execFile } = require("child_process");
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hari-crop-"));
-  const inFile = path.join(dir, "in.jpg");
-  const outFile = path.join(dir, "out.jpg");
-  try {
-    fs.writeFileSync(inFile, buffer);
-    const w = got.width / got.height > ratio
-      ? Math.round(got.height * ratio) : got.width;
-    const h = got.width / got.height > ratio
-      ? got.height : Math.round(got.width / ratio);
-    await new Promise((resolve, reject) => {
-      execFile(
-        "ffmpeg",
-        ["-y", "-v", "error", "-i", inFile,
-         "-vf", `crop=${w}:${h}`, "-q:v", "2", outFile],
-        { timeout: 20_000 },
-        (err) => (err ? reject(err) : resolve())
-      );
-    });
-    const out = fs.readFileSync(outFile);
-    if (out.length < 10 * 1024) return { buffer, mime };
-    return { buffer: out, mime: "image/jpeg" };
-  } catch (e) {
-    console.warn("imagegen crop failed, keeping the original:", e.message);
-    return { buffer, mime };
-  } finally {
-    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
-  }
+function providerOrder(purpose = "photo") {
+  const custom = String(process.env.IMAGE_PROVIDER_ORDER || "")
+    .split(",").map((s) => s.trim()).filter((s) => PROVIDERS[s]);
+  const order = custom.length ? custom : QUALITY_ORDER[purpose] || QUALITY_ORDER.photo;
+  return order.filter((n) => PROVIDERS[n].available());
 }
 
-/** Hugging Face Inference — FLUX.1-schnell on a free account token. */
-async function tryHuggingFace(prompt, { aspect } = {}) {
-  const token = process.env.HF_TOKEN;
-  if (!token) return null;
-  const model = process.env.HF_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell";
-  const { width, height } = shapeOf(aspect);
-  try {
-    const r = await fetch(`https://router.huggingface.co/hf-inference/models/${model}`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: JSON.stringify({
-        inputs: prompt.slice(0, 1400),
-        parameters: { width, height },
-      }),
-      signal: AbortSignal.timeout(120_000),
-    });
-    // 503 means the model is warming up — worth one wait, not a chain exit.
-    if (r.status === 503) {
-      console.warn("imagegen huggingface: model loading");
-      return null;
-    }
-    if (!r.ok) {
-      console.warn(`imagegen huggingface: ${r.status}`);
-      return null;
-    }
-    const mime = String(r.headers.get("content-type") || "image/jpeg").split(";")[0];
-    if (!mime.startsWith("image/")) return null;
-    const buffer = Buffer.from(await r.arrayBuffer());
-    if (buffer.length < 20 * 1024) return null;
-    const real = jpegSize(buffer);
-    return {
-      buffer, mime, provider: "huggingface",
-      width: real ? real.width : width,
-      height: real ? real.height : height,
-    };
-  } catch (e) {
-    console.warn("imagegen huggingface:", e.message);
-    return null;
-  }
+function keylessOn() {
+  return String(process.env.IMAGE_KEYLESS || "on").toLowerCase() !== "off";
 }
 
-/** Together AI — FLUX.1-schnell-Free. */
-async function tryTogether(prompt, { aspect } = {}) {
-  const key = process.env.TOGETHER_API_KEY;
-  if (!key) return null;
-  const model = process.env.TOGETHER_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell-Free";
-  const { width, height } = shapeOf(aspect);
-  try {
-    const r = await fetch("https://api.together.xyz/v1/images/generations", {
-      method: "POST",
-      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-      body: JSON.stringify({
-        model,
-        prompt: prompt.slice(0, 1400),
-        width, height, steps: 4, n: 1,
-        response_format: "b64_json",
-      }),
-      signal: AbortSignal.timeout(120_000),
-    });
-    if (!r.ok) {
-      console.warn(`imagegen together: ${r.status}`);
-      return null;
-    }
-    const j = await r.json();
-    const b64 = j?.data?.[0]?.b64_json;
-    if (!b64) return null;
-    const buffer = Buffer.from(b64, "base64");
-    if (buffer.length < 20 * 1024) return null;
-    const real = jpegSize(buffer);
-    return {
-      buffer, mime: "image/jpeg", provider: "together",
-      width: real ? real.width : width,
-      height: real ? real.height : height,
-    };
-  } catch (e) {
-    console.warn("imagegen together:", e.message);
-    return null;
-  }
-}
-
-/** Which keyed providers this deployment could use, for the health probe. */
-function configuredProviders() {
-  const out = [];
-  if (process.env.GEMINI_API_KEY) out.push("gemini (needs billing)");
-  if (process.env.CF_ACCOUNT_ID && process.env.CF_API_TOKEN) out.push("cloudflare");
-  if (process.env.HF_TOKEN) out.push("huggingface");
-  if (process.env.TOGETHER_API_KEY) out.push("together");
-  out.push("pollinations (keyless, Sana, watermarked)");
+/** Which providers this deployment would try, in order, for the health probe. */
+function configuredProviders(purpose = "photo") {
+  const out = providerOrder(purpose).map((n) =>
+    n === "gemini" && geminiImageMode() === "auto" ? "gemini (probing: set GEMINI_IMAGE_BILLING=on once billed)" : n);
+  if (keylessOn()) out.push("pollinations (keyless, ≤1024 px)");
   return out;
+}
+
+/** Words that must be IN the picture: a logo, a sign, "that says …". */
+function wantsText(prompt) {
+  const p = String(prompt || "");
+  return /["“][^"”]{2,60}["”]/.test(p) ||
+    /\b(logo|wordmark|typography|lettering|signboard|that says|saying|with the (words?|text)|written|title text|caption)\b/i.test(p);
 }
 
 /* ------------------------------------------------------------------ */
@@ -400,8 +589,8 @@ function configuredProviders() {
 /* idol with RED skin and the flute pushed through his cheek — good    */
 /* light, good jewellery, wrong deity. The model is not going to learn */
 /* this from "divine aura, cinematic lighting"; the attributes have to */
-/* be in the prompt, because Cloudflare's flux-1-schnell takes no      */
-/* negative prompt and no reference image.                             */
+/* be in the prompt, because most of these models take no negative    */
+/* prompt and no reference image.                                      */
 /*                                                                     */
 /* Only the figures this app is actually asked for, and only the       */
 /* attributes that are canonical rather than stylistic. Getting these  */
@@ -464,41 +653,90 @@ const SUBJECT_HINTS = [
   },
 ];
 
-/**
- * Add canonical attributes when the prompt names a subject the image model
- * is known to get wrong. Appended rather than substituted: whatever the
- * user asked for — the style, the setting, the mood — is untouched.
- */
-function withSubjectHints(prompt) {
+/** The canonical notes for every subject the prompt names. */
+function subjectHints(prompt) {
   const p = String(prompt || "");
-  const hits = SUBJECT_HINTS.filter((h) => h.match.test(p));
-  if (!hits.length) return p;
-  return `${p}. ${hits.map((h) => h.hint).join(". ")}.`;
+  return SUBJECT_HINTS.filter((h) => h.match.test(p)).map((h) => h.hint);
 }
 
 /**
- * @param opts.aspect  square | portrait | landscape | wide
- * @param opts.seed    fixed seed — video frames share one so the subject
- *                     stays the same person/place from frame to frame.
+ * Add canonical attributes when the prompt names a subject the image model
+ * is known to get wrong. Appended rather than substituted: whatever the
+ * user asked for — the style, the setting, the mood — is untouched. A note
+ * already in the prompt (the enhancer kept it) is not added twice.
+ */
+function withSubjectHints(prompt) {
+  const p = String(prompt || "");
+  const hits = subjectHints(p).filter((h) => !p.includes(h));
+  if (!hits.length) return p;
+  return `${p}. ${hits.join(". ")}.`;
+}
+
+/**
+ * @param opts.aspect    square | portrait | landscape | wide | poster (4:5) | story (9:16)
+ * @param opts.seed      fixed seed — video frames share one so the subject
+ *                       stays the same person/place from frame to frame.
+ * @param opts.purpose   'photo' (default) | 'text' (words must be in the
+ *                       picture) | 'background' (a poster background: no
+ *                       text, space for the app's typography). Omitted,
+ *                       it is read from the prompt.
+ * @param opts.enhance   run the prompt enhancer first (imagePrompt.js)
+ * @param opts.style     poster style words, for the enhancer
+ * @param opts.target    {width, height} to finish at instead of the shape's
+ *                       own size (a 1080x1080 poster, not the 1440 square)
+ * @param opts.finish    crop/scale to the exact shape and strip tags (default true)
+ * @param opts.aiUpscale allow fal esrgan when the result is far too small
  */
 async function generateImage(prompt, opts = {}) {
   const raw = String(prompt || "").trim();
   if (!raw) throw new Error("empty prompt");
-  const p = withSubjectHints(raw);
-  // Best first, each skipped in a breath when its key is absent.
-  for (const provider of [tryGemini, tryCloudflare, tryHuggingFace, tryTogether]) {
-    const out = await provider(p, opts);
-    if (out) return out;
+  const shape = shapeOf(opts.aspect);
+  const purpose = opts.purpose || (wantsText(raw) ? "text" : "photo");
+  const time = budget(); // the enhancer's seconds count too
+
+  let p = raw;
+  let enhanced = false;
+  if (opts.enhance || purpose === "background") {
+    const e = await imagePrompt.enhancePrompt(raw, {
+      purpose, style: opts.style || "", shape: shapeName(opts.aspect), mustKeep: subjectHints(raw),
+    });
+    p = e.prompt;
+    enhanced = e.enhanced;
   }
-  try {
-    return await tryPollinations(p, opts);
-  } catch (e) {
-    // ONE retry. A timeout or a truncated body at this size is usually the
-    // provider being busy, and failing the whole request on the first
-    // stumble is how "ask me to try again in a moment" became common.
-    console.warn("imagegen retrying after:", e.message);
-    return tryPollinations(p, { ...opts, seed: Math.floor(Math.random() * 1e9) });
+  p = withSubjectHints(p);
+  const negative = purpose === "background" ? imagePrompt.BACKGROUND_NEGATIVE : undefined;
+
+  const common = { aspect: opts.aspect, shape, seed: opts.seed, negative };
+  let out = null;
+  // Best first among the providers that are available right now.
+  for (const name of providerOrder(purpose)) {
+    const timeoutMs = time.keyed();
+    if (timeoutMs < 5000) break;
+    out = await PROVIDERS[name].run(p, { ...common, timeoutMs });
+    if (out) break;
   }
+  if (!out) {
+    if (!keylessOn()) throw new Error("no image provider answered");
+    try {
+      out = await tryPollinations(p, { ...common, ownPrompt: enhanced, timeoutMs: time.keyless() });
+    } catch (e) {
+      // ONE retry, only when there is time for it. A timeout or a truncated
+      // body is usually the provider being busy; a retry that cannot finish
+      // inside the budget is just a longer wait for the same apology.
+      if (time.left() < 20_000) throw e;
+      console.warn("imagegen retrying after:", e.message);
+      out = await tryPollinations(p, {
+        ...common, ownPrompt: enhanced, seed: Math.floor(Math.random() * 1e9), timeoutMs: time.keyless(),
+      });
+    }
+  }
+
+  if (opts.finish !== false) {
+    const target = opts.target && opts.target.width > 0 && opts.target.height > 0 ? opts.target : shape;
+    const done = await require("./imagePost").finish(out, target, { aiUpscale: !!opts.aiUpscale });
+    out = { ...out, buffer: done.buffer, mime: done.mime, width: done.width || out.width, height: done.height || out.height, upscaled: done.upscaled };
+  }
+  return { ...out, prompt: p, enhanced, purpose };
 }
 
 /** True once a Veo/quota probe said video needs the paid tier. */
@@ -554,7 +792,17 @@ async function tryVeoVideo(prompt) {
   }
 }
 
+/** Tests only: forget cooldowns learnt from earlier stubbed answers. */
+function _reset() {
+  geminiBlockedUntil = 0;
+  geminiImageConfigOk = true;
+  cfBlockedUntil = 0;
+  fal._reset();
+}
+
 module.exports = {
-  generateImage, tryVeoVideo, jpegSize, shapeOf, configuredProviders,
-  withSubjectHints,
+  generateImage, tryVeoVideo, jpegSize, shapeOf, shapeName, configuredProviders,
+  withSubjectHints, subjectHints, providerOrder, wantsText, SHAPES,
+  geminiImageModel, geminiImageMode, geminiBody, cfDecode, fitEdge,
+  _test: { tryGemini, tryFal, tryCloudflare, tryPollinations, _reset },
 };

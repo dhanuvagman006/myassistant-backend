@@ -133,6 +133,29 @@ kubectl -n myassistant rollout undo deploy/myassistant-backend --to-revision=3
 Note: rollback reverts code, not data. If a bad release corrupted the DB,
 restore from the nightly backup as above.
 
+## Live voice + images (app build 135, 2026-09-30)
+
+Check these secrets before the deploy that ships Live voice and Poster Studio
+(check names only; never print values):
+
+- **`AI_LIVE_MODEL` must NOT be set to an old value.** The new `live` block in
+  `/ai/config` reads it, so a leftover `gemini-3.1-flash-live-preview` would
+  override the `gemini-3.8-live` default. Remove it unless you mean to pin a
+  model. `AI_LIVE_VOICE` (default `Callirrhoe`, runner-up `Vindemiatrix`)
+  switches the Live voice with no app release; `AI_LIVE=off` turns Live off.
+- **Good images need `FAL_KEY` and/or `CF_ACCOUNT_ID` + `CF_API_TOKEN`**
+  (token with Workers AI permission). Without them the chain falls through to
+  Pollinations (keyless, lowest quality).
+- **`GEMINI_IMAGE_BILLING=on` only once billing is enabled** on the Gemini
+  project (there is no free image tier). Default `auto` tries Gemini once and
+  cools down 6 h on a quota error. `GEMINI_IMAGE_API_KEY` lets images use a
+  billed key while text stays on the free one.
+- The image finish (exact crop, sharpen, strip metadata) uses ffmpeg, which the
+  Docker image has; local test runs without ffmpeg skip those checks.
+
+Apply with the same `kubectl patch secret` + `rollout restart` as the Plivo
+steps below.
+
 ## Plivo agent calling ("call X and tell them Y" — Hari speaks on the call)
 
 Plivo is the ONLY telephony provider. Exotel was removed on 2026-09-13:

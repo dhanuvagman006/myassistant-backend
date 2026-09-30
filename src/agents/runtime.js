@@ -577,7 +577,10 @@ async function contextExtra(ctx, state) {
   const sessionState = require("../agents/sessionState");
   const [block, mem, recent] = await Promise.all([
     require("../users/context").contextBlock(ctx.userId, { lat: ctx.lat, lng: ctx.lng, tz: ctx.tzOffsetMin, appBuild: ctx.appBuild }),
-    require("../agents/memory").memoryBlock(ctx.userId),
+    // The app's turns (ai/context.js) pass the user's words: only the facts
+    // that fit them are sent (2026-09-30). Everyone else gets them all.
+    require("../agents/memory").memoryBlock(ctx.userId,
+      ctx.memoryWords === undefined ? undefined : { words: ctx.memoryWords }),
     // Continuity across sessions: what was said minutes ago, so a
     // fresh session never re-asks what it just answered. THIS
     // session's own turns are excluded — they are the live
@@ -601,7 +604,9 @@ async function contextExtra(ctx, state) {
   // The honest limits of THIS phone, so a denied permission is
   // explained rather than attempted and then apologised for.
   const limits = registry.limitsBlock(ctx.deviceCaps);
-  return [nowLine, block, mem, recent, ...live, limits]
+  // The clock LAST (2026-09-30): it changes every minute, and anything
+  // after it could never be part of the prompt prefix Gemini caches.
+  return [limits, block, mem, recent, ...live, nowLine]
     .filter(Boolean).join("\n");
 }
 

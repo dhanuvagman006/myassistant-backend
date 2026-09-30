@@ -1453,9 +1453,14 @@ console.log("\nexecution record");
     for (const fn of ["tryCloudflare", "tryHuggingFace", "tryTogether"]) {
       assert.match(src, new RegExp(`async function ${fn}\\(`), `${fn} is missing`);
     }
-    assert.match(src,
-      /for \(const provider of \[tryGemini, tryCloudflare, tryHuggingFace, tryTogether\]\)/,
-      "the chain does not try the keyed providers in order");
+    // 2026-09-30: the chain is ordered by quality among the providers
+    // that have a key (providerOrder), no longer a fixed literal loop.
+    const quality = ["gemini", "fal-zimage", "cf-klein", "fal-qwen", "cf-schnell", "huggingface", "together"];
+    const order = imagegen.providerOrder("photo");
+    const at = order.map((n) => quality.indexOf(n));
+    assert.ok(at.every((i) => i >= 0), `unknown provider in ${order}`);
+    assert.deepStrictEqual(at, [...at].sort((a, b) => a - b),
+      "the chain does not try the keyed providers in quality order");
   });
 
   test("the image size reported is the one that came back", () => {

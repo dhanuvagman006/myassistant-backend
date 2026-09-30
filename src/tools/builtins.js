@@ -4351,9 +4351,18 @@ function registerBuiltins() {
       "anniversary or wedding card with a name, their own dictated wishes, " +
       "a signature or a real person's photo goes to make_greeting_poster " +
       "whenever that tool is offered — this tool would invent a stranger's " +
-      "face and misspell the names.",
+      "face and misspell the names.\n" +
+      // Poster Studio (2026-09-30): the words of an event poster are set
+      // by the app in real fonts, never painted by an image model.
+      "NOT FOR A POSTER, FLYER OR BANNER WITH WORDS — an event, a sale, an " +
+      "announcement ('make a poster for our event tomorrow') goes to " +
+      "create_event_poster whenever that tool is offered: the app sets the " +
+      "words over a generated background, so nothing is misspelt.",
     risk: "low",
     deviceAction: true,
+    // The image chain's own budget is 75 s (imagegen.js); the default 30 s
+    // cut a slow provider off and lost the show_image for a saved picture.
+    timeoutMs: 85_000,
     inputSchema: {
       type: "object",
       properties: {
@@ -4386,9 +4395,19 @@ function registerBuiltins() {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
       const prompt = String(args.prompt || "").trim().slice(0, 1400);
       if (!prompt) return { ok: false, error: "describe what to draw" };
+      // A poster WITH WORDS reached this tool anyway: the studio sets the
+      // words in real fonts (2026-09-30). Only for app builds that have it.
+      const studioTools = require("../posters/studioTools");
+      if (studioTools.shouldRouteToStudio(args, ctx)) {
+        const request = studioTools.isWordsPoster(ctx.userText) ? ctx.userText : prompt;
+        return studioTools.runCreateEventPoster({ request }, ctx);
+      }
       try {
         const { generateImage } = require("../services/imagegen");
-        const img = await generateImage(prompt, { aspect: args.aspect });
+        // enhance: a short prompt-writer pass (skipped when the prompt is
+        // already rich or the text model is unavailable); aiUpscale: fal
+        // esrgan when the provider came back far too small.
+        const img = await generateImage(prompt, { aspect: args.aspect, enhance: true, aiUpscale: true });
         const docs = require("../docs/store");
         const ext = img.mime === "image/png" ? "png" : "jpg";
         const row = await docs.createDocument(ctx.userId, {
@@ -9005,6 +9024,14 @@ function registerBuiltins() {
       return { ok: true, data: rows, speak: lines.join(". ") };
     },
   });
+
+  // AI Poster Studio + photo edits (2026-09-30): create_event_poster and
+  // edit_my_photo — src/posters/studioTools.js.
+  require("../posters/studioTools").registerStudioTools(registry);
+
+  // "Play my morning" and meeting prep (2026-09-30): play_daily_brief and
+  // prepare_meeting — src/meetings/tools.js.
+  require("../meetings/tools").registerBriefMeetingTools(registry);
 }
 
 /**

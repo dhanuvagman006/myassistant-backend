@@ -64,7 +64,7 @@ for (const f of ["generateWithTools", "generateWithToolsStream", "generateReply"
     // said (background extraction, as every turn always has); nothing else
     // on these routes may reach a model.
     const sys = String((b && b.system) || (a && a.system) || "");
-    modelCalls.push({ f, extraction: f === "generateReply" && /durable personal facts|COMMITMENTS/.test(sys) });
+    modelCalls.push({ f, head: sys.slice(0, 90), extraction: f === "generateReply" && /durable personal facts|COMMITMENTS/.test(sys) });
     throw new Error("no model on the tool server");
   };
 }
@@ -666,6 +666,148 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
     });
 
     /* ============================================================ */
+    console.log("\nLive voice and understanding (2026-09-30)");
+    /* ============================================================ */
+
+    const vp = require(path.join(BACKEND, "src/ai/voicePrompt"));
+    const upTo = (sys) => sys.indexOf(vp.RESOLVE_REFERENCES) + vp.RESOLVE_REFERENCES.length;
+    const capture = async (rx, fn) => {
+      const lines = [];
+      const real = console.log;
+      console.log = (...a) => { const l = a.join(" "); if (rx.test(l)) lines.push(l); else real(...a); };
+      try { await fn(); } finally { console.log = real; }
+      return lines;
+    };
+
+    await atest("config: build 135+ gets the live block; AI_LIVE=off turns it off; older builds get none", async () => {
+      const cfg = async (q) => (await api("GET", `/ai/config${q}`, { token: A.token })).json;
+      let c = await cfg("?build=135");
+      assert.deepStrictEqual(c.live, {
+        on: true, model: "gemini-3.8-live", voice: "Callirrhoe", silenceMs: 500, prefixMs: 100,
+        startSensitivity: "high", endSensitivity: "high", idleCloseSec: 60,
+        voices: ["Callirrhoe", "Achernar", "Aoede", "Vindemiatrix", "Sulafat", "Kore", "Charon", "Achird"],
+      });
+      assert.ok(c.models.live && c.models.liveVoice, "the old fields stay, harmless");
+      assert.strictEqual((await cfg("?build=134")).live, undefined);
+      process.env.AI_LIVE = "off";
+      process.env.AI_LIVE_SILENCE_MS = "650";
+      try {
+        c = await cfg("?build=140");
+        assert.strictEqual(c.live.on, false, "the kill switch");
+        assert.strictEqual(c.live.silenceMs, 650);
+      } finally {
+        delete process.env.AI_LIVE;
+        delete process.env.AI_LIVE_SILENCE_MS;
+      }
+    });
+
+    let liveS;
+    await atest("context mode live: the Live prompt (no delivery marks), ≤LIVE_MAX fixed tools, static rules first", async () => {
+      const r = await context(A, { text: "[SYSTEM] Live session starting", mode: "live", build: 135, expressive: true });
+      assert.strictEqual(r.status, 200, r.text);
+      liveS = r.json;
+      const sys = liveS.system;
+      assert.match(sys, /LIVE VOICE/);
+      assert.match(sys, /THE USER IS YOUR OWNER/);
+      assert.match(sys, /HOW TO ADDRESS THEM — as "Sir"/);
+      assert.match(sys, /ASK BEFORE THE RISKY ONES/);
+      assert.match(sys, /RESOLVE REFERENCES/);
+      assert.doesNotMatch(sys, /<tone:|<sigh>|<laugh>|<short pause>|HOW YOU SOUND/, "Live speaks natively");
+      assert.ok(liveS.tools.length > 10 && liveS.tools.length <= require("../src/ai/liveTools").LIVE_MAX, `${liveS.tools.length} tools`);
+      const names = liveS.tools.map((t) => t.name);
+      for (const n of ["stay_silent", "end_conversation", "place_phone_call", "create_reminder", "web_search"]) {
+        assert.ok(names.includes(n), n);
+      }
+      const at = (s) => sys.indexOf(s);
+      assert.ok(at("RESOLVE REFERENCES") < at("WHAT YOU REMEMBER") && at("WHAT YOU REMEMBER") < at("Current date and time"));
+      assert.match(sys, /Current date and time for the user: [^\n]*$/, "the clock last");
+      const again = (await context(A, { text: "[SYSTEM] Live session starting", mode: "live", build: 135 })).json;
+      assert.strictEqual(again.system.slice(0, upTo(again.system)), sys.slice(0, upTo(sys)), "one cacheable prefix");
+      assert.deepStrictEqual(again.tools.map((t) => t.name), names, "the same fixed set");
+    });
+
+    await atest("spoken and typed: the prefix up to the rules is identical turn to turn; the clock and memory after it", async () => {
+      const v1 = (await context(A, { text: "what is the time", mode: "voice" })).json;
+      const v2 = (await context(A, { text: "remind me about the gym", mode: "voice", sessionId: v1.sessionId })).json;
+      assert.ok(upTo(v1.system) > 16_000);
+      assert.strictEqual(v2.system.slice(0, upTo(v2.system)), v1.system.slice(0, upTo(v1.system)));
+      assert.ok(v1.system.indexOf("Current date and time") > upTo(v1.system));
+      const c1 = (await context(A, { text: "what is the time" })).json;
+      assert.ok(c1.system.indexOf("RESOLVE REFERENCES") < c1.system.indexOf("Current date and time"));
+    });
+
+    await atest("a Live turn is opened on its own: a turn id and this turn's notes, no prompt", async () => {
+      const t1 = await context(A, { text: "what do you remember about me", mode: "live", build: 135, sessionId: liveS.sessionId, turnOnly: true });
+      assert.strictEqual(t1.status, 200, t1.text);
+      assert.strictEqual(t1.json.sessionId, liveS.sessionId);
+      assert.notStrictEqual(t1.json.turnId, liveS.turnId);
+      assert.deepStrictEqual([t1.json.system, t1.json.tools, t1.json.history, typeof t1.json.notes], ["", [], [], "string"]);
+      const ran = await tool(A, { sessionId: liveS.sessionId, turnId: t1.json.turnId, name: "recall_memory", args: {} });
+      assert.strictEqual(ran.json.ok, true, ran.text);
+      const logged = await capture(/^ai: turn live/, async () => {
+        const r = await turn(A, { sessionId: liveS.sessionId, turnId: t1.json.turnId, user: "what do you remember about me",
+          reply: "You're vegetarian, and your car is a blue Swift.", engine: "live", mode: "live",
+          tools: [{ name: "recall_memory", ok: true }], latency: { endToFirstAudioMs: 820, endToPlayMs: 900, toolMs: 140 } });
+        assert.strictEqual(r.json.ok, true, r.text);
+      });
+      assert.strictEqual(logged.length, 1, "one line per turn");
+      assert.match(logged[0], /^ai: turn live live build=135 reply=820ms firstAudio=820ms play=900ms tools=140ms toolCalls=1/);
+      const g = await context(A, { text: "[SYSTEM] garbled", mode: "live", build: 135, sessionId: liveS.sessionId, turnOnly: true });
+      assert.strictEqual(g.status, 200);
+    });
+
+    await atest("LAST RESULTS: what the tools returned in the last two turns reaches the next prompt", async () => {
+      assert.ok(await waitFor(async () => (await db.one(
+        `SELECT count(*)::int AS n FROM executed_actions WHERE session_id=$1 AND tool='recall_memory'`,
+        [liveS.sessionId])).n > 0), "the ledger has it");
+      const next = (await context(A, { text: "read the second one again", mode: "voice", sessionId: liveS.sessionId })).json;
+      assert.match(next.system, /LAST RESULTS \(what your tools returned[\s\S]*- recall_memory\(\) → 1\. id \d+: /);
+      assert.match(next.system, /LAST RESULTS \(what[\s\S]*- recall_memory\(\) → [^\n]*User is vegetarian/);
+      assert.ok(next.system.indexOf("LAST RESULTS (what") > upTo(next.system), "after the static rules");
+      const typed = (await context(A, { text: "and the first one?", sessionId: liveS.sessionId })).json;
+      assert.match(typed.system, /LAST RESULTS \(what[\s\S]*- recall_memory\(\)/, "typed turns get it too");
+      const fresh = (await context(A, { text: "hello", mode: "voice" })).json;
+      assert.doesNotMatch(fresh.system, /LAST RESULTS \(what/, "a new session starts with none");
+    });
+
+    await atest("memory: ~15 facts chosen by their words, the relevant one included; Live with no words gets 20", async () => {
+      const now = Date.now();
+      for (let i = 0; i < 30; i++) {
+        await db.run(`INSERT INTO agent_memories (user_id, fact, importance, created_at) VALUES ($1,$2,3,$3)`,
+          [B.id, `User likes filler topic number ${i}`, now - 90 * 86_400_000]);
+      }
+      await db.run(`INSERT INTO agent_memories (user_id, fact, importance, created_at) VALUES ($1,$2,1,$3)`,
+        [B.id, "User's dentist is Dr. Rao in Jayanagar", now - 200 * 86_400_000]);
+      const fillers = (sys) => (sys.match(/User likes filler topic number/g) || []).length;
+      for (const mode of ["voice", "chat"]) {
+        const sys = (await context(B, { text: "when is my dentist appointment", mode })).json.system;
+        assert.match(sys, /Dr\. Rao in Jayanagar/, `${mode}: the fact that fits`);
+        assert.strictEqual(fillers(sys), 14, `${mode}: 15 facts in all`);
+      }
+      const live = (await context(B, { text: "[SYSTEM] Live session starting", mode: "live", build: 135 })).json.system;
+      assert.strictEqual(fillers(live), 20, "no words: the top 20 by importance and recency");
+      assert.doesNotMatch(live, /Dr\. Rao/);
+    });
+
+    await atest("cut off mid-reply: only what they heard is remembered, with a note", async () => {
+      const c = (await context(A, { text: "what's on tomorrow", mode: "voice" })).json;
+      const reply = "Two things tomorrow: the bank at five and Ravi at seven. Want me to move one?";
+      const r = await turn(A, { sessionId: c.sessionId, turnId: c.turnId, user: "what's on tomorrow", reply,
+        engine: "cloud", mode: "voice", cutOffAfter: "Two things tomorrow: the bank at five" });
+      assert.deepStrictEqual(r.json, { ok: true, reply, corrected: false, cutOff: true });
+      const row = await waitFor(async () => db.one(
+        `SELECT text FROM conversation_turns WHERE session_id=$1 AND role='assistant'`, [c.sessionId]));
+      assert.strictEqual(row.text, "Two things tomorrow: the bank at five [cut off here: the user interrupted and did not hear the rest of this reply]");
+      const next = (await context(A, { text: "what was the second?", mode: "voice", sessionId: c.sessionId })).json;
+      assert.match(next.history[next.history.length - 1].text, /cut off here/);
+      assert.strictEqual(sessions.get(A.id, c.sessionId).lastReply, row.text);
+      const whole = (await context(A, { text: "hi", mode: "voice" })).json;
+      const w = await turn(A, { sessionId: whole.sessionId, turnId: whole.turnId, user: "hi", reply: "Hello!",
+        engine: "cloud", cutOffAfter: "Hello!" });
+      assert.deepStrictEqual(w.json, { ok: true, reply: "Hello!", corrected: false }, "heard whole");
+    });
+
+    /* ============================================================ */
     console.log("\nsessions belong to one account");
     /* ============================================================ */
 
@@ -745,7 +887,7 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
     });
 
     await atest("nothing here called a model", () => {
-      assert.deepStrictEqual(modelCalls.filter((c) => !c.extraction), [], "a model was called on the tool server");
+      assert.deepStrictEqual(modelCalls.filter((c) => !c.extraction).map((c) => `${c.f}: ${c.head}`), [], "a model was called on the tool server");
       assert.ok(modelCalls.some((c) => c.extraction), "a recorded turn is still learnt from");
       assert.ok(!outbound.some((u) => /generativelanguage|:generateContent|BidiGenerateContent/.test(u)), outbound.join("\n"));
     });

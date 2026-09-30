@@ -36,6 +36,10 @@ const router = require("express").Router();
 const multer = require("multer");
 const svc = require("../posters/service");
 
+// AI POSTER STUDIO (2026-09-30): /posters/ai/design, /posters/ai/background
+// and its job poll, behind the same app auth and poster limiter.
+router.use(require("../posters/aiRoutes"));
+
 const photoUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: svc.MAX_PHOTO_BYTES, files: 1 },

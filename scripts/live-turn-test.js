@@ -69,5 +69,8 @@ test("the spoken prompt does not claim to hear a voice it only reads", () => {
   assert.doesNotMatch(p, /You can hear them/, "the app's recogniser hands the model words, not a voice");
 });
 
+console.log("\nLive voice and understanding (scripts/ai-live-unit-test.js)");
+require("./ai-live-unit-test").run(test);
+
 console.log(`\n${passed} passed${process.exitCode ? ", some FAILED" : ""}`);
 process.exit(process.exitCode || 0);

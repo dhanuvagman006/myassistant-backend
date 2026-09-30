@@ -111,6 +111,11 @@ async function daysOf(uid, tzOffsetMin) {
           String(e.title || "Meeting").slice(0, 120) +
           (e.location ? ` · ${String(e.location).slice(0, 40)}` : ""),
         at: Number.isFinite(at) ? at : null,
+        // 2026-09-30: Meeting Prep opens THIS event from Home's card, and
+        // the spoken brief says the name and the place apart.
+        event_id: e.id ? String(e.id).slice(0, 200) : null,
+        name: String(e.title || "Meeting").slice(0, 120),
+        place: e.location ? String(e.location).slice(0, 40) : "",
       };
       if (!Number.isFinite(at) || at < endOfToday) today.push(item);
       else if (at < endOfTomorrow) tomorrow.push(item);
@@ -385,6 +390,8 @@ async function buildBrief(uid, opts = {}) {
 
   return {
     name: profile?.user?.name ? String(profile.user.name).split(" ")[0] : null,
+    // How the spoken brief greets them (agents/owner.js): Sir or Ma'am.
+    address: require("../agents/owner").honorific(profile?.user || {}),
     weather_line,
     weather_note,
     agenda: days.today,

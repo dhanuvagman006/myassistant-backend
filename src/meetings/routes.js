@@ -8,6 +8,8 @@
  *   GET  /meetings                 recent meetings with their action items
  *   GET  /meetings/:id             one meeting, including the full transcript
  *   GET  /meetings/:id/pdf         the minutes as a shareable PDF
+ *   GET  /meetings/prep?id=        "Prepare me" (2026-09-30, prep.js): the next
+ *                                  meeting in 24 h (or event id / reminder:<id>)
  *
  * Two entry points on purpose. A phone that already produced a transcript
  * should not pay to transcribe twice; a plain recording still has to work.
@@ -320,6 +322,23 @@ router.get("/", async (req, res) => {
     res.json({ meetings: await meetings.list(u, { limit: Math.min(Math.max(1, Number(req.query.limit) || 10), 200) }) });
   } catch (e) {
     res.status(500).json({ error: "could not read meetings" });
+  }
+});
+
+/**
+ * MEETING PREP (2026-09-30) — Home's "Prepare" button. Before /:id, which
+ * would take "prep" for an id. { meeting: null } when there is none.
+ */
+router.get("/prep", async (req, res) => {
+  const u = uid(req);
+  if (!u) return res.status(401).json({ error: "unauthorized" });
+  const id = typeof req.query.id === "string" && req.query.id.trim() ? req.query.id.trim().slice(0, 200) : null;
+  try {
+    const prep = await require("./prep").prepare(u, { meetingId: id, tzOffsetMin: tz(req) });
+    res.json(prep);
+  } catch (e) {
+    console.error("meeting prep error:", e.message || e);
+    res.status(500).json({ error: "could not prepare the meeting" });
   }
 });
 

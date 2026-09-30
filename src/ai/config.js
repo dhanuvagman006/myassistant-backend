@@ -92,8 +92,46 @@ const ttsModel = () =>
 const expressiveTtsModel = () => envModel("AI_TTS_EXPRESSIVE_MODEL", "gemini-3.8-flash-tts");
 // The delivery a spoken reply gets when its model gave no tone of its own.
 const ttsStyle = () => envModel("AI_TTS_STYLE", "warm, friendly and natural");
+// The old Live socket's model (models.live / liveVoice): no app reads them
+// since 2026-09-29; still sent, unchanged, so nothing that parses them breaks.
 const liveModel = () =>
   envModel("AI_LIVE_MODEL", envModel("GEMINI_LIVE_MODEL", "gemini-live-2.5-flash-preview"));
+
+// GEMINI LIVE ON THE PHONE (2026-09-30): from build 135 (or an app that
+// says it can, ?live=1) the conversation may run through the Live API —
+// the phone streams the mic and plays Live's own voice. The `live` block
+// is how it is set up: model, prebuilt voice, the voice-activity settings
+// (how long a pause ends their turn, how much audio before speech is kept,
+// how readily speech starts and ends a turn) and how long an idle session
+// stays open. AI_LIVE=off turns it off (the app keeps the cascade);
+// AI_LIVE_MODEL, AI_LIVE_VOICE and AI_LIVE_SILENCE_MS override.
+const LIVE_BUILD = 135;
+const LIVE_VOICES = ["Callirrhoe", "Achernar", "Aoede", "Vindemiatrix", "Sulafat", "Kore", "Charon", "Achird"];
+const liveOn = () => !/^(off|0|false|no)$/i.test(String(process.env.AI_LIVE || "on").trim());
+function liveSilenceMs() {
+  const n = Math.round(Number(process.env.AI_LIVE_SILENCE_MS));
+  return Number.isFinite(n) && n >= 200 && n <= 3000 ? n : 500;
+}
+function liveBlock() {
+  const v = envModel("AI_LIVE_VOICE", "");
+  return {
+    on: liveOn(),
+    model: envModel("AI_LIVE_MODEL", "gemini-3.8-live"),
+    // Live takes prebuilt voices only (never the library's Fola).
+    voice: VOICES.has(v) ? v : "Callirrhoe",
+    silenceMs: liveSilenceMs(),
+    prefixMs: 100,
+    startSensitivity: "high",
+    endSensitivity: "high",
+    idleCloseSec: 60,
+    voices: LIVE_VOICES.slice(),
+  };
+}
+/** Does this app get the live block: build 135+, or it says it can. */
+function liveCapable(build, flag) {
+  const b = Number(build);
+  return (Number.isFinite(b) && b >= LIVE_BUILD) || flag === true || /^(1|true|yes|on)$/i.test(String(flag || ""));
+}
 
 /**
  * The voice a user hears: theirs, their avatar's, or the deployment's. A
@@ -126,7 +164,7 @@ function speechLanguage(preferred) {
   return BCP47[name] || "en-IN";
 }
 
-async function forUser(userId, { build } = {}) {
+async function forUser(userId, { build, live } = {}) {
   const uid = Number(userId);
   const profile = await require("../users/context").getProfile(uid).catch(() => null);
   const registry = require("../tools/registry");
@@ -141,7 +179,7 @@ async function forUser(userId, { build } = {}) {
   }
   const expressive = Number.isFinite(b) && b >= EXPRESSIVE_BUILD;
   const voice = voiceFor(profile, { expressive });
-  return {
+  const out = {
     models: {
       cloud: cloudModel(),
       cloudFast: cloudFastModel(),
@@ -162,10 +200,13 @@ async function forUser(userId, { build } = {}) {
     routing: { toolWords, freshWords: groundingOn() ? FRESH_WORDS.slice() : [NO_GROUNDING], shortcutNames },
     limits: { maxToolRounds: 6 },
   };
+  if (liveCapable(build, live)) out.live = liveBlock();
+  return out;
 }
 
 module.exports = {
   forUser, voiceFor, speechLanguage, cloudModel, cloudFastModel, cloudFallbackModel,
   thinkingLevel, ttsModel, expressiveTtsModel, ttsStyle, liveModel,
+  liveBlock, liveCapable, liveOn, LIVE_BUILD, LIVE_VOICES,
   VOICES, LIBRARY_VOICES, EXPRESSIVE_BUILD, TOOL_VERBS, FRESH_WORDS, NO_GROUNDING, groundingOn,
 };
