@@ -344,6 +344,8 @@ const SEED_MEMORY = new Set([
   "add_standing_instruction",
   // Also durable writes, also absent.
   "remember_case", "remember_event", "remember_person_date",
+  // A person's address (2026-09-30).
+  "remember_address",
 ]);
 
 /** Words too common to count as grounding. */

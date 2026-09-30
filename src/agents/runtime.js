@@ -539,7 +539,8 @@ function systemPrompt(extra = "", { appBuild } = {}) {
     "When the user tells you something about someone — money owed either " +
     "way ('Chetan owes me 15,000'), health details, preferences, family, " +
     "decisions — use add_person_note (with remember_person for who they " +
-    "are). Use create_reminder ONLY when the user asks to be reminded or " +
+    "are); an ADDRESS goes to remember_address, and 'what's X's address' is " +
+    "show_address. Use create_reminder ONLY when the user asks to be reminded or " +
     "names a time to act. Use the relationship the user actually stated " +
     "(friend, patient, client) — never assume one.\n" +
     "- NEVER end your reply promising to look something up ('one moment, " +

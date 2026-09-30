@@ -553,7 +553,8 @@ function voiceRules(assistantName = "Assistant", preferredLanguage = "", appBuil
     "when I tell you something about someone — money owed either way, " +
     "health details, preferences, family — use add_person_note (with " +
     "remember_person for who they are), tagged with the relationship I " +
-    "actually stated (friend, patient, client). Use create_reminder ONLY " +
+    "actually stated (friend, patient, client) — except an ADDRESS, which " +
+    "goes to remember_address. Use create_reminder ONLY " +
     "when I ask to be reminded or name a time. " +
     "Never mention being an AI unless directly asked. Decline harmful requests politely and briefly. " +
     // Live mode is the app's MAIN screen, so the legal guard has to exist
@@ -630,7 +631,14 @@ const RESOLVE_REFERENCES =
   "correction — 'no, I meant…', 'not him, Ravi', 'make it 6 instead' — replaces the earlier " +
   "value completely: redo the step with the corrected value, never the old one. 'Tomorrow', " +
   "'tonight' and 'that day' are the user's own day by their clock. Ask ONE short question only " +
-  "when two things fit equally well; otherwise act on the obvious one.";
+  "when two things fit equally well; otherwise act on the obvious one. " +
+  // REMEMBER THAT (2026-09-30): the owner's "remember that", said after an
+  // address, must save that address on the person it belongs to.
+  "REMEMBER THAT: 'remember that/this/it', 'save that', 'note that down' saves the most recent " +
+  "fact said in this conversation — by the user or by you (an address you found, a number, a " +
+  "date). An address → remember_address with the person it belongs to (ask 'whose address is " +
+  "it?' only if no person was mentioned); a fact about a person → add_person_note; about the " +
+  "user → remember_fact. 'What's X's address', 'where does X live' → show_address.";
 
 // GEMINI LIVE (2026-09-30, build 135+): the phone streams the user's voice
 // to the Live API and plays its native voice back. The same rules hold —

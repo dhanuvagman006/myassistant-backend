@@ -310,6 +310,37 @@ async function resolveRecipient(userId, spokenName) {
   return { contactPhone, toPhone, appUser, name: match?.name || null };
 }
 
+/**
+ * THE ADDRESS CARD (2026-09-30) — remember_address and show_address put
+ * the address on screen: {type:'show_address', name, label, address,
+ * phone?, saved}. phone is the person's number when it is on file, so the
+ * card can call them; absent otherwise, never empty.
+ */
+function addressCard(person, label, address, saved) {
+  const card = { type: "show_address", name: person.name, label, address, saved: !!saved };
+  const phone = String(person.phone || "").trim();
+  if (phone) card.phone = phone;
+  return card;
+}
+
+/** A PIN code said digit by digit — "560011" read as a number is noise. */
+function speakablePin(address) {
+  return String(address).replace(/[.\s]+$/, "")
+    .replace(/\b([1-9]\d{2})\s?(\d{3})\b/g, (_m, a, b) => `${a}${b}`.split("").join(" "));
+}
+
+/** "Ravi's home address is …" — read out, with what else is on file. */
+function addressSpeech(r) {
+  const addr = speakablePin(r.address);
+  const lead = r.label === "saved note"
+    ? `Here's what I have for ${r.person.name}'s address: ${addr}.`
+    : r.asked
+      ? `I don't have ${r.person.name}'s ${r.asked} address — the ${r.label} address is ${addr}.`
+      : `${r.person.name}'s ${r.label} address is ${addr}.`;
+  const also = r.others.map((o) => o.label);
+  return also.length ? `${lead} I also have the ${also.join(" and ")} address.` : lead;
+}
+
 function registerBuiltins() {
   if (registered) return; // idempotent: tests and boot both call this
   registered = true;
@@ -621,7 +652,9 @@ function registerBuiltins() {
     name: "remember_fact",
     description:
       "Store a durable fact about the user or their life so it is remembered " +
-      "in future conversations (preferences, family, work, important dates).",
+      "in future conversations (preferences, family, work, important dates). " +
+      "NOT for a person's address — 'X's address is…', 'X lives at…' (house, " +
+      "office, shop) go to remember_address, and 'what's X's address' is show_address.",
     risk: "medium",
     inputSchema: {
       type: "object",
@@ -909,7 +942,8 @@ function registerBuiltins() {
       "Record or update a PERSON the user tells you about — their name, how " +
       "they relate to the user (client, patient, friend, colleague), their " +
       "organisation and location. Use for 'Ravi is my client', 'my doctor is " +
-      "Dr Rao at Manipal'.",
+      "Dr Rao at Manipal'. A street ADDRESS (house, office, shop) is NOT the " +
+      "location: save it with remember_address.",
     risk: "medium",
     inputSchema: {
       type: "object",
@@ -917,7 +951,7 @@ function registerBuiltins() {
         name: { type: "string", description: "Person's name" },
         relationship: { type: "string", description: "client, patient, friend, wife, colleague…" },
         organisation: { type: "string", description: "Company or institution" },
-        location: { type: "string", description: "City or place" },
+        location: { type: "string", description: "City or place — not a street address (remember_address)" },
       },
       required: ["name"],
     },
@@ -933,6 +967,87 @@ function registerBuiltins() {
     },
   });
 
+  // ADDRESSES (2026-09-30). The owner: "when we ask for remember anyone
+  // house address and next when we say remember that and ask for that
+  // person's address it should show us." Before this an address went to
+  // remember_fact, add_person_note or remember_person(location) by the
+  // model's choice and came back only by luck, and only spoken.
+  registry.register({
+    name: "remember_address",
+    description:
+      "Save a PERSON's ADDRESS — house/home, office, shop — on their page " +
+      "(creates the person if new). Use for 'Ravi's address is…', 'Ravi " +
+      "lives at…', 'note down Ravi's house/office address', 'save this " +
+      "address for Ravi', and for 'remember that' / 'save that' when the " +
+      "last thing said was an address (the person it belongs to is `name`; " +
+      "ask 'whose address is it?' only if no person was mentioned). The " +
+      "full address, exactly as said. Saying a new one for the same " +
+      "label replaces the old one. Not remember_fact, not add_person_note.",
+    risk: "medium",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Whose address it is: 'Ravi', 'Amma', 'Dr Rao'" },
+        address: { type: "string", description: "The full address as said: '12, 4th Cross, Jayanagar, Bengaluru 560011'" },
+        label: { type: "string", description: "'home' (default — also for house), 'office', 'shop', or another short label" },
+        relationship: { type: "string", description: "friend, client, uncle… only when the user said it" },
+      },
+      required: ["name", "address"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      if (!String(args.name || "").trim()) return { ok: false, needsArgs: ["name"] };
+      if (!String(args.address || "").trim()) return { ok: false, needsArgs: ["address"] };
+      const r = await mem.saveAddress(ctx.userId, args);
+      return {
+        ok: true,
+        data: { name: r.person.name, label: r.label, address: r.address, created: !!r.person.created },
+        deviceAction: addressCard(r.person, r.label, r.address, true),
+        speak: `Saved ${r.person.name}'s ${r.label} address.`,
+      };
+    },
+  });
+
+  registry.register({
+    name: "show_address",
+    description:
+      "Show and read out a saved ADDRESS of a person — it pops up on screen " +
+      "as a card with Maps and Share. Use for 'what's Ravi's address', " +
+      "'where does Ravi live', 'show me Ravi's address', 'send me Ravi's " +
+      "office address', 'Ravi's house address?'. Not lookup_person (that " +
+      "only speaks the whole file). When nothing is saved, say you don't " +
+      "have it yet and offer to save it — never guess an address.",
+    risk: "low",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Whose address: 'Ravi'" },
+        label: { type: "string", description: "'home', 'office', 'shop'… only when the user said which" },
+      },
+      required: ["name"],
+    },
+    async execute(args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const said = String(args.name || "").trim();
+      if (!said) return { ok: false, needsArgs: ["name"] };
+      const r = await mem.findAddress(ctx.userId, said, args.label);
+      if (!r || !r.address) {
+        const who = r ? r.person.name : said;
+        return {
+          ok: false,
+          error: `I don't have ${who}'s address yet — tell me and I'll save it.`,
+          data: { name: who, known_person: !!r },
+        };
+      }
+      return {
+        ok: true,
+        data: { name: r.person.name, label: r.label, address: r.address, others: r.others },
+        deviceAction: addressCard(r.person, r.label, r.address, false),
+        speak: addressSpeech(r),
+      };
+    },
+  });
+
   registry.register({
     name: "add_person_note",
     description:
@@ -942,7 +1057,8 @@ function registerBuiltins() {
       "they said. The note lands on that person's page in the app and comes " +
       "back whenever the user asks about them. Creates the person if they " +
       "are not on file yet. This is the DEFAULT place for facts about a " +
-      "person — NOT create_reminder (reminders are only for 'remind me').",
+      "person — NOT create_reminder (reminders are only for 'remind me'). " +
+      "NOT for an address — 'X's address is…', 'X lives at…' go to remember_address.",
     risk: "medium",
     inputSchema: {
       type: "object",
@@ -1108,8 +1224,10 @@ function registerBuiltins() {
     description:
       "Retrieve everything stored about a person the user has told us about " +
       "(relationship, organisation, notes, linked documents, and saved " +
-      "birthdays/anniversaries under `dates`). Use for 'what do you know " +
-      "about Ravi', 'tell me about my client X', 'when is Allen's birthday'.",
+      "birthdays/anniversaries under `dates`, saved addresses under " +
+      "`addresses`). Use for 'what do you know about Ravi', 'tell me about my " +
+      "client X', 'when is Allen's birthday'. For 'what's X's address' / 'where " +
+      "does X live' call show_address instead — it puts the address on screen.",
     risk: "low",
     inputSchema: {
       type: "object",

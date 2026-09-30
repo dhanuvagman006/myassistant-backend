@@ -75,6 +75,22 @@ async function migrate(exec) {
       UNIQUE (user_id, person_id, label)
     );
     CREATE INDEX IF NOT EXISTS idx_person_dates_md ON person_dates(month, day);
+
+    -- A person's addresses, one per label (2026-09-30). The owner's ask:
+    -- "remember Ravi's house address", then "what's Ravi's address?" must
+    -- show it. Before this an address landed wherever the model put it (a
+    -- fact, a note, the location field) and came back only by luck.
+    CREATE TABLE IF NOT EXISTS person_addresses (
+      id         BIGSERIAL PRIMARY KEY,
+      user_id    INTEGER NOT NULL,
+      person_id  BIGINT  NOT NULL,
+      label      TEXT    NOT NULL DEFAULT 'home',   -- home | office | shop | …
+      address    TEXT    NOT NULL,
+      created_at BIGINT,
+      updated_at BIGINT,
+      UNIQUE (user_id, person_id, label)
+    );
+    CREATE INDEX IF NOT EXISTS idx_person_addresses_user ON person_addresses(user_id);
     CREATE INDEX IF NOT EXISTS idx_case_people_user
       ON case_people(user_id, person_id);
 

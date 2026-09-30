@@ -14,7 +14,8 @@
 // 36 (was 32, 2026-09-30): room for meeting prep, posters and pictures.
 // Measured with a 30k-char prompt and 32 tools: setup 1.8 s, first audio
 // 1.5 s after a tool call — the size of this list barely moves either.
-const LIVE_MAX = 36;
+// 40 (2026-09-30): room for remember_address and show_address.
+const LIVE_MAX = 40;
 
 // Most needed first. Anything new in CORE that is not listed here still
 // joins, after these, while there is room.
@@ -29,7 +30,10 @@ const LIVE_ORDER = [
   // play_daily_brief player.
   "prepare_meeting", "create_event_poster", "generate_image",
   "open_named_app", "phone_control", "play_music",
-  "remember_fact", "recall_memory", "lookup_person", "update_my_profile", "recall_conversation",
+  "remember_fact", "recall_memory",
+  // "Remember Ravi's house address" / "what's Ravi's address" (2026-09-30).
+  "remember_address", "show_address",
+  "lookup_person", "update_my_profile", "recall_conversation",
   "check_recent_actions", "daily_brief", "shopping_list_add", "shopping_list_show",
   "search_documents", "edit_my_photo", "create_document", "present_text",
   "send_developer_feedback", "uninstall_app",

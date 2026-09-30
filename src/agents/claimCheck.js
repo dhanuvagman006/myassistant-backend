@@ -152,6 +152,8 @@ const FAMILIES = [
       "read_news_story",
       // "Opening WhatsApp with the card" (photo cards, 2026-09-26).
       "share_poster",
+      // "Pulling up Ravi's address" — the address card (2026-09-30).
+      "show_address",
     ],
     claim: /\b(opening|opened|launching|launched|pulling up|bringing up)\b/i,
     // खोल…, ओपन कर…, ತೆರೆ…/ಓಪನ್ ಮಾಡ…, திறக்க…, తెరుస్…, തുറക്ക…
@@ -312,6 +314,8 @@ const FAMILIES = [
             "remember_person_date", "add_finance_item", "update_finance_item",
             "add_standing_instruction", "remember_event", "remember_case",
             "update_my_profile",
+            // "Saved Ravi's home address" (2026-09-30).
+            "remember_address",
             // "Saved your shortcut" (2026-09-27).
             "create_shortcut", "update_shortcut", "delete_shortcut"],
     claim: /\b(logged|recorded|noted it down|saved (it |that )?(to|in) your|saved (the|your) shortcut|filed under|i'?ve (written|saved)|written that down)\b/i,

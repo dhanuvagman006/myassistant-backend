@@ -101,6 +101,7 @@ const USER_TABLES = [
   ["cases", "user_id"],
   ["case_people", "user_id"],
   ["person_dates", "user_id"], // birthdays/anniversaries per person
+  ["person_addresses", "user_id"], // home/office addresses per person (2026-09-30)
   ["jobs", "user_id"], // queued and recurring scheduled tasks
   // Messages they sent to other people's agents. A hard delete, so these
   // leave the recipients' inboxes too; messages sent TO them are removed

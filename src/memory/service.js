@@ -136,6 +136,150 @@ function editDistance(a, b) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Addresses (2026-09-30)                                              */
+/* ------------------------------------------------------------------ */
+// The owner's ask: "remember Ravi's house address", then later "what's
+// Ravi's address?" must SHOW it. One row per person and label, so saying
+// a new home address replaces the old one instead of piling up beside it.
+
+const ADDRESS_MAX = 300;
+
+// The words people use for the same place, folded so "house address" is
+// found again by "home address".
+const LABEL_ALIASES = {
+  house: "home", residence: "home", native: "home",
+  work: "office", workplace: "office",
+  store: "shop",
+};
+
+function addressLabel(label) {
+  const l = String(label || "").trim().toLowerCase()
+    .replace(/\s*address$/, "").replace(/\s+/g, " ").slice(0, 40);
+  return LABEL_ALIASES[l] || l || "home";
+}
+
+/**
+ * The person an address is saved ON: the exact name, else the one whose
+ * first name it is ("Ravi" → "Ravi Kumar"), else a new person. Never the
+ * fuzzy match findPerson() allows for reads — "Ravi" is one letter from
+ * "Rani", and a wrong read is a wrong answer, a wrong write is her address
+ * on his page.
+ */
+async function personForWrite(uid, { name, relationship }) {
+  const nm = String(name || "").trim();
+  const hit = await one(
+    `SELECT * FROM clients WHERE user_id=$1 AND archived=0
+       AND (lower(name)=lower($2) OR lower(name) LIKE lower($2)||' %')
+     ORDER BY (lower(name)=lower($2)) DESC, updated_at DESC LIMIT 1`,
+    [uid, nm]
+  );
+  if (hit) {
+    if (relationship) await upsertPerson(uid, { name: hit.name, relationship, kind: relationship });
+    return hit;
+  }
+  return upsertPerson(uid, { name: nm, relationship, kind: relationship });
+}
+
+async function saveAddress(userId, { name, address, label, relationship }) {
+  const uid = assertUser(userId);
+  const addr = String(address || "").replace(/\s+/g, " ").trim().slice(0, ADDRESS_MAX);
+  if (!String(name || "").trim()) throw new Error("person name required");
+  if (!addr) throw new Error("address required");
+  const person = await personForWrite(uid, { name, relationship });
+  const lbl = addressLabel(label);
+  const t = now();
+  await run(
+    `INSERT INTO person_addresses (user_id, person_id, label, address, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$5)
+     ON CONFLICT (user_id, person_id, label)
+     DO UPDATE SET address=EXCLUDED.address, updated_at=EXCLUDED.updated_at`,
+    [uid, person.id, lbl, addr, t]
+  );
+  return { person, label: lbl, address: addr };
+}
+
+async function addressesFor(userId, personId) {
+  const uid = assertUser(userId);
+  return query(
+    `SELECT label, address, updated_at FROM person_addresses
+      WHERE user_id=$1 AND person_id=$2 ORDER BY updated_at DESC, id DESC`,
+    [uid, personId]
+  );
+}
+
+/** Does this text read like an address? For the legacy fallback only. */
+function looksLikeAddress(text) {
+  const t = String(text || "");
+  if (/\baddress\b/i.test(t)) return true;
+  const money = /(₹|\brs\.?\s|\binr\b|rupees|lakh|owes?\b|paid|salary)/i.test(t);
+  if (!money && /\b[1-9]\d{2}\s?\d{3}\b/.test(t)) return true; // a PIN code
+  if (/(#\s*\d|\bno\.\s*\d)/i.test(t)) return true; // "#12", "No. 4"
+  return /\b(road|rd|street|nagar|layout|cross|main|lane|colony)\b/i.test(t) &&
+    /\d|\blives?\b|\bstays?\b|\bhouse\b|\bhome\b/i.test(t);
+}
+
+/** "Ravi's house address is 12, 4th Cross" → "12, 4th Cross". */
+function addressPart(text) {
+  const t = String(text || "").trim();
+  const m = t.match(/\baddress\s*(?:is|:|-)\s*(.+)$/i) || t.match(/\b(?:lives|stays)\s+(?:at|in)\s+(.+)$/i);
+  return ((m && m[1]) || t).replace(/[.\s]+$/, "").slice(0, ADDRESS_MAX);
+}
+
+/**
+ * Before person_addresses existed an address went into a fact, a note or
+ * the location field. The newest address-looking one of those, so what
+ * was told before today is still found. Facts saved with no person linked
+ * count when they name the person.
+ */
+async function legacyAddress(uid, person) {
+  const first = String(person.name || "").trim().split(/\s+/)[0] || "";
+  const [facts, notes] = await Promise.all([
+    query(
+      `SELECT fact AS text, created_at FROM agent_memories
+        WHERE user_id=$1 AND valid=1
+          AND ((subject_type='person' AND subject_id=$2)
+               OR (subject_type='' AND $3 <> '' AND fact ~* ('\\m' || $3 || '\\M')))
+        ORDER BY id DESC LIMIT 50`,
+      [uid, person.id, first.replace(/[^\p{L}\p{N}]/gu, "")]
+    ).catch(() => []),
+    query(
+      `SELECT text, created_at FROM client_notes
+        WHERE user_id=$1 AND client_id=$2 ORDER BY id DESC LIMIT 50`,
+      [uid, person.id]
+    ).catch(() => []),
+  ]);
+  const hit = [...facts, ...notes]
+    .sort((a, b) => Number(b.created_at || 0) - Number(a.created_at || 0))
+    .find((r) => looksLikeAddress(r.text));
+  if (hit) return addressPart(hit.text);
+  return looksLikeAddress(person.location) ? addressPart(person.location) : null;
+}
+
+/**
+ * The address to show for a person: the label asked for, else the only or
+ * newest one, else the legacy fallback (label 'saved note').
+ * @returns {null | {person, label, address, others:[{label,address}], asked:string|null}}
+ *   null when the person is unknown; address null when none is saved.
+ */
+async function findAddress(userId, name, label) {
+  const uid = assertUser(userId);
+  const person = await findPerson(uid, name);
+  if (!person) return null;
+  const rows = await addressesFor(uid, person.id);
+  const want = label ? addressLabel(label) : null;
+  const pick = (want && rows.find((r) => r.label === want)) || rows[0] || null;
+  if (pick) {
+    return {
+      person, label: pick.label, address: pick.address,
+      others: rows.filter((r) => r !== pick).map((r) => ({ label: r.label, address: r.address })),
+      asked: want && want !== pick.label ? want : null,
+    };
+  }
+  const legacy = await legacyAddress(uid, person);
+  return { person, label: legacy ? "saved note" : null, address: legacy, others: [], asked: null };
+}
+
+/* ------------------------------------------------------------------ */
 /* Cases                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -450,7 +594,7 @@ async function recallAbout(userId, name) {
   const person = await findPerson(uid, name);
   if (!person) return null;
 
-  const [cases, docs, evts, notes, mems, dates] = await Promise.all([
+  const [cases, docs, evts, notes, mems, dates, addresses] = await Promise.all([
     casesForPerson(uid, person.id),
     documentsFor(uid, "person", person.id),
     eventsFor(uid, "person", person.id),
@@ -470,6 +614,7 @@ async function recallAbout(userId, name) {
         WHERE user_id=$1 AND person_id=$2 ORDER BY month, day`,
       [uid, person.id]
     ),
+    addressesFor(uid, person.id),
   ]);
 
   // Documents attached to the person's cases count as the person's too.
@@ -497,6 +642,8 @@ async function recallAbout(userId, name) {
     dates: dates.map((d) => ({
       label: d.label, month: d.month, day: d.day, year: d.year || null,
     })),
+    // Saved addresses (2026-09-30): "what do you know about Ravi" says them too.
+    addresses: addresses.map((a) => ({ label: a.label, address: a.address })),
     events: [...evts, ...caseEvents].map((e) => ({ title: e.title, when_at: e.when_at, notes: e.notes })),
     notes: notes.map((n) => n.text),
     facts: mems.map((m) => m.fact),
@@ -591,6 +738,7 @@ async function addMessage(userId, conversationId, role, content) {
 
 module.exports = {
   upsertPerson, findPerson,
+  saveAddress, addressesFor, findAddress, addressLabel, looksLikeAddress,
   upsertCase, linkCasePerson, casesForPerson,
   linkDocument, documentsFor,
   remember, forget, attributeKey,

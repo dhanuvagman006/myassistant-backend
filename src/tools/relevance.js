@@ -158,6 +158,8 @@ function selectForTurn(tools, text, { history = [], sessionId = "" } = {}) {
 
   scored.sort((a, b) => b[1] - a[1]);
   const picked = new Set(CORE);
+  // Words that name their tools outright go before the carried set.
+  for (const n of pinnedFor(text, new Set(tools.map((t) => t.name)))) picked.add(n);
   for (const n of carried(sessionId)) picked.add(n);
   for (const [n] of scored) {
     if (picked.size >= MAX_TOOLS) break;
@@ -221,6 +223,27 @@ const PHONE_MAX = 40;
 // Always on the phone besides CORE: the spoken prompt tells the model to
 // call stay_silent for talk that was not meant for it.
 const PHONE_ALWAYS = ["stay_silent"];
+
+/**
+ * PINNED BY WORDS (2026-09-30). A few requests must reach their tools
+ * whatever the scores and the carried set say: past PHONE_MAX the
+ * carried tools of earlier turns fill the room ahead of this turn's, so a
+ * scored tool can still be cut. Two tools per pin, not CORE — they cost
+ * nothing on the turns that do not say these words.
+ */
+const PINS = [
+  // "Remember Ravi's house address", "where does Ravi live", "what's his
+  // office address", and "remember that" said after one.
+  {
+    rx: /\baddress(es)?\b|\blives?\b|\bstays?\b|\bwhere does\b|\bhouse\b|\bhome\b|\boffice\b|\b(remember|save|note)\s+(that|this|it)\b/i,
+    tools: ["remember_address", "show_address"],
+  },
+];
+function pinnedFor(text, live) {
+  const t = String(text || "");
+  return PINS.filter((p) => p.rx.test(t)).flatMap((p) => p.tools).filter((n) => live.has(n));
+}
+
 function selectForPhone(tools, text, opts = {}) {
   const live = new Set(Array.isArray(tools) ? tools.map((t) => t.name) : []);
   let picked = selectForTurn(tools, text, opts);
@@ -229,11 +252,12 @@ function selectForPhone(tools, text, opts = {}) {
     remember(opts.sessionId || "", picked);
   }
   const always = PHONE_ALWAYS.filter((n) => live.has(n));
-  const kept = new Set([...CORE, ...always]);
-  const out = [...new Set([...always, ...picked])];
+  const pins = pinnedFor(text, live);
+  const kept = new Set([...CORE, ...always, ...pins]);
+  const out = [...new Set([...always, ...pins, ...picked])];
   if (out.length <= PHONE_MAX) return out;
   // Past the cap the core set stays and the best-scored rest fill it.
   return [...out.filter((n) => kept.has(n)), ...out.filter((n) => !kept.has(n))].slice(0, PHONE_MAX);
 }
 
-module.exports = { selectForTurn, selectForPhone, triggerWords, CORE, MAX_TOOLS, PHONE_MAX, PHONE_ALWAYS };
+module.exports = { selectForTurn, selectForPhone, triggerWords, pinnedFor, CORE, MAX_TOOLS, PHONE_MAX, PHONE_ALWAYS };
