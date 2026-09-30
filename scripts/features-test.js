@@ -618,6 +618,7 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
             remember_person_date: { person: "Amma", date: "03-14", label: "birthday" },
             add_finance_item: { kind: "emi", name: "Bike EMI", amount: 3500, interest_rate: 11, due_day: 5 },
             update_finance_item: { name: "Bike EMI", due_day: 3 },
+            remember_address: { name: "Ravi", address: "12, 4th Cross, Jayanagar, Bengaluru 560011" },
           };
           const SAID = ["I've saved that.", "Done, I've written that down.", "Noted it down."];
           const bad = [];
