@@ -325,6 +325,40 @@ app.get("/tools/weather", appAuth, async (req, res) => {
     res.status(502).json({ error: "weather unavailable" });
   }
 });
+// Home's weather card (2026-09-30): now, 24 hours and the week, named by
+// the area the phone is in. Location from the query or the X-Geo headers
+// every app request carries; the name is looked up once a day per ~1 km
+// and never holds the card up for more than 2.5 s.
+const wxPlaces = new Map(); // "12.97,77.59" → { ts, name }
+app.get("/tools/weather/forecast", appAuth, async (req, res) => {
+  let lat = parseFloat(req.query.lat);
+  let lng = parseFloat(req.query.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    lat = parseFloat(req.get("X-Geo-Lat"));
+    lng = parseFloat(req.get("X-Geo-Lng"));
+  }
+  const city = typeof req.query.city === "string" ? req.query.city : undefined;
+  try {
+    const place = async () => {
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+      const k = `${lat.toFixed(2)},${lng.toFixed(2)}`;
+      const hit = wxPlaces.get(k);
+      if (hit && Date.now() - hit.ts < 24 * 3600_000) return hit.name;
+      const p = await require("./tools/builtins").reverseGeocode(lat, lng);
+      const name = (p && (p.area || p.city)) || null;
+      if (name) wxPlaces.set(k, { ts: Date.now(), name });
+      return name;
+    };
+    const [w, name] = await Promise.all([
+      wxTool.forecast({ lat, lng, city }),
+      Promise.race([place().catch(() => null), new Promise((r) => setTimeout(() => r(null), 2500))]),
+    ]);
+    if (!w) return res.status(400).json({ error: "lat/lng or city required" });
+    res.json({ ...w, label: w.label || name || null });
+  } catch (e) {
+    res.status(502).json({ error: "weather unavailable" });
+  }
+});
 app.get("/tools/news", appAuth, async (req, res) => {
   try {
     res.json({

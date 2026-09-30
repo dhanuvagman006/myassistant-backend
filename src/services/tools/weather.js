@@ -191,4 +191,102 @@ async function hourlyOutlook(where, hoursAhead = 8) {
   };
 }
 
-module.exports = { getWeather, describe, hourlyOutlook };
+/**
+ * THE HOME WEATHER CARD (2026-09-30, owner: "need weather card in the home
+ * page" with a screenshot of a forecast card): now, the next 24 hours and
+ * the week, in one Open-Meteo call, plus the area's name for the title.
+ *
+ * @returns {Promise<object|null>} { label, now:{tempC,feelsC,humidity,
+ *   windKmh,visibilityKm,uv,code,condition,isDay}, hours:[{at,hour,tempC,
+ *   rainChance,mm,code,isDay}], days:[{date,maxC,minC,mm,rainChance,code,
+ *   windKmh,uv,sunrise,sunset}], rainWindow }
+ */
+async function forecast(where) {
+  let lat = where.lat, lng = where.lng, label = where.city || null;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    if (!where.city) return null;
+    const g = await geocodeCity(where.city);
+    if (!g) return null;
+    ({ lat, lng, label } = g);
+  }
+  const key = `wxf:${lat.toFixed(2)},${lng.toFixed(2)}`;
+  const hit = cache.get(key);
+  let j = hit && Date.now() - hit.ts < TTL ? hit.data : null;
+  if (!j) {
+    j = await getJson(
+      `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}&longitude=${lng.toFixed(3)}` +
+        "&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,is_day,visibility,uv_index" +
+        "&hourly=temperature_2m,precipitation_probability,precipitation,weather_code,is_day" +
+        "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,wind_speed_10m_max,uv_index_max,sunrise,sunset" +
+        "&timezone=auto&forecast_days=7"
+    );
+    cache.set(key, { ts: Date.now(), data: j });
+  }
+  const round = (v) => (Number.isFinite(v) ? Math.round(v * 10) / 10 : null);
+
+  // The next 24 hours from the hour it is THERE (see hourlyOutlook).
+  const times = j.hourly?.time || [];
+  const anchor = String(j.current?.time || "").slice(0, 13);
+  let start = times.findIndex((t) => t.slice(0, 13) >= anchor);
+  if (start < 0) start = 0;
+  const hours = [];
+  for (let i = start; i < Math.min(start + 24, times.length); i++) {
+    hours.push({
+      at: times[i],
+      hour: Number(times[i].slice(11, 13)),
+      tempC: round(j.hourly.temperature_2m?.[i]),
+      rainChance: j.hourly.precipitation_probability?.[i] ?? 0,
+      mm: round(j.hourly.precipitation?.[i] ?? 0),
+      code: j.hourly.weather_code?.[i] ?? null,
+      isDay: j.hourly.is_day?.[i] === 1,
+    });
+  }
+  const days = (j.daily?.time || []).map((date, i) => ({
+    date,
+    maxC: round(j.daily.temperature_2m_max?.[i]),
+    minC: round(j.daily.temperature_2m_min?.[i]),
+    mm: round(j.daily.precipitation_sum?.[i] ?? 0),
+    rainChance: j.daily.precipitation_probability_max?.[i] ?? 0,
+    code: j.daily.weather_code?.[i] ?? null,
+    windKmh: round(j.daily.wind_speed_10m_max?.[i]),
+    uv: round(j.daily.uv_index_max?.[i]),
+    sunrise: String(j.daily.sunrise?.[i] || "").slice(11, 16) || null,
+    sunset: String(j.daily.sunset?.[i] || "").slice(11, 16) || null,
+  }));
+
+  // The first stretch in the next 12 hours worth an umbrella.
+  let rainWindow = null;
+  const wet = hours.slice(0, 12).filter((h) => h.rainChance >= 40);
+  if (wet.length) {
+    let last = wet[0];
+    for (const h of wet) {
+      if (((h.hour - last.hour + 24) % 24) <= 2) last = h; else break;
+    }
+    rainWindow = {
+      from: String(wet[0].hour).padStart(2, "0") + ":00",
+      to: String((last.hour + 1) % 24).padStart(2, "0") + ":00",
+      peak: Math.max(...wet.map((h) => h.rainChance)),
+    };
+  }
+
+  const c = j.current || {};
+  return {
+    label: label || null,
+    now: {
+      tempC: round(c.temperature_2m),
+      feelsC: round(c.apparent_temperature),
+      humidity: c.relative_humidity_2m ?? null,
+      windKmh: round(c.wind_speed_10m),
+      visibilityKm: Number.isFinite(c.visibility) ? Math.round(c.visibility / 100) / 10 : null,
+      uv: round(c.uv_index),
+      code: c.weather_code ?? null,
+      condition: WMO[c.weather_code] || "unknown",
+      isDay: c.is_day === 1,
+    },
+    hours,
+    days,
+    rainWindow,
+  };
+}
+
+module.exports = { getWeather, describe, hourlyOutlook, forecast, WMO };
