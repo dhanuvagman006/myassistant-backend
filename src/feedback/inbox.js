@@ -80,7 +80,7 @@ async function cli(argv = [], out = console.log) {
       const row = await store.get(id);
       if (!row || row.status !== "done") { lines.push(`#${id}: not done`); continue; }
       const told = await store.notifyResolved(row);
-      lines.push(`#${id}: ${told ? "told" : row.notified_at ? "already told" : "not told (no phone, or push failed)"}`);
+      lines.push(`#${id}: ${told ? "told" : Number(row.notified_at) > 0 ? "already told" : "not told (no phone, or push failed)"}`);
     }
     const text = lines.join("\n") || "(nothing)";
     out(text);

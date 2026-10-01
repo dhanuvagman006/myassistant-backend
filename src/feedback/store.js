@@ -145,7 +145,8 @@ async function resolve(id, { build = 0, note = "" } = {}) {
  * the assistant's developer answered.
  */
 async function notifyResolved(row) {
-  if (!row || !row.user_id || row.notified_at) return false;
+  // BIGINT comes back as a string: "0" is truthy, so compare as a number.
+  if (!row || !row.user_id || Number(row.notified_at) > 0) return false;
   const user = await db.findById(row.user_id).catch(() => null);
   if (!user?.fcm_token) return false;
   // The inbox runs as its own process: make sure push is set up there too.
