@@ -525,7 +525,10 @@ async function prepare(uid, body) {
     const limits = registry.limitsBlock(s.device.caps);
     const notion = require("../connectors/notion/tools").notionHintFor(uid, build);
     system =
-      (mode === "live" ? liveRules(assistantName, preferred, build) : voiceRules(assistantName, preferred, build)) +
+      // Rule paragraphs gated to the tools THIS session was given.
+      (mode === "live"
+        ? liveRules(assistantName, preferred, build, { declared: decls.map((d) => d.name) })
+        : voiceRules(assistantName, preferred, build, { declared: decls.map((d) => d.name) })) +
       "\n\n" + RESOLVE_REFERENCES +
       (expressive ? "\n\n" + EXPRESSIVE_SPEECH : "") +
       (limits ? "\n\n" + limits : "") +

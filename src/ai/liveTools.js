@@ -38,13 +38,21 @@ const LIVE_ORDER = [
   "remember_fact", "recall_memory",
   // "Remember Ravi's house address" / "what's Ravi's address" (2026-09-30).
   "remember_address", "show_address",
-  "lookup_person", "update_my_profile", "recall_conversation",
+  "lookup_person",
   "check_recent_actions", "daily_brief", "shopping_list_add", "shopping_list_show",
   // send_developer_feedback before the cap: OWNER_RULE asks for it on
   // every unhappy turn, and past 40 names the tail is cut (2026-10-01).
   "send_developer_feedback",
-  "search_documents", "edit_my_photo", "create_document", "present_text",
-  "uninstall_app",
+  // Photo cards are what the client actually makes by voice (20 of his
+  // last 200 turns, 2026-10-01) and they were past the cap in Live.
+  "make_greeting_poster", "change_poster",
+  "edit_my_photo", "create_document", "present_text",
+  // Past the cap on purpose (2026-10-01, the tool-call eval): the three
+  // below pushed create_document / present_text / edit_my_photo out, and
+  // "make me a PPT" went to send_developer_feedback. Nobody searches
+  // documents, edits their profile or uninstalls by voice often enough.
+  // recall_conversation: the transcript is already in Live's own context.
+  "search_documents", "update_my_profile", "recall_conversation", "uninstall_app",
 ];
 
 /**

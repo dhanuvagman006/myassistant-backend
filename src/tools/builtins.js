@@ -6767,7 +6767,8 @@ function registerBuiltins() {
     description:
       "THE DEFAULT way to send a message to a person — 'send a message to " +
       "X', 'tell X that…', 'let X know…', 'inform X…', 'tell X's agent…', " +
-      "'inform X's agent that…'. Delivers through the recipient's OWN " +
+      "'inform X's agent that…'. NOT when the user said CALL: 'call X and " +
+      "tell her…' is place_phone_call with the message. Delivers through the recipient's OWN " +
       "assistant: they get a push notification and their assistant speaks " +
       "it aloud, naming the sender. Call this IMMEDIATELY — never ask the " +
       "user to choose a channel first. DELIVERY LADDER, automatic: if the " +

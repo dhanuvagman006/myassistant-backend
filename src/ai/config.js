@@ -117,6 +117,10 @@ function liveSilenceMs() {
   // came back to half a sentence. Costs ~300 ms per turn.
   return Number.isFinite(n) && n >= 200 && n <= 3000 ? n : 800;
 }
+function liveHangoverMs() {
+  const n = Math.round(Number(process.env.AI_LIVE_VAD_HANGOVER_MS));
+  return Number.isFinite(n) && n >= 200 && n <= 3000 ? n : 700;
+}
 function liveBlock() {
   const v = envModel("AI_LIVE_VOICE", "");
   return {
@@ -138,6 +142,12 @@ function liveBlock() {
     // setup"); the feeling comes from LIVE_RULES instead. Flip when the
     // endpoint takes it — the app sends whatever is here.
     affectiveDialog: false,
+    // The phone's own end-of-speech hangover and the half-sentence guard
+    // (2026-10-01, the client's cut-off think-pauses). Served so either
+    // can be taken back without a release: AI_LIVE_VAD_HANGOVER_MS,
+    // AI_LIVE_FRAGMENT_GUARD=off.
+    vadHangoverMs: liveHangoverMs(),
+    fragmentGuard: process.env.AI_LIVE_FRAGMENT_GUARD !== "off",
     voices: LIVE_VOICES.slice(),
   };
 }

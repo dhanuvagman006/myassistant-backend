@@ -23,7 +23,8 @@ const claimCheck = require("../agents/claimCheck");
 const sessionState = require("../agents/sessionState");
 const sessions = require("./sessions");
 
-const ENGINES = new Set(["nano", "cloud", "search", "shortcut", "live"]);
+// "nano" left this set on 2026-10-01: the on-device route was removed on 2026-09-29.
+const ENGINES = new Set(["cloud", "search", "shortcut", "live"]);
 const MODES = new Set(["voice", "live", "chat"]);
 const turnLogOn = () => !/^(off|0|false|no)$/i.test(String(process.env.AI_TURN_LOG || "on").trim());
 const ms = (v) => {

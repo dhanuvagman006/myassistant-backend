@@ -113,7 +113,8 @@ function registerBriefMeetingTools(registry) {
     risk: "low",
     timeoutMs: 25_000,
     description:
-      "PREPARE THE USER FOR A MEETING — 'prepare me for my next meeting', 'prep me for the 3 pm', " +
+      "PREPARE THE USER FOR A MEETING — 'prepare me for my meeting with Suresh tomorrow', " +
+      "'prepare me for my next meeting', 'prep me for the 3 pm', " +
       "'what should I know before I meet Ravi', 'brief me for this meeting', 'who is in my next " +
       "meeting'. Gathers the event, who is in it (matched to their people records), notes and " +
       "summaries from earlier meetings with them, open promises either way and recent emails, and " +

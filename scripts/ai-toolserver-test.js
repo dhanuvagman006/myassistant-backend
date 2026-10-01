@@ -327,7 +327,7 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
 
     await atest("a turn is recorded, and the next turn's history and memory carry it", async () => {
       const r = await turn(A, { sessionId: voice.sessionId, turnId: voice.turnId, user: "hello there",
-        reply: "Hello Sir! What can I do for you?", engine: "nano", tools: [], latencyMs: 640, mode: "voice" });
+        reply: "Hello Sir! What can I do for you?", engine: "cloud", tools: [], latencyMs: 640, mode: "voice" });
       assert.strictEqual(r.status, 200, r.text);
       assert.deepStrictEqual(r.json, { ok: true, reply: "Hello Sir! What can I do for you?", corrected: false });
       const rows = await waitFor(async () => {
@@ -338,11 +338,11 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
       });
       assert.ok(rows, "both halves written");
       assert.deepStrictEqual(rows.map((x) => [x.role, x.source, x.turn_id]),
-        [["user", "ai-nano", voice.turnId], ["assistant", "ai-nano", voice.turnId]]);
+        [["user", "ai-cloud", voice.turnId], ["assistant", "ai-cloud", voice.turnId]]);
       assert.strictEqual(Number(rows[1].latency_ms), 640);
       assert.strictEqual(Number(rows[1].app_build), 120);
       const again = await turn(A, { sessionId: voice.sessionId, turnId: voice.turnId, user: "hello there",
-        reply: "Hello Sir! What can I do for you?", engine: "nano" });
+        reply: "Hello Sir! What can I do for you?", engine: "cloud" });
       assert.strictEqual(again.status, 200);
       const n = (await db.one(`SELECT count(*)::int AS n FROM conversation_turns WHERE session_id=$1`, [voice.sessionId])).n;
       assert.strictEqual(n, 2, "a retried record is not written twice");
@@ -685,6 +685,7 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
       assert.deepStrictEqual(c.live, {
         on: true, model: "gemini-3.8-live", voice: "Sulafat", silenceMs: 800, prefixMs: 100,
         startSensitivity: "low", endSensitivity: "high", idleCloseSec: 180, affectiveDialog: false,
+        vadHangoverMs: 700, fragmentGuard: true,
         voices: ["Sulafat", "Callirrhoe", "Achernar", "Aoede", "Vindemiatrix", "Kore", "Charon", "Achird"],
       });
       assert.ok(c.models.live && c.models.liveVoice, "the old fields stay, harmless");
