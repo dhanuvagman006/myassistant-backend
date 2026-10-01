@@ -191,7 +191,19 @@ async function getAstrologyReading({ birthday, name = "Friend", date = new Date(
   const quote = MOTIVATIONAL_QUOTES[quoteIndex];
   const affirmation = ZODIAC_AFFIRMATIONS[zodiac.name] || "You possess all the strength you need to achieve greatness today.";
 
-  const isLuckyDay = true; // Every day is framed positively to build optimism, confidence, and trust
+  // THE DAY'S REAL READING (2026-10-01, owner: "remove mock data"). This
+  // used to say "Today is your lucky day" every single day with the same
+  // sentence — a fabrication dressed as a forecast. The text now comes from
+  // the same daily horoscope service the get_horoscope tool uses; with no
+  // answer from it, the summary says so instead of inventing one.
+  let daily = null;
+  try {
+    const r = await fetch(
+      `https://horoscope-app-api.vercel.app/api/v1/get-horoscope/daily?sign=${zodiac.name.toLowerCase()}&day=TODAY`,
+      { signal: AbortSignal.timeout(6000), redirect: "follow" });
+    if (r.ok) daily = ((await r.json()).data || {}).horoscope || null;
+  } catch (_) { daily = null; }
+  const isLuckyDay = Boolean(daily);
 
   const reading = {
     zodiacSign: zodiac.name,
@@ -199,14 +211,15 @@ async function getAstrologyReading({ birthday, name = "Friend", date = new Date(
     element: zodiac.element,
     ruler: zodiac.ruler,
     isLuckyDay,
-    headline: `✨ Today is your lucky day, ${name}!`,
-    summary: `The celestial energies are aligned harmoniously with your ${zodiac.name} spirit. Favorable planetary vibrations support your endeavors, bringing clarity, confidence, and positive outcomes.`,
+    headline: daily ? `${zodiac.symbol} ${zodiac.name} today, ${name}` : `${zodiac.symbol} ${zodiac.name}`,
+    summary: daily || "Today's horoscope could not be fetched right now.",
     luckyNumber,
     luckyColor,
     luckyHours: "10:00 AM - 1:30 PM & 4:30 PM - 7:00 PM",
     affirmation,
     quote,
-    planetaryData: apiData ? "Live planetary transits synchronized" : "Calculated via Vedic Ephemeris",
+    planetaryData: apiData ? "Live planetary transits synchronized" : "",
+    source: daily ? "horoscope-app-api" : "",
   };
 
   cache.set(cacheKey, { ts: Date.now(), data: reading });
@@ -220,8 +233,7 @@ function describeAstrology(reading, name = "Friend") {
   if (!reading) return "";
   return (
     `ASTROLOGICAL FORECAST for ${name} (${reading.zodiacSign} ${reading.symbol}):\n` +
-    `• Lucky Status: Today is your lucky day! Strong auspicious cosmic energy.\n` +
-    `• Daily Vibe: ${reading.summary}\n` +
+    `• Today: ${reading.summary}\n` +
     `• Lucky Number: ${reading.luckyNumber} | Lucky Color: ${reading.luckyColor} | Best Hours: ${reading.luckyHours}\n` +
     `• Astrological Insight: ${reading.affirmation}\n` +
     `• Motivational Quote: ${reading.quote}\n` +

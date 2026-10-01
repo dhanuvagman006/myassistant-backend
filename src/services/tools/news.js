@@ -31,15 +31,26 @@ async function getHeadlines({ topic, lang = "en-IN", country = "IN", max = 6 } =
 
   // Titles look like "Headline text - Source Name". Skip the feed title.
   const items = [];
-  const re = /<item>[\s\S]*?<title>([\s\S]*?)<\/title>(?:[\s\S]*?<link>([\s\S]*?)<\/link>)?/g;
+  // Each <item> on its own, so a tag is read from ITS block only (the old
+  // single regex could pull the next item's link). pubDate is the real
+  // publish time; callers used to print "today" for every story.
+  const itemRe = /<item>([\s\S]*?)<\/item>/g;
+  const tag = (block, name) => {
+    const m = new RegExp(`<${name}>([\\s\\S]*?)<\\/${name}>`).exec(block);
+    return m ? decode(m[1].replace(/<!\[CDATA\[|\]\]>/g, "").trim()) : "";
+  };
   let m;
-  while ((m = re.exec(xml)) && items.length < 12) {
-    const raw = decode(m[1].replace(/<!\[CDATA\[|\]\]>/g, "").trim());
+  while ((m = itemRe.exec(xml)) && items.length < 12) {
+    const block = m[1];
+    const raw = tag(block, "title");
+    if (!raw) continue;
     const dash = raw.lastIndexOf(" - ");
+    const at = Date.parse(tag(block, "pubDate"));
     items.push({
       title: dash > 0 ? raw.slice(0, dash) : raw,
       source: dash > 0 ? raw.slice(dash + 3) : "",
-      link: m[2] ? decode(m[2].replace(/<!\[CDATA\[|\]\]>/g, "").trim()) : "",
+      link: tag(block, "link"),
+      publishedAt: Number.isFinite(at) ? at : null,
     });
   }
   cache.set(url, { ts: Date.now(), data: items });

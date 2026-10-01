@@ -178,10 +178,20 @@ router.get("/", async (_req, res) => {
         topic: "Indian stock market Nifty Sensex",
         max: 5,
       });
+      // The real publish time, said the way a person would; blank when
+      // the feed had none — never a made-up "today" (2026-10-01).
+      const ago = (at) => {
+        if (!at) return "";
+        const m = Math.max(0, Math.round((Date.now() - at) / 60000));
+        if (m < 60) return `${m} min ago`;
+        if (m < 24 * 60) return `${Math.round(m / 60)} h ago`;
+        return m < 48 * 60 ? "yesterday" : `${Math.round(m / 1440)} days ago`;
+      };
       news = items.map((h) => ({
         headline: h.title,
-        source: h.source || "Markets",
-        time: "today",
+        source: h.source || "",
+        time: ago(h.publishedAt),
+        published_at: h.publishedAt || null,
       }));
     } catch (_) {}
 

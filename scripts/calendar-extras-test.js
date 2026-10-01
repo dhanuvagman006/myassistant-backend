@@ -102,13 +102,13 @@ const ICS = [
     assert.deepStrictEqual(cx.parseRange({ from: "2026-10-02" }), { from: "2026-10-02", to: "2026-10-02" });
   });
 
-  await atest("region: query, then geo, then Kerala", () => {
+  await atest("region: query, then geo, then national", () => {
     const req = (query, h = {}) => ({ query, get: (k) => h[k] });
     assert.strictEqual(cx.resolveRegion(req({ region: "in" })), "IN");
     assert.strictEqual(cx.resolveRegion(req({ region: "KL" })), "IN-KL");
     assert.strictEqual(cx.resolveRegion(req({}, { "X-Geo-Lat": "9.93", "X-Geo-Lng": "76.26" })), "IN-KL"); // Kochi
     assert.strictEqual(cx.resolveRegion(req({}, { "X-Geo-Lat": "19.07", "X-Geo-Lng": "72.88" })), "IN"); // Mumbai
-    assert.strictEqual(cx.resolveRegion(req({ region: "bogus" })), "IN-KL");
+    assert.strictEqual(cx.resolveRegion(req({ region: "bogus" })), "IN");
   });
 
   // ── the rules ─────────────────────────────────────────────────────

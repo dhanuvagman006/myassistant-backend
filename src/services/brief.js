@@ -74,6 +74,9 @@ function localMidnight(now, tzOffsetMin, offset = 0) {
 async function daysOf(uid, tzOffsetMin) {
   const today = [];
   const tomorrow = [];
+  // A source that failed is REPORTED, not passed off as empty (2026-10-01:
+  // a reminders or calendar error came back as "your schedule is clear").
+  let failed = false;
   const now = Date.now();
   const startOfToday = localMidnight(now, tzOffsetMin, 0);
   const endOfToday = localMidnight(now, tzOffsetMin, 1);
@@ -94,7 +97,10 @@ async function daysOf(uid, tzOffsetMin) {
       if (!timed || (due >= startOfToday && due < endOfToday)) today.push(item);
       else if (due >= endOfToday && due < endOfTomorrow) tomorrow.push(item);
     }
-  } catch (_) {}
+  } catch (e) {
+    failed = true;
+    console.warn("brief: reminders failed —", e.message);
+  }
 
   // Calendar only when the user linked Google; null means not linked.
   try {
@@ -120,13 +126,19 @@ async function daysOf(uid, tzOffsetMin) {
       if (!Number.isFinite(at) || at < endOfToday) today.push(item);
       else if (at < endOfTomorrow) tomorrow.push(item);
     }
-  } catch (_) {}
+  } catch (e) {
+    // Not linked is not a failure; an error reading a linked calendar is.
+    if (!/not linked|no google|unauthori[sz]ed|no token/i.test(String(e.message))) {
+      failed = true;
+      console.warn("brief: calendar failed —", e.message);
+    }
+  }
 
   // Timed first (soonest up), undated last.
   const byTime = (a, b) => (a.at ?? Infinity) - (b.at ?? Infinity);
   today.sort(byTime);
   tomorrow.sort(byTime);
-  return { today: today.slice(0, 10), tomorrow: tomorrow.slice(0, 6) };
+  return { today: today.slice(0, 10), tomorrow: tomorrow.slice(0, 6), failed };
 }
 
 /// Birthdays and bills TODAY or TOMORROW (2026-09-29), for Home's cards:
@@ -377,7 +389,7 @@ async function buildBrief(uid, opts = {}) {
   const practice = await boxed(practiceOf(uid, tz), 2500, null);
   const [days, promises, messages, people, weather_line, headlines, screen_time, dates, weather_note] =
     await Promise.all([
-      boxed(daysOf(uid, tz), 3000, { today: [], tomorrow: [] }),
+      boxed(daysOf(uid, tz), 3000, { today: [], tomorrow: [], failed: true }),
       boxed(promisesOf(uid, tz), 2500, []),
       boxed(messagesOf(profile?.user?.phone_number || null), 2500, []),
       boxed(peopleOf(uid), 2500, []),
@@ -395,6 +407,9 @@ async function buildBrief(uid, opts = {}) {
     weather_line,
     weather_note,
     agenda: days.today,
+    // false: a source failed or timed out — the app and the voice say
+    // "couldn't load", never "all clear".
+    agenda_loaded: !days.failed,
     tomorrow: days.tomorrow,
     dates,
     practice,
@@ -412,7 +427,9 @@ function speakBrief(b) {
   const bits = [];
   const timed = b.agenda.filter((a) => a.at);
   if (b.agenda.length === 0) {
-    bits.push("Your schedule is clear today.");
+    bits.push(b.agenda_loaded === false
+      ? "I couldn't load your schedule just now — ask me again in a moment."
+      : "Your schedule is clear today.");
   } else {
     const first = b.agenda[0];
     bits.push(

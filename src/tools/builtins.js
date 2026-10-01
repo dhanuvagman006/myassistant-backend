@@ -6655,7 +6655,7 @@ function registerBuiltins() {
         // server's own network (SSRF) — see services/safeFetch.js.
         const r = await safeFetch(url, {
           headers: {
-            "user-agent": "Mozilla/5.0 (Android) MyAssistant/1.0",
+            "user-agent": "MyAssistant/1.0 (+https://hariassistant.tech)",
             accept: "text/html,application/xhtml+xml",
           },
         }, { timeoutMs: 20000 });
@@ -6734,13 +6734,17 @@ function registerBuiltins() {
     },
     async execute(args) {
       try {
-        const sign = String(args.sign).toLowerCase();
-        const day = args.day ? String(args.day).toLowerCase() : "today";
-        const url = `https://horoscope-app-api.vercel.app/api/v1/get-horoscope/daily?sign=${sign}&day=${day}`;
-        const res = await fetch(url);
-        if (!res.ok) return { ok: false, error: "Astrology API request failed" };
+        const SIGNS = new Set(["aries", "taurus", "gemini", "cancer", "leo", "virgo", "libra",
+          "scorpio", "sagittarius", "capricorn", "aquarius", "pisces"]);
+        const sign = String(args.sign || "").trim().toLowerCase();
+        if (!SIGNS.has(sign)) return { ok: false, error: `unknown zodiac sign: ${sign.slice(0, 20)}` };
+        const DAYS = { today: "TODAY", tomorrow: "TOMORROW", yesterday: "YESTERDAY" };
+        const day = DAYS[String(args.day || "today").toLowerCase()] || "TODAY";
+        const url = `https://horoscope-app-api.vercel.app/api/v1/get-horoscope/daily?sign=${encodeURIComponent(sign)}&day=${day}`;
+        const res = await fetch(url, { signal: AbortSignal.timeout(6000), redirect: "follow" });
+        if (!res.ok) return { ok: false, error: "the horoscope service did not answer" };
         const data = await res.json();
-        return { ok: true, data: data.data };
+        return { ok: true, data: { ...(data.data || {}), note: "A general daily horoscope for the sign; say so if asked how it is made." } };
       } catch (e) {
         return { ok: false, error: e.message };
       }

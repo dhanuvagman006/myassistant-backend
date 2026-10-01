@@ -123,6 +123,8 @@ const FAMILIES = [
       // These open an app or a screen too, and say so in the same words.
       "enable_usage_tracking", "order_food", "book_ride", "book_movie_tickets",
       "try_a_look", "present_text", "generate_image", "generate_video",
+      // show_pictures pops a photo on the phone ("Here is X") — same claim.
+      "show_pictures",
       // Poster Studio, photo edits and meeting prep open a screen (2026-09-30).
       "create_event_poster", "edit_my_photo", "prepare_meeting",
       // Screens inside this app. "Opening your settings" is the same claim.

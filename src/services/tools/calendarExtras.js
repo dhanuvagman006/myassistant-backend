@@ -67,8 +67,10 @@ function regionFromGeo(lat, lng) {
 }
 
 /**
- * query ?region= → the phone's X-Geo headers → IN-KL (the app's users are
- * in Kerala today; the profile keeps location only as free text).
+ * query ?region= → the phone's X-Geo headers → IN (national days only).
+ * It used to default to Kerala; a tester in Karnataka saw Kerala's
+ * holidays (2026-10-01). A state is used only when the phone's position
+ * puts the user in it.
  */
 function resolveRegion(req) {
   const raw = String(req.query?.region || "").toUpperCase().replace("_", "-");
@@ -76,7 +78,7 @@ function resolveRegion(req) {
   if (REGIONS.has(raw)) return raw;
   const lat = parseFloat(req.query?.lat ?? req.get?.("X-Geo-Lat"));
   const lng = parseFloat(req.query?.lng ?? req.get?.("X-Geo-Lng"));
-  return regionFromGeo(lat, lng) || "IN-KL";
+  return regionFromGeo(lat, lng) || "IN";
 }
 
 // ── curated rows ──────────────────────────────────────────────────────
