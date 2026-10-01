@@ -365,7 +365,9 @@ function bolnaWebhook(body) {
     }
     return true;
   }
-  if (!["dialing", "in_progress", "summarizing"].includes(rec.state)) return true; // duplicate
+  // "summarizing" is finishCompleted reading the outcome: a second
+  // "completed" delivery in that window must not set the reminders twice.
+  if (!["dialing", "in_progress"].includes(rec.state)) return true; // duplicate
 
   if (status === "busy" || status === "no-answer" || status === "no_answer") {
     handleNoAnswer(rec);
@@ -488,8 +490,19 @@ function finishCompleted(rec, summary) {
       (rec.selfCall
         ? `I called you and delivered the reminder: ${rec.task}`
         : `I spoke with ${rec.contactName} and passed on: ${rec.task}`);
-  rec.state = "completed";
-  settle(rec);
+  // What comes next — a promise, a callback — becomes a reminder before
+  // the report goes out (agents/callOutcome). The report waits a moment
+  // for it, never forever.
+  rec.state = "summarizing";
+  const done = () => { rec.state = "completed"; settle(rec); };
+  let timer;
+  Promise.race([
+    require("./callOutcome").record(rec),
+    new Promise((res) => { timer = setTimeout(res, 20_000); timer.unref?.(); }),
+  ])
+    .then((o) => { if (o && o.line) rec.result = `${rec.result} ${o.line}`; })
+    .catch(() => {})
+    .finally(() => { clearTimeout(timer); done(); });
 }
 
 /**
@@ -1062,6 +1075,9 @@ module.exports = {
   tool,
   relayDown,
   closeStale,
+  // For tests: the live call map and the completion step.
+  _calls: calls,
+  _finishCompleted: finishCompleted,
   // For tests: the failure bookkeeping, and a way to clear it.
   _trouble: trouble,
   redactNumbers,
