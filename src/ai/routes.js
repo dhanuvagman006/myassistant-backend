@@ -83,6 +83,25 @@ const turnAudioUpload = require("multer")({
   storage: require("multer").memoryStorage(),
   limits: { fileSize: 6 * 1024 * 1024, files: 2, fields: 8 },
 });
+/**
+ * WHY THE FAST VOICE GAVE WAY (2026-10-01). The phone reports the reason
+ * it fell back to the classic voice, so "why did Live drop for the
+ * client?" is in the server log — and, for an error, in the developer's
+ * inbox (once an hour).
+ */
+router.post("/live-fallback", async (req, res) => {
+  const uid = userOf(req, res);
+  if (!uid) return;
+  const reason = String((req.body && req.body.reason) || "").slice(0, 200);
+  const keep = req.body && req.body.keep_live === true;
+  console.log(`ai: live fallback uid=${uid} keepLive=${keep} build=${Number((req.body && req.body.build) || req.get("X-App-Build")) || 0} reason=${JSON.stringify(reason)}`);
+  if (!keep && /error|fail|quota|429|exhaust|unavailable|closed|denied|timeout|refused/i.test(reason)) {
+    require("../feedback/store").alert(`Fast voice fell back to the classic voice: ${reason.slice(0, 120)}`,
+      { details: `user ${uid}, build ${Number((req.body && req.body.build) || req.get("X-App-Build")) || 0}`, windowMs: 3600_000 }).catch(() => {});
+  }
+  res.json({ ok: true });
+});
+
 router.post("/turn-audio", turnAudioUpload.fields([{ name: "user", maxCount: 1 }, { name: "agent", maxCount: 1 }]),
   async (req, res) => {
     const uid = userOf(req, res);
