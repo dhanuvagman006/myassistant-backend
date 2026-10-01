@@ -510,6 +510,16 @@ function check(replyText, executed = []) {
       out.push(s);
       continue;
     }
+    // "PULLING UP THE HEADLINES" WHILE A SEARCH RAN is a figure of speech,
+    // not a device claim (user 55, 2026-10-01: web_search answered and the
+    // user heard "I couldn't open that on your phone" in the middle of the
+    // news). The sentence is dropped, not replaced; what follows is true.
+    if (family.id === "open" && /(pulling up|bringing up)/i.test(s) &&
+        !/(opening|opened|launching|launched)/i.test(s) &&
+        [...ranOk].some((t) => /^(web_search|get_news|search_news|read_news_story|get_weather|lookup_person)$/.test(t))) {
+      violations.push(`${family.id} (figurative, dropped): "${s.slice(0, 80)}"`);
+      continue;
+    }
     // An unsupported claim. Replace that sentence with the truth rather
     // than appending a contradiction after it.
     violations.push(`${family.id}: "${s.slice(0, 80)}"`);

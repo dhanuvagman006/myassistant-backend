@@ -35,7 +35,7 @@ function run(test) {
     for (const k of ENV) delete process.env[k];
     try {
       assert.deepStrictEqual(config.liveBlock(), {
-        on: true, model: "gemini-3.8-live", voice: "Sulafat", silenceMs: 500, prefixMs: 100,
+        on: true, model: "gemini-3.8-live", voice: "Sulafat", silenceMs: 800, prefixMs: 100,
         startSensitivity: "low", endSensitivity: "high", idleCloseSec: 180, affectiveDialog: false,
         voices: ["Sulafat", "Callirrhoe", "Achernar", "Aoede", "Vindemiatrix", "Kore", "Charon", "Achird"],
       });
@@ -61,7 +61,7 @@ function run(test) {
       b = config.liveBlock();
       assert.strictEqual(b.on, true);
       assert.strictEqual(b.voice, "Sulafat", "Live takes prebuilt voices only");
-      assert.strictEqual(b.silenceMs, 500, "an out-of-range pause falls back");
+      assert.strictEqual(b.silenceMs, 800, "an out-of-range pause falls back");
     } finally { restore(); }
   });
 

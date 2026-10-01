@@ -112,7 +112,10 @@ const LIVE_VOICES = ["Sulafat", "Callirrhoe", "Achernar", "Aoede", "Vindemiatrix
 const liveOn = () => !/^(off|0|false|no)$/i.test(String(process.env.AI_LIVE || "on").trim());
 function liveSilenceMs() {
   const n = Math.round(Number(process.env.AI_LIVE_SILENCE_MS));
-  return Number.isFinite(n) && n >= 200 && n <= 3000 ? n : 500;
+  // 800 since 2026-10-01: the client's think-pauses ("Tell me the …",
+  // "Can you tell me about Dr. …") ended his turn at 500 and two answers
+  // came back to half a sentence. Costs ~300 ms per turn.
+  return Number.isFinite(n) && n >= 200 && n <= 3000 ? n : 800;
 }
 function liveBlock() {
   const v = envModel("AI_LIVE_VOICE", "");

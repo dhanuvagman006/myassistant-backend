@@ -270,7 +270,14 @@ function assess(text, { expectsNumber = false, expectsName = false, offered = ""
 
 /** What to say instead of acting, in the user's own language where known. */
 function clarificationFor(assessment, { language = "" } = {}) {
-  const l = String(language).toLowerCase();
+  // ENGLISH IN, ENGLISH OUT (client, 2026-10-01): a profile language of
+  // Kannada must not turn "Tell me the" into a Kannada "say that again" —
+  // what was heard was Latin script, so the reprompt is English. Only a
+  // transcript with no Latin letters at all follows the profile language.
+  const heard = String((assessment && assessment.heard) || "");
+  const latin = /[A-Za-z]/.test(heard);
+  const indic = /[ऀ-෿]/.test(heard);
+  const l = latin && !indic ? "" : String(language).toLowerCase();
   if (/hindi/.test(l)) return "माफ़ कीजिए, वह ठीक से सुनाई नहीं दिया — फिर से बोलिए?";
   if (/kannada/.test(l)) return "ಕ್ಷಮಿಸಿ, ಅದು ಸರಿಯಾಗಿ ಕೇಳಿಸಲಿಲ್ಲ — ಇನ್ನೊಮ್ಮೆ ಹೇಳ್ತೀರಾ?";
   if (/tulu/.test(l)) return "ಕ್ಷಮಿಸಿ, ಅವು ಸರಿಯಾದ್ ಕೇನ್ಜಿ — ಒಂಜಿ ಸರ್ತಿ ಪನ್ಪರಾ?";

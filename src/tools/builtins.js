@@ -5463,6 +5463,18 @@ function registerBuiltins() {
       const asked = String(args.app || "").trim();
       if (!asked) return { ok: false, error: "no app was named" };
 
+      // A SOCIAL HANDLE IS NOT AN APP (client's phone, 2026-10-01: the
+      // model asked the phone to open an Instagram username as an app,
+      // and the user heard "I couldn't open that on your phone").
+      // A lowercase token with an underscore, dot or digit and no spaces
+      // that resolves to no known provider is an Instagram profile.
+      if (/^@?[a-z0-9][a-z0-9._]{2,29}$/.test(asked) && /[._0-9]/.test(asked) &&
+          !require("../fulfillment/deeplinks").resolveAppName(asked)) {
+        const handle = asked.replace(/^@/, "");
+        const openApp = registry.get("open_app");
+        if (openApp) return openApp.execute({ app: "instagram", query: handle }, ctx);
+      }
+
       // "OPEN THE CALENDAR / THE NEWS" is this app's own screen, unless they
       // name another app (owner, 2026-09-30: it opened other apps, or said
       // Google Calendar was not connected).

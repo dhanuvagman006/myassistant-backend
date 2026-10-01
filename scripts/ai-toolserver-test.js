@@ -683,7 +683,7 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
       const cfg = async (q) => (await api("GET", `/ai/config${q}`, { token: A.token })).json;
       let c = await cfg("?build=135");
       assert.deepStrictEqual(c.live, {
-        on: true, model: "gemini-3.8-live", voice: "Sulafat", silenceMs: 500, prefixMs: 100,
+        on: true, model: "gemini-3.8-live", voice: "Sulafat", silenceMs: 800, prefixMs: 100,
         startSensitivity: "low", endSensitivity: "high", idleCloseSec: 180, affectiveDialog: false,
         voices: ["Sulafat", "Callirrhoe", "Achernar", "Aoede", "Vindemiatrix", "Kore", "Charon", "Achird"],
       });
