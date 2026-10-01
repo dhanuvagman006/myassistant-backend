@@ -58,73 +58,73 @@ async function agentCallFailures() {
   const REJECTION =
     `Calling from_number ${FROM} doesn't exist for plivo. ` +
     "Please check your agent telephony provider.";
-  const OWNER_DASHBOARD = {
-    telephony_in: "vobiz", telephony_out: "vobiz",
-    voice_provider: "elevenlabs", voice_model: "eleven_v3_conversational",
-    voice_id: "NyZqLdjqUb8SpOUKIlWT",
-    hearing_provider: "deepgram", hearing_model: "nova-3", hearing_language: "en",
-  };
+  console.log("\nthe calling agents are built from the one definition");
 
-  console.log("\nthe calling agent is the one the owner set up");
-
-  await atest("the saved agent config matches the owner's dashboard choices", async () => {
-    const mine = cfgMod.agentConfig({ webhookUrl: "https://x.test/hook" }).agent_config;
-    assert.deepStrictEqual(cfgMod.dashboardChoices(mine), OWNER_DASHBOARD);
-    assert.strictEqual(cfgMod.TELEPHONY, "vobiz");
-    assert.strictEqual(cfgMod.VOICE.model, "eleven_v3_conversational");
-    assert.strictEqual(cfgMod.VOICE.id, "NyZqLdjqUb8SpOUKIlWT");
-    assert.strictEqual(cfgMod.TRANSCRIBER.language, "en");
-    // The dashboard as the owner left it is no drift at all.
-    assert.deepStrictEqual(cfgMod.dashboardDrift({ agent_config: mine }), []);
+  await atest("both agents: six languages, their own gender voice, tools, hours, webhook", async () => {
+    for (const gender of ["woman", "man"]) {
+      const a = cfgMod.agentConfig({ webhookUrl: "https://x.test/hook", toolBase: "https://x.test/tool/s", gender });
+      const tc = a.agent_config.tasks[0].tools_config;
+      assert.strictEqual(a.agent_config.agent_name, cfgMod.agentName(gender));
+      assert.strictEqual(a.agent_config.webhook_url, "https://x.test/hook");
+      assert.deepStrictEqual(a.agent_config.calling_guardrails, cfgMod.CALL_HOURS);
+      assert.strictEqual(tc.input.provider, "vobiz");
+      assert.strictEqual(tc.output.provider, "vobiz");
+      assert.strictEqual(tc.synthesizer.provider_config.model, "eleven_v3_conversational");
+      assert.strictEqual(tc.synthesizer.provider_config.voice_id, cfgMod.VOICES[gender].eleven.id);
+      const langs = tc.multilingual_config.languages;
+      assert.deepStrictEqual(Object.keys(langs).sort(), ["en", "hi", "kn", "ml", "ta", "te"]);
+      assert.strictEqual(langs.kn.synthesizer.provider, "sarvam");
+      assert.strictEqual(langs.kn.synthesizer.provider_config.voice_id, cfgMod.VOICES[gender].sarvam.id);
+      assert.strictEqual(langs.kn.synthesizer.provider_config.model, "bulbul:v3");
+      assert.strictEqual(langs.kn.transcriber.model, "saaras:v4");
+      assert.strictEqual(langs.hi.transcriber.language, "hi");
+      assert.deepStrictEqual(tc.api_tools.tools.map((t) => t.name), ["note_for_user", "check_free_time", "connect_to_user"]);
+      assert.strictEqual(tc.api_tools.tools_params.note_for_user.url, "https://x.test/tool/s/note_for_user");
+      assert.match(tc.api_tools.tools_params.connect_to_user.param, /user_phone/);
+      assert.strictEqual(tc.s2s, null);
+      const prompt = a.agent_prompts.task_1.system_prompt;
+      for (const v of ["persona", "gender_rules", "tone", "call_ref", "language", "honorific"]) {
+        assert.ok(prompt.includes(`{{${v}}}`), `prompt names {{${v}}}`);
+      }
+    }
+    assert.match(cfgMod.genderRules("woman", "Ravi"), /ಸಹಾಯಕಿ|रही/);
+    assert.match(cfgMod.genderRules("man", "Ravi"), /ಸಹಾಯಕ —|रहा/);
+    assert.strictEqual(cfgMod.persona("man"), "a man");
   });
 
-  /** The live agent as the service would return it, with overrides. */
-  const liveAgent = (over = {}) => {
-    const a = cfgMod.agentConfig({ webhookUrl: "" }).agent_config;
-    const tc = a.tasks[0].tools_config;
-    if (over.telephony) { tc.input.provider = over.telephony; tc.output.provider = over.telephony; }
-    if (over.voiceId) tc.synthesizer.provider_config.voice_id = over.voiceId;
-    if (over.voiceLabel) tc.synthesizer.provider_config.voice = over.voiceLabel;
-    if (over.language) tc.transcriber.language = over.language;
-    return a;
-  };
-  /** Run scripts/update_bolna_agent.js with the service stubbed out. */
-  const runUpdate = (live, args = []) => {
+  /** Run scripts/bolna_agents.js with the service stubbed out. */
+  const runSync = (existing, args = []) => {
     const stub =
-      `const live = ${JSON.stringify(live)};` +
+      `const existing = ${JSON.stringify(existing)};` +
       "globalThis.fetch = async (url, opts = {}) => {" +
-      "  if ((opts.method || 'GET') === 'PUT') {" +
+      "  const m = opts.method || 'GET';" +
+      "  if (m === 'PUT' || m === 'POST') {" +
       "    const b = JSON.parse(opts.body);" +
-      "    console.log('PUT_SENT voice=' + b.agent_config.tasks[0].tools_config.synthesizer.provider_config.voice);" +
-      "    return { ok: true, status: 200, text: async () => '{}' };" +
+      "    console.log(m + '_SENT ' + url.replace(/^https:\\/\\/api.bolna.ai/, '') + ' name=' + b.agent_config.agent_name);" +
+      "    return { ok: true, status: 200, text: async () => JSON.stringify({ agent_id: 'new-' + b.agent_config.agent_name.length }) };" +
       "  }" +
-      "  return { ok: true, status: 200, json: async () => live };" +
+      "  return { ok: true, status: 200, text: async () => JSON.stringify(existing) };" +
       "};" +
-      `require(${JSON.stringify(path.join(__dirname, "update_bolna_agent.js"))});`;
+      `require(${JSON.stringify(path.join(__dirname, "bolna_agents.js"))});`;
     return spawnSync(process.execPath, ["-e", stub, "--", ...args], {
-      env: { ...process.env, BOLNA_API_KEY: "bn-test", BOLNA_AGENT_ID: "agent-test", BOLNA_TELEPHONY_PROVIDER: "" },
+      env: { ...process.env, BOLNA_API_KEY: "bn-test", PUBLIC_BASE_URL: "https://x.test", BOLNA_TELEPHONY_PROVIDER: "" },
       encoding: "utf8",
       timeout: 20_000,
     });
   };
 
-  await atest("the update script refuses to undo a dashboard that differs from the file", async () => {
-    const r = runUpdate(liveAgent({ telephony: "plivo", language: "hi" }));
-    assert.strictEqual(r.status, 1, r.stdout + r.stderr);
-    assert.ok(!/PUT_SENT/.test(r.stdout), "it sent the config anyway");
-    assert.match(r.stderr, /REFUSED/);
-    assert.match(r.stderr, /telephony_in: dashboard "plivo" → file "vobiz"/);
-    assert.match(r.stderr, /hearing_language: dashboard "hi" → file "en"/);
-    // Overwriting is a deliberate act, not a default.
-    const forced = runUpdate(liveAgent({ telephony: "plivo" }), ["--overwrite-dashboard"]);
-    assert.strictEqual(forced.status, 0, forced.stdout + forced.stderr);
-    assert.match(forced.stdout, /PUT_SENT/);
-  });
-
-  await atest("a matching dashboard is updated, and keeps its own label for the voice", async () => {
-    const r = runUpdate(liveAgent({ voiceLabel: "Dashboard Voice Label" }));
+  await atest("the sync script creates a missing agent and replaces an existing one by name", async () => {
+    const dry = runSync([], ["--dry"]);
+    assert.strictEqual(dry.status, 0, dry.stdout + dry.stderr);
+    assert.ok(!/_SENT/.test(dry.stdout), "dry run wrote");
+    assert.match(dry.stdout, /woman: CREATE/);
+    assert.match(dry.stdout, /man: CREATE/);
+    const r = runSync([{ id: "w-1", agent_name: cfgMod.agentName("woman") }], ["--apply"]);
     assert.strictEqual(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stdout, /PUT_SENT voice=Dashboard Voice Label/);
+    assert.match(r.stdout, /PUT_SENT \/v2\/agent\/w-1 name=My Assistant caller \(woman\)/);
+    assert.match(r.stdout, /POST_SENT \/v2\/agent name=My Assistant caller \(man\)/);
+    assert.match(r.stdout, /BOLNA_AGENT_ID=w-1/);
+    assert.match(r.stdout, /BOLNA_AGENT_ID_MALE=new-/);
   });
 
   // ---- (b) + (c): the service refuses our caller number ----

@@ -50,6 +50,9 @@ function migrate() {
       -- it. Added 2026-09-20: before this the transcript lived only in
       -- the in-memory call record and was gone on the next deploy.
       ALTER TABLE task_outcomes ADD COLUMN IF NOT EXISTS transcript TEXT NOT NULL DEFAULT '';
+      -- The call's recording link, the caller's mid-call notes, which
+      -- voice and language it used (2026-10-01, Bolna integration).
+      ALTER TABLE task_outcomes ADD COLUMN IF NOT EXISTS extra JSONB NOT NULL DEFAULT '{}'::jsonb;
       CREATE INDEX IF NOT EXISTS idx_outcomes_user ON task_outcomes(user_id, id DESC);
       CREATE INDEX IF NOT EXISTS idx_outcomes_time ON task_outcomes(created_at DESC);
     `).catch((e) => {
@@ -77,7 +80,7 @@ async function create(userId, { kind, target, detail, status = "requested", path
 
 /** Update status/reason/detail. A terminal row is never demoted back to a
  *  non-terminal one (a late "dialing" after "failed" must not hide the failure). */
-async function update(userId, id, { status, reason, detail, transcript }) {
+async function update(userId, id, { status, reason, detail, transcript, extra }) {
   await migrate();
   const row = await one("SELECT * FROM task_outcomes WHERE id = $1 AND user_id = $2", [Number(id), Number(userId)]);
   if (!row) return null;
@@ -93,6 +96,10 @@ async function update(userId, id, { status, reason, detail, transcript }) {
        : (row.transcript || ""),
      Date.now(), row.id]
   );
+  if (extra && typeof extra === "object") {
+    await run(`UPDATE task_outcomes SET extra = COALESCE(extra, '{}'::jsonb) || $1::jsonb WHERE id = $2`,
+      [JSON.stringify(extra).slice(0, 4000), row.id]);
+  }
   return one("SELECT * FROM task_outcomes WHERE id = $1", [row.id]);
 }
 
@@ -184,6 +191,9 @@ function toClient(r) {
     reason: r.reason,
     path: r.path,
     transcript: r.transcript || "",
+    recordingUrl: String((r.extra && r.extra.recording_url) || ""),
+    notes: Array.isArray(r.extra && r.extra.notes) ? r.extra.notes : [],
+    voice: String((r.extra && r.extra.voice) || ""),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
     ok: isSuccess(r.status) ? true : isFailure(r.status) ? false : null,

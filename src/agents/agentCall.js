@@ -24,6 +24,11 @@ function cfg() {
     bolnaKey: process.env.BOLNA_API_KEY || "",
     bolnaFrom: process.env.BOLNA_FROM_NUMBER || "",
     bolnaAgent: process.env.BOLNA_AGENT_ID || "",
+    // The man's voice is a second agent built from the same definition
+    // (callAgentConfig; scripts/bolna_agents.js). Absent, every call is
+    // the woman's.
+    bolnaAgentMale: process.env.BOLNA_AGENT_ID_MALE || "",
+    defaultGender: process.env.BOLNA_DEFAULT_VOICE === "man" ? "man" : "woman",
     // Three minutes between attempts, three attempts (his spec,
     // 2026-09-20: "max call agent can make is 3 calls and also with 3
     // min gap"). Long enough to reach a phone in another room, short
@@ -246,7 +251,7 @@ async function bolnaPlaceCall({ to, rec }) {
   // reached every user EXCEPT the ones who had once opened the screen.
   // src/agents/callAgentConfig.js is the single definition; this is the
   // single agent it is pushed to.
-  const agentId = c.bolnaAgent;
+  const agentId = rec.gender === "man" && c.bolnaAgentMale ? c.bolnaAgentMale : c.bolnaAgent;
   // RESOLVED BEFORE THE DIAL CLOCK STARTS.
   //
   // This used to sit inline in the body object, AFTER
@@ -257,6 +262,10 @@ async function bolnaPlaceCall({ to, rec }) {
   // slow lookup burned the whole budget and fetch was handed an
   // already-aborted signal, so the call never left the building.
   const who = await addressFor(rec);
+  // The user's own number rides along for connect_to_user (transfer).
+  const me = rec.userId ? await require("../db").findById(rec.userId).catch(() => null) : null;
+  const cac = require("./callAgentConfig");
+  const langCode = rec.language && cac.LANGUAGES[rec.language.code] ? rec.language.code : null;
   const r = await fetch("https://api.bolna.ai/call", {
     method: "POST",
     headers: {
@@ -292,7 +301,21 @@ async function bolnaPlaceCall({ to, rec }) {
         // said were not polite enough, went out with no manner
         // specified at all. The default is the polite one.
         tone: require("./callTone").withAudioTags(rec.tone || DEFAULT_TONE),
+        // Woman or man: the prompt's first line and its grammar paragraph.
+        persona: cac.persona(rec.gender),
+        gender_rules: cac.genderRules(rec.gender, who.user_name),
+        // Which language the call opens in, by name for the prompt.
+        language: langCode ? cac.LANGUAGES[langCode].name : "English",
+        // Mid-call tools identify the call by this.
+        call_ref: rec.id,
+        user_phone: String(me?.phone_number || ""),
       },
+      // The agent is multilingual: open in the message's language and
+      // let the platform switch voice and hearing if they change.
+      ...(langCode && langCode !== "en" ? { agent_data: { language: langCode } } : {}),
+      // Calling hours (callAgentConfig.CALL_HOURS) are for strangers; a
+      // 5 a.m. wake-up the user asked for, or an urgent message, goes out.
+      ...(rec.selfCall || /urgent/i.test(rec.tone || "") ? { bypass_call_guardrails: true } : {}),
     }),
   });
   if (!r.ok) {
@@ -352,6 +375,9 @@ function bolnaWebhook(body) {
     const secs = Number(body?.conversation_duration || 0);
     const transcript = String(body?.transcript || "");
     rec.answer = transcript.slice(0, 4000) || rec.answer;
+    // The recording, for the Calls screen (Bolna keeps it; we keep the link).
+    const rurl = body?.telephony_data?.recording_url;
+    if (rurl && /^https?:\/\//.test(String(rurl))) rec.recording = String(rurl).slice(0, 500);
 
     // "COMPLETED" IS THE PROVIDER'S WORD, NOT THE OUTCOME.
     //
@@ -450,7 +476,10 @@ function theirWords(transcript) {
 }
 
 function finishCompleted(rec, summary) {
-  const said = summary || theirWords(rec.answer);
+  // What the caller noted mid-call outranks a summary: it is the one line
+  // the caller chose to pass on ("he will pay by Friday").
+  const noted = (rec.notes || []).join(" ").trim();
+  const said = noted || summary || theirWords(rec.answer);
   rec.result = said
     ? rec.selfCall
       ? `I called you as asked. ${said}`
@@ -513,6 +542,7 @@ function handleNoAnswer(rec) {
       language: rec.language || null,
       mode: rec.mode,
       tone: rec.tone || "",
+      gender: rec.gender || "woman",
       selfCall: rec.selfCall,
       attempt: rec.attempt + 1,
       maxAttempts: rec.maxAttempts,
@@ -558,6 +588,9 @@ async function retryFromJob(payload = {}) {
       // A retry must sound like the call it is retrying — a pod restart
       // in between must not turn a firm reminder into a cheerful one.
       tone: String(payload.tone || "").slice(0, require("./callTone").MAX),
+      gender: pickGender(payload.gender),
+      notes: [],
+      recording: null,
       state: "no_answer",
       result: null,
       answer: null,
@@ -723,6 +756,12 @@ function settle(rec) {
         // The conversation itself, so "what did he say?" is answerable
         // from the Calls screen days later, not just in the moment.
         transcript: rec.answer || "",
+        extra: {
+          recording_url: rec.recording || "",
+          notes: rec.notes || [],
+          voice: rec.gender || "woman",
+          language: rec.language ? rec.language.code : "en",
+        },
       })
       .catch(() => {});
     if (rec.pushOutcome && rec.userId && !rec.pushed) {
@@ -831,7 +870,7 @@ async function preview({ userName, contactName, task, lang }) {
  * the calling service refused — `message` is a plain sentence, never the
  * service's reply (see noteProviderFailure).
  */
-async function start({ userId, userName, toNumber, contactName, task, lang, selfCall, retryTimes, retryGapMinutes, tone }) {
+async function start({ userId, userName, toNumber, contactName, task, lang, selfCall, retryTimes, retryGapMinutes, tone, gender }) {
   if (!enabled()) throw { code: "unavailable" };
   const to = normalizeNumber(toNumber);
   if (!to) throw { code: "bad_number" };
@@ -856,6 +895,11 @@ async function start({ userId, userName, toNumber, contactName, task, lang, self
     // The owner, 2026-10-01: "loan recovery needs one voice, wishing
     // another". A tone the user asked for wins.
     tone: require("./callTone").resolve({ requested: tone, task, selfCall }).tone,
+    // Whose voice: the one asked for ("in a male voice"), else the default.
+    gender: pickGender(gender),
+    // What the caller noted for the user mid-call (note_for_user).
+    notes: [],
+    recording: null,
     state: "dialing",
     result: null,
     answer: null,
@@ -932,7 +976,66 @@ async function start({ userId, userName, toNumber, contactName, task, lang, self
 function status(id) {
   const rec = calls.get(id);
   if (!rec) return null;
-  return { state: rec.state, result: rec.result, answer: rec.answer || null };
+  return {
+    state: rec.state, result: rec.result, answer: rec.answer || null,
+    recording: rec.recording || null, notes: rec.notes || [], voice: rec.gender || "woman",
+  };
+}
+
+function pickGender(g) {
+  const s = String(g || "").toLowerCase();
+  if (/^(man|male|m|he|him|boy|gent)/.test(s)) return "man";
+  if (/^(woman|female|f|she|her|girl|lady)/.test(s)) return "woman";
+  return cfg().defaultGender;
+}
+
+// ---------------- MID-CALL TOOLS ----------------
+// Bolna calls these while the call is live (callAgentConfig.apiTools);
+// the caller names the call by the reference it was given.
+
+/** What the caller tells us for the user; kept on the call and in the outcome. */
+function toolNote({ call_ref, note }) {
+  const rec = calls.get(String(call_ref || ""));
+  const text = String(note || "").replace(/\s+/g, " ").trim().slice(0, 400);
+  if (!rec) return { ok: false, error: "unknown call" };
+  if (!text) return { ok: false, error: "empty note" };
+  rec.notes = rec.notes || [];
+  if (rec.notes.length < 5 && !rec.notes.includes(text)) rec.notes.push(text);
+  return { ok: true, saved: true };
+}
+
+/** When the user is free on a day — from their Google calendar, when linked. */
+async function toolFreeTime({ call_ref, day }) {
+  const rec = calls.get(String(call_ref || ""));
+  if (!rec || !rec.userId) return { status: "unknown", reason: "unknown call" };
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(day || "").trim());
+  if (!m) return { status: "unknown", reason: "day must be YYYY-MM-DD" };
+  try {
+    const linked = await require("../google/tokens").accessToken(rec.userId).catch(() => null);
+    if (!linked) return { status: "unknown", reason: "calendar not linked" };
+    const gapi = require("../google/api");
+    const events = await gapi.upcomingEvents(rec.userId, { days: 60, max: 100 });
+    if (!Array.isArray(events)) return { status: "unknown", reason: "calendar not available" };
+    const busy = events
+      .filter((e) => String(e.start || e.startAt || "").slice(0, 10) === day || String(e.date || "").slice(0, 10) === day)
+      .map((e) => ({ title: String(e.title || e.summary || "busy").slice(0, 60), start: e.start || e.startAt || "", end: e.end || e.endAt || "" }))
+      .slice(0, 12);
+    return {
+      status: "ok", day, busy,
+      suggestion: busy.length
+        ? "Offer a time that does not overlap the busy slots, and say the user will confirm."
+        : "Nothing is booked that day; offer a time and say the user will confirm.",
+    };
+  } catch (e) {
+    return { status: "unknown", reason: String(e.message || e).slice(0, 80) };
+  }
+}
+
+/** Dispatch for routes/agentCall.js (POST /agent-call/bolna/tool/:secret/:name). */
+async function tool(name, body) {
+  if (name === "note_for_user") return toolNote(body || {});
+  if (name === "check_free_time") return toolFreeTime(body || {});
+  return { ok: false, error: "unknown tool" };
 }
 
 function get(id) {
@@ -956,6 +1059,7 @@ module.exports = {
   start,
   status,
   get,
+  tool,
   relayDown,
   closeStale,
   // For tests: the failure bookkeeping, and a way to clear it.

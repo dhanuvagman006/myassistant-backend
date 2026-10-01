@@ -1008,7 +1008,7 @@ let analysisReply = () => "{}";
       assert.strictEqual(rows.length, 1);
       assert.deepStrictEqual([rows[0].kind, rows[0].target, rows[0].status], ["agent_call", "Ravi Kumar", "dialing"]);
       const st = await api("GET", `/agent-call/${callId}`);
-      assert.deepStrictEqual(st.json, { state: "dialing", result: null, answer: null });
+      assert.deepStrictEqual(st.json, { state: "dialing", result: null, answer: null, recording: null, notes: [], voice: "woman" });
       assert.strictEqual((await api("POST", "/agent-call", { body: { contactName: "x" } })).status, 400);
     });
 

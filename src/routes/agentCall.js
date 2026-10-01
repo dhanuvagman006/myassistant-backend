@@ -90,6 +90,8 @@ router.post("/", async (req, res) => {
       retryTimes: Number(req.body?.retryTimes) || 0,
       retryGapMinutes: Number(req.body?.retryGapMinutes) || 0,
       tone: req.body?.tone,
+      // "in a male voice": woman (default) or man — agentCall.pickGender.
+      gender: req.body?.voice,
     });
     res.status(202).json({ id });
   } catch (e) {
@@ -164,6 +166,23 @@ function providerWebhook(envKey, handle) {
       console.error(`${envKey} webhook failed:`, e.message);
     }
     res.json({ ok: true });
+  });
+  // MID-CALL TOOLS: the live call asks us something (note_for_user,
+  // check_free_time — callAgentConfig.apiTools). Same secret, same
+  // public mount; the body names the call by its reference.
+  r.post("/tool/:secret/:name", async (req, res) => {
+    const key = process.env[envKey] || "";
+    const want = crypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
+    if (!key || !safeEqual(String(req.params.secret || ""), want)) {
+      return res.status(404).json({ error: "not found" });
+    }
+    try {
+      const out = await agent.tool(String(req.params.name || ""), req.body || {});
+      res.json(out);
+    } catch (e) {
+      console.error(`${envKey} tool failed:`, e.message);
+      res.json({ ok: false, error: "tool failed" });
+    }
   });
   return r;
 }

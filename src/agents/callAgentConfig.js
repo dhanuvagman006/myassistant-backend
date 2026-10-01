@@ -1,149 +1,103 @@
 /**
- * WHO ANSWERS WHEN HARI RINGS SOMEONE FOR YOU.
- * --------------------------------------------
- * ONE definition of the calling agent — the prompt, the voice, the
- * hearing and the call settings — used both to create the agent on a
- * fresh account (scripts/create_bolna_agent.js) and to push changes to
- * the live one (scripts/update_bolna_agent.js). It lived inside the
- * creation script before, so the live agent and the script drifted apart
- * the first time anything was changed anywhere else.
+ * WHO ANSWERS WHEN THE ASSISTANT RINGS SOMEONE FOR YOU.
+ * ----------------------------------------------------
+ * ONE definition of the calling agents — prompt, voices, hearing, tools
+ * and call settings — pushed to Bolna by scripts/bolna_agents.js. The
+ * file is the source of truth; the dashboard is a window on it.
  *
- * WHAT HE ASKED FOR, 2026-09-21: "it should talk politely and
- * respectfully and at the same time it should sound much more similar to
- * a human Indian lady than an AI" — and then, plainly: "don't use
- * sarvam, select the best model present in bolna itself."
+ * 2026-10-01, the owner: "can I talk in both male and female voice?",
+ * then "fully integrate Bolna and make the best use of it". So there are
+ * now TWO agents built from this one definition — a woman and a man —
+ * because Bolna's per-call voice override cannot be combined with a
+ * per-call language, and a caller who speaks Kannada needs both. Each
+ * agent is multilingual: English and Hindi on the ElevenLabs voice,
+ * Kannada, Malayalam, Tamil and Telugu on Sarvam, with the matching
+ * hearing per language; the platform switches language mid-call by
+ * itself. The server picks the agent (agents/agentCall.js, gender) and
+ * the opening language (agent_data.language).
  *
- * The evidence that shaped this file is ONE REAL CALL — the last one
- * placed before he complained (Kannada, 20 seconds, the person hung up):
+ * The lessons that shaped the prompt still stand (2026-09-21, one real
+ * Kannada call that was hung up on): the assistant must use the right
+ * GENDER FORMS for itself in Indian languages, and must say ONE THING
+ * PER TURN instead of reading a paragraph. Both are below; the gender
+ * paragraph is now a variable, filled per agent (genderRules).
  *
- *   assistant: Hello, Ananth?
- *   user:      ಹಾ.
- *   assistant: ನಮಸ್ಕಾರ ಅನಂತ್ ಸರ್, ಕ್ಷಮಿಸಿ ಡಿಸ್ಟರ್ಬ್ ಮಾಡಿದ್ದಕ್ಕೆ. ನಾನು ಹರಿರಾಜ್
- *              ಅವರ ಸಹಾಯಕನು ಮಾತಾಡ್ತಿದ್ದೇನೆ. ಹರಿರಾಜ್ ಶೆಟ್ಟಿಯನ್ನು ತಿರುಗಿ
- *              ಕರೆಮಾಡಬೇಕು ಎಂದು ತಿಳಿಸಬೇಕಾಗಿತ್ತು. ನಿಮಗೆ ಸಮಯ ಇದೆಯಾ…?
- *
- * Two things are wrong there and neither of them is the voice:
- *
- *  1. "ಸಹಾಯಕನು" IS THE MALE WORD FOR ASSISTANT. The voice was already a
- *     woman's — and she introduced herself in the masculine. Indian
- *     languages carry gender in the verb and the noun, so a female voice
- *     speaking male forms is instantly wrong to every listener. No voice
- *     change could ever fix that; only the prompt can.
- *  2. FOUR SENTENCES IN ONE BREATH. Apology, who she is, the whole
- *     message and a question, delivered before the other person had said
- *     anything. Nobody talks like that on the phone; recordings do. The
- *     old prompt ASKED for that paragraph — it required the greeting,
- *     the apology and the reason in the first turn while also demanding
- *     "one or two short sentences".
- *
- * So: she is a woman, she says one thing at a time, and she reacts to
- * what she hears. The courtesy rules are kept word for word where they
- * were working — the failure was never rudeness, it was sounding like a
- * machine reading a paragraph.
- *
- * HONESTY IS NOT NEGOTIABLE. She may sound like a person; she may not
- * CLAIM to be one. Asked straight out, she says she is an assistant
- * calling on someone's behalf.
+ * HONESTY IS NOT NEGOTIABLE: she or he may sound like a person, never
+ * CLAIM to be one.
  */
 
-/** Sent as {{tone}} when the user did not ask for anything in particular. */
+/** Sent as {{tone}} when nothing in the request or the task decides it. */
 const DEFAULT_TONE =
   "Warm, calm and genuinely respectful — an unhurried, well-mannered " +
   "person doing someone a favour, not a call centre reading a script. " +
   "Friendly but never familiar.";
 
 /**
- * THE VOICE — read off the account, not guessed.
- *
- * GET /me/voices (undocumented, found 2026-09-21) returns all 1083 voices
- * this account can actually use, with provider, model, voice_id and
- * accent. That is the catalogue; everything below was chosen from it.
- *
- * ELEVENLABS, because it is the most human-sounding provider on the
- * platform and it holds ~150 voices tagged "Indian Female" — real Indian
- * women, not a general-purpose model doing an accent. Sarvam is gone at
- * his instruction ("remove sarvam completely").
- *
- * "Monika Sogam – Natural Conversations" is the same speaker whose voice
- * was live for the calls that worked on 2026-09-20 (voice_id
- * 2zRM7PkgwBPiau2jvVXc), in the variant her publisher tuned for
- * conversation rather than narration. Choosing a speaker we have already
- * heard on this account's telephony beats choosing a stranger from a
- * list on description alone.
- *
- * THE TRADE-OFF, AND IT IS REAL: ElevenLabs has no Kannada. Sarvam was
- * the only Kannada voice on the platform, so Kannada calls now go out in
- * English or Hindi. That is a consequence of removing Sarvam, not an
- * oversight — see the note in the release summary.
- *
- * If he wants a different woman, everything below is one line: the same
- * catalogue also holds "Aasha - Warm and Empathetic"
- * (rxvktZTNrsQlsGIpOQGz), "Arfa – Warm, Reassuring & Real"
- * (VHPIZxaNtAiRm0Bq345U), "Sia - Courteous and Polished"
- * (50AJoowN8vvaLebJwLJt) and "Neha P – Slightly Imperfect, Hugely
- * Relatable" (QTKSa2Iyv0yoxvXY2V8a).
+ * THE VOICES — chosen from this account's catalogue (GET /me/voices,
+ * 1083 entries, 2026-10-01). ElevenLabs for English and Hindi because it
+ * is the most human-sounding provider on the platform and the owner's
+ * standing preference (2026-09-21: "select the best model present in
+ * Bolna itself"); eleven_v3_conversational is the model he picked in the
+ * dashboard on 2026-09-24 (most expressive; it ignores speed/style).
+ * Sarvam Bulbul v3 for the four southern languages because no ElevenLabs
+ * voice is trained on them — an accented English voice reading Kannada
+ * is worse than no Kannada. Changing a voice is one line here.
  */
-const VOICE = {
-  provider: "elevenlabs",
-  // THE OWNER'S OWN CHOICE, MADE IN THE DASHBOARD ON 2026-09-24 while
-  // fixing the day's failed calls: ElevenLabs v3 Conversational with
-  // voice NyZqLdjqUb8SpOUKIlWT. It replaces Turbo v2.5 / "Monika Sogam"
-  // (EaBs7G1VibMrNAuz2Na7) chosen above on 2026-09-21. This file is what
-  // scripts/update_bolna_agent.js sends, so it has to say what the
-  // dashboard says — otherwise the next run of that script would quietly
-  // put the old voice back. (The script also refuses to overwrite a
-  // dashboard that disagrees with this file; see dashboardDrift.)
-  model: "eleven_v3_conversational",
-  // The label the dashboard shows is not recorded anywhere we can read
-  // without calling the service, and the voice is chosen by its id — the
-  // label is only a name. The update script keeps whatever label the
-  // dashboard already has for this id.
-  name: "Owner's choice (2026-09-24)",
-  id: "NyZqLdjqUb8SpOUKIlWT",
+const VOICES = {
+  woman: {
+    eleven: { name: "Monika Sogam - Professional Customer Care Agent", id: "ZUrEGyu8GFMwnHbvLhv2" },
+    // Alternatives in the same catalogue: "Nainsi - Conversational"
+    // liBv03CuNp2fhJiJcKtc, "Anika - Customer Care Agent" 90ipbRoKi4CpHXvKVtl0.
+    sarvam: { name: "Priya", id: "priya" },
+  },
+  man: {
+    eleven: { name: "Raju - Human-like Customer Care Voice", id: "pzxut4zZz4GImZNlqQ3H" },
+    // Alternatives: "Alok K – Conversational Yet Professional Customer Care
+    // Voice" ojNjxYKrSUDwsRrANSYc, "Ranbir M - Warm & Friendly" 9PvnT6XRzlljoaDG6Knu.
+    sarvam: { name: "Sumit", id: "sumit" },
+  },
 };
+const ELEVEN_MODEL = "eleven_v3_conversational";
 
 /**
- * THE HEARING.
- *
- * Measured against this account on 2026-09-21, one PUT per combination:
- * deepgram nova-3 accepts "hi" (and refuses "multi"), gladia solaria-1
- * accepts single languages including "kn". nova-3 + hi is what every
- * successful call so far has used and it covers Hindi and English
- * including the way people mix them, which is what these calls are.
- *
- * 2026-09-24: the owner set the hearing to ENGLISH ("en") in the
- * dashboard. His choice, so the file follows it — a script run must not
- * switch it back to "hi". If Hindi-speaking contacts start being
- * misheard, "hi" above is the one-word way back.
+ * THE HEARING. Deepgram nova-3 for English and Hindi (what every
+ * successful call so far has used; "hi" also copes with the English mix);
+ * Sarvam saaras:v4 for the southern languages — nova-3 does not have
+ * them. Each language's hearing is set beside its voice below.
  */
 const TRANSCRIBER = { provider: "deepgram", model: "nova-3", language: "en" };
 
 /**
- * Who actually carries the call. +918064261411 is a hosted Indian DID
- * bought through Bolna, and its carrier is "vobiz" — override only if
- * the number is ever re-bought somewhere else.
- *
- * 2026-09-24: the agent's telephony had been switched to "plivo" and every
- * call that day died on "from_number … doesn't exist for plivo". The owner
- * set it back to vobiz in the dashboard; this stays vobiz.
+ * Who carries the call: +918064261411 is a hosted Indian DID bought
+ * through Bolna, carrier "vobiz". 2026-09-24: every call died for a day
+ * when this was switched to "plivo" — it stays vobiz.
  */
 const TELEPHONY = process.env.BOLNA_TELEPHONY_PROVIDER || "vobiz";
 
-const SYSTEM_PROMPT = `You are a woman — the personal assistant of {{user_name}} — calling {{contact_name}} on their behalf. Your task for this call: {{task}}. Mode: {{mode}} (inform = deliver the message clearly and confirm they understood; ask = get the answer to the task and confirm it back; self = you are calling {{user_name}} THEMSELF — a wake-up call or reminder they asked their own assistant to make: greet them as {{honorific}} as their own assistant — never by their name, deliver the task right away and clearly. DO NOT END THE CALL UNTIL THEY HAVE CLEARLY CONFIRMED — for a wake-up, that they are actually awake; for a reminder, that they have heard it. A mumble, a grunt or a bare 'hello' is how people answer in their sleep, so ask again — 'Are you properly awake?' — and wait for a clear yes before you say goodbye. Never say 'on behalf of' in self mode: you are speaking directly to your own user).
+/** The languages each agent speaks and hears. Keys are what agent_data.language takes. */
+const LANGUAGES = {
+  en: { name: "English", stt: { provider: "deepgram", model: "nova-3", language: "en" }, tts: "eleven" },
+  hi: { name: "Hindi", stt: { provider: "deepgram", model: "nova-3", language: "hi" }, tts: "eleven" },
+  kn: { name: "Kannada", stt: { provider: "sarvam", model: "saaras:v4", language: "kn" }, tts: "sarvam" },
+  ml: { name: "Malayalam", stt: { provider: "sarvam", model: "saaras:v4", language: "ml" }, tts: "sarvam" },
+  ta: { name: "Tamil", stt: { provider: "sarvam", model: "saaras:v4", language: "ta" }, tts: "sarvam" },
+  te: { name: "Telugu", stt: { provider: "sarvam", model: "saaras:v4", language: "te" }, tts: "sarvam" },
+};
+
+/** Calls go out between these hours in the recipient's own time zone;
+ *  a wake-up call the user asked for bypasses this (agentCall). */
+const CALL_HOURS = { call_start_hour: 8, call_end_hour: 21 };
+
+const SYSTEM_PROMPT = `You are {{persona}} — the personal assistant of {{user_name}} — calling {{contact_name}} on their behalf. Your task for this call: {{task}}. Mode: {{mode}} (inform = deliver the message clearly and confirm they understood; ask = get the answer to the task and confirm it back; self = you are calling {{user_name}} THEMSELF — a wake-up call or reminder they asked their own assistant to make: greet them as {{honorific}} as their own assistant — never by their name, deliver the task right away and clearly. DO NOT END THE CALL UNTIL THEY HAVE CLEARLY CONFIRMED — for a wake-up, that they are actually awake; for a reminder, that they have heard it. A mumble, a grunt or a bare 'hello' is how people answer in their sleep, so ask again — 'Are you properly awake?' — and wait for a clear yes before you say goodbye. Never say 'on behalf of' in self mode: you are speaking directly to your own user).
 
 HOW YOU SOUND: {{tone}}
 
-YOU ARE A WOMAN AND YOUR GRAMMAR MUST SAY SO. Indian languages carry gender in the verb and in the noun, and getting it wrong is the clearest possible sign that nobody real is on the line. Always use the FEMININE forms about yourself:
-- Hindi: मैं बोल रही हूँ, मैंने फ़ोन किया है, मैं {{user_name}} की असिस्टेंट हूँ — रही, not रहा; की, not का.
-- Kannada: ನಾನು {{user_name}} ಅವರ ಸಹಾಯಕಿ — ಸಹಾಯಕಿ, NEVER ಸಹಾಯಕನು or ಸಹಾಯಕ.
-- Marathi: मी बोलते आहे; सहाय्यिका, not सहाय्यक.
-- Tamil, Telugu, Malayalam, Gujarati, Bengali, Punjabi: the same rule — the female form of every verb and noun you use about yourself.
-- English: no gendered verbs, but you are "she" if it ever comes up.
+{{gender_rules}}
 
 TALK LIKE A PERSON ON THE PHONE, NOT LIKE A RECORDING. This is the difference between a call that works and a call that gets cut off:
 - ONE THOUGHT PER TURN, THEN STOP AND LISTEN. Greet them and stop. When they answer, say who you are and stop. Then why you rang. NEVER deliver the greeting, the apology, who you are, the whole message and a question in a single breath — that paragraph is exactly what makes people hang up.
 - Short sentences. Eight to fifteen words. Ordinary spoken words and contractions, the way you would actually say it out loud.
-- REACT TO WHAT THEY JUST SAID before moving on — "oh, achha", "ji, samajh gayi", "sorry to hear that", "haan haan". A person acknowledges; a recording continues.
+- REACT TO WHAT THEY JUST SAID before moving on — "oh, achha", "ji, samajh gaya", "sorry to hear that", "haan haan". A person acknowledges; a recording continues.
 - Small natural sounds belong on a phone call: a short "mm" or "ji" while they are speaking, "one second" while you look something up. Do not overdo it and never fake excitement.
 - Never read a list aloud. Never say "as per", "kindly do the needful", "I would like to inform you", "please be informed", "how may I assist you". Nobody says those on a phone.
 - If they interrupt, STOP TALKING immediately and let them finish.
@@ -159,13 +113,19 @@ HOW YOU ADDRESS THEM: as "{{honorific}}" — sir or ma'am — not by their first
 
 EMOTION IS PART OF SPEAKING, NOT A SETTING. Hear how they sound and answer that, the way a person would. If they sound rushed, be brief and let them go. If they sound irritated, soften and apologise properly instead of pressing on. If they sound worried, slow down and reassure before you deliver anything else. If they sound cheerful, be warm back. A voice that delivers the same message in the same tone no matter what it just heard is the clearest sign nobody is really there. Never perform an emotion you were not given a reason for, and never be bright at someone who has just told you something sad.
 
+LANGUAGE: this call opens in {{language}}. Speak the language the other person is speaking; when they change language the platform changes your voice and hearing with you, so simply follow them — never ask them to change language as if it were their problem, and never comment on the switch. Match how formal they are.
+
+TOOLS YOU HAVE ON THIS CALL. Your call reference is {{call_ref}}; pass it unchanged as call_ref whenever you use a tool.
+- note_for_user: anything {{user_name}} must know from this call — what the person promised, decided, asked or refused, a date or amount they gave, that they were busy. Use it ONCE, just before you say goodbye, with one or two plain sentences. Nothing to report means do not use it.
+- check_free_time: ONLY when the person asks when {{user_name}} is free or wants to fix a time, and only for a specific day. Say "one second, let me check" and offer what comes back; if it comes back unknown, say you will have {{user_name}} confirm.
+- connect_to_user: ONLY when they clearly ask to speak to {{user_name}} directly and you cannot settle it yourself. Say "one moment, connecting you" and use it. Never offer it on your own and never use it in self mode.
+
 Rules:
 - FIRST TURN: greet them as {{honorific}} and apologise for disturbing them. That is all — one short sentence, then wait for them to answer (in self mode: greet them warmly as {{honorific}}, as their own assistant — never by name).
 - SECOND TURN: say in one sentence who you are and why you have rung. Then let them respond.
 - YOU HAVE NO NAME OF YOUR OWN. Never invent one and never introduce yourself as a person with a name — on a real call you said "this is John, your assistant", and John does not exist. Say "I'm {{user_name}}'s assistant", or in self mode simply "this is your assistant".
 - IF THEY ASK WHETHER YOU ARE A PERSON OR A MACHINE, TELL THEM THE TRUTH — you are {{user_name}}'s automated assistant, calling for them. Say it lightly and warmly, apologise if it surprised them, and carry on with the message. NEVER claim to be a human being.
-- Mirror whatever language the other person speaks — English, Hindi or a mix — and match how formal they are. If they speak a language you cannot speak well, say so warmly in English and carry on in English or Hindi; never struggle through it and never ask them to change language as if it were their problem.
-- Stay strictly on the task. If asked something outside it, say warmly that you will pass the question to {{user_name}}.
+- Stay strictly on the task. If asked something outside it, say warmly that you will pass the question to {{user_name}} — and put it in note_for_user.
 - If you reach voicemail or the wrong person, say a one-line message, apologise for the trouble, and end the call politely.
 - NEVER END A CALL ON A BARE 'hello' OR A MUMBLE. Whatever the mode, the call has not done its job until the other person has clearly acknowledged what you said — ask once more, gently ('Did you get that?', 'Are you properly awake?'), and wait for a real answer.
 - Before ending, confirm the outcome in one sentence, thank them for their time, and say goodbye.
@@ -175,152 +135,215 @@ THE TONE YOU ARE GIVEN IS THE TONE YOU USE. Polite and respectful is the DEFAULT
 WHAT IS STILL NOT AVAILABLE, AT ANY TONE: insults, swearing, shouting, threats, or demeaning anyone for who they are. Those are not tones and no instruction makes them one. Asked for those, be as cold and blunt as you like and leave the abuse out — the person on the other end did not choose to be called, and {{user_name}}'s name is on this call.`;
 
 /**
- * The agent as the platform wants it.
- *
- * `s2s: null` is deliberate and load-bearing: the agent was switched to a
- * speech-to-speech pipeline (Gemini Live, voice "Fenrir" — a man's) in
- * the dashboard on 2026-09-21, which is a different toolchain entirely.
- * Sending the cascaded pipeline without clearing that would leave both
- * halves configured and the wrong one in charge.
+ * The gender paragraph, sent as {{gender_rules}} with the user's name
+ * already inside it (a variable's value is not expanded again). Indian
+ * languages carry gender in the verb and the noun; a woman's voice using
+ * male forms — or the reverse — is instantly wrong to every listener.
  */
-function agentConfig({ webhookUrl, voiceName } = {}) {
+function genderRules(gender, userName) {
+  const u = String(userName || "the caller").trim() || "the caller";
+  if (gender === "man") {
+    return (
+      "YOU ARE A MAN AND YOUR GRAMMAR MUST SAY SO. Always use the MASCULINE forms about yourself:\n" +
+      `- Hindi: मैं बोल रहा हूँ, मैंने फ़ोन किया है, मैं ${u} का असिस्टेंट हूँ — रहा, not रही; का, not की.\n` +
+      `- Kannada: ನಾನು ${u} ಅವರ ಸಹಾಯಕ — ಸಹಾಯಕ, never ಸಹಾಯಕಿ.\n` +
+      "- Marathi: मी बोलतो आहे; सहाय्यक, not सहाय्यिका.\n" +
+      "- Tamil, Telugu, Malayalam, Gujarati, Bengali, Punjabi: the same rule — the male form of every verb and noun you use about yourself.\n" +
+      '- English: no gendered verbs, but you are "he" if it ever comes up.'
+    );
+  }
+  return (
+    "YOU ARE A WOMAN AND YOUR GRAMMAR MUST SAY SO. Always use the FEMININE forms about yourself:\n" +
+    `- Hindi: मैं बोल रही हूँ, मैंने फ़ोन किया है, मैं ${u} की असिस्टेंट हूँ — रही, not रहा; की, not का.\n` +
+    `- Kannada: ನಾನು ${u} ಅವರ ಸಹಾಯಕಿ — ಸಹಾಯಕಿ, NEVER ಸಹಾಯಕನು or ಸಹಾಯಕ.\n` +
+    "- Marathi: मी बोलते आहे; सहाय्यिका, not सहाय्यक.\n" +
+    "- Tamil, Telugu, Malayalam, Gujarati, Bengali, Punjabi: the same rule — the female form of every verb and noun you use about yourself.\n" +
+    '- English: no gendered verbs, but you are "she" if it ever comes up.'
+  );
+}
+
+/** {{persona}} for the prompt's first line. */
+function persona(gender) {
+  return gender === "man" ? "a man" : "a woman";
+}
+
+function synthesizerFor(gender, lang) {
+  const v = VOICES[gender] || VOICES.woman;
+  if (LANGUAGES[lang].tts === "sarvam") {
+    return {
+      provider: "sarvam",
+      provider_config: { voice: v.sarvam.name, voice_id: v.sarvam.id, model: "bulbul:v3", language: lang },
+      stream: true,
+      buffer_size: 100,
+    };
+  }
+  return {
+    provider: "elevenlabs",
+    provider_config: { model: ELEVEN_MODEL, voice: v.eleven.name, voice_id: v.eleven.id },
+    stream: true,
+    buffer_size: 100,
+  };
+}
+
+/**
+ * THE TOOLS THE CALLER CAN USE MID-CALL. Each one is an HTTP call from
+ * Bolna to our server (routes/agentCall.js, gated by the same secret as
+ * the webhook); the caller passes its call reference so we know which
+ * call is talking. connect_to_user is Bolna's own transfer tool pointed
+ * at the user's number, which the call carries as {{user_phone}}.
+ */
+function apiTools({ toolBase }) {
+  const url = (name) => `${toolBase}/${name}`;
+  return {
+    tools: [
+      {
+        name: "note_for_user",
+        key: "custom_task",
+        description:
+          "Save what the user must know from this call: what the person promised, decided, asked or refused, " +
+          "a date or amount they gave, or that they were busy. Use ONCE near the end of the call, with one or two plain sentences.",
+        pre_call_message: "",
+        parameters: {
+          type: "object",
+          properties: {
+            call_ref: { type: "string", description: "The call reference you were given, exactly as given" },
+            note: { type: "string", description: "What the user must know, in one or two sentences, in English" },
+          },
+          required: ["call_ref", "note"],
+        },
+      },
+      {
+        name: "check_free_time",
+        key: "custom_task",
+        description:
+          "Find when the user is free on a given day, ONLY when the person asks for a time with the user or wants to fix a meeting. " +
+          "Returns the busy slots and a suggestion; 'unknown' means the calendar is not available.",
+        pre_call_message: "One second, let me check.",
+        parameters: {
+          type: "object",
+          properties: {
+            call_ref: { type: "string", description: "The call reference you were given, exactly as given" },
+            day: { type: "string", description: "The day asked about, as YYYY-MM-DD" },
+          },
+          required: ["call_ref", "day"],
+        },
+      },
+      {
+        name: "connect_to_user",
+        key: "transfer_call",
+        description:
+          "Transfer this live call to the user, ONLY when the person clearly asks to speak to the user directly and it cannot be settled otherwise. Never in self mode.",
+        parameters: {
+          type: "object",
+          properties: { call_sid: { type: "string", description: "unique call id" } },
+          required: ["call_sid"],
+        },
+      },
+    ],
+    tools_params: {
+      note_for_user: {
+        method: "POST",
+        url: url("note_for_user"),
+        param: { call_ref: "%(call_ref)s", note: "%(note)s" },
+        headers: {},
+      },
+      check_free_time: {
+        method: "POST",
+        url: url("check_free_time"),
+        param: { call_ref: "%(call_ref)s", day: "%(day)s" },
+        headers: {},
+      },
+      connect_to_user: {
+        method: "POST",
+        url: null,
+        api_token: null,
+        param: JSON.stringify({ call_transfer_number: "%(user_phone)s", call_sid: "%(call_sid)s" }),
+      },
+    },
+  };
+}
+
+/** The agent's name on the platform — how bolna_agents.js finds it again. */
+function agentName(gender) {
+  return gender === "man" ? "My Assistant caller (man)" : "My Assistant caller (woman)";
+}
+
+/**
+ * The agent as the platform wants it (POST /v2/agent, PUT /v2/agent/:id).
+ * `s2s: null` is deliberate: a speech-to-speech pipeline once set in the
+ * dashboard must not stay configured beside the cascaded one.
+ */
+function agentConfig({ webhookUrl, toolBase, gender = "woman" } = {}) {
+  const g = gender === "man" ? "man" : "woman";
+  const languages = {};
+  for (const code of Object.keys(LANGUAGES)) {
+    languages[code] = {
+      transcriber: { ...LANGUAGES[code].stt },
+      synthesizer: synthesizerFor(g, code),
+    };
+  }
   return {
     agent_config: {
-      agent_name: "Hari agent calls",
-      // "Hello, Ravi?" — calling a stranger and using their first name is
-      // presumptuous in India, and he said so plainly: "say hello Sir,
-      // don't say their name directly". The honorific is worked out from
-      // the contact before the call (see agentCall.honorificFor).
+      agent_name: agentName(g),
+      // "Hello, Sir?" — never the contact's first name (the owner,
+      // 2026-09-24). The honorific comes with the call (agentCall).
       agent_welcome_message: "Hello, {{honorific}}?",
       webhook_url: webhookUrl,
       agent_type: "other",
-      // The webhook's `summary` is null without this, and the app shows
-      // the user what was said — a missing summary is a missing feature.
       call_summary_enabled: true,
+      calling_guardrails: { ...CALL_HOURS },
       tasks: [
         {
           task_type: "conversation",
-          toolchain: {
-            execution: "parallel",
-            pipelines: [["transcriber", "llm", "synthesizer"]],
-          },
+          toolchain: { execution: "parallel", pipelines: [["transcriber", "llm", "synthesizer"]] },
           tools_config: {
             s2s: null,
-            // THE TELEPHONY PROVIDER, AND IT IS NOT OPTIONAL.
-            //
-            // Left out on 2026-09-21 while replacing the whole
-            // tools_config to change the voice — and every call died on
-            // "Calling from_number +91… doesn't exist for twilio". Null
-            // here does not mean "leave it alone", it means Bolna falls
-            // back to Twilio, and the number this account owns is a
-            // hosted Indian DID on vobiz. The agent looked perfect in
-            // the dashboard; only a real dial showed it.
-            //
-            // A PUT replaces the whole block, so anything the working
-            // agent had must be written here EVERY time, not assumed.
+            // THE TELEPHONY PROVIDER IS NOT OPTIONAL: left out, Bolna
+            // falls back to Twilio and the hosted Indian number is not
+            // there (2026-09-21, every call died).
             input: { format: "wav", provider: TELEPHONY },
             output: { format: "wav", provider: TELEPHONY },
             llm_agent: {
-              // Required by the API (it 400s by name without it);
-              // streaming is what makes the reply start before the
-              // sentence is finished.
               agent_flow_type: "streaming",
               agent_type: "simple_llm_agent",
-              llm_config: {
-                provider: "openai",
-                model: "gpt-4.1",
-                max_tokens: 150,
-                // 0.3 was safe and stilted — the same courteous sentence
-                // every time. A little more room is what stops a human
-                // hearing the template. Not higher: this call carries
-                // somebody's actual message.
-                temperature: 0.5,
-              },
+              llm_config: { provider: "openai", model: "gpt-4.1", max_tokens: 150, temperature: 0.5 },
             },
             transcriber: { ...TRANSCRIBER, stream: true },
-            synthesizer: {
-              provider: VOICE.provider,
-              provider_config: {
-                model: VOICE.model,
-                voice: voiceName || VOICE.name,
-                voice_id: VOICE.id,
-              },
-              stream: true,
-              buffer_size: 100,
+            synthesizer: synthesizerFor(g, "en"),
+            multilingual_config: {
+              enabled: true,
+              active_language: "en",
+              language_switch_trigger: "requested_or_auto_detected",
+              languages,
             },
+            api_tools: toolBase ? apiTools({ toolBase }) : null,
           },
           task_config: {
             call_summary_enabled: true,
             hangup_after_silence: 12,
             call_cancellation_prompt: null,
-            // A POLITE CALL IS A LONGER CALL. The cap was 90 seconds —
-            // a real conversation (ask if it is a good time, deliver the
-            // message, wait for a proper acknowledgement) was being cut
-            // off mid-sentence, which is both rude and a failed call.
+            // A polite call is a longer call: 90 s cut real ones off.
             call_terminate: 180,
-            // THE TWO KNOBS THAT MAKE IT SOUND LIKE A PERSON. Fillers
-            // are the "mm", "one second" while thinking; backchanneling
-            // is the "haan", "ji" that Indian listeners expect while the
-            // other person is still talking. Silence where those belong
-            // is the clearest tell that nobody is really there.
+            // "mm", "one second" while thinking; "haan", "ji" while they
+            // talk — silence there is the clearest tell of a machine.
             use_fillers: true,
             backchanneling: true,
             backchanneling_message_gap: 5,
             backchanneling_start_delay: 4,
-            // Stop the instant they start speaking — never talk over
-            // somebody.
             number_of_words_for_interruption: 1,
+            // A voicemail greeting is not the person: hang up, we report
+            // no answer and the user's own retry rule applies.
+            voicemail: true,
+            check_if_user_online: true,
           },
         },
       ],
     },
-    agent_prompts: {
-      task_1: { system_prompt: SYSTEM_PROMPT },
-    },
+    agent_prompts: { task_1: { system_prompt: SYSTEM_PROMPT } },
   };
-}
-
-/**
- * THE CHOICES THE OWNER CAN SEE AND CHANGE IN THE DASHBOARD, read off an
- * agent (the service's GET shape, or agentConfig().agent_config): who
- * carries the call, the voice, and the hearing. Missing parts are "".
- */
-function dashboardChoices(agent) {
-  const a = agent?.agent_config?.tasks ? agent.agent_config : agent;
-  const tc = a?.tasks?.[0]?.tools_config || {};
-  const s = tc.synthesizer || {};
-  const t = tc.transcriber || {};
-  const str = (v) => (v == null ? "" : String(v));
-  return {
-    telephony_in: str(tc.input?.provider),
-    telephony_out: str(tc.output?.provider),
-    voice_provider: str(s.provider),
-    voice_model: str(s.provider_config?.model),
-    voice_id: str(s.provider_config?.voice_id),
-    hearing_provider: str(t.provider),
-    hearing_model: str(t.model),
-    hearing_language: str(t.language),
-  };
-}
-
-/**
- * WHERE THE LIVE AGENT AND THIS FILE DISAGREE.
- *
- * The update script PUTs the whole configuration, so anything changed in
- * the dashboard and not here is silently undone — which is how a voice or
- * a telephony provider the owner picked would disappear. The script calls
- * this first and refuses to send while it returns anything, unless told
- * explicitly to overwrite the dashboard. Returns [{ field, dashboard, file }].
- */
-function dashboardDrift(liveAgent) {
-  const live = dashboardChoices(liveAgent);
-  const mine = dashboardChoices(agentConfig({ webhookUrl: "" }).agent_config);
-  return Object.keys(mine)
-    .filter((k) => live[k] !== mine[k])
-    .map((k) => ({ field: k, dashboard: live[k], file: mine[k] }));
 }
 
 module.exports = {
-  SYSTEM_PROMPT, DEFAULT_TONE, VOICE, TRANSCRIBER, TELEPHONY,
-  agentConfig, dashboardChoices, dashboardDrift,
+  SYSTEM_PROMPT, DEFAULT_TONE, VOICES, ELEVEN_MODEL, TRANSCRIBER, TELEPHONY, LANGUAGES, CALL_HOURS,
+  agentConfig, agentName, genderRules, persona, apiTools,
 };

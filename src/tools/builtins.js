@@ -2796,6 +2796,14 @@ function registerBuiltins() {
             "respectful. Never pass abuse, insults or threats — the call " +
             "refuses them and goes out firm instead.",
         },
+        voice: {
+          type: "string",
+          enum: ["woman", "man"],
+          description:
+            "WHOSE VOICE makes the call when the assistant places it: 'woman' " +
+            "(default) or 'man'. Pass it ONLY when the user asked ('use a " +
+            "male voice', 'let a lady call her') — never choose it yourself.",
+        },
         retry_times: {
           type: "integer",
           description:
@@ -2902,6 +2910,7 @@ function registerBuiltins() {
             retryTimes: args.retry_times,
             retryGapMinutes: args.retry_gap_minutes,
             tone: args.tone,
+            gender: args.voice,
           });
           // PROMISE ONLY THE RETRY THAT IS ON THE CALL. This always said
           // "I'll try again in five minutes", while an unanswered call with
@@ -3024,6 +3033,7 @@ function registerBuiltins() {
           retry_times: Number(args.retry_times) || 0,
           retry_gap_minutes: Number(args.retry_gap_minutes) || 0,
           tone: args.tone || null,
+          voice: args.voice === "man" ? "man" : args.voice === "woman" ? "woman" : null,
         },
         // NOT "calling X now": the contact has not even been looked up
         // yet. Testers were told "Calling Dikshit Pujari now" and then, a
