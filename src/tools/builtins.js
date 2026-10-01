@@ -1860,6 +1860,7 @@ function registerBuiltins() {
         `SELECT brief_push, brief_hour FROM users WHERE id=$1`,
         [ctx.userId]
       );
+      if (!u) return { ok: false, error: "no profile to set the brief on — sign in again" };
       const on = u.brief_push !== 0;
       const hr = Number.isFinite(Number(u.brief_hour)) && u.brief_hour !== null
         ? Number(u.brief_hour)
@@ -2064,7 +2065,7 @@ function registerBuiltins() {
       const n = await run(
         `UPDATE jobs SET status='cancelled', updated_at=$3
           WHERE id=$1 AND user_id=$2 AND kind='scheduled_task' AND status='pending'`,
-        [Number(args.id), ctx.userId, Date.now()]
+        [Number.isFinite(Number(args.id)) ? Number(args.id) : -1, ctx.userId, Date.now()]
       );
       return n > 0
         ? { ok: true, speak: "Cancelled." }
@@ -2177,6 +2178,7 @@ function registerBuiltins() {
     async execute(args, ctx) {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
       const p = await userCtx.updateProfile(ctx.userId, args);
+      if (!p || !p.user) return { ok: false, error: "no profile to update — sign in again" };
       return { ok: true, data: p.user, speak: "Got it." };
     },
   });
