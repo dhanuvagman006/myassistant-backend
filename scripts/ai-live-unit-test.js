@@ -36,7 +36,7 @@ function run(test) {
     try {
       assert.deepStrictEqual(config.liveBlock(), {
         on: true, model: "gemini-3.8-live", voice: "Sulafat", silenceMs: 500, prefixMs: 100,
-        startSensitivity: "high", endSensitivity: "high", idleCloseSec: 180, affectiveDialog: false,
+        startSensitivity: "low", endSensitivity: "high", idleCloseSec: 180, affectiveDialog: false,
         voices: ["Sulafat", "Callirrhoe", "Achernar", "Aoede", "Vindemiatrix", "Kore", "Charon", "Achird"],
       });
       assert.strictEqual(config.liveCapable(135), true);

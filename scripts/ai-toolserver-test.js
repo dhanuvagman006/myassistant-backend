@@ -684,7 +684,7 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
       let c = await cfg("?build=135");
       assert.deepStrictEqual(c.live, {
         on: true, model: "gemini-3.8-live", voice: "Sulafat", silenceMs: 500, prefixMs: 100,
-        startSensitivity: "high", endSensitivity: "high", idleCloseSec: 180, affectiveDialog: false,
+        startSensitivity: "low", endSensitivity: "high", idleCloseSec: 180, affectiveDialog: false,
         voices: ["Sulafat", "Callirrhoe", "Achernar", "Aoede", "Vindemiatrix", "Kore", "Charon", "Achird"],
       });
       assert.ok(c.models.live && c.models.liveVoice, "the old fields stay, harmless");

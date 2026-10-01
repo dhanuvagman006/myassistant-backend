@@ -111,6 +111,10 @@ function updateDevice(s, body) {
   if (build !== undefined && build > 0) d.build = Math.floor(build);
   const platform = String(body.platform || "").trim().toLowerCase().slice(0, 20);
   if (platform) d.platform = platform;
+  const model = String(body.model || "").trim().slice(0, 80);
+  if (model) d.model = model;
+  const os = String(body.os || "").trim().slice(0, 60);
+  if (os) d.os = os;
   const tz = num(body.tz);
   if (tz !== undefined && Math.abs(tz) <= 14 * 60) d.tz = Math.round(tz);
   const lat = num(body.lat);
@@ -144,16 +148,20 @@ function updateDevice(s, body) {
 function saveDevice(s, uid) {
   const c = s.device.caps;
   if (!c) return;
-  const sig = JSON.stringify([c.platform, c.build, c.granted, c.denied]);
+  const model = s.device.model || "";
+  const os = s.device.os || "";
+  const sig = JSON.stringify([c.platform, c.build, c.granted, c.denied, model, os]);
   if (sig === s.devicesSaved) return;
   s.devicesSaved = sig;
   require("../db").run(
-    `INSERT INTO user_devices (user_id, platform, build, granted, denied, seen_at)
-     VALUES ($1,$2,$3,$4,$5,$6)
+    `INSERT INTO user_devices (user_id, platform, build, granted, denied, seen_at, model, os_version)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
      ON CONFLICT (user_id) DO UPDATE SET
        platform=EXCLUDED.platform, build=EXCLUDED.build,
-       granted=EXCLUDED.granted, denied=EXCLUDED.denied, seen_at=EXCLUDED.seen_at`,
-    [uid, c.platform, c.build, c.granted.join(","), c.denied.join(","), Date.now()]
+       granted=EXCLUDED.granted, denied=EXCLUDED.denied, seen_at=EXCLUDED.seen_at,
+       model=CASE WHEN EXCLUDED.model <> '' THEN EXCLUDED.model ELSE user_devices.model END,
+       os_version=CASE WHEN EXCLUDED.os_version <> '' THEN EXCLUDED.os_version ELSE user_devices.os_version END`,
+    [uid, c.platform, c.build, c.granted.join(","), c.denied.join(","), Date.now(), model, os]
   ).catch((e) => console.warn("user_devices write failed:", e.message));
 }
 
@@ -223,7 +231,8 @@ async function languageAskFor(uid, profile) {
       (verdict.language
         ? ` — they have been speaking ${verdict.language} to you, so offer that` : "") +
       ". Whatever they answer, call update_my_profile with " +
-      "preferred_language set to it, then carry on in that language. " +
+      "preferred_language set to it and carry on in it for as long as " +
+      "they speak it — the moment they speak English, answer in English. " +
       "Ask this ONCE and never raise it again. "
     );
   } catch (_) {

@@ -244,6 +244,12 @@ const PINS = [
     rx: /\bcalendar\b|\bdiary\b|\bagenda\b|\bschedule\b|\bnews\b|\bopen\b|\bshow me\b/i,
     tools: ["open_app_screen", "show_schedule"],
   },
+  // "Show me a picture / image / photo of X", "how does X look" — a
+  // picture in the app, never Instagram (client, 2026-10-01).
+  {
+    rx: /\b(picture|pictures|image|images|photo|photos|pic|pics)\b|\bhow does\b.*\blook\b|\bwhat does\b.*\blook like\b/i,
+    tools: ["show_pictures"],
+  },
 ];
 function pinnedFor(text, live) {
   const t = String(text || "");

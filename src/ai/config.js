@@ -123,7 +123,10 @@ function liveBlock() {
     voice: VOICES.has(v) ? v : "Sulafat",
     silenceMs: liveSilenceMs(),
     prefixMs: 100,
-    startSensitivity: "high",
+    // LOW since 2026-10-01 (client: "other persons' voice should not
+    // interfere"): the model stops opening a turn on faint background
+    // speech. End stays high, so the user's own pause still ends a turn.
+    startSensitivity: "low",
     endSensitivity: "high",
     idleCloseSec: 180, // a session warmed on app-open lasts a look around the app
     // Live's affective dialog: her tone follows the feeling in their voice

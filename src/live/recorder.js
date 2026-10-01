@@ -605,7 +605,15 @@ async function list({ userId, limit = 50, offset = 0 } = {}) {
     // user_exists: a call whose account was deleted is labelled as such in
     // the panel instead of passing for a user with no name.
     `SELECT r.id, r.user_id, u.name AS user_name, (u.id IS NOT NULL) AS user_exists,
-            r.session_id, r.started_at, r.duration_ms, r.bytes, r.turns, r.format
+            r.session_id, r.started_at, r.duration_ms, r.bytes, r.turns, r.format,
+            -- A per-turn row (src/live/turnAudio.js) is keyed turn:<id>; its
+            -- words sit in conversation_turns under that id.
+            (SELECT q.text FROM conversation_turns q
+              WHERE r.session_id LIKE 'turn:%' AND q.user_id = r.user_id AND q.role = 'user'
+                AND q.turn_id = substr(r.session_id, 6) ORDER BY q.id LIMIT 1) AS question,
+            (SELECT a.text FROM conversation_turns a
+              WHERE r.session_id LIKE 'turn:%' AND a.user_id = r.user_id AND a.role = 'assistant'
+                AND a.turn_id = substr(r.session_id, 6) ORDER BY a.id LIMIT 1) AS answer
        FROM live_recordings r LEFT JOIN users u ON u.id = r.user_id
       WHERE ${where}
       ORDER BY r.started_at DESC LIMIT ${lim} OFFSET ${off}`,
@@ -616,7 +624,7 @@ async function list({ userId, limit = 50, offset = 0 } = {}) {
 async function get(id) {
   await migrate();
   const rows = await query(
-    `SELECT id, user_id, session_id, file, bytes, duration_ms, started_at
+    `SELECT id, user_id, session_id, file, bytes, duration_ms, started_at, format
        FROM live_recordings WHERE id = $1 AND state = 'ready'
         AND ${require("../users/helpImprove").reviewableSql("user_id", "started_at")}`,
     [Number(id) || 0]);

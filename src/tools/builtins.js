@@ -4431,6 +4431,96 @@ function registerBuiltins() {
   });
 
   registry.register({
+    name: "show_pictures",
+    description:
+      "SHOW A PICTURE of a person, place, animal or thing, right here in " +
+      "the app — 'show me a picture of Virat Kohli', 'show me the Taj " +
+      "Mahal', 'how does a golden retriever look', 'show me an image of " +
+      "Rashmika'. It finds a real photo on the web and pops it up full " +
+      "screen on the phone. This is THE tool for any picture/image/photo " +
+      "request; never open Instagram, Google Images or any other app for " +
+      "one unless the user said that app's name. For a picture that does " +
+      "not exist yet ('draw me…', 'make a poster') use generate_image.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        subject: {
+          type: "string",
+          description:
+            "Who or what to show, as a short search phrase: 'Virat Kohli', " +
+            "'Taj Mahal at sunset', 'golden retriever puppy'.",
+        },
+      },
+      required: ["subject"],
+    },
+    async execute(args, ctx = {}) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const subject = String(args.subject || "").trim().slice(0, 120);
+      if (!subject) return { ok: false, error: "say who or what to show" };
+      const hint =
+        "Say in one line that no picture was found. Do not open any app " +
+        "unless the user names one; never open Instagram for this.";
+      let pic;
+      try {
+        pic = await require("./pictures").findPicture(subject);
+      } catch (e) {
+        return { ok: false, error: `picture lookup failed: ${String(e.message).slice(0, 100)}`, data: { hint } };
+      }
+      if (!pic) return { ok: false, error: `no picture of ${subject} found`, data: { hint } };
+      const docs = require("../docs/store");
+      const title = `Picture — ${subject}`;
+      const ext = pic.mime === "image/png" ? "png" : pic.mime === "image/webp" ? "webp" : pic.mime === "image/gif" ? "gif" : "jpg";
+      let row;
+      try {
+        row = await docs.createDocument(ctx.userId, {
+          buffer: pic.buffer,
+          filename: `picture-${Date.now()}.${ext}`,
+          mime: pic.mime,
+          note: subject,
+        });
+      } catch (e) {
+        return { ok: false, error: `could not save the picture: ${String(e.message).slice(0, 100)}`, data: { hint } };
+      }
+      let credit = pic.source || "the web";
+      if (!pic.source && pic.page) {
+        try { credit = new URL(pic.page).hostname.replace(/^www\./, ""); } catch (_) { /* keep */ }
+      }
+      const updated = await docs
+        .setMetadata(ctx.userId, row.id, {
+          title,
+          category: "other",
+          docDate: new Date().toISOString().slice(0, 10),
+          summary: `A picture of ${subject}, from ${credit}.`,
+          tags: ["picture", "web"],
+          fullText: `Picture of ${subject}. Source: ${credit}${pic.page ? " " + pic.page : ""}`,
+        })
+        .catch(() => null);
+      return {
+        ok: true,
+        data: {
+          shown: true,
+          subject,
+          source: credit,
+          documentId: row.id,
+          note:
+            "The picture is on the user's screen NOW, inside this app. " +
+            "Say so in a few words; do not open any other app.",
+        },
+        deviceAction: {
+          type: "show_image",
+          doc_id: row.id,
+          prompt: subject,
+          title,
+          document: docs.toClient(updated || row),
+        },
+        speak: `Here is ${subject}.`,
+      };
+    },
+  });
+
+  registry.register({
     name: "generate_image",
     description:
       "CREATE an image from a description — 'draw a poster for my café', " +
@@ -4862,6 +4952,9 @@ function registerBuiltins() {
       "PROFILE or a search — 'open Instagram', 'open the Prime Minister's " +
       "Instagram', 'show me Virat Kohli on X', 'open WhatsApp'. This DOES " +
       "open the app on their phone; say you're opening it.\n" +
+      "NOT FOR PICTURES: 'show me a picture/image/photo of X' is " +
+      "show_pictures, which shows it inside this app. Use open_app only " +
+      "when the user NAMED the app (Instagram, YouTube, Google…).\n" +
       "OPENING SOMEONE'S PROFILE: put their NAME in `person`, exactly as " +
       "the user said it. Works for ANYONE — a head of state, a cricketer, " +
       "a regional actor, a friend. The handle is established from the live " +

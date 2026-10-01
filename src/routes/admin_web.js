@@ -190,7 +190,9 @@ async function distinctPerDay(days) {
 const USER_COLS = `id, name, email, provider, created_at, status, gender,
   birthday, profession, organisation, location, preferred_language,
   phone_number, phone_verified_at, app_build, app_build_at, last_seen_at,
-  fcm_token IS NOT NULL AND fcm_token <> '' AS has_device`;
+  fcm_token IS NOT NULL AND fcm_token <> '' AS has_device,
+  (SELECT d.model FROM user_devices d WHERE d.user_id = users.id) AS device_model,
+  (SELECT d.os_version FROM user_devices d WHERE d.user_id = users.id) AS device_os`;
 
 /* ------------------------------------------------------------------ */
 /* Overview                                                            */
@@ -267,6 +269,39 @@ router.get("/api/users", async (req, res) => {
   );
   const total = await cnt(`SELECT COUNT(*) AS count FROM users ${where}`, params);
   res.json({ users: rows, total });
+});
+
+/**
+ * PHONES (2026-10-01, owner: "my app is acting differently in different
+ * android phones"): every user's handset, OS and build beside how the
+ * assistant performs for them this week — turns, median and slowest
+ * reply, how many turns ran on the fast voice — so a slow or odd phone
+ * shows up as a row, not a hunch.
+ */
+router.get("/api/devices", async (req, res) => {
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 7, 1), 90);
+  const since = Date.now() - days * 86400_000;
+  const rows = await sq(
+    `SELECT u.id AS user_id, u.name, u.app_build, u.last_seen_at,
+            d.model, d.os_version, d.platform, d.build AS device_build, d.seen_at, d.granted, d.denied,
+            s.turns, s.p50, s.max_ms, s.live_turns, s.slow_turns
+       FROM users u
+       LEFT JOIN user_devices d ON d.user_id = u.id
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*)::int AS turns,
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY t.latency_ms)::int AS p50,
+                MAX(t.latency_ms)::int AS max_ms,
+                COUNT(*) FILTER (WHERE t.source LIKE 'ai-live%')::int AS live_turns,
+                COUNT(*) FILTER (WHERE t.latency_ms > 6000)::int AS slow_turns
+           FROM conversation_turns t
+          WHERE t.user_id = u.id AND t.role = 'assistant' AND t.created_at > $1
+       ) s ON TRUE
+      WHERE d.user_id IS NOT NULL OR s.turns > 0
+      ORDER BY GREATEST(COALESCE(d.seen_at, 0), COALESCE(u.last_seen_at, 0)) DESC
+      LIMIT 200`,
+    [since]
+  );
+  res.json({ devices: rows, days });
 });
 
 router.get("/api/users/:id", async (req, res) => {
@@ -494,7 +529,8 @@ router.get("/api/recordings/:id/audio", async (req, res) => {
 
   const stamp = new Date(Number(row.started_at)).toISOString()
     .replace(/[:.]/g, "-").slice(0, 19);
-  res.setHeader("Content-Type", "audio/mp4");
+  const wav = row.format === "wav";
+  res.setHeader("Content-Type", wav ? "audio/wav" : "audio/mp4");
   res.setHeader("Accept-Ranges", "bytes");
   res.setHeader("Cache-Control", "private, max-age=600");
   res.setHeader("Content-Disposition",

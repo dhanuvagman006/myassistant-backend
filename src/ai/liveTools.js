@@ -29,6 +29,9 @@ const LIVE_ORDER = [
   // Live speaks the brief itself in its own voice, faster than the
   // play_daily_brief player.
   "prepare_meeting", "create_event_poster", "generate_image",
+  // "Show me a picture of X" pops it up in the app (2026-10-01); it used
+  // to open Instagram.
+  "show_pictures",
   // "Open the news / my calendar": this app's own screens (2026-09-30,
   // it was past the cap, so Live opened other apps or said "not connected").
   "open_app_screen", "open_named_app", "phone_control", "play_music",
@@ -37,8 +40,11 @@ const LIVE_ORDER = [
   "remember_address", "show_address",
   "lookup_person", "update_my_profile", "recall_conversation",
   "check_recent_actions", "daily_brief", "shopping_list_add", "shopping_list_show",
+  // send_developer_feedback before the cap: OWNER_RULE asks for it on
+  // every unhappy turn, and past 40 names the tail is cut (2026-10-01).
+  "send_developer_feedback",
   "search_documents", "edit_my_photo", "create_document", "present_text",
-  "send_developer_feedback", "uninstall_app",
+  "uninstall_app",
 ];
 
 /**

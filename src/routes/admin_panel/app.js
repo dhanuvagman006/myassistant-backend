@@ -242,6 +242,7 @@ const NAV = [
   ["#/analytics", "Analytics"],
   ["#/conversations", "Conversations"],
   ["#/recordings", "Recordings"],
+  ["#/phones", "Phones"],
   ["#/video-notes", "Video notes"],
   ["#/documents", "Documents"],
   ["#/activity", "Activity"],
@@ -296,6 +297,7 @@ async function render() {
     if (hash.startsWith("#/analytics")) return await viewAnalytics();
     if (hash.startsWith("#/conversations")) return await viewConversations();
     if (hash.startsWith("#/recordings")) return await viewRecordings();
+    if (hash.startsWith("#/phones")) return await viewPhones();
     if (hash.startsWith("#/video-notes")) return await viewVideoNotes();
     if (hash.startsWith("#/documents")) return await viewDocuments();
     if (hash.startsWith("#/activity")) return await viewActivity();
@@ -408,8 +410,11 @@ async function viewUsers() {
                                   : h("span", { class: "badge warn" }, "unverified"))
           : h("span", { class: "faint" }, "—")),
         h("td", {}, h("span", { class: "badge neutral" }, u.provider || "?")),
-        h("td", {}, u.has_device ? h("span", { class: "badge accent" }, "push ok")
-                                 : h("span", { class: "faint" }, "no device")),
+        h("td", {},
+          h("div", {}, u.has_device ? h("span", { class: "badge accent" }, "push ok")
+                                    : h("span", { class: "faint" }, "no device")),
+          u.device_model ? h("div", { class: "sub", style: "margin-top:4px;" }, u.device_model,
+            u.device_os ? h("span", { class: "faint" }, " · " + u.device_os) : null) : null),
         h("td", {}, u.app_build
           ? h("span", { class: "badge neutral" }, "build " + u.app_build)
           : h("span", { class: "faint" }, "unknown")),
@@ -587,7 +592,13 @@ async function viewUserDetail(id) {
             field("Gender", fGender), field("Birthday", fBirthday),
             field("Profession", fProf), field("Organisation", fOrg),
             field("Location", fLoc), field("Preferred language", fLang)),
-          saveBtn),
+          saveBtn,
+          u.device_model || u.device_os
+            ? h("div", { class: "sub", style: "margin-top:12px;" },
+                "Handset: ", h("b", {}, u.device_model || "unknown"),
+                u.device_os ? " · " + u.device_os : "",
+                u.app_build ? " · build " + u.app_build : "")
+            : null),
         h("div", { class: "card section-gap" },
           h("h3", {}, "Phone ", h("span", { class: "hint" }, "setting a number here also marks it verified")),
           u.phone_number ? h("div", { style: "margin-bottom:10px;" }, "Current: ", h("strong", {}, u.phone_number)) : null,
@@ -970,7 +981,10 @@ async function viewConversations() {
           ? h("a", { href: "#/user/" + c.user_id }, c.user_name || "#" + c.user_id)
           : h("span", { class: "faint" }, "—")),
         h("td", { style: "max-width:280px;" }, c.question || h("span", { class: "faint" }, "—")),
-        h("td", { class: "sub", style: "max-width:380px;" }, c.answer || ""),
+        h("td", { class: "sub", style: "max-width:380px;" }, c.answer || "",
+          c.audio_id ? h("div", { style: "margin-top:6px;" },
+            h("audio", { controls: "controls", preload: "none", style: "width:240px;height:30px;",
+                         src: `/admin-panel/api/recordings/${c.audio_id}/audio` })) : null),
         h("td", {}, latencyPill(c.latency_ms)),
         h("td", { class: "sub" }, c.tools || ""),
         h("td", { class: "sub", style: "white-space:nowrap;" },
@@ -1021,6 +1035,46 @@ async function viewConversations() {
         body),
       moreBtn)));
   await load(false);
+}
+
+/* ------------------------------------------------------------------ */
+/* Phones — which handset, and how the assistant does on it            */
+/* ------------------------------------------------------------------ */
+
+async function viewPhones() {
+  shell("#/phones", loading());
+  const d = await api("/devices?days=7");
+  const ms = (v) => (v ? (v / 1000).toFixed(1) + "s" : "—");
+  const rows = d.devices.map((r) =>
+    h("tr", {},
+      h("td", {}, h("a", { href: "#/user/" + r.user_id }, r.name || "#" + r.user_id)),
+      h("td", {}, r.model || h("span", { class: "faint" }, "not reported yet"),
+        r.os_version ? h("div", { class: "sub" }, r.os_version) : null),
+      h("td", {}, r.app_build ? h("span", { class: "badge neutral" }, "build " + r.app_build)
+                              : h("span", { class: "faint" }, "—")),
+      h("td", { class: "sub" }, String(r.turns || 0),
+        r.live_turns ? h("span", { class: "faint" }, ` (${r.live_turns} fast voice)`) : null),
+      h("td", {}, latencyPill(r.p50 || 0)),
+      h("td", {}, r.max_ms ? latencyPill(r.max_ms) : h("span", { class: "faint" }, "—")),
+      h("td", { class: r.slow_turns ? "" : "faint" }, String(r.slow_turns || 0)),
+      h("td", { class: "sub", style: "max-width:260px;" },
+        r.denied ? h("span", { style: "color:#b45309;" }, "denied: " + r.denied) : h("span", { class: "faint" }, "all granted")),
+      h("td", { class: "sub", style: "white-space:nowrap;" },
+        timeAgo(Math.max(Number(r.seen_at || 0), Number(r.last_seen_at || 0)) || Date.now()))));
+  shell("#/phones", h("div", {},
+    h("div", { class: "page-head" },
+      h("div", {}, h("div", { class: "page-title" }, "Phones"),
+        h("div", { class: "page-sub" },
+          "Each tester's handset and Android version beside the assistant's reply times for them this week. " +
+          "A phone with a slow median or many slow turns is where to look when it \"acts differently\"."))),
+    h("div", { class: "card table-card" },
+      h("table", {},
+        h("thead", {}, h("tr", {},
+          h("th", {}, "User"), h("th", {}, "Phone"), h("th", {}, "App"),
+          h("th", {}, "Turns (7d)"), h("th", {}, "Median reply"), h("th", {}, "Slowest"),
+          h("th", {}, "Slow (>6s)"), h("th", {}, "Permissions"), h("th", {}, "Last seen"))),
+        h("tbody", {}, ...(rows.length ? rows
+          : [h("tr", {}, h("td", { colspan: 9, class: "chart-empty" }, "No phones reported yet."))]))))));
 }
 
 /* ------------------------------------------------------------------ */
@@ -1553,12 +1607,16 @@ async function viewRecordings() {
           ? h("a", { href: "#/user/" + r.user_id }, r.user_name || "#" + r.user_id)
           : h("span", { class: "faint" }, "—")),
       h("td", { style: "white-space:nowrap;" }, fmtLen(r.duration_ms)),
-      h("td", { class: "sub" }, String(r.turns || 0)),
+      h("td", { class: "sub" }, r.format === "wav"
+        ? h("div", { style: "max-width:360px;" },
+            h("div", {}, h("span", { class: "faint" }, "User: "), r.question || "—"),
+            h("div", { class: "sub" }, h("span", { class: "faint" }, "Assistant: "), r.answer || "—"))
+        : String(r.turns || 0)),
       h("td", { class: "sub", style: "white-space:nowrap;" }, fmtBytes(r.bytes)),
       h("td", {}, player),
       h("td", { style: "white-space:nowrap;" },
         h("a", { class: "btn", href: `/admin-panel/api/recordings/${r.id}/audio`,
-                 download: `call-${r.id}.m4a` }, "Download"),
+                 download: `${r.format === "wav" ? "turn" : "call"}-${r.id}.${r.format === "wav" ? "wav" : "m4a"}` }, "Download"),
         " ",
         h("button", {
           class: "btn danger",
@@ -1618,7 +1676,7 @@ async function viewRecordings() {
       h("table", {},
         h("thead", {}, h("tr", {},
           h("th", {}, "When"), h("th", {}, "User"), h("th", {}, "Length"),
-          h("th", {}, "Turns"), h("th", {}, "Size"), h("th", {}, "Listen"),
+          h("th", {}, "Turns / words"), h("th", {}, "Size"), h("th", {}, "Listen"),
           h("th", {}, ""))),
         body),
       moreBtn)));

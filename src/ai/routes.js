@@ -72,6 +72,42 @@ router.post("/turn", async (req, res) => {
   res.status(out.status).json(out.json);
 });
 
+/**
+ * A LIVE TURN'S AUDIO, for review (2026-10-01, src/live/turnAudio.js):
+ * multipart with `user` (PCM16 mono, user_rate Hz, default 16000) and
+ * `agent` (PCM16 mono, agent_rate Hz, default 24000), plus turn_id and
+ * started_at. Stored only for a user who said yes to "help improve";
+ * otherwise 204 and the phone simply stops sending.
+ */
+const turnAudioUpload = require("multer")({
+  storage: require("multer").memoryStorage(),
+  limits: { fileSize: 6 * 1024 * 1024, files: 2, fields: 8 },
+});
+router.post("/turn-audio", turnAudioUpload.fields([{ name: "user", maxCount: 1 }, { name: "agent", maxCount: 1 }]),
+  async (req, res) => {
+    const uid = userOf(req, res);
+    if (!uid) return;
+    const f = req.files || {};
+    const body = req.body || {};
+    const turnId = String(body.turn_id || "").trim();
+    if (!turnId) return res.status(400).json({ error: "turn_id required" });
+    const rate = (v, d) => { const n = Number(v); return n >= 8000 && n <= 48000 ? Math.round(n) : d; };
+    try {
+      const id = await require("../live/turnAudio").save(uid, {
+        turnId,
+        userPcm: f.user && f.user[0] ? f.user[0].buffer : null,
+        userRate: rate(body.user_rate, 16000),
+        agentPcm: f.agent && f.agent[0] ? f.agent[0].buffer : null,
+        agentRate: rate(body.agent_rate, 24000),
+        startedAt: Number(body.started_at) || Date.now(),
+      });
+      if (!id) return res.status(204).end();
+      res.json({ ok: true, id });
+    } catch (e) {
+      res.status(400).json({ error: String(e.message || e).slice(0, 120) });
+    }
+  });
+
 router.post("/firebase-token", async (req, res) => {
   const uid = userOf(req, res);
   if (!uid) return;

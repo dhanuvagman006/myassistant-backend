@@ -169,6 +169,9 @@ async function adminConversations({ q, userId, source, minLatency, limit = 50, o
   return query(
     `SELECT t.id, t.user_id, u.name AS user_name, t.text AS answer,
             t.latency_ms, t.source, t.tools, t.app_build, t.created_at,
+            (SELECT r.id FROM live_recordings r
+              WHERE t.turn_id <> '' AND r.user_id = t.user_id AND r.state = 'ready'
+                AND r.session_id = 'turn:' || t.turn_id LIMIT 1) AS audio_id,
             COALESCE(
               (SELECT q.text FROM conversation_turns q
                 WHERE q.turn_id <> '' AND q.turn_id = t.turn_id
