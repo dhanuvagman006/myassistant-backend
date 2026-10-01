@@ -230,9 +230,7 @@ function nameHits(raw, canonicalName) {
  */
 // "Speak in Canada" is "speak in Kannada" misheard (the client, 2026-10-01:
 // "k n Ad", "canada"); after a speak-verb the country is never meant.
-const KANNADA_MISHEARD = new RegExp(
-  "(" + B + "(?:speak|talk|reply|answer|respond|say|tell|converse|chat|continue|switch|go|change)" + B + "[^.?!]{0,40}?" + B + "(?:in|to|into|with)" + S + "+)(?:canada|kanada|kannad|k" + S + "?n" + S + "?ad" + "[a-z]*|canara)" + B,
-  "i");
+const KANNADA_MISHEARD = /(\b(?:speak|talk|reply|answer|respond|say|tell|converse|chat|continue|switch|go|change)\b[^.?!]{0,40}?\b(?:in|to|into|with)\s+)(?:canada|kanada|kannad|k\s?n\s?ad[a-z]*|canara)\b/i;
 
 function requestedLanguage(text) {
   const none = { language: "", permanent: false };
