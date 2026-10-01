@@ -521,7 +521,15 @@ async function editImage({
     const err = new NoProviderError(notes);
     // Distinguish "nothing is configured" from "it was tried and refused":
     // the first is the operator's problem, the second is the user's photo.
-    if (notes.some((n) => /no image back|quota|HTTP|timed out|400/.test(n))) {
+    if (notes.some((n) => /quota|billing|429|cooling down/.test(n))) {
+      // The model is there but the account cannot pay for it (owner's
+      // phone, 2026-10-01: "Try a beard" blamed his photo for a 429).
+      // Honest, and the same code the app already shows a banner for.
+      err.code = "no_provider";
+      err.message =
+        "Photo edits are switched off right now — nothing wrong with your photo. " +
+        "The developer has been told.";
+    } else if (notes.some((n) => /no image back|HTTP|timed out|400/.test(n))) {
       err.code = "edit_failed";
       err.message =
         "That edit didn't come back. It usually means the photo was unclear, " +
@@ -555,7 +563,13 @@ async function editImage({
 function configured() {
   const out = [];
   for (const p of CHAIN) {
-    const ready = p.ready ? p.ready() : p.name === "gemini" ? !!process.env.GEMINI_API_KEY : false;
+    // Gemini counts as ready only when the account can pay for its image
+    // model and it is not cooling down after a quota error — otherwise
+    // the app offered "Make it" and the server said no (2026-10-01).
+    const ready = p.ready ? p.ready()
+      : p.name === "gemini"
+        ? !!process.env.GEMINI_API_KEY && process.env.GEMINI_IMAGE_BILLING !== "off" && Date.now() >= geminiBlockedUntil
+        : false;
     out.push({ name: p.name, ready, vtoOnly: !!p.vtoOnly });
   }
   return out;
