@@ -117,19 +117,87 @@ async function fetchImage(url) {
  * The first picture of `subject` that really downloads:
  * { buffer, mime, url, page, title, source } — or null.
  */
+// Words that say nothing about WHO is in the picture.
+const NOISE = new Set([
+  "the", "of", "from", "in", "at", "a", "an", "and", "mr", "mrs", "ms", "dr", "sir", "madam", "shri", "smt",
+  "ji", "picture", "pictures", "photo", "photos", "image", "images", "pic", "show", "me", "some", "please",
+]);
+
+/** The name tokens of a subject: letters only, three or more, no noise. */
+function nameTokens(subject) {
+  return String(subject || "").toLowerCase().replace(/[^\p{L}\s]/gu, " ").split(/\s+/)
+    .filter((w) => w.length >= 3 && !NOISE.has(w));
+}
+
+/** "X from Y" / "X of Y" → the person and the place, when it reads that way. */
+function splitSubject(subject) {
+  const m = /^(.+?)\s+(?:from|of|in|at)\s+(.+)$/i.exec(String(subject || "").trim());
+  return m ? { name: m[1].trim(), place: m[2].trim() } : { name: String(subject || "").trim(), place: "" };
+}
+
+/** Looks like a particular person: two or more name words, or initials ("K.P. Adhikari"). */
+function looksLikePerson(subject) {
+  const { name } = splitSubject(subject);
+  if (/^(the|a|an|some)\s/i.test(name)) return false; // "the Taj Mahal" is a place
+  const words = name.split(/\s+/).filter(Boolean);
+  const caps = words.filter((w) => /^[A-Z\u0900-\u0DFF]/.test(w)).length;
+  const initials = /\b[A-Z]\.(?:\s?[A-Z]\.)*/.test(name);
+  return words.length >= 2 && (initials || caps >= 2) && nameTokens(name).length >= 1;
+}
+
+/**
+ * DOES THE RESULT NAME THE PERSON ASKED FOR? Image search answers any
+ * query with somebody; for "K.P. Jagadish Adhikari from Moodabidri" it
+ * showed a stranger (the client, 2026-10-01, feedback #15). A candidate
+ * counts only when its title or page carries the name — at least the
+ * longest name word and half of the rest.
+ */
+function nameMatch(subject, cand) {
+  if (!looksLikePerson(subject)) return true;
+  const toks = nameTokens(splitSubject(subject).name);
+  if (!toks.length) return true;
+  const hay = `${cand.title || ""} ${decodeURIComponent(String(cand.page || "")).replace(/[-_/.]+/g, " ")}`.toLowerCase();
+  const longest = toks.reduce((a, b) => (b.length > a.length ? b : a), "");
+  const hits = toks.filter((t) => hay.includes(t)).length;
+  return hay.includes(longest) && hits * 2 >= toks.length;
+}
+
+/** The query sent to the search: the name in quotes, the place beside it. */
+function searchQuery(subject) {
+  const { name, place } = splitSubject(subject);
+  if (!looksLikePerson(subject)) return String(subject || "").trim();
+  return place ? `"${name}" ${place}` : `"${name}"`;
+}
+
+/**
+ * The picture, or null. For a named person, `null` with `unsure` set
+ * means pictures came back but none could be tied to that name — the
+ * tool then says so instead of showing a stranger.
+ */
 async function findPicture(subject) {
   const q = String(subject || "").trim();
   if (!q) return null;
-  const candidates = [...(await braveImages(q, 6))];
-  if (candidates.length < 2) candidates.push(...(await wikipediaImages(q)));
+  const person = looksLikePerson(q);
+  const candidates = [...(await braveImages(searchQuery(q), 8))];
+  if (candidates.length < 2 && person) candidates.push(...(await braveImages(q, 6)));
+  if (candidates.length < 2) candidates.push(...(await wikipediaImages(splitSubject(q).name)));
   const seen = new Set();
+  let matched = false;
   for (const c of candidates) {
     if (seen.has(c.url)) continue;
     seen.add(c.url);
+    if (person && !nameMatch(q, c)) continue;
+    matched = true;
     const img = await fetchImage(c.url);
     if (img) return { ...img, ...c };
+  }
+  // Pictures came back and not one of them names the person asked for.
+  if (person && candidates.length && !matched) {
+    const err = new Error(`found pictures, but none that is surely ${splitSubject(q).name}`);
+    err.code = "unsure";
+    throw err;
   }
   return null;
 }
 
-module.exports = { findPicture, braveImages, wikipediaImages, fetchImage };
+module.exports = { findPicture, braveImages, wikipediaImages, fetchImage, nameMatch, searchQuery, looksLikePerson, splitSubject };

@@ -3105,7 +3105,10 @@ function registerBuiltins() {
       "Turn LIVE TRANSLATOR (interpreter) mode ON or OFF. Use when the " +
       "user asks to translate a conversation with someone present — 'be my " +
       "translator', 'translate between Kannada and English', 'help me talk " +
-      "to him in Hindi' — and OFF for 'stop translating'. While ON, the " +
+      "to him in Hindi' — and OFF for 'stop translating'. NOT for a " +
+      "one-off phrase: 'how do you say good morning in Kannada', 'translate " +
+      "this to Malayalam: …', 'what is X in Hindi' — answer those YOURSELF, " +
+      "directly, in that language's own script, and say it aloud. While ON, the " +
       "device listens to EVERYONE nearby (not only the owner's voice) and " +
       "each utterance heard is spoken back in the other language. Always " +
       "pass both languages when turning it on; infer them from the request " +
@@ -4527,6 +4530,19 @@ function registerBuiltins() {
       try {
         pic = await require("./pictures").findPicture(subject);
       } catch (e) {
+        if (e.code === "unsure") {
+          // A stranger's face is worse than no picture (feedback #15).
+          return {
+            ok: false,
+            error: e.message,
+            data: {
+              hint:
+                "Say in one line that you found pictures but none you are sure is " +
+                "this person, and ask for one more detail (their work, their town) " +
+                "if they want to try again. Never show a guess as if it were them.",
+            },
+          };
+        }
         return { ok: false, error: `picture lookup failed: ${String(e.message).slice(0, 100)}`, data: { hint } };
       }
       if (!pic) return { ok: false, error: `no picture of ${subject} found`, data: { hint } };

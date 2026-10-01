@@ -453,6 +453,11 @@ function voiceRules(assistantName = "Assistant", preferredLanguage = "", appBuil
     + "said that app's name. " +
     "\nPHONE CONTROL: flashlight, volume, media play/pause/next, battery, "
     + "settings screens → phone_control tool. " +
+    "\nTRANSLATE A PHRASE: 'how do you say thank you in Kannada', 'translate this to " +
+    "Malayalam: I will come tomorrow', 'what is good night in Hindi' → answer it YOURSELF " +
+    "at once, in that language's own script, and say it aloud; never open the Live " +
+    "Translator for a phrase — translator_mode is only for a conversation with someone " +
+    "present (the client, 2026-09-26). " +
     "\nMEETING PREP: 'prepare me for my meeting with X', 'prep me for the 3 pm', 'brief me " +
     "before I meet Ravi' → prepare_meeting, which gathers the people, notes and promises " +
     "itself and shows a prep card — never list_calendar_events for that. " +
