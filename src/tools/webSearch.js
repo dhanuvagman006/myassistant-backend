@@ -130,7 +130,7 @@ async function run(query, ctx = {}) {
   let blocked = false; // any provider refused us, not merely found nothing
   for (const p of chain) {
     try {
-      const r = await BACKENDS[p](q, { isLive, lat: ctx.lat, lng: ctx.lng });
+      const r = await BACKENDS[p](q, { isLive, stable: require("./pageText").prefersStablePages(q), lat: ctx.lat, lng: ctx.lng });
       if (r && r.length) {
         results = r;
         used = p;
@@ -433,7 +433,9 @@ const BACKENDS = {
 
     // "What's the news" asked twice in a day must not return the same four
     // stories, so a live question is restricted to the past day first.
-    let out = await ask(opts.isLive ? "pd" : null);
+    // …unless it is a timetable or a route: the settled page beats the one
+    // touched today, which was about another route (pageText.prefersStablePages).
+    let out = await ask(opts.isLive && !opts.stable ? "pd" : null);
 
     // A DAY-RESTRICTED SEARCH THAT FINDS NOTHING IS NOT AN ABSENCE.
     //

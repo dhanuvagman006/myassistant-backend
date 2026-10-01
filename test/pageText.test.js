@@ -36,6 +36,12 @@ async function check(name, fn) {
     }
   });
 
+  await check("timetables and routes prefer the settled page; today's rates and news keep the day filter", () => {
+    for (const q of ["flight timings from Mangalore to Bangalore tomorrow", "train schedule Mysore to Bangalore", "Mangalore to Bangalore flights",
+      "when does Lulu mall open, what are the hours"]) assert.strictEqual(pt.prefersStablePages(q), true, q);
+    for (const q of ["gold rate today in Bangalore", "what's the news", "India vs Australia score"]) assert.strictEqual(pt.prefersStablePages(q), false, q);
+  });
+
   await check("snippets with a time, a price or a duration already answer", () => {
     assert.strictEqual(pt.hasFigures([{ title: "IndiGo 6E 123", snippet: "departs 06:45, arrives 07:55" }]), true);
     assert.strictEqual(pt.hasFigures([{ title: "Fares", snippet: "from ₹2,499 one way" }]), true);

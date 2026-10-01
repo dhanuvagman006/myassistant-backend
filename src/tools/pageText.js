@@ -52,6 +52,19 @@ function wantsFigures(query) {
   return WANTS_FIGURES.test(String(query || ""));
 }
 
+/**
+ * Questions whose best page is the SETTLED one, not the one updated
+ * today: a timetable, a route ("from Mangalore to Bangalore"), opening
+ * hours. Asking the search for the past day first (right for news and
+ * today's rates) returned pages about OTHER routes that happened to be
+ * updated today (2026-10-01).
+ */
+function prefersStablePages(query) {
+  const q = String(query || "");
+  return /(timing|timings|schedule|schedules|timetable|hours|duration|how long|distance|route)/i.test(q) ||
+    /from\s+\S+(?:\s+\S+)?\s+to\s+\S+/i.test(q) || /\S+\s+to\s+\S+\s+(flight|flights|train|trains|bus|buses)/i.test(q);
+}
+
 /** Do the search snippets already carry a figure? */
 function hasFigures(results) {
   return (results || []).slice(0, 5).some((r) => FIGURE.test(`${r.title || ""} ${r.snippet || ""}`));
@@ -72,4 +85,4 @@ function figureLines(text, max = 1200) {
   return out;
 }
 
-module.exports = { extractReadableText, decodeEntities, wantsFigures, hasFigures, figureLines, FIGURE };
+module.exports = { extractReadableText, decodeEntities, wantsFigures, hasFigures, figureLines, prefersStablePages, FIGURE };
