@@ -3974,7 +3974,12 @@ function registerBuiltins() {
   registry.register({
     name: "open_webpage",
     description:
-      "Open a website on the user's phone. Pass `url` ONLY for a service " +
+      "Open a website on the user's phone — for DOING something there " +
+      "(book, buy, log in, fill a form) or when the user asked to open a " +
+      "site. NEVER as the answer to a question: 'what time is the flight', " +
+      "'how much is the fare', 'when does it open' are answered from " +
+      "web_search, in your own words; opening Google for them is a " +
+      "failure. Pass `url` ONLY for a service " +
       "whose OFFICIAL domain you are completely certain of (IndiGo → " +
       "https://www.goindigo.in, IRCTC → https://www.irctc.co.in, income " +
       "tax e-filing → https://eportal.incometax.gov.in). For ANYTHING " +
@@ -9402,34 +9407,6 @@ function parseWhenMs(when, tzOffsetMin) {
  * otherwise dominates a news page and pushes the article out of the 8 kB
  * budget. What remains collapses to paragraphs.
  */
-function extractReadableText(html) {
-  let h = String(html || "");
-  h = h.replace(/<!--[\s\S]*?-->/g, " ");
-  h = h.replace(/<(script|style|noscript|svg|iframe|form|template)\b[\s\S]*?<\/\1>/gi, " ");
-  h = h.replace(/<(nav|header|footer|aside)\b[\s\S]*?<\/\1>/gi, " ");
-  // Block edges become line breaks so sentences do not fuse across them.
-  h = h.replace(/<\/(p|div|section|article|li|h[1-6]|tr|blockquote)>/gi, "\n");
-  h = h.replace(/<br\s*\/?>/gi, "\n");
-  h = h.replace(/<[^>]+>/g, " ");
-  h = decodeEntities(h);
-  return h
-    .split("\n")
-    .map((line) => line.replace(/[ \t\u00a0]+/g, " ").trim())
-    .filter((line) => line.length > 1)
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function decodeEntities(t) {
-  return String(t || "")
-    .replace(/&(amp|lt|gt|quot|#39|apos|nbsp|mdash|ndash|hellip|rsquo|lsquo|ldquo|rdquo);/g,
-      (_, e) => ({
-        amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'", apos: "'",
-        nbsp: " ", mdash: "—", ndash: "–", hellip: "…",
-        rsquo: "\u2019", lsquo: "\u2018", ldquo: "\u201c", rdquo: "\u201d",
-      })[e] || " ")
-    .replace(/&#x?[0-9a-f]+;/gi, " ");
-}
+const { extractReadableText } = require("./pageText");
 
 module.exports = { registerBuiltins, reverseGeocode };

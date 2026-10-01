@@ -234,6 +234,32 @@ async function run(query, ctx = {}) {
           }
         : {}),
     };
+    // "What are the flight timings from Mangalore to Bangalore" (the
+    // owner, 2026-10-01): three searches, pages whose snippets carried no
+    // times, and the assistant offered Google. When the question wants
+    // figures and the snippets have none, read the top pages and hand
+    // over the lines that carry times and prices. SEARCH_DEEP_READ=off
+    // switches it off.
+    if (!fallback && process.env.SEARCH_DEEP_READ !== "off") {
+      const pt = require("./pageText");
+      if (pt.wantsFigures(q) && !pt.hasFigures(results)) {
+        const pages = await deepRead(results);
+        if (pages.length) {
+          out.data = { results, pages };
+          out.speak += "\n" + pages.map((p) => `From ${p.site}: ${p.lines.join(" | ")}`).join("\n");
+          out.note =
+            "The figures the question asked for are in `pages` (read from the top results). " +
+            "Answer from them in your own words — the specific times or prices, with the site " +
+            "they came from. Do NOT offer to open a website for a question; only if they want " +
+            "to book or buy.";
+        } else {
+          out.note =
+            "No page carried the exact figures. Say plainly what you found (which airlines, " +
+            "how long, typical times) and that the exact timetable was not in reach — do NOT " +
+            "offer to open Google; offer open_webpage only if they want to book.";
+        }
+      }
+    }
     resultCache.set(cacheKey, { ts: Date.now(), out, shape });
     if (resultCache.size > 200) {
       resultCache.delete(resultCache.keys().next().value);
@@ -552,4 +578,33 @@ const BACKENDS = {
   },
 };
 
-module.exports = { run, provider };
+/**
+ * The lines with figures from the top two result pages, read through
+ * safeFetch (model-visible URLs must not reach this server's own network).
+ * [{ site, url, lines }] — pages that fail, time out, or carry no figure
+ * are left out.
+ */
+async function deepRead(results, { max = 2, timeoutMs = 8000 } = {}) {
+  const pt = require("./pageText");
+  const { safeFetch } = require("../services/safeFetch");
+  const picks = (results || []).filter((r) => /^https?:\/\//i.test(r.url || "")).slice(0, max);
+  const pages = await Promise.all(picks.map(async (r) => {
+    try {
+      const resp = await safeFetch(r.url, { headers: { "user-agent": "MyAssistant/1.0 (+https://hariassistant.tech)", accept: "text/html" } }, { timeoutMs });
+      if (!resp.ok) return null;
+      const type = String(resp.headers.get("content-type") || "");
+      if (!/text\/html|application\/xhtml/i.test(type)) return null;
+      const html = (await resp.text()).slice(0, 600_000);
+      const lines = pt.figureLines(pt.extractReadableText(html), 1200);
+      if (!lines.length) return null;
+      let site = r.url;
+      try { site = new URL(r.url).hostname.replace(/^www\./, ""); } catch (_) { /* keep */ }
+      return { site, url: r.url, lines };
+    } catch (_) {
+      return null;
+    }
+  }));
+  return pages.filter(Boolean);
+}
+
+module.exports = { run, provider, deepRead };

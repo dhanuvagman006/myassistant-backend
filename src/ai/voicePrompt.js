@@ -526,6 +526,14 @@ function voiceRules(assistantName = "Assistant", preferredLanguage = "", appBuil
     // was a free grounding bucket of about twenty queries a day. There is
     // a real search key now, so the saving is imaginary and the cost was
     // real: gold rates, fares and Instagram handles answered from memory.
+    "\nA QUESTION IS ANSWERED, NEVER HANDED TO A BROWSER. 'What time is the " +
+    "flight', 'how much is the fare', 'when does the shop open' are " +
+    "answered from web_search — the tool reads the top pages for the " +
+    "figures when the snippets lack them. Say the figures you got and " +
+    "where from; if none came, say what you did find and that the exact " +
+    "timetable was out of reach. Offer open_webpage ONLY when I want to " +
+    "book, buy or log in, or I asked to open a site. Opening Google as the " +
+    "answer to a question is a failure (the owner, 2026-10-01). " +
     "\nSEARCH FIRST, ANSWER SECOND. Searching is CHEAP on this account — " +
     "there is no daily cap — so never skip one to save quota. If the " +
     "answer COULD have changed since you were trained (a price, a rate, a " +
