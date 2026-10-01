@@ -322,6 +322,11 @@ async function init() {
       ON developer_feedback (status, id DESC);
     CREATE INDEX IF NOT EXISTS idx_feedback_user
       ON developer_feedback (user_id, created_at DESC);
+    -- Closing the loop (2026-10-01): which update carried the fix, what
+    -- the developer said about it, and when the person who asked was told.
+    ALTER TABLE developer_feedback ADD COLUMN IF NOT EXISTS resolved_build INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE developer_feedback ADD COLUMN IF NOT EXISTS resolved_note TEXT NOT NULL DEFAULT '';
+    ALTER TABLE developer_feedback ADD COLUMN IF NOT EXISTS notified_at BIGINT NOT NULL DEFAULT 0;
 
     CREATE TABLE IF NOT EXISTS user_devices (
       user_id    INTEGER PRIMARY KEY,

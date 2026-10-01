@@ -95,6 +95,54 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
       false, "and an unbacked one still is");
   });
 
+  await atest("a request to change the app is filed with where they were, and answered in one line", async () => {
+    const r = await tool.execute({
+      kind: "improvement", summary: "Make the reminder text bigger", user_asked: true,
+    }, { ...ctx, userText: "I want the reminder text bigger", platform: "android", lang: "kn" });
+    assert.strictEqual(r.ok, true);
+    assert.match(r.note, /with the developer/);
+    const row = await db.one(`SELECT * FROM developer_feedback WHERE user_id=$1 AND summary=$2`, [UID, "Make the reminder text bigger"]);
+    assert.match(row.details, /Said: "I want the reminder text bigger"/);
+    assert.match(row.details, /build 99 · android · lang kn/);
+    assert.strictEqual(row.user_asked, 1);
+  });
+
+  await atest("done with a build tells the person who asked, once, and shows in their own list", async () => {
+    const store = require("../src/feedback/store");
+    const push = require("../src/services/push");
+    const pushes = [];
+    const real = push.sendNotification;
+    push.sendNotification = async (token, title, body, data) => { pushes.push({ token, title, body, data }); return true; };
+    await db.run(`UPDATE users SET fcm_token='tok-fb' WHERE id=$1`, [UID]).catch(() => {});
+    const u = await db.findById(UID).catch(() => null);
+    try {
+      const row = await db.one(`SELECT id FROM developer_feedback WHERE user_id=$1 AND summary=$2`, [UID, "Make the reminder text bigger"]);
+      const inbox = require("../src/feedback/inbox");
+      const listed = await inbox.cli(["list"], () => {});
+      assert.match(listed, /Make the reminder text bigger/);
+      const done = await inbox.cli(["done", String(row.id), "--build", "144", "--note", "Bigger in Reminders"], () => {});
+      assert.match(done, /done: #/);
+      const after = await db.one(`SELECT * FROM developer_feedback WHERE id=$1`, [row.id]);
+      assert.strictEqual(after.status, "done");
+      assert.strictEqual(after.resolved_build, 144);
+      if (u?.fcm_token) {
+        assert.strictEqual(pushes.length, 1);
+        assert.match(pushes[0].title, /You asked: Make the reminder text bigger/);
+        assert.match(pushes[0].body, /update 144/);
+        assert.ok(after.notified_at > 0);
+        // Telling them again would be noise.
+        await store.notifyResolved(after);
+        assert.strictEqual(pushes.length, 1);
+      }
+      const mine = await registry.get("check_my_requests").execute({}, ctx);
+      const hit = mine.data.requests.find((q) => q.id === row.id);
+      assert.ok(hit, "listed for the user");
+      assert.match(hit.status, /done in update 144 — Bigger in Reminders/);
+    } finally {
+      push.sendNotification = real;
+    }
+  });
+
   await atest("deleting an account deletes its feedback", () => {
     assert.match(src("routes/privacy.js"), /\["developer_feedback", "user_id"\]/);
   });

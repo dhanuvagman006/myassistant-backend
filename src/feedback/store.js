@@ -106,7 +106,8 @@ async function list({ status = "", q = "", limit = 50, offset = 0 } = {}) {
   params.push(Math.max(Number(offset) || 0, 0));
   return db.query(
     `SELECT f.id, f.user_id, f.kind, f.summary, f.details, f.user_words,
-            f.source, f.app_build, f.status, f.created_at, u.name, u.email
+            f.source, f.app_build, f.status, f.created_at, f.resolved_build, f.resolved_note,
+            u.name, u.email
        FROM developer_feedback f LEFT JOIN users u ON u.id = f.user_id
       ${where.length ? "WHERE " + where.join(" AND ") : ""}
       ORDER BY f.id DESC
@@ -129,4 +130,41 @@ async function setStatus(id, status) {
     `UPDATE developer_feedback SET status=$1 WHERE id=$2`, [status, Number(id)])) > 0;
 }
 
-module.exports = { add, alert, list, counts, setStatus, KINDS, DAILY_CAP, ALERT_WINDOW };
+/** Handled: which update carried it and a line for the person who asked. */
+async function resolve(id, { build = 0, note = "" } = {}) {
+  const n = await db.run(
+    `UPDATE developer_feedback SET status='done', resolved_build=$1, resolved_note=$2 WHERE id=$3`,
+    [Number(build) || 0, clip(note, 300), Number(id)]);
+  if (!n) return null;
+  return db.one(`SELECT * FROM developer_feedback WHERE id=$1`, [Number(id)]);
+}
+
+/**
+ * Tell the person who asked that their request shipped — once. The push
+ * is the whole loop from their side: they said it to the assistant, and
+ * the assistant's developer answered.
+ */
+async function notifyResolved(row) {
+  if (!row || !row.user_id || row.notified_at) return false;
+  const user = await db.findById(row.user_id).catch(() => null);
+  if (!user?.fcm_token) return false;
+  const body = [
+    row.resolved_build ? `It's in update ${row.resolved_build}.` : "It's done.",
+    row.resolved_note,
+  ].filter(Boolean).join(" ").slice(0, 180);
+  const ok = await require("../services/push").sendNotification(
+    user.fcm_token, `You asked: ${clip(row.summary, 60)}`, body,
+    { kind: "feedback_done", id: String(row.id) }).catch(() => false);
+  if (ok) await db.run(`UPDATE developer_feedback SET notified_at=$1 WHERE id=$2`, [Date.now(), row.id]);
+  return Boolean(ok);
+}
+
+/** What one person asked for, newest first — for "what happened to my request?". */
+async function forUser(userId, limit = 10) {
+  return db.query(
+    `SELECT id, kind, summary, status, resolved_build, resolved_note, created_at
+       FROM developer_feedback WHERE user_id=$1 ORDER BY id DESC LIMIT $2`,
+    [Number(userId), Math.min(Math.max(Number(limit) || 10, 1), 50)]);
+}
+
+module.exports = { add, alert, list, counts, setStatus, resolve, notifyResolved, forUser, KINDS, DAILY_CAP, ALERT_WINDOW };

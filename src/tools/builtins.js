@@ -767,7 +767,13 @@ function registerBuiltins() {
       "'report this' — and when YOU could not do what they asked because " +
       "the app lacks it. Write a specific summary a developer can act on: " +
       "what they tried, what happened, what they wanted. Call it alongside " +
-      "your answer; mention it only if they asked you to pass it on.",
+      "your answer; mention it only if they asked you to pass it on. " +
+      "REQUESTS TO CHANGE THE APP are the main use: 'I want the app to…', " +
+      "'can you add/change…', 'it would be better if…', 'make the text " +
+      "bigger', 'this screen should…' → kind feature or improvement, " +
+      "user_asked true, and tell them in ONE line that it is with the " +
+      "developer and they will be told when it ships. Ask ONE question " +
+      "first only if the request is too vague to act on.",
     risk: "low",
     inputSchema: {
       type: "object",
@@ -821,17 +827,58 @@ function registerBuiltins() {
             "again with user_asked true.",
         };
       }
+      // What they were doing when they said it, so the developer can
+      // reproduce it without asking: their words, the build, the device.
+      const where = [
+        ctx.userText ? `Said: "${String(ctx.userText).slice(0, 300)}"` : "",
+        ctx.appBuild ? `build ${ctx.appBuild}` : "",
+        ctx.platform ? String(ctx.platform) : "",
+        ctx.lang ? `lang ${ctx.lang}` : "",
+      ].filter(Boolean).join(" · ");
       const r = await require("../feedback/store").add(ctx.userId, {
         userAsked,
         kind: args.kind,
         summary: args.summary,
-        details: args.details,
+        details: [String(args.details || "").trim(), where].filter(Boolean).join("\n"),
         userWords: args.user_words,
         source: ctx.source || "text",
         appBuild: ctx.appBuild,
       });
       if (!r.ok) return { ok: false, error: r.error };
-      return { ok: true, data: { sent: true, duplicate: r.duplicate } };
+      return {
+        ok: true,
+        data: { sent: true, duplicate: r.duplicate },
+        note: userAsked
+          ? "Filed. Tell them in one line: it's with the developer and they'll be told when it ships. Never promise a date."
+          : "Filed quietly. Say nothing about it.",
+      };
+    },
+  });
+
+  // "What happened to what I asked for?" — their own requests and where
+  // each one stands (2026-10-01, the loop's other half).
+  registry.register({
+    name: "check_my_requests",
+    description:
+      "Show the user THEIR OWN requests and reports to the app's developer " +
+      "and where each stands — waiting, seen, or done in which update. Use " +
+      "for 'what happened to my request', 'did you tell the developer', " +
+      "'is the thing I asked for done'. Never for anyone else's feedback.",
+    risk: "low",
+    inputSchema: { type: "object", properties: {} },
+    async execute(_args, ctx) {
+      if (!ctx.userId) return { ok: false, error: "not signed in" };
+      const rows = await require("../feedback/store").forUser(ctx.userId, 10);
+      const words = (r) =>
+        r.status === "done"
+          ? `done${r.resolved_build ? ` in update ${r.resolved_build}` : ""}${r.resolved_note ? ` — ${r.resolved_note}` : ""}`
+          : r.status === "seen" ? "seen by the developer, not done yet" : "waiting for the developer";
+      return {
+        ok: true,
+        data: { requests: rows.map((r) => ({ id: r.id, kind: r.kind, summary: r.summary, status: words(r), when: r.created_at })) },
+        speak: rows.length ? "" : "You haven't asked me to pass anything to the developer yet.",
+        note: "Read the status words as given; never invent a date for anything not done.",
+      };
     },
   });
 

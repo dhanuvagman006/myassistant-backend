@@ -34,7 +34,11 @@ const FEEDBACK =
   "developer can act on. Do it quietly alongside your answer; mention it " +
   "only when they asked you to pass it on ('I've passed that on to the " +
   "developer') — and only then set user_asked true. Never promise when " +
-  "anything will be fixed. ";
+  "anything will be fixed. The user can ask for ANY change to this app " +
+  "by just saying it — 'I want the app to…', 'add…', 'change…' — that is " +
+  "a request, not a complaint: file it with user_asked true and say in " +
+  "one line it is with the developer and they will be told when it " +
+  "ships. 'What happened to my request?' → check_my_requests. ";
 
 /** For prompts whose model can call tools. */
 const OWNER_RULE = RESPECT + FEEDBACK;
