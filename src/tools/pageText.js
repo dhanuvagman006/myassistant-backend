@@ -61,8 +61,8 @@ function wantsFigures(query) {
  */
 function prefersStablePages(query) {
   const q = String(query || "");
-  return /(timing|timings|schedule|schedules|timetable|hours|duration|how long|distance|route)/i.test(q) ||
-    /from\s+\S+(?:\s+\S+)?\s+to\s+\S+/i.test(q) || /\S+\s+to\s+\S+\s+(flight|flights|train|trains|bus|buses)/i.test(q);
+  return /\b(timing|timings|schedule|schedules|timetable|hours|duration|how long|distance|route)\b/i.test(q) ||
+    /\bfrom\s+\S+(?:\s+\S+)?\s+to\s+\S+/i.test(q) || /\S+\s+to\s+\S+\s+(flight|flights|train|trains|bus|buses)\b/i.test(q);
 }
 
 /** Do the search snippets already carry a figure? */
