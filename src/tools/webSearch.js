@@ -242,8 +242,9 @@ async function run(query, ctx = {}) {
     // switches it off.
     if (!fallback && process.env.SEARCH_DEEP_READ !== "off") {
       const pt = require("./pageText");
-      if (pt.wantsFigures(q) && !pt.hasFigures(results)) {
-        const pages = await deepRead(results);
+      const kind = pt.figureKind(q);
+      if (pt.wantsFigures(q) && !pt.hasFigures(results, kind)) {
+        const pages = await deepRead(results, { kind });
         if (pages.length) {
           out.data = { results, pages };
           out.speak += "\n" + pages.map((p) => `From ${p.site}: ${p.lines.join(" | ")}`).join("\n");
@@ -586,7 +587,7 @@ const BACKENDS = {
  * [{ site, url, lines }] — pages that fail, time out, or carry no figure
  * are left out.
  */
-async function deepRead(results, { max = 2, timeoutMs = 8000 } = {}) {
+async function deepRead(results, { max = 2, timeoutMs = 8000, kind } = {}) {
   const pt = require("./pageText");
   const { safeFetch } = require("../services/safeFetch");
   const picks = (results || []).filter((r) => /^https?:\/\//i.test(r.url || "")).slice(0, max);
@@ -597,7 +598,7 @@ async function deepRead(results, { max = 2, timeoutMs = 8000 } = {}) {
       const type = String(resp.headers.get("content-type") || "");
       if (!/text\/html|application\/xhtml/i.test(type)) return null;
       const html = (await resp.text()).slice(0, 600_000);
-      const lines = pt.figureLines(pt.extractReadableText(html), 1200);
+      const lines = pt.figureLines(pt.extractReadableText(html), 1200, kind);
       if (!lines.length) return null;
       let site = r.url;
       try { site = new URL(r.url).hostname.replace(/^www\./, ""); } catch (_) { /* keep */ }

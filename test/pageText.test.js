@@ -46,6 +46,14 @@ async function check(name, fn) {
     assert.strictEqual(pt.hasFigures([{ title: "IndiGo 6E 123", snippet: "departs 06:45, arrives 07:55" }]), true);
     assert.strictEqual(pt.hasFigures([{ title: "Fares", snippet: "from ₹2,499 one way" }]), true);
     assert.strictEqual(pt.hasFigures([{ title: "Flights Mangalore to Bangalore", snippet: "Book cheap flights with us. Best deals." }]), false);
+    // A timing question is not answered by a fare, and a fare question not by a time.
+    const timing = pt.figureKind("flight timings from Mangalore to Bangalore");
+    assert.deepStrictEqual(timing, { time: true, price: false });
+    assert.strictEqual(pt.hasFigures([{ title: "Fares @ ₹7085", snippet: "flights from ₹7,085 one way, 1h 10m" }], timing), false);
+    assert.strictEqual(pt.hasFigures([{ title: "6E 7281", snippet: "departs 06:45" }], timing), true);
+    const fare = pt.figureKind("how much is the fare from Mangalore to Bangalore");
+    assert.deepStrictEqual(fare, { time: false, price: true });
+    assert.strictEqual(pt.hasFigures([{ title: "6E 7281", snippet: "departs 06:45" }], fare), false);
   });
 
   await check("the lines that carry figures come out of a page, nothing else", () => {

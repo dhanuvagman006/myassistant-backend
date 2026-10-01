@@ -52,6 +52,26 @@ function wantsFigures(query) {
   return WANTS_FIGURES.test(String(query || ""));
 }
 
+/** A clock time, and a money amount: the two kinds a question tends to want. */
+const TIME = /\b\d{1,2}[:.]\d{2}\b|\b\d{1,2}\s?(?:am|pm|a\.m\.|p\.m\.)\b/i;
+const PRICE = /(?:₹|rs\.?|inr|\$|usd)\s?\d[\d,]*/i;
+
+/** Which kind of figure the question wants: { time, price }. Neither → any figure will do. */
+function figureKind(query) {
+  const q = String(query || "");
+  return {
+    time: /\b(time|times|timing|timings|schedule|timetable|depart\w*|arriv\w*|when|what time|opening|open|close[sd]?|hours|kitne baje|kab|ಯಾವಾಗ)\b/i.test(q),
+    price: /\b(fare|fares|price|prices|cost|costs|rate|rates|how much|charges?|fee|fees|ticket|kitna|kitne|ಎಷ್ಟು|എത്ര|எவ்வளவு|ఎంత)\b/i.test(q),
+  };
+}
+
+function kindTest(kind) {
+  if (kind && kind.time && !kind.price) return (s) => TIME.test(s);
+  if (kind && kind.price && !kind.time) return (s) => PRICE.test(s);
+  if (kind && kind.time && kind.price) return (s) => TIME.test(s) || PRICE.test(s);
+  return (s) => FIGURE.test(s);
+}
+
 /**
  * Questions whose best page is the SETTLED one, not the one updated
  * today: a timetable, a route ("from Mangalore to Bangalore"), opening
@@ -66,17 +86,19 @@ function prefersStablePages(query) {
 }
 
 /** Do the search snippets already carry a figure? */
-function hasFigures(results) {
-  return (results || []).slice(0, 5).some((r) => FIGURE.test(`${r.title || ""} ${r.snippet || ""}`));
+function hasFigures(results, kind) {
+  const test = kindTest(kind);
+  return (results || []).slice(0, 5).some((r) => test(`${r.title || ""} ${r.snippet || ""}`));
 }
 
 /** The lines of a page that carry figures, in order, up to `max` characters. */
-function figureLines(text, max = 1200) {
+function figureLines(text, max = 1200, kind) {
   const out = [];
   let size = 0;
+  const test = kindTest(kind);
   for (const raw of String(text || "").split("\n")) {
     const line = raw.trim();
-    if (line.length < 6 || line.length > 240 || !FIGURE.test(line)) continue;
+    if (line.length < 6 || line.length > 240 || !test(line)) continue;
     if (out.includes(line)) continue;
     if (size + line.length > max) break;
     out.push(line);
@@ -85,4 +107,4 @@ function figureLines(text, max = 1200) {
   return out;
 }
 
-module.exports = { extractReadableText, decodeEntities, wantsFigures, hasFigures, figureLines, prefersStablePages, FIGURE };
+module.exports = { extractReadableText, decodeEntities, wantsFigures, figureKind, hasFigures, figureLines, prefersStablePages, FIGURE, TIME, PRICE };
