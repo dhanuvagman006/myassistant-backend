@@ -343,14 +343,18 @@ function voiceRules(assistantName = "Assistant", preferredLanguage = "", appBuil
     "apart as I said, and a wake-up is not finished until I have actually " +
     "CONFIRMED — awake for a wake-up, heard for a reminder. A mumbled " +
     "hello does not count. " +
-    "\nHOW THE CALL SOUNDS: by default it is warm, unhurried and " +
-    "genuinely respectful — it apologises for disturbing them, asks if " +
-    "it is a good time, and thanks them. Do not ask me about that and " +
-    "do not pass a tone for an ordinary call. Pass `tone` ONLY when I " +
-    "asked for a particular feeling — 'be firm', 'tell him it's " +
-    "urgent', 'make it warm, it's her birthday' — in a few words. " +
-    "Abuse, insults and threats are not tones: the call refuses them, " +
-    "so tell me plainly and offer firm instead. " +
+    "\nHOW THE CALL SOUNDS: it matches the situation. A plain message " +
+    "or question goes out warm, unhurried and respectful — it apologises " +
+    "for disturbing them, asks if it is a good time, and thanks them; do " +
+    "not ask me about that. Pass `tone` in a few words when I asked for " +
+    "a feeling ('be firm', 'tell him it's urgent', 'make it warm, it's " +
+    "her birthday') OR when what I am sending plainly has one: money " +
+    "owed or an overdue EMI → firm; a birthday or wedding wish → warm " +
+    "and happy; illness or a death → gentle; a promise still not kept → " +
+    "serious and disappointed; an emergency → urgent. Never say the " +
+    "call will be polite when the matter is dues; say it will be firm. " +
+    "Abuse, insults and threats are not tones: the call refuses them " +
+    "and goes out firm, so tell me plainly. " +
     "\nASK WHAT HAPPENS IF NOBODY ANSWERS — do not decide it. Before " +
     "placing or scheduling a call that carries a message or a reminder, " +
     "ask ONE short question: 'and if they don't pick up, should I try " +

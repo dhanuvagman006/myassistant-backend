@@ -291,7 +291,7 @@ async function bolnaPlaceCall({ to, rec }) {
         // its own placeholder — so every call, including the ones he
         // said were not polite enough, went out with no manner
         // specified at all. The default is the polite one.
-        tone: rec.tone || DEFAULT_TONE,
+        tone: require("./callTone").withAudioTags(rec.tone || DEFAULT_TONE),
       },
     }),
   });
@@ -557,7 +557,7 @@ async function retryFromJob(payload = {}) {
       mode: payload.mode || "inform",
       // A retry must sound like the call it is retrying — a pod restart
       // in between must not turn a firm reminder into a cheerful one.
-      tone: String(payload.tone || "").slice(0, 200),
+      tone: String(payload.tone || "").slice(0, require("./callTone").MAX),
       state: "no_answer",
       result: null,
       answer: null,
@@ -851,9 +851,11 @@ async function start({ userId, userName, toNumber, contactName, task, lang, self
       require("./callLanguage").resolve({ requested: lang, message: task }),
     userName: userName || null,
     mode: detectMode(task),
-    // Only when the user asked for one ("be firm", "it's her birthday").
-    // Empty means the default manner, which is the polite one.
-    tone: String(tone || "").trim().slice(0, 200),
+    // HOW SHE SOUNDS, from the situation when the user did not say
+    // (dues → firm, a wish → warm, bad news → gentle; agents/callTone.js).
+    // The owner, 2026-10-01: "loan recovery needs one voice, wishing
+    // another". A tone the user asked for wins.
+    tone: require("./callTone").resolve({ requested: tone, task, selfCall }).tone,
     state: "dialing",
     result: null,
     answer: null,

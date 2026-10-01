@@ -77,6 +77,10 @@ const CASES = [
   ["Speak to me in Kannada.", []],
   // Half a sentence: nothing, or stay_silent, both keep quiet.
   ["Tell me the", ["stay_silent"]],
+  // The situation sets the manner (2026-10-01): a dues call must carry a
+  // tone, a plain message must not (agents/callTone.js fills the rest).
+  ["Call Suresh and tell him his EMI is ten days overdue and must be paid by Friday", ["place_phone_call"], { tone: /firm|stern|serious|strict/i }],
+  ["Call Ravi and wish him a happy birthday from me", ["place_phone_call"], { tone: /warm|happy|cheer|joy/i }],
 ];
 
 // The client's kind of phone: Android, current build, the usual grants.
@@ -122,8 +126,9 @@ async function ask(system, decls, text) {
     if (!r.ok) throw new Error(`${r.status} ${JSON.stringify(j).slice(0, 300)}`);
     const parts = (((j.candidates || [])[0] || {}).content || {}).parts || [];
     const calls = parts.filter((p) => p.functionCall).map((p) => p.functionCall.name);
+    const args = parts.filter((p) => p.functionCall).map((p) => p.functionCall.args || {});
     const said = parts.filter((p) => p.text).map((p) => p.text).join(" ").trim();
-    return { calls, said };
+    return { calls, args, said };
   }
   throw new Error("gave up after retries");
 }
@@ -146,7 +151,7 @@ async function ask(system, decls, text) {
   const fails = [];
   for (let i = 0; i < CASES.length; i++) {
     if (only.length && !only.includes(i + 1)) continue;
-    const [text, want] = CASES[i];
+    const [text, want, expectArgs] = CASES[i];
     n++;
     // Free-tier pacing between calls (EVAL_PACE_MS, default 5 s).
     if (n > 1) await new Promise((res) => setTimeout(res, Number(process.env.EVAL_PACE_MS || 5000)));
@@ -157,9 +162,16 @@ async function ask(system, decls, text) {
       got = { calls: [], said: `ERROR ${e.message}` };
     }
     const first = got.calls[0] || null;
-    const ok = want.length
+    let ok = want.length
       ? want.includes(first) || (want.includes("stay_silent") && got.calls.length === 0)
       : got.calls.length === 0;
+    // Named arguments must match too (e.g. the call's tone).
+    if (ok && expectArgs) {
+      const a = (got.args || [])[0] || {};
+      for (const [k, rx] of Object.entries(expectArgs)) {
+        if (!rx.test(String(a[k] || ""))) { ok = false; got.said = `${k}=${JSON.stringify(a[k] || "")} ${got.said}`; }
+      }
+    }
     if (ok) pass++;
     else fails.push(i + 1);
     console.log(`${ok ? " ok " : "FAIL"} ${String(i + 1).padStart(2)} ${text.slice(0, 58).padEnd(58)} -> ${(first || "(no tool)").padEnd(22)} want ${want.join("|") || "(none)"}${ok ? "" : `  said: ${got.said.slice(0, 90)}`}`);

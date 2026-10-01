@@ -2785,14 +2785,16 @@ function registerBuiltins() {
         tone: {
           type: "string",
           description:
-            "HOW THE CALL SHOULD SOUND, in a few words, ONLY when the " +
-            "user asked for something other than ordinary courtesy — " +
-            "'firm', 'urgent, it cannot wait', 'warm and happy, it is her " +
-            "birthday', 'serious and disappointed'. Leave it out for a " +
-            "normal call: the default is already warm and respectful, and " +
-            "inventing a tone changes how a stranger is spoken to. Never " +
-            "pass abuse, insults or threats — those are refused on the " +
-            "call itself.",
+            "HOW THE CALL SHOULD SOUND, in a few words. Pass it when the " +
+            "user asked for a manner ('be firm', 'tell him it's urgent') " +
+            "OR when the situation plainly has one: money owed, an " +
+            "overdue EMI or rent → 'firm'; a birthday, wedding or " +
+            "congratulations → 'warm and happy'; illness or a death → " +
+            "'gentle'; something promised and still not done → 'serious " +
+            "and disappointed'; an emergency → 'urgent'. Leave it out for " +
+            "a plain message or question: the default is warm and " +
+            "respectful. Never pass abuse, insults or threats — the call " +
+            "refuses them and goes out firm instead.",
         },
         retry_times: {
           type: "integer",
