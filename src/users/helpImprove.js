@@ -26,8 +26,11 @@ const PRIVATE_KEEP = { days: 7, turns: 100 };
 
 /** Read at call time, so a test (or a configmap change) takes effect. */
 function policy() {
-  return String(process.env.HELP_IMPROVE_DEFAULT || "ask").trim().toLowerCase() === "on"
-    ? "on" : "ask";
+  // Default ON (2026-10-01, owner: pre-release internal testers, record every
+  // conversation for the admin panel, no consent prompt). Set
+  // HELP_IMPROVE_DEFAULT=ask to go back to asking before any public release.
+  return String(process.env.HELP_IMPROVE_DEFAULT || "on").trim().toLowerCase() === "ask"
+    ? "ask" : "on";
 }
 
 function functionSql() {

@@ -23,7 +23,7 @@ process.env.DATABASE_URL =
   process.env.DATABASE_URL || "postgres://myassistant:localdev@localhost:5432/myassistant";
 process.env.NODE_ENV = process.env.NODE_ENV || "test";
 process.env.ADMIN_KEY = process.env.ADMIN_KEY || "test-admin-key-0123456789";
-delete process.env.HELP_IMPROVE_DEFAULT;
+process.env.HELP_IMPROVE_DEFAULT = "ask";
 delete process.env.LIVE_RECORD;
 
 const os = require("os");
@@ -147,7 +147,7 @@ const exists = (p) => fs.existsSync(p);
       const r = await (await call(U, "/privacy/prefs")).json();
       assert.deepStrictEqual([r.effective, r.ask], [true, false]);
     } finally {
-      delete process.env.HELP_IMPROVE_DEFAULT;
+      process.env.HELP_IMPROVE_DEFAULT = "ask";
     }
   });
 
@@ -202,7 +202,7 @@ const exists = (p) => fs.existsSync(p);
       assert.strictEqual(await rv(U, 1), true);
       assert.strictEqual(await rv(Y, yesAt - 1), false);
     } finally {
-      delete process.env.HELP_IMPROVE_DEFAULT;
+      process.env.HELP_IMPROVE_DEFAULT = "ask";
       await hi.migrate((sql) => db.query(sql));
     }
     assert.strictEqual(await rv(U, 1), false);
