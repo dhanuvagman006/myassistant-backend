@@ -587,7 +587,7 @@ const BACKENDS = {
  * [{ site, url, lines }] — pages that fail, time out, or carry no figure
  * are left out.
  */
-async function deepRead(results, { max = 2, timeoutMs = 8000, kind } = {}) {
+async function deepRead(results, { max = 5, keep = 2, timeoutMs = 8000, kind } = {}) {
   const pt = require("./pageText");
   const { safeFetch } = require("../services/safeFetch");
   const picks = (results || []).filter((r) => /^https?:\/\//i.test(r.url || "")).slice(0, max);
@@ -607,7 +607,10 @@ async function deepRead(results, { max = 2, timeoutMs = 8000, kind } = {}) {
       return null;
     }
   }));
-  return pages.filter(Boolean);
+  // The big booking sites render their timetables in the browser, so the
+  // first results often carry nothing; the fifth (trip.com, cleartrip)
+  // does. All are read at once; the first two with figures are kept.
+  return pages.filter(Boolean).slice(0, keep);
 }
 
 module.exports = { run, provider, deepRead };

@@ -96,13 +96,19 @@ function figureLines(text, max = 1200, kind) {
   const out = [];
   let size = 0;
   const test = kindTest(kind);
+  let prev = "";
   for (const raw of String(text || "").split("\n")) {
     const line = raw.trim();
-    if (line.length < 6 || line.length > 240 || !test(line)) continue;
-    if (out.includes(line)) continue;
-    if (size + line.length > max) break;
-    out.push(line);
-    size += line.length + 1;
+    if (line.length < 2 || line.length > 240) { prev = ""; continue; }
+    if (!test(line)) { prev = line; continue; }
+    // "IndiGo 6E 7281" on one line and "06:15⇒07:25" on the next: keep
+    // the short label with its figure, or the figure is a bare time.
+    const label = prev && prev.length <= 60 && /\p{L}/u.test(prev) && !test(prev) ? `${prev} ${line}` : line;
+    prev = "";
+    if (label.length < 6 || out.includes(label)) continue;
+    if (size + label.length > max) break;
+    out.push(label);
+    size += label.length + 1;
   }
   return out;
 }

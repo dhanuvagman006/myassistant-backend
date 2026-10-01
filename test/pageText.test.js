@@ -87,6 +87,10 @@ async function check(name, fn) {
     assert.strictEqual(out.length, 1);
     assert.strictEqual(out[0].site, "ixigo.com");
     assert.deepStrictEqual(out[0].lines, ["6E 7281 06:45 - 07:55", "IX 1341 19:00 - 20:05"]);
+    // A label on its own line stays with the time below it.
+    pages["https://z.in/t"] = { type: "text/html", body: "<html><body><div>IndiGo 6E 7281</div><div>06:15⇒07:25</div><div>Air India Express</div><div>19:15⇒20:20</div></body></html>" };
+    const labelled = await ws.deepRead([{ title: "z", url: "https://z.in/t", snippet: "" }], { kind: { time: true, price: false } });
+    assert.deepStrictEqual(labelled[0].lines, ["IndiGo 6E 7281 06:15⇒07:25", "Air India Express 19:15⇒20:20"]);
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);
