@@ -502,6 +502,11 @@ async function prepare(uid, body) {
   // only when both are true; an older build would show them). Never Live:
   // it speaks natively, and a mark would be read out.
   const expressive = body.expressive === true && mode !== "live";
+  // Someone who shares their profession keeps their coarse position
+  // current with every turn (people/nearby.js; throttled, cheap).
+  if (fix && Number.isFinite(fix.lat) && Number.isFinite(fix.lng)) {
+    require("../people/nearby").touchLocation(uid, fix.lat, fix.lng).catch(() => {});
+  }
   const lastResults = tm.timed("last", require("./lastResults").block(uid, s, turnId).catch(() => ""));
   let system;
   if (mode === "voice" || mode === "live") {

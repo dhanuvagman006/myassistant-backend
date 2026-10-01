@@ -135,6 +135,15 @@ async function init() {
     -- Verification, routes/phone.js)? NULL means
     -- unverified, which the API treats as not having one at all.
     ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified_at BIGINT;
+    -- NEARBY (2026-10-01, people/nearby.js): the switch to be found by
+    -- people around, and a COARSE position (two decimals, ~1 km) with
+    -- its area name, kept only while the switch is on.
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS profession_shared INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS geo_lat DOUBLE PRECISION;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS geo_lng DOUBLE PRECISION;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS geo_label TEXT NOT NULL DEFAULT '';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS geo_at BIGINT NOT NULL DEFAULT 0;
+    CREATE INDEX IF NOT EXISTS idx_users_nearby ON users (profession_shared, geo_lat, geo_lng);
 
     -- Partial: only real numbers compete for uniqueness, so any number of
     -- accounts may sit at NULL while none may share a number.

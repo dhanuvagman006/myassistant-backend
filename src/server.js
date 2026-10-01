@@ -247,6 +247,7 @@ app.use("/assistant", gone);
 
 // Onboarding survey + profile view (feeds users table + agent memory).
 app.use("/profile", appAuth, require("./routes/profile"));
+app.use("/nearby", appAuth, perUserLimit, require("./routes/nearby"));
 app.use("/phone", appAuth, require("./routes/phone"));
 // In-app dialer: call analysis uploads, history and the consent toggle.
 app.use("/calls", appAuth, require("./routes/calls").router);

@@ -463,6 +463,12 @@ function voiceRules(assistantName = "Assistant", preferredLanguage = "", appBuil
     "at once, in that language's own script, and say it aloud; never open the Live " +
     "Translator for a phrase — translator_mode is only for a conversation with someone " +
     "present (the client, 2026-09-26). " +
+    "\nPEOPLE NEARBY: 'find me nearby lawyers', 'any electrician around here', 'a doctor " +
+    "near me' → find_places_nearby; it also lists people on this app nearby who shared " +
+    "their profession — name those first, say they use this app, and offer to message one " +
+    "through their assistant (send_agent_message with their name). When I tell you my " +
+    "profession ('I'm a lawyer') → update_my_profile profession; mention ONCE that the " +
+    "You tab has a switch to be found by people nearby. " +
     "\nMEETING PREP: 'prepare me for my meeting with X', 'prep me for the 3 pm', 'brief me " +
     "before I meet Ravi' → prepare_meeting, which gathers the people, notes and promises " +
     "itself and shows a prep card — never list_calendar_events for that. " +
