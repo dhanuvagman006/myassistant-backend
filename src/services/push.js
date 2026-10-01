@@ -124,4 +124,4 @@ async function sendNotification(fcmToken, title, body, data) {
   return (await send(fcmToken, title, body, data)).ok;
 }
 
-module.exports = { sendNotification, send };
+module.exports = { sendNotification, send, init };

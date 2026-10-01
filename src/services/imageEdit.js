@@ -372,6 +372,7 @@ async function callGemini(url, headers, body, notes, label) {
   if (r.status === 429) {
     geminiBlockedUntil = Date.now() + GEMINI_COOLDOWN_MS;
     notes.push(`${label}: quota exhausted (429) — billing not enabled on the key, or the limit is hit`);
+    require("../ops/alerts").geminiImageQuota(`${label}: 429`).catch(() => {});
     return { quota: true };
   }
   if (!r.ok) {

@@ -517,6 +517,9 @@ async function sweep() {
   // cost the other sweeps.
   await require("../agents/agentCall").closeStale()
     .catch((e) => console.error("stale call sweep failed:", e.message));
+  // Money and quota problems go to the developer's inbox (ops/alerts).
+  await require("../ops/alerts").sweep()
+    .catch((e) => console.error("ops alert sweep failed:", e.message));
   const results = await Promise.allSettled([
     sweepCommitments(),
     sweepPatientRecalls(),

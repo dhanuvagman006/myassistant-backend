@@ -68,11 +68,25 @@ async function cli(argv = [], out = console.log) {
     const row = await store.resolve(id, { build, note });
     if (!row) throw new Error(`no feedback #${id}`);
     const told = await store.notifyResolved(row);
-    const text = `done: #${id} "${row.summary}"${build ? ` in build ${build}` : ""} — user ${told ? "told by push" : "not told (no phone registered)"}`;
+    const text = `done: #${id} "${row.summary}"${build ? ` in build ${build}` : ""} — user ${told ? "told by push" : "not told (no phone, or push failed — see notify)"}`;
     out(text);
     return text;
   }
-  throw new Error(`unknown command ${cmd} (list | seen <ids> | done <id> --build <n> --note …)`);
+  if (cmd === "notify") {
+    // Tell the person about a request already marked done (once).
+    const ids = String(rest[0] || "").split(",").map((s) => Number(s.trim())).filter(Boolean);
+    const lines = [];
+    for (const id of ids) {
+      const row = await store.get(id);
+      if (!row || row.status !== "done") { lines.push(`#${id}: not done`); continue; }
+      const told = await store.notifyResolved(row);
+      lines.push(`#${id}: ${told ? "told" : row.notified_at ? "already told" : "not told (no phone, or push failed)"}`);
+    }
+    const text = lines.join("\n") || "(nothing)";
+    out(text);
+    return text;
+  }
+  throw new Error(`unknown command ${cmd} (list | seen <ids> | done <id> --build <n> --note … | notify <ids>)`);
 }
 
 module.exports = { cli, line };

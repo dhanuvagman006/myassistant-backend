@@ -143,6 +143,47 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
     }
   });
 
+  await atest("a low calling balance and an image-quota 429 reach the inbox, once a day", async () => {
+    const store = require("../src/feedback/store");
+    const alerts = require("../src/ops/alerts");
+    await db.run(`DELETE FROM developer_feedback WHERE user_id=0 AND source='ops' AND (summary ILIKE 'Calling balance%' OR summary ILIKE 'Photo edits are off%')`);
+    const saved = { key: process.env.BOLNA_API_KEY, floor: process.env.BOLNA_LOW_BALANCE_USD };
+    process.env.BOLNA_API_KEY = "bn-test";
+    process.env.BOLNA_LOW_BALANCE_USD = "10";
+    const me = (wallet) => async () => ({ ok: true, json: async () => ({ wallet, concurrency: { max: 10, current: 0 } }) });
+    try {
+      const fine = await alerts.checkBolnaBalance({ fetchImpl: me(42.5) });
+      assert.deepStrictEqual(fine, { wallet: 42.5, low: false });
+      const low = await alerts.checkBolnaBalance({ fetchImpl: me(6.24) });
+      assert.deepStrictEqual(low, { wallet: 6.24, low: true });
+      await alerts.checkBolnaBalance({ fetchImpl: me(5.0) }); // same day: one row
+      const rows = await store.list({ q: "Calling balance" });
+      assert.strictEqual(rows.length, 1);
+      assert.match(rows[0].details, /\$6\.24/);
+      assert.strictEqual(rows[0].user_id, 0);
+      await alerts.geminiImageQuota("gemini-3-pro-image: 429");
+      await alerts.geminiImageQuota("gemini-3-pro-image: 429");
+      const q = await store.list({ q: "Photo edits are off" });
+      assert.strictEqual(q.length, 1);
+      // The sweep reads the balance at most every six hours.
+      alerts._reset();
+      const realFetch = globalThis.fetch;
+      let calls = 0;
+      globalThis.fetch = async () => { calls++; return me(6.24)(); };
+      try {
+        const t0 = Date.now();
+        await alerts.sweep({ now: t0 });
+        await alerts.sweep({ now: t0 + 3600_000 });
+        assert.strictEqual(calls, 1);
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+    } finally {
+      if (saved.key === undefined) delete process.env.BOLNA_API_KEY; else process.env.BOLNA_API_KEY = saved.key;
+      if (saved.floor === undefined) delete process.env.BOLNA_LOW_BALANCE_USD; else process.env.BOLNA_LOW_BALANCE_USD = saved.floor;
+    }
+  });
+
   await atest("deleting an account deletes its feedback", () => {
     assert.match(src("routes/privacy.js"), /\["developer_feedback", "user_id"\]/);
   });

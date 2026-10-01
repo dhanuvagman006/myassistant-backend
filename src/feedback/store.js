@@ -148,6 +148,8 @@ async function notifyResolved(row) {
   if (!row || !row.user_id || row.notified_at) return false;
   const user = await db.findById(row.user_id).catch(() => null);
   if (!user?.fcm_token) return false;
+  // The inbox runs as its own process: make sure push is set up there too.
+  try { require("../services/push").init(); } catch (_) { /* reported by send */ }
   const body = [
     row.resolved_build ? `It's in update ${row.resolved_build}.` : "It's done.",
     row.resolved_note,
@@ -159,6 +161,10 @@ async function notifyResolved(row) {
   return Boolean(ok);
 }
 
+async function get(id) {
+  return db.one(`SELECT * FROM developer_feedback WHERE id=$1`, [Number(id)]);
+}
+
 /** What one person asked for, newest first — for "what happened to my request?". */
 async function forUser(userId, limit = 10) {
   return db.query(
@@ -167,4 +173,4 @@ async function forUser(userId, limit = 10) {
     [Number(userId), Math.min(Math.max(Number(limit) || 10, 1), 50)]);
 }
 
-module.exports = { add, alert, list, counts, setStatus, resolve, notifyResolved, forUser, KINDS, DAILY_CAP, ALERT_WINDOW };
+module.exports = { add, alert, list, counts, setStatus, resolve, notifyResolved, forUser, get, KINDS, DAILY_CAP, ALERT_WINDOW };
