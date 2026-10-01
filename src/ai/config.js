@@ -121,11 +121,48 @@ function liveHangoverMs() {
   const n = Math.round(Number(process.env.AI_LIVE_VAD_HANGOVER_MS));
   return Number.isFinite(n) && n >= 200 && n <= 3000 ? n : 700;
 }
-function liveBlock() {
+/**
+ * WHICH LIVE MODEL A GIVEN USER GETS (the owner, 2026-10-01: "set the
+ * higher live model for Hariraj for now, and for other users the current
+ * one"). AI_LIVE_MODEL is everyone's; AI_LIVE_MODEL_USERS pins people:
+ *   AI_LIVE_MODEL_USERS="56:gemini-3.8-live,54:gemini-3.8-live"
+ * The phone falls back to the cascade (models.cloudFast + TTS) by itself
+ * when Live fails, whatever the model.
+ */
+function liveModelFor(userId) {
+  const base = envModel("AI_LIVE_MODEL", "gemini-3.8-live");
+  const uid = Number(userId);
+  if (!(uid > 0)) return base;
+  const pins = String(process.env.AI_LIVE_MODEL_USERS || "")
+    .split(",").map((p) => p.trim()).filter(Boolean);
+  for (const p of pins) {
+    const i = p.indexOf(":");
+    if (i <= 0) continue;
+    if (Number(p.slice(0, i)) === uid) {
+      const m = p.slice(i + 1).trim();
+      if (/^[a-z0-9.-]+$/i.test(m)) return m;
+    }
+  }
+  return base;
+}
+
+/**
+ * HOW THE CLASSIC (non-Live) VOICE HEARS. "device" = the phone's own
+ * recogniser (fast captions, one locale, "Kannada" heard as "Canada");
+ * "record" = the phone records the turn and Gemini transcribes it in
+ * whatever language was spoken — and the recording is kept for review,
+ * so every turn can be heard in the admin panel (the owner, 2026-10-01).
+ * AI_CLOUD_STT=device switches back.
+ */
+function cloudSttMode() {
+  return process.env.AI_CLOUD_STT === "device" ? "device" : "record";
+}
+
+function liveBlock(userId) {
   const v = envModel("AI_LIVE_VOICE", "");
   return {
     on: liveOn(),
-    model: envModel("AI_LIVE_MODEL", "gemini-3.8-live"),
+    model: liveModelFor(userId),
     // Live takes prebuilt voices only (never the library's Fola).
     voice: VOICES.has(v) ? v : "Sulafat",
     silenceMs: liveSilenceMs(),
@@ -224,13 +261,14 @@ async function forUser(userId, { build, live } = {}) {
     routing: { toolWords, freshWords: groundingOn() ? FRESH_WORDS.slice() : [NO_GROUNDING], shortcutNames },
     limits: { maxToolRounds: 6 },
   };
-  if (liveCapable(build, live)) out.live = liveBlock();
+  if (liveCapable(build, live)) out.live = liveBlock(uid);
+  out.listen = { cloudStt: cloudSttMode() };
   return out;
 }
 
 module.exports = {
   forUser, voiceFor, speechLanguage, cloudModel, cloudFastModel, cloudFallbackModel,
-  thinkingLevel, ttsModel, expressiveTtsModel, ttsStyle, liveModel,
+  thinkingLevel, ttsModel, expressiveTtsModel, ttsStyle, liveModel, liveModelFor, cloudSttMode,
   liveBlock, liveCapable, liveOn, LIVE_BUILD, LIVE_VOICES,
   VOICES, LIBRARY_VOICES, EXPRESSIVE_BUILD, TOOL_VERBS, FRESH_WORDS, NO_GROUNDING, groundingOn,
 };

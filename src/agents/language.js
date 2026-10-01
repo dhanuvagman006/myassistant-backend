@@ -228,9 +228,15 @@ function nameHits(raw, canonicalName) {
  * @returns {{language:string, permanent:boolean}}  language "" when the
  *          user asked no such thing; permanent false for a one-off.
  */
+// "Speak in Canada" is "speak in Kannada" misheard (the client, 2026-10-01:
+// "k n Ad", "canada"); after a speak-verb the country is never meant.
+const KANNADA_MISHEARD = new RegExp(
+  "(" + B + "(?:speak|talk|reply|answer|respond|say|tell|converse|chat|continue|switch|go|change)" + B + "[^.?!]{0,40}?" + B + "(?:in|to|into|with)" + S + "+)(?:canada|kanada|kannad|k" + S + "?n" + S + "?ad" + "[a-z]*|canara)" + B,
+  "i");
+
 function requestedLanguage(text) {
   const none = { language: "", permanent: false };
-  const raw = String(text || "").trim();
+  const raw = String(text || "").trim().replace(KANNADA_MISHEARD, "$1Kannada");
   if (!raw || raw.length > 400) return none;
   if (ABOUT_NOT_FOR.test(raw)) return none;
 

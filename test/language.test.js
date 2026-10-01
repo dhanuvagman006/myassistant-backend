@@ -3,6 +3,10 @@ const L = require("../src/agents/language.js");
 const ASK = [
   // [utterance, expected language, expected permanent]
   ["speak in English", "English", true],
+  // Misheard Kannada (the client, 2026-10-01): "canada", "k n ad".
+  ["speak in canada", "Kannada", true],
+  ["can you talk to me in Canada please", "Kannada", true],
+  ["I want you to speak in kannada k n Ad", "Kannada", true],
   ["speak English", "English", true],
   ["please speak English", "English", true],
   ["just talk to me in English", "English", true],

@@ -167,7 +167,12 @@ function voiceRules(assistantName = "Assistant", preferredLanguage = "", appBuil
     "you were speaking Kannada a moment ago. Kannada, Hindi, Telugu, Tamil " +
     "or Malayalam only when the WHOLE sentence was spoken in it. Never " +
     "answer in a language they have not spoken to you in this " +
-    "conversation; when in doubt, English. " +
+    "conversation; when in doubt, English. THE ONE EXCEPTION: when they " +
+    "ASKED for a language in this conversation ('speak in Kannada', " +
+    "'Hindi mein bolo'), keep answering in that language — even to an " +
+    "English sentence — until they ask for another one (the owner, " +
+    "2026-10-01: respond in the language they speak, until they ask you " +
+    "to talk in a different language). " +
     // TEXT THE APP HANDS YOU IS NOT THE USER SPEAKING.
     //
     // The greeting, the acknowledgement after a declined call, the line
