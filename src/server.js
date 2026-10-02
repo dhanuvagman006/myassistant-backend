@@ -355,7 +355,9 @@ app.get("/tools/weather/forecast", appAuth, async (req, res) => {
       Promise.race([place().catch(() => null), new Promise((r) => setTimeout(() => r(null), 2500))]),
     ]);
     if (!w) return res.status(400).json({ error: "lat/lng or city required" });
-    res.json({ ...w, label: w.label || name || null });
+    // The neighbourhood from the phone's own position first; OpenWeatherMap's
+    // label is the nearest city ("Mangaluru"), coarser than where they are.
+    res.json({ ...w, label: (Number.isFinite(lat) && name) || w.label || name || null });
   } catch (e) {
     res.status(502).json({ error: "weather unavailable" });
   }
