@@ -171,6 +171,23 @@ function fake(handler) {
       }
     });
 
+    await check("the realtime key: pcm 24 kHz, semantic vad, input transcription, the voice, the tools", async () => {
+      fake(({ url, body }) => {
+        assert.match(url, /\/realtime\/client_secrets$/);
+        const s = body.session;
+        assert.strictEqual(s.model, "gpt-realtime");
+        assert.strictEqual(s.instructions, "be kind");
+        assert.strictEqual(s.audio.input.format.rate, 24000);
+        assert.strictEqual(s.audio.input.turn_detection.type, "semantic_vad");
+        assert.strictEqual(s.audio.input.transcription.model, "gpt-4o-mini-transcribe");
+        assert.strictEqual(s.audio.output.voice, "sage");
+        assert.deepStrictEqual(s.tools[0], { type: "function", name: "set_timer", description: "d", parameters: { type: "object", properties: { minutes: { type: "integer" } } } });
+        return { value: "ek_1", expires_at: 1234 };
+      });
+      const out = await O.realtimeClientSecret({ voice: "sage", instructions: "be kind", tools: [{ name: "set_timer", description: "d", parameters: { type: "OBJECT", properties: { minutes: { type: "INTEGER" } } } }] });
+      assert.deepStrictEqual(out, { value: "ek_1", expiresAt: 1234, model: "gpt-realtime" });
+    });
+
     await check("the router keeps its contracts on top: reply, stream, tools, transcript", async () => {
       const R = require("../src/services/ai/router");
       fake(({ url, body }) => {

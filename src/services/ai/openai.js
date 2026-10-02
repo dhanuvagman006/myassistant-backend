@@ -430,7 +430,12 @@ async function realtimeClientSecret({ voice, instructions = "", tools = [], mode
         type: "realtime", model: m,
         ...(instructions ? { instructions: String(instructions).slice(0, 60_000) } : {}),
         audio: {
-          input: { format: { type: "audio/pcm", rate: 24000 }, turn_detection: { type: "semantic_vad", eagerness: "medium", create_response: true, interrupt_response: true } },
+          input: {
+            format: { type: "audio/pcm", rate: 24000 },
+            turn_detection: { type: "semantic_vad", eagerness: "medium", create_response: true, interrupt_response: true },
+            // What the owner said, as text, so the phone can caption and log the turn.
+            transcription: { model: env("OPENAI_RT_STT_MODEL", "gpt-4o-mini-transcribe") },
+          },
           output: { format: { type: "audio/pcm", rate: 24000 }, voice: VOICES.includes(String(voice || "")) ? voice : models.ttsVoice() },
         },
         ...(tools.length ? { tools: toTools(tools).map((t) => ({ type: "function", ...t.function })) } : {}),
