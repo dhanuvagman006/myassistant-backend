@@ -26,6 +26,33 @@
  * plain picture card.
  */
 const S = require("./spec");
+
+// The card maker is for THEIR photo or a template they asked for by name.
+const ASKS_FOR_CARD_MAKER =
+  /\b(card maker|poster studio|template|image picker|photo picker|from (my |the )?gallery|signature|(my|our|his|her|their|this|that|the) (own |old )?(photo|picture|pic|image|selfie)s?|with (a |the |my |her |his |their )?(photo|picture|pic))\b/i;
+function wantsCardMaker(args, ctx) {
+  if (Number(args.photo_id) > 0 || Number(args.document_id) > 0 || Number(args.poster_id) > 0) return true;
+  const said = String((ctx && ctx.userText) || "");
+  // A live turn may not carry their words; then the model's own "pick" stands.
+  return said ? ASKS_FOR_CARD_MAKER.test(said) : args.photo === "pick";
+}
+/** The card as an image prompt: their words quoted, nothing invented. */
+function greetingPrompt(args) {
+  const occasion = String(args.occasion || "birthday").replace(/_/g, " ").toLowerCase();
+  const head = String(args.headline || (occasion === "birthday" ? "Happy Birthday" : `Happy ${occasion.replace(/\b\w/g, (c) => c.toUpperCase())}`)).trim();
+  const q = (v) => String(v || "").replace(/"/g, "'").trim();
+  const words = [`a large elegant headline "${q(head)}"`];
+  if (args.name) words.push(`the name "${q(args.name)}" prominently below it`);
+  if (Number(args.age) > 0) words.push(`the number "${Number(args.age)}" as a decorative accent`);
+  if (args.message) words.push(`the message "${q(args.message)}" in smaller graceful lettering`);
+  if (args.from) words.push(`signed "— ${q(args.from)}" at the bottom`);
+  if (args.date) words.push(`the date "${q(args.date)}"`);
+  const colour = args.colour ? ` in ${q(args.colour)} tones` : "";
+  return `A beautiful, festive ${occasion} greeting card poster${colour}, portrait, rich colours, ` +
+    "an ornate decorative frame, soft glowing bokeh light, flowers and celebratory details, polished " +
+    `professional print design. Print exactly these words, spelled exactly as written: ${words.join(", ")}. ` +
+    "No other text anywhere.";
+}
 const svc = require("./service");
 
 const POSTER_MIN_BUILD = 119;
@@ -194,7 +221,8 @@ function registerPosterTools(registry) {
       "the wishes, who it is from.\n" +
       "Put names and wishes in EXACTLY as said, in the script they want — never write, polish or " +
       "translate them unless the user asks you to write them (then read your draft back first). " +
-      "The photo is picked on the phone (photo 'pick', the default), taken from a saved " +
+      "ONLY WHEN THEY ASK FOR THE CARD MAKER OR WANT THEIR OWN PHOTO ON IT — a plain 'make a birthday " +
+      "card for Ravi' is generate_image. The photo is picked on the phone (photo 'pick'), taken from a saved " +
       "document (document_id), or is a photo just cleaned up with improve_old_photo " +
       "(photo_id — 'make a card with it'); 'without a photo' is photo 'none'. Ask ONE question " +
       "at a time. Continue a card already started by passing poster_id. Nothing here is AI: " +
@@ -215,7 +243,7 @@ function registerPosterTools(registry) {
         design: { type: "string", description: `One of: ${S.DESIGN_IDS.join(", ")}.` },
         format: { type: "string", enum: Object.keys(S.FORMATS), description: "story = tall, for a WhatsApp status. Default portrait." },
         signature: { type: "boolean", description: "True when they want their own signature on it." },
-        photo: { type: "string", enum: ["pick", "none"], description: "pick (default) opens the photo picker; none = no photo." },
+        photo: { type: "string", enum: ["pick", "none"], description: "pick opens the photo picker — only when they said they want their photo on it; none = no photo." },
         photo_id: { type: "integer", description: "A photo already picked and cleaned up (the photo_id improve_old_photo gave) — put on the card, no picker." },
         document_id: { type: "integer", description: "A photo already in their documents, to use on the card." },
         poster_id: { type: "integer", description: "Continue this card instead of starting a new one." },
@@ -223,6 +251,15 @@ function registerPosterTools(registry) {
     },
     async execute(args, ctx) {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
+      // THE OWNER, 2026-10-02: "directly generate the image when the user
+      // asks for it. Remove that poster thing until he asks us." The card
+      // maker (photo picker, phone-drawn template) only when they asked
+      // for it or for their own photo; otherwise OpenAI's image model makes
+      // the card with their exact words.
+      if (!wantsCardMaker(args, ctx)) {
+        const gen = registry.get("generate_image");
+        if (gen) return gen.execute({ prompt: greetingPrompt(args), aspect: args.format === "story" ? "story" : "portrait", _raw: true }, ctx);
+      }
       if (tooOld(ctx)) return TOO_OLD;
       const uid = Number(ctx.userId);
       const col = colourArg(args);

@@ -4651,10 +4651,10 @@ function registerBuiltins() {
       "the user gave go on it. If the ONE fact a poster cannot do without " +
       "is missing — what it is for, or an event's date — ask ONE short " +
       "question first instead of inventing it; otherwise make it now and " +
-      "offer changes after. The studio (create_event_poster) only when they " +
-      "want THEIR OWN PHOTO on it, a gallery picture, or ask for the studio; " +
-      "a card with a real person's name, wishes or signature is " +
-      "make_greeting_poster when offered.",
+      "offer changes after. Birthday and greeting cards too: their name " +
+      "and wishes in quotes. The studio (create_event_poster) or the card " +
+      "maker (make_greeting_poster) ONLY when they ask for it by name or " +
+      "want THEIR OWN PHOTO or signature on it.",
     risk: "low",
     deviceAction: true,
     // The image chain's own budget is 75 s (imagegen.js); the default 30 s
@@ -4706,7 +4706,7 @@ function registerBuiltins() {
         // esrgan when the provider came back far too small.
         // Quoted words are the poster's text: the enhancer must not
         // rewrite them, so a prompt that carries any is used as written.
-        const img = await generateImage(prompt, { aspect: args.aspect, enhance: !/"[^"]{2,}"/.test(prompt), aiUpscale: true });
+        const img = await generateImage(prompt, { aspect: args.aspect, enhance: !args._raw && !/"[^"]{2,}"/.test(prompt), aiUpscale: true });
         const docs = require("../docs/store");
         const ext = img.mime === "image/png" ? "png" : "jpg";
         const row = await docs.createDocument(ctx.userId, {

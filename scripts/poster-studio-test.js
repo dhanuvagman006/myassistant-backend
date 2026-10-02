@@ -693,7 +693,8 @@ function withEnv(vars, fn) {
       return json(500, {});
     };
     H.cf = () => json(200, { result: { image: fakeJpeg(1024, 1280).toString("base64") }, success: true });
-    const r = await registry.execute("create_event_poster", { request: REQ }, ctx());
+    // The studio only when asked for by name (2026-10-02); a plain request is generated outright.
+    const r = await registry.execute("create_event_poster", { request: REQ }, ctx({ userText: "open the poster studio: " + REQ }));
     assert.strictEqual(r.ok, true, r.error);
     const a = r.deviceAction;
     assert.strictEqual(a.type, "open_poster_studio");

@@ -61,8 +61,19 @@ async function generate(body, { stream = false, emit, userId } = {}) {
     const { instructions, text } = splitTone(textOf(last));
     const speech = gen.speechConfig || gen.speech_config || {};
     const voiceName = speech.voiceConfig?.prebuiltVoiceConfig?.voiceName || speech.voice_config?.prebuilt_voice_config?.voice_name || speech.voiceName || "";
-    const out = await openai.speak(text, { voice: voiceFor(voiceName), instructions, format: "pcm" });
-    emit(chunk([{ inlineData: { mimeType: out.mime, data: out.buffer.toString("base64") } }], { finishReason: "STOP" }));
+    const audioPart = (b) => ({ inlineData: { mimeType: "audio/pcm;rate=24000", data: b.toString("base64") } });
+    if (!stream) {
+      const out = await openai.speak(text, { voice: voiceFor(voiceName), instructions, format: "pcm" });
+      emit(chunk([audioPart(out.buffer)], { finishReason: "STOP" }));
+      return;
+    }
+    // Streamed: each piece goes out as it is made; the last carries STOP.
+    let held = null;
+    await openai.speakStream(text, {
+      voice: voiceFor(voiceName), instructions,
+      onChunk: (b) => { if (held) emit(chunk([audioPart(held)])); held = b; },
+    });
+    emit(chunk(held ? [audioPart(held)] : [], { finishReason: "STOP" }));
     return;
   }
 

@@ -190,6 +190,23 @@ function fake(handler) {
       assert.deepStrictEqual(r.queries, ["first flight mangalore bangalore"]);
     });
 
+    await check("streamed speech arrives in whole samples; noise heard as a foreign script is dropped", async () => {
+      fake(() => new Response(new ReadableStream({
+        start(c) { c.enqueue(new Uint8Array(5001)); c.enqueue(new Uint8Array(30000)); c.enqueue(new Uint8Array(7)); c.close(); },
+      }), { status: 200 }));
+      const sizes = [];
+      const r = await O.speakStream("Hello there.", { voice: "marin", onChunk: (b) => sizes.push(b.length) });
+      assert.ok(sizes.every((n) => n % 2 === 0), String(sizes));
+      assert.strictEqual(r.bytes, sizes.reduce((a, b) => a + b, 0));
+      assert.strictEqual(r.bytes, 35008);
+      assert.strictEqual(sizes[0], 5000);
+      assert.strictEqual(O.plausibleTranscript("بخاطر", "kn"), false);
+      assert.strictEqual(O.plausibleTranscript("はい。", "kn"), false);
+      assert.strictEqual(O.plausibleTranscript("ನಮಸ್ಕಾರ, how are you", "kn"), true);
+      assert.strictEqual(O.plausibleTranscript("नमस्ते", "en"), true);
+      assert.strictEqual(O.plausibleTranscript("بخاطر", "ur"), true);
+    });
+
     await check("the realtime key: pcm 24 kHz, semantic vad, input transcription, the voice, the tools", async () => {
       fake(({ url, body }) => {
         assert.match(url, /\/realtime\/client_secrets$/);
@@ -197,13 +214,16 @@ function fake(handler) {
         assert.strictEqual(s.model, "gpt-realtime");
         assert.strictEqual(s.instructions, "be kind");
         assert.strictEqual(s.audio.input.format.rate, 24000);
-        assert.strictEqual(s.audio.input.turn_detection.type, "semantic_vad");
+        assert.strictEqual(s.audio.input.turn_detection.type, "server_vad");
+        assert.strictEqual(s.audio.input.turn_detection.silence_duration_ms, 800);
+        assert.strictEqual(s.audio.input.noise_reduction.type, "near_field");
         assert.strictEqual(s.audio.input.transcription.model, "gpt-4o-mini-transcribe");
+        assert.strictEqual(s.audio.input.transcription.language, "kn");
         assert.strictEqual(s.audio.output.voice, "sage");
         assert.deepStrictEqual(s.tools[0], { type: "function", name: "set_timer", description: "d", parameters: { type: "object", properties: { minutes: { type: "integer" } } } });
         return { value: "ek_1", expires_at: 1234 };
       });
-      const out = await O.realtimeClientSecret({ voice: "sage", instructions: "be kind", tools: [{ name: "set_timer", description: "d", parameters: { type: "OBJECT", properties: { minutes: { type: "INTEGER" } } } }] });
+      const out = await O.realtimeClientSecret({ voice: "sage", instructions: "be kind", language: "kn", silenceMs: 800, tools: [{ name: "set_timer", description: "d", parameters: { type: "OBJECT", properties: { minutes: { type: "INTEGER" } } } }] });
       assert.deepStrictEqual(out, { value: "ek_1", expiresAt: 1234, model: "gpt-realtime" });
     });
 

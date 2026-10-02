@@ -101,6 +101,17 @@ async function runCreateEventPoster(args, ctx) {
   if (!request) {
     return { ok: false, error: "need_request", note: "Ask what the poster is for, in one short question." };
   }
+  // THE OWNER, 2026-10-02: generate it directly; the studio only on request.
+  const said = String((ctx && ctx.userText) || "");
+  if (require("../services/ai/openai").ready() && !WANTS_STUDIO.test(said) && !WANTS_STUDIO.test(request)) {
+    const gen = require("../tools/registry").get("generate_image");
+    if (gen) {
+      const prompt = `An eye-catching, professionally designed poster for this: ${request.replace(/"/g, "'")}. ` +
+        "Set the event's name as a bold headline and the date, time and place clearly below it, using only the " +
+        "facts given, every word spelled exactly. Vivid, polished, high-end print design. No other text.";
+      return gen.execute({ prompt, aspect: args.format === "story" ? "story" : args.format === "square" ? "square" : "portrait", _raw: true }, ctx);
+    }
+  }
   try {
     const design = await studio.design(uid, {
       request,

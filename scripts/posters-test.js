@@ -1326,8 +1326,30 @@ function measure(rgb) {
   require("../src/tools/builtins").registerBuiltins();
   const tools = require("../src/posters/tools");
   const NAMES = ["make_greeting_poster", "change_poster", "share_poster", "improve_old_photo"];
-  const ctx = { userId: T, appBuild: 119, source: "live" };
+  // These cases are the card maker itself, so the user asks for it (2026-10-02:
+  // without that, a card goes straight to the image model — tested below).
+  const ctx = { userId: T, appBuild: 119, source: "live", userText: "make it in the card maker" };
   const tool = (n) => registry.get(n);
+
+  await atest("a plain card request goes straight to the image model with the exact words (2026-10-02)", async () => {
+    const gen = tool("generate_image");
+    const real = gen.execute;
+    let seen = null;
+    gen.execute = async (args) => { seen = args; return { ok: true, data: { generated: true } }; };
+    try {
+      const r = await tool("make_greeting_poster").execute(
+        { occasion: "birthday", name: "Ravi", message: "Have a wonderful year", from: "Amma" },
+        { ...ctx, userText: "make a birthday card for Ravi" });
+      assert.ok(r.ok && r.data.generated, JSON.stringify(r));
+      assert.match(seen.prompt, /"Happy Birthday"[\s\S]*"Ravi"[\s\S]*"Have a wonderful year"[\s\S]*"— Amma"/);
+      assert.strictEqual(seen._raw, true, "the quoted words are not rewritten by the prompt writer");
+      seen = null;
+      await tool("make_greeting_poster").execute({ name: "Ravi" }, { ...ctx, userText: "make a card for Ravi with his photo" });
+      assert.strictEqual(seen, null, "their own photo: the card maker, not the image model");
+    } finally {
+      gen.execute = real;
+    }
+  });
 
   await atest("the four tools exist, need build 119, and an older app is offered none of them", () => {
     assert.strictEqual(tools.POSTER_MIN_BUILD, 119);

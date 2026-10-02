@@ -533,7 +533,7 @@ async function prepare(uid, body) {
       // Rule paragraphs gated to the tools THIS session was given.
       (mode === "live"
         ? liveRules(assistantName, preferred, build, { declared: decls.map((d) => d.name) })
-        : voiceRules(assistantName, preferred, build, { declared: decls.map((d) => d.name) })) +
+        : voiceRules(assistantName, preferred, build, { declared: decls.map((d) => d.name) }) + "\n\n" + require("./voicePrompt").SHARP_RULES) +
       "\n\n" + RESOLVE_REFERENCES +
       (expressive ? "\n\n" + EXPRESSIVE_SPEECH : "") +
       (limits ? "\n\n" + limits : "") +

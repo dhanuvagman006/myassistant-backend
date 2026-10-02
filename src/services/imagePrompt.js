@@ -96,7 +96,7 @@ async function enhancePrompt(words, { purpose = "photo", style = "", shape = "",
   if (purpose !== "background" && raw.split(" ").length >= 60) return plain("already detailed");
 
   const router = require("./ai/router");
-  const model = router.envModel("IMAGE_PROMPT_MODEL", router.chatModel());
+  const model = router.envModel("IMAGE_PROMPT_MODEL", require("./ai/openai").models.fast());
   try {
     const { reply } = await router.generateReply(
       [{

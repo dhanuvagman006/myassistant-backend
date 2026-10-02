@@ -179,7 +179,11 @@ router.post("/realtime/secret", async (req, res) => {
   try {
     const openai = require("../services/ai/openai");
     const b = req.body || {};
+    const cfg = require("./config");
+    const profile = await require("../users/context").getProfile(uid).catch(() => null);
+    const language = cfg.speechLanguage(profile && profile.user && profile.user.preferred_language).slice(0, 2);
     const out = await openai.realtimeClientSecret({
+      language, silenceMs: cfg.liveBlock(uid).silenceMs,
       voice: require("./proxy").voiceFor(b.voice),
       instructions: (VOICE_STYLE + "\n\n" + String(b.instructions || "")).slice(0, 60_000),
       tools: Array.isArray(b.tools) ? b.tools : [],

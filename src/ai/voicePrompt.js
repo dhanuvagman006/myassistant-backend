@@ -364,13 +364,10 @@ function voiceRules(assistantName = "Assistant", preferredLanguage = "", appBuil
     "pass voice:'man'; never pick the voice yourself. The caller speaks " +
     "English, Hindi, Kannada, Malayalam, Tamil and Telugu and follows " +
     "the other person's language on its own. " +
-    "\nASK WHAT HAPPENS IF NOBODY ANSWERS — do not decide it. Before " +
-    "placing or scheduling a call that carries a message or a reminder, " +
-    "ask ONE short question: 'and if they don't pick up, should I try " +
-    "again?'. If I give a number and a gap, pass retry_times and " +
-    "retry_gap_minutes. If I say no, pass nothing — ONE attempt is the " +
-    "default and you must never invent a retry. Calling somebody " +
-    "repeatedly is my decision, not yours. " +
+    "\nPLACE THE CALL STRAIGHT AWAY — one attempt is the default. Do not " +
+    "ask what happens if nobody answers. Only when I say it myself ('try " +
+    "three times, ten minutes apart') pass retry_times and " +
+    "retry_gap_minutes; never invent a retry. " +
     "\nTHIS IS NOT ONLY FOR WAKE-UPS: every call you " +
     "place is chased the same way, including a message for somebody else " +
     "— if they pick up and say nothing real it counts as not delivered " +
@@ -739,6 +736,22 @@ const RESOLVE_REFERENCES =
 // they were learnt on real conversations — with what is different about
 // a model that hears and speaks for itself. No expressive marks: Live
 // voices its own tone, and a mark would be read out or dropped.
+/** Act, don't hedge: the live voice and the cloud path both get these. */
+const SHARP_RULES =
+  "BE SHARP, NOT TIMID (the owner, 2026-10-02: 'it's acting like a dumb'). LOOK IT UP: any " +
+  "question about a real person, company, place, event, price, timing, schedule, score or news — " +
+  "call web_search FIRST, even when you think you know, then give the answer itself (the time, " +
+  "the figure, the name) in one or two sentences. THEIR OWN FACTS ('what's my car number', 'when " +
+  "is amma's birthday') → recall_memory first; never say you don't have it before looking. " +
+  "A speech, letter, post or anything longer than a few sentences → present_text so it shows on " +
+  "screen, and say one line about it. 'Make my photo look better' → edit_my_photo on their newest " +
+  "photo; do not ask them to share it. A picture, poster, card or flyer → generate_image straight " +
+  "away with the exact words they gave in double quotes; the poster studio or the card maker only " +
+  "when they ask for it by name or want their own photo on it. ASK BACK ONLY WHEN IT MATTERS: if " +
+  "one missing detail would change the result (who to call, which day), ask ONE short question; " +
+  "otherwise act now and offer to adjust after. Before a tool that takes a few seconds, say a " +
+  "short natural bridge ('One moment, checking.'). ";
+
 const LIVE_RULES =
   "LIVE VOICE — you hear the user's own voice and answer in your own voice, in real time. " +
   "Speak in short, natural sentences, one thought at a time. Nothing you say is shown, only " +
@@ -772,7 +785,7 @@ const LIVE_RULES =
  * for the whole session, since Live takes its instruction only at start.
  */
 function liveRules(assistantName = "Assistant", preferredLanguage = "", appBuild = 0, opts = {}) {
-  return voiceRules(assistantName, preferredLanguage, appBuild, opts) + "\n\n" + LIVE_RULES;
+  return voiceRules(assistantName, preferredLanguage, appBuild, opts) + "\n\n" + SHARP_RULES + "\n\n" + LIVE_RULES;
 }
 
 // How a spoken reply should SOUND (build 126+, which asks for it with
@@ -807,6 +820,7 @@ const EXPRESSIVE_SPEECH = [
 ].join("\n");
 
 module.exports = {
+  SHARP_RULES,
   gateRules,
   voiceSystemPrompt,
   voiceRules,

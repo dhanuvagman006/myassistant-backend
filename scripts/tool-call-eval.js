@@ -7,9 +7,9 @@
  * build — and a text Gemini model with the same instruction and tools
  * says what it would call. Run before and after a prompt change:
  *
- *   GEMINI_API_KEY=… node scripts/tool-call-eval.js            # gated rules (what ships)
- *   GEMINI_API_KEY=… node scripts/tool-call-eval.js --ungated  # the old full prompt
- *   EVAL_MODEL=gemini-3.5-flash-lite … --only=12,17            # a subset
+ *   OPENAI_API_KEY=… node scripts/tool-call-eval.js            # gated rules (what ships)
+ *   OPENAI_API_KEY=… node scripts/tool-call-eval.js --ungated  # the old full prompt
+ *   EVAL_MODEL=gpt-4.1-mini … --only=12,17                    # a subset
  *
  * It needs a key, so it is not in test:all. Exit 1 when below EVAL_MIN
  * (default 85 %).
@@ -19,12 +19,14 @@ const registry = require("../src/tools/registry");
 require("../src/agents/runtime");
 const live = require("../src/ai/liveTools");
 
-const KEY = process.env.GEMINI_API_KEY;
-if (!KEY) {
-  console.error("GEMINI_API_KEY is required");
+// OpenAI since 2026-10-02 (the provider switch): the same instruction and
+// tools go to the text model the brain uses, so the eval measures what ships.
+const openai = require("../src/services/ai/openai");
+if (!openai.ready()) {
+  console.error("OPENAI_API_KEY is required");
   process.exit(2);
 }
-const MODEL = process.env.EVAL_MODEL || "gemini-3.8-flash";
+const MODEL = process.env.EVAL_MODEL || openai.models.chat();
 const UNGATED = process.argv.includes("--ungated");
 const only = (process.argv.find((a) => a.startsWith("--only=")) || "").slice(7)
   .split(",").filter(Boolean).map(Number);
@@ -106,31 +108,50 @@ function schema(s) {
   return out;
 }
 
+// EVAL_ENGINE=realtime: the voice model itself (gpt-realtime), one fresh
+// session per case with text output — what the phone's fast voice runs on.
+const ENGINE = process.env.EVAL_ENGINE || "chat";
+async function askRealtime(system, decls, text) {
+  const secret = await openai.realtimeClientSecret({ instructions: system, tools: decls, voice: "marin" });
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`wss://api.openai.com/v1/realtime?model=${encodeURIComponent(secret.model)}`,
+      { headers: { Authorization: `Bearer ${secret.value}` } });
+    const calls = [], args = [];
+    let said = "";
+    const done = (v, err) => { clearTimeout(timer); try { ws.close(); } catch (_) {} err ? reject(err) : resolve(v); };
+    const timer = setTimeout(() => done(null, new Error("realtime timeout")), 40_000);
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text }] } }));
+      ws.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["text"] } }));
+    };
+    ws.onmessage = (m) => {
+      const e = JSON.parse(m.data);
+      if (e.type === "response.function_call_arguments.done") {
+        calls.push(e.name);
+        try { args.push(JSON.parse(e.arguments || "{}")); } catch (_) { args.push({}); }
+      } else if (e.type === "response.output_text.delta" || e.type === "response.output_audio_transcript.delta") {
+        said += e.delta || "";
+      } else if (e.type === "error") {
+        done(null, new Error(JSON.stringify(e.error).slice(0, 200)));
+      } else if (e.type === "response.done") {
+        done({ calls, args, said: said.trim() });
+      }
+    };
+    ws.onerror = (e) => done(null, new Error(`socket: ${e.message || e.type}`));
+  });
+}
+
 async function ask(system, decls, text) {
-  const body = {
-    systemInstruction: { parts: [{ text: system }] },
-    contents: [{ role: "user", parts: [{ text }] }],
-    tools: [{ functionDeclarations: decls }],
-    toolConfig: { functionCallingConfig: { mode: "AUTO" } },
-    generationConfig: { temperature: 0.2, maxOutputTokens: 200 },
+  if (ENGINE === "realtime") return askRealtime(system, decls, text);
+  const out = await openai.chat({
+    model: MODEL, system, messages: [{ role: "user", content: text }],
+    declarations: decls, temperature: 0.2, maxTokens: 200, timeoutMs: 60_000,
+  });
+  return {
+    calls: out.functionCalls.map((c) => c.name),
+    args: out.functionCalls.map((c) => c.args || {}),
+    said: String(out.text || "").trim(),
   };
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
-      { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": KEY }, body: JSON.stringify(body) });
-    if (r.status === 429 || r.status >= 500) {
-      await new Promise((res) => setTimeout(res, 15000 * (attempt + 1)));
-      continue;
-    }
-    const j = await r.json();
-    if (!r.ok) throw new Error(`${r.status} ${JSON.stringify(j).slice(0, 300)}`);
-    const parts = (((j.candidates || [])[0] || {}).content || {}).parts || [];
-    const calls = parts.filter((p) => p.functionCall).map((p) => p.functionCall.name);
-    const args = parts.filter((p) => p.functionCall).map((p) => p.functionCall.args || {});
-    const said = parts.filter((p) => p.text).map((p) => p.text).join(" ").trim();
-    return { calls, args, said };
-  }
-  throw new Error("gave up after retries");
 }
 
 (async () => {
@@ -145,7 +166,7 @@ async function ask(system, decls, text) {
     name: d.name, description: String(d.description || "").slice(0, 2000),
     parameters: schema(d.parameters || d.inputSchema),
   }));
-  console.log(`model ${MODEL}; ${UNGATED ? "UNGATED" : "gated"} rules ${system.length} chars; ${declared.length} tools: ${declared.join(" ")}\n`);
+  console.log(`${ENGINE === "realtime" ? `engine realtime (${openai.models.realtime()})` : `model ${MODEL}`}; ${UNGATED ? "UNGATED" : "gated"} rules ${system.length} chars; ${declared.length} tools: ${declared.join(" ")}\n`);
 
   let pass = 0, n = 0;
   const fails = [];
@@ -153,8 +174,8 @@ async function ask(system, decls, text) {
     if (only.length && !only.includes(i + 1)) continue;
     const [text, want, expectArgs] = CASES[i];
     n++;
-    // Free-tier pacing between calls (EVAL_PACE_MS, default 5 s).
-    if (n > 1) await new Promise((res) => setTimeout(res, Number(process.env.EVAL_PACE_MS || 5000)));
+    // A breath between calls (EVAL_PACE_MS, default 300 ms).
+    if (n > 1) await new Promise((res) => setTimeout(res, Number(process.env.EVAL_PACE_MS || 300)));
     let got;
     try {
       got = await ask(system, fds, text);

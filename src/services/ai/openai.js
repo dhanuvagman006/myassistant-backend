@@ -334,10 +334,32 @@ async function transcribe(buffer, mime, { language = "", hint = "", prompt = "",
   form.append("response_format", "json");
   const lang = String(language || hint || "").trim().slice(0, 2).toLowerCase();
   if (lang && /^[a-z]{2}$/.test(lang) && lang !== "un") form.append("language", lang);
-  if (prompt) form.append("prompt", String(prompt).slice(0, 800));
+  const hintText = prompt || (LANGUAGE_NAMES[lang] && lang !== "en" ? `${LANGUAGE_NAMES[lang]} speech; the speaker may mix in English words.` : "");
+  if (hintText) form.append("prompt", String(hintText).slice(0, 800));
   const j = await call("/audio/transcriptions", { form, timeoutMs });
   const text = String(j.text || "").trim();
+  if (!plausibleTranscript(text, lang)) {
+    // Noise or near-silence comes back as a line of Urdu, Japanese or
+    // Korean (seen 2 Oct on the client's Kannada turns). Nothing was said.
+    console.warn(`openai transcribe: dropped an implausible transcript (${text.length} chars, hint ${lang || "none"})`);
+    return { text: "", language: lang, dropped: true };
+  }
   return { text, language: lang || String(j.language || "") };
+}
+
+const LANGUAGE_NAMES = {
+  en: "English", hi: "Hindi", kn: "Kannada", ml: "Malayalam", ta: "Tamil", te: "Telugu", mr: "Marathi",
+  bn: "Bengali", gu: "Gujarati", pa: "Punjabi", or: "Odia", ur: "Urdu", ar: "Arabic",
+};
+// Latin and the Indian scripts (U+0900–U+0DFF) are always plausible for our
+// users; another script only when it is the language they speak.
+const OWN_SCRIPT = { ur: /[\u0600-\u06FF]/g, ar: /[\u0600-\u06FF]/g };
+function plausibleTranscript(text, lang = "") {
+  const letters = String(text || "").replace(/[\s\d\p{P}\p{S}]/gu, "");
+  if (!letters) return true;
+  const ok = (letters.match(/[A-Za-z\u00C0-\u024F\u0900-\u0DFF]/g) || []).length +
+    (OWN_SCRIPT[lang] ? (letters.match(OWN_SCRIPT[lang]) || []).length : 0);
+  return ok / letters.length >= 0.5;
 }
 
 /** Raw 16-bit mono PCM → a WAV the transcriber accepts. */
@@ -364,7 +386,7 @@ function wavWrap(pcm, rate = 16000) {
  * phone plays); "mp3" for a file. `instructions` is the manner: "warm and
  * unhurried", "firm" — the same tone words the rest of the app uses.
  */
-async function speak(text, { voice, instructions = "", format = "pcm", timeoutMs = 30_000 } = {}) {
+async function speak(text, { voice, instructions = "", format = "pcm", timeoutMs = 90_000 } = {}) {
   const v = VOICES.includes(String(voice || "")) ? voice : models.ttsVoice();
   const r = await call("/audio/speech", {
     body: {
@@ -376,6 +398,43 @@ async function speak(text, { voice, instructions = "", format = "pcm", timeoutMs
   });
   const buffer = Buffer.from(await r.arrayBuffer());
   return { buffer, mime: format === "mp3" ? "audio/mpeg" : "audio/pcm;rate=24000", rate: 24000 };
+}
+
+/**
+ * Speech as it is made (2026-10-02): the first audio leaves in a fraction
+ * of a second and a long sentence never hits a timeout (two 30 s failures
+ * on the client's long Kannada replies, waiting for the whole sentence).
+ * onChunk gets 24 kHz 16-bit PCM in whole samples. Returns the byte count.
+ */
+async function speakStream(text, { voice, instructions = "", onChunk = () => {}, timeoutMs = 90_000, firstBytes = 4800, chunkBytes = 19_200 } = {}) {
+  const v = VOICES.includes(String(voice || "")) ? voice : models.ttsVoice();
+  const r = await call("/audio/speech", {
+    body: {
+      model: models.tts(), voice: v, input: String(text || "").slice(0, 4000), response_format: "pcm",
+      ...(instructions ? { instructions: String(instructions).slice(0, 1000) } : {}),
+    },
+    timeoutMs, raw: true,
+  });
+  let pending = Buffer.alloc(0);
+  let total = 0;
+  let first = true;
+  const flush = (all) => {
+    const n = pending.length - (pending.length % 2);
+    if (n <= 0 || (!all && n < (first ? firstBytes : chunkBytes))) return;
+    onChunk(Buffer.from(pending.subarray(0, n)));
+    total += n;
+    pending = pending.subarray(n);
+    first = false;
+  };
+  const reader = r.body.getReader();
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (value && value.length) pending = Buffer.concat([pending, Buffer.from(value)]);
+    flush(false);
+  }
+  flush(true);
+  return { bytes: total, mime: "audio/pcm;rate=24000", rate: 24000 };
 }
 
 // ---------------------------------------------------------------- pictures
@@ -427,8 +486,19 @@ function fromImageResponse(j) {
  * A short-lived key the phone uses to open its own realtime voice session
  * (the app never sees OPENAI_API_KEY). Returns { value, expiresAt, model }.
  */
-async function realtimeClientSecret({ voice, instructions = "", tools = [], model } = {}) {
+async function realtimeClientSecret({ voice, instructions = "", tools = [], model, language = "", silenceMs = 800 } = {}) {
   const m = model || models.realtime();
+  // server_vad by default (2026-10-02): a pause of silenceMs ends the turn,
+  // the timing the phone's watchdogs were tuned for. semantic_vad waited up
+  // to seconds on Kannada and the phone gave up ("no answer").
+  // OPENAI_RT_VAD=semantic switches.
+  const turn = env("OPENAI_RT_VAD", "server") === "semantic"
+    ? { type: "semantic_vad", eagerness: env("OPENAI_RT_EAGERNESS", "high"), create_response: true, interrupt_response: true }
+    : {
+        type: "server_vad", threshold: Number(env("OPENAI_RT_VAD_THRESHOLD", "0.6")), prefix_padding_ms: 300,
+        silence_duration_ms: Math.max(300, Math.min(2000, Number(silenceMs) || 800)), create_response: true, interrupt_response: true,
+      };
+  const lang = String(language || "").slice(0, 2).toLowerCase();
   const j = await call("/realtime/client_secrets", {
     body: {
       session: {
@@ -437,9 +507,14 @@ async function realtimeClientSecret({ voice, instructions = "", tools = [], mode
         audio: {
           input: {
             format: { type: "audio/pcm", rate: 24000 },
-            turn_detection: { type: "semantic_vad", eagerness: "medium", create_response: true, interrupt_response: true },
+            // The phone is held near the mouth; voices further off are damped.
+            noise_reduction: { type: env("OPENAI_RT_NOISE", "near_field") },
+            turn_detection: turn,
             // What the owner said, as text, so the phone can caption and log the turn.
-            transcription: { model: env("OPENAI_RT_STT_MODEL", "gpt-4o-mini-transcribe") },
+            transcription: {
+              model: env("OPENAI_RT_STT_MODEL", "gpt-4o-mini-transcribe"),
+              ...(/^[a-z]{2}$/.test(lang) && lang !== "en" ? { language: lang } : {}),
+            },
           },
           output: { format: { type: "audio/pcm", rate: 24000 }, voice: VOICES.includes(String(voice || "")) ? voice : models.ttsVoice() },
         },
@@ -523,7 +598,7 @@ const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); 
 
 module.exports = {
   ready, key, models, VOICES, OpenAIError, isBusy, busy: () => Date.now() < busyUntil,
-  chat, transcribe, speak, imageGenerate, imageEdit, realtimeClientSecret, webSearch,
+  chat, transcribe, speak, speakStream, imageGenerate, imageEdit, realtimeClientSecret, webSearch, plausibleTranscript,
   // for tests
   fromSimple, fromContents, toTools, wavWrap, imageSize,
 };
