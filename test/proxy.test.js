@@ -68,7 +68,7 @@ const collect = () => { const out = []; return { out, emit: (j) => out.push(j) }
     await check("a spoken sentence: the tone note becomes the manner, the audio comes back as a part", async () => {
       fake(({ url, body }) => {
         assert.match(url, /\/audio\/speech$/);
-        assert.strictEqual(body.voice, "marin");
+        assert.strictEqual(body.voice, "shimmer");
         assert.strictEqual(body.instructions, "warm, unhurried");
         assert.strictEqual(body.input, "Good morning, Sir.");
         return new Response(Buffer.alloc(2400), { status: 200 });
@@ -120,10 +120,10 @@ const collect = () => { const out = []; return { out, emit: (j) => out.push(j) }
     });
 
     await check("the app's voice names map to OpenAI voices; unknown names take the default", () => {
-      assert.strictEqual(P.voiceFor("Fola"), "marin");
+      assert.strictEqual(P.voiceFor("Fola"), "shimmer");
       assert.strictEqual(P.voiceFor("Charon"), "onyx");
       assert.strictEqual(P.voiceFor("verse"), "verse");
-      assert.strictEqual(P.voiceFor("Nobody"), "marin");
+      assert.strictEqual(P.voiceFor("Nobody"), "shimmer");
       assert.deepStrictEqual(P.splitTone("<tone: firm> Pay by Friday."), { instructions: "firm", text: "Pay by Friday." });
       assert.deepStrictEqual(P.splitTone("Plain."), { instructions: "", text: "Plain." });
     });
@@ -136,9 +136,9 @@ const collect = () => { const out = []; return { out, emit: (j) => out.push(j) }
       assert.strictEqual(out.models.cloudFast, "gpt-4.1-mini");
       assert.strictEqual(out.models.tts, "gpt-4o-mini-tts");
       assert.ok(require("../src/services/ai/openai").VOICES.includes(out.models.ttsVoice), out.models.ttsVoice);
-      assert.strictEqual(out.live.model, "gpt-realtime", "the fast voice runs on realtime");
+      assert.strictEqual(out.live.model, "gpt-realtime-2.1", "the fast voice runs on realtime");
       assert.ok(require("../src/services/ai/openai").VOICES.includes(out.live.voice), out.live.voice);
-      assert.strictEqual(out.live.voices[0], "marin", "the picker offers OpenAI's voices, best first");
+      assert.strictEqual(out.live.voices[0], "shimmer", "the picker offers the default voice first");
       assert.ok(out.live.voices.every((v) => require("../src/services/ai/openai").VOICES.includes(v)), String(out.live.voices));
       // An app that predates the server port keeps Gemini's names.
       const old = await cfg.forUser(0, { build: 145 });

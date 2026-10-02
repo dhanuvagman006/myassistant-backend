@@ -12,9 +12,9 @@
  *   OPENAI_MODEL            gpt-4.1-mini     replies, tools, planning
  *   OPENAI_SMART_MODEL      gpt-4.1          documents, when asked for
  *   OPENAI_STT_MODEL        gpt-4o-transcribe
- *   OPENAI_TTS_MODEL        gpt-4o-mini-tts  (voice OPENAI_TTS_VOICE, default coral)
+ *   OPENAI_TTS_MODEL        gpt-4o-mini-tts  (voice OPENAI_TTS_VOICE, default shimmer)
  *   OPENAI_IMAGE_MODEL      gpt-image-1      make AND edit pictures
- *   OPENAI_REALTIME_MODEL   gpt-realtime     the phone's fast voice
+ *   OPENAI_REALTIME_MODEL   gpt-realtime-2.1 the phone's fast voice (reasoning OPENAI_RT_REASONING, low)
  *   OPENAI_EMBED_MODEL      text-embedding-3-small (memory/embeddings.js)
  *
  * The callers' contracts are unchanged (services/ai/router.js): what was
@@ -44,12 +44,15 @@ const models = {
   search: () => env("OPENAI_SEARCH_MODEL", "gpt-4.1-mini"),
   stt: () => env("OPENAI_STT_MODEL", "gpt-4o-transcribe"),
   tts: () => env("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
-  // marin: OpenAI's newest, most natural voice (gpt-4o-mini-tts and gpt-realtime).
-  ttsVoice: () => env("OPENAI_TTS_VOICE", "marin"),
+  // shimmer (the owner's session spec, 2026-10-02): the live voice and the
+  // spoken fallback sound the same.
+  ttsVoice: () => env("OPENAI_TTS_VOICE", "shimmer"),
   image: () => env("OPENAI_IMAGE_MODEL", "gpt-image-1"),
   // Edits on a model measured for it (2026-10-02: gpt-image-1.5, ~25 s).
   imageEdit: () => env("OPENAI_IMAGE_EDIT_MODEL", env("OPENAI_IMAGE_MODEL", "gpt-image-1")),
-  realtime: () => env("OPENAI_REALTIME_MODEL", "gpt-realtime"),
+  // gpt-realtime-2.1 (2026-10-02): the guide's model; it takes reasoning
+  // effort, which gpt-realtime refuses ("Unsupported option for this model").
+  realtime: () => env("OPENAI_REALTIME_MODEL", "gpt-realtime-2.1"),
   embed: () => env("OPENAI_EMBED_MODEL", "text-embedding-3-small"),
 };
 
@@ -497,14 +500,14 @@ function fromImageResponse(j) {
  * A short-lived key the phone uses to open its own realtime voice session
  * (the app never sees OPENAI_API_KEY). Returns { value, expiresAt, model }.
  */
-async function realtimeClientSecret({ voice, instructions = "", tools = [], model, language = "", silenceMs = 800 } = {}) {
+async function realtimeClientSecret({ voice, instructions = "", tools = [], model, language = "", silenceMs = 800, parallelTools = false, user = "" } = {}) {
   const m = model || models.realtime();
-  // server_vad by default (2026-10-02): a pause of silenceMs ends the turn,
-  // the timing the phone's watchdogs were tuned for. semantic_vad waited up
-  // to seconds on Kannada and the phone gave up ("no answer").
-  // OPENAI_RT_VAD=semantic switches.
-  const turn = env("OPENAI_RT_VAD", "server") === "semantic"
-    ? { type: "semantic_vad", eagerness: env("OPENAI_RT_EAGERNESS", "high"), create_response: true, interrupt_response: false }
+  // semantic_vad "auto" by default (the owner's session spec, 2026-10-02
+  // night: "it responds before I finish talking"): the model judges whether
+  // the sentence is finished, not just how long the pause was.
+  // OPENAI_RT_VAD=server restores the timed pause (silenceMs).
+  const turn = env("OPENAI_RT_VAD", "semantic") !== "server"
+    ? { type: "semantic_vad", eagerness: env("OPENAI_RT_EAGERNESS", "auto"), create_response: true, interrupt_response: false }
     : {
         // 0.7 (2 Oct, "it even considers the background noises"): a TV or a
         // voice across the room stays under it; their own voice, near the
@@ -532,16 +535,27 @@ async function realtimeClientSecret({ voice, instructions = "", tools = [], mode
             // switched to English, the hint went, and "Mr. Shankar Bhat" came
             // back in Urdu script). Never a language they do not speak.
             transcription: {
-              model: env("OPENAI_RT_STT_MODEL", "gpt-4o-transcribe"),
+              model: env("OPENAI_RT_STT_MODEL", "whisper-1"),
               ...(/^[a-z]{2}$/.test(lang) ? { language: lang } : {}),
               prompt: transcriptionHint(lang),
             },
           },
           output: { format: { type: "audio/pcm", rate: 24000 }, voice: VOICES.includes(String(voice || "")) ? voice : models.ttsVoice() },
         },
-        ...(tools.length ? { tools: toTools(tools).map((t) => ({ type: "function", ...t.function })) } : {}),
+        output_modalities: ["audio"],
+        max_output_tokens: "inf",
+        ...(/^gpt-realtime-2/.test(m) ? { reasoning: { effort: env("OPENAI_RT_REASONING", "low") } } : {}),
+        ...(tools.length ? {
+          tools: toTools(tools).map((t) => ({ type: "function", ...t.function })),
+          tool_choice: "auto",
+          // Only a phone that answers every call of a response in one go
+          // (build 154+); an older one would ask for two replies.
+          parallel_tool_calls: Boolean(parallelTools),
+        } : {}),
       },
     },
+    // Per user, hashed: OpenAI's abuse checks see one person, not our whole key.
+    ...(user ? { headers: { "OpenAI-Safety-Identifier": require("crypto").createHash("sha256").update(String(user)).digest("hex").slice(0, 32) } } : {}),
     timeoutMs: 15_000,
   });
   const value = j.value || (j.client_secret && j.client_secret.value) || "";

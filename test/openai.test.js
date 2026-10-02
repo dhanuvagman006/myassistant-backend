@@ -124,7 +124,7 @@ function fake(handler) {
     await check("speech comes back as 24 kHz pcm with the manner asked for", async () => {
       fake(({ url, body }) => {
         assert.match(url, /\/audio\/speech$/);
-        assert.strictEqual(body.voice, "marin");
+        assert.strictEqual(body.voice, "shimmer");
         assert.strictEqual(body.response_format, "pcm");
         assert.strictEqual(body.instructions, "warm and unhurried");
         return new Response(Buffer.alloc(4800), { status: 200, headers: { "content-type": "audio/pcm" } });
@@ -208,25 +208,31 @@ function fake(handler) {
     });
 
     await check("the realtime key: pcm 24 kHz, semantic vad, input transcription, the voice, the tools", async () => {
-      fake(({ url, body }) => {
+      fake(({ url, body, init }) => {
         assert.match(url, /\/realtime\/client_secrets$/);
         const s = body.session;
-        assert.strictEqual(s.model, "gpt-realtime");
+        assert.strictEqual(s.model, "gpt-realtime-2.1");
+        assert.deepStrictEqual(s.reasoning, { effort: "low" });
+        assert.deepStrictEqual(s.output_modalities, ["audio"]);
+        assert.strictEqual(s.max_output_tokens, "inf");
+        assert.strictEqual(s.tool_choice, "auto");
+        assert.strictEqual(s.parallel_tool_calls, true);
+        assert.match(String(init.headers["OpenAI-Safety-Identifier"]), /^[0-9a-f]{32}$/);
         assert.strictEqual(s.instructions, "be kind");
         assert.strictEqual(s.audio.input.format.rate, 24000);
-        assert.strictEqual(s.audio.input.turn_detection.type, "server_vad");
-        assert.strictEqual(s.audio.input.turn_detection.silence_duration_ms, 800);
+        assert.strictEqual(s.audio.input.turn_detection.type, "semantic_vad");
+        assert.strictEqual(s.audio.input.turn_detection.eagerness, "auto");
         assert.strictEqual(s.audio.input.turn_detection.interrupt_response, false, "only the button interrupts");
         assert.strictEqual(s.audio.input.noise_reduction.type, "near_field");
-        assert.strictEqual(s.audio.input.transcription.model, "gpt-4o-transcribe");
+        assert.strictEqual(s.audio.input.transcription.model, "whisper-1");
         assert.strictEqual(s.audio.input.transcription.language, "kn");
         assert.match(s.audio.input.transcription.prompt, /Kannada and English/);
         assert.strictEqual(s.audio.output.voice, "sage");
         assert.deepStrictEqual(s.tools[0], { type: "function", name: "set_timer", description: "d", parameters: { type: "object", properties: { minutes: { type: "integer" } } } });
         return { value: "ek_1", expires_at: 1234 };
       });
-      const out = await O.realtimeClientSecret({ voice: "sage", instructions: "be kind", language: "kn", silenceMs: 800, tools: [{ name: "set_timer", description: "d", parameters: { type: "OBJECT", properties: { minutes: { type: "INTEGER" } } } }] });
-      assert.deepStrictEqual(out, { value: "ek_1", expiresAt: 1234, model: "gpt-realtime" });
+      const out = await O.realtimeClientSecret({ voice: "sage", instructions: "be kind", language: "kn", silenceMs: 800, parallelTools: true, user: 56, tools: [{ name: "set_timer", description: "d", parameters: { type: "OBJECT", properties: { minutes: { type: "INTEGER" } } } }] });
+      assert.deepStrictEqual(out, { value: "ek_1", expiresAt: 1234, model: "gpt-realtime-2.1" });
       // English keeps its hint too: never left to guess (it guessed Urdu).
       fake(({ body }) => {
         assert.strictEqual(body.session.audio.input.transcription.language, "en");

@@ -172,6 +172,8 @@ const VOICE_STYLE =
   "feeling that follows what they say (delight, concern, a smile in the voice, calm firmness when it " +
   "is serious). Short sentences, no filler, never read a list aloud. Match their language and energy.";
 
+// From this build the phone answers all of a response's tool calls together.
+const PARALLEL_TOOLS_BUILD = 154;
 /** A short-lived key for the phone's own realtime voice session (Phase C). */
 router.post("/realtime/secret", async (req, res) => {
   const uid = userOf(req, res);
@@ -183,7 +185,8 @@ router.post("/realtime/secret", async (req, res) => {
     const profile = await require("../users/context").getProfile(uid).catch(() => null);
     const language = cfg.speechLanguage(profile && profile.user && profile.user.preferred_language).slice(0, 2);
     const out = await openai.realtimeClientSecret({
-      language, silenceMs: cfg.liveBlock(uid).silenceMs,
+      language, silenceMs: cfg.liveBlock(uid).silenceMs, user: uid,
+      parallelTools: (Number(req.get("X-App-Build")) || 0) >= PARALLEL_TOOLS_BUILD,
       voice: require("./proxy").voiceFor(b.voice),
       instructions: (VOICE_STYLE + "\n\n" + String(b.instructions || "")).slice(0, 60_000),
       tools: Array.isArray(b.tools) ? b.tools : [],

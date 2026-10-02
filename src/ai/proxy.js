@@ -15,16 +15,16 @@ const openai = require("../services/ai/openai");
 
 const TTS_VOICES = {
   // The names the app's pickers still show → the nearest OpenAI voice.
-  Fola: "marin", Kore: "sage", Aoede: "nova", Puck: "echo", Charon: "onyx", Fenrir: "ash",
-  Sulafat: "marin", Callirrhoe: "shimmer", Achernar: "nova", Vindemiatrix: "sage", Achird: "verse",
+  Fola: "shimmer", Kore: "sage", Aoede: "nova", Puck: "echo", Charon: "onyx", Fenrir: "ash",
+  Sulafat: "shimmer", Callirrhoe: "shimmer", Achernar: "nova", Vindemiatrix: "sage", Achird: "verse",
   Zephyr: "alloy", Leda: "shimmer", Orus: "onyx", Autonoe: "nova", Enceladus: "ash",
 };
 
 /**
- * The voices the fast-voice picker offers on OpenAI, best first: marin and
- * cedar are the realtime model's most natural (a woman's, a man's).
+ * The voices the fast-voice picker offers on OpenAI: shimmer, the default
+ * (the owner, 2026-10-02), then marin and cedar (a woman's, a man's).
  */
-const REALTIME_VOICES = ["marin", "cedar", "coral", "sage", "shimmer", "verse", "ballad", "ash"];
+const REALTIME_VOICES = ["shimmer", "marin", "cedar", "coral", "sage", "verse", "ballad", "ash"];
 
 /** The OpenAI voice for a name the app knows, or the served default. */
 function voiceFor(name) {
