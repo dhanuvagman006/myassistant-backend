@@ -160,7 +160,7 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
       const r = await api("GET", "/ai/config", { token: A.token });
       assert.strictEqual(r.status, 200, r.text);
       const c = r.json;
-      assert.deepStrictEqual(Object.keys(c).sort(), ["limits", "listen", "models", "routing"], "no Nano any more");
+      assert.deepStrictEqual(Object.keys(c).sort(), ["limits", "listen", "models", "provider", "routing"], "no Nano any more");
       assert.deepStrictEqual(Object.keys(c.models).sort(),
         ["cloud", "cloudFallback", "cloudFast", "live", "liveVoice", "thinking", "tts", "ttsLanguage", "ttsStyle", "ttsVoice"]);
       assert.strictEqual(c.models.cloud, "gemini-3.5-flash-lite", "the phone's own conversation model");

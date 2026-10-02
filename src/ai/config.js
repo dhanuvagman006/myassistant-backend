@@ -263,6 +263,24 @@ async function forUser(userId, { build, live } = {}) {
   };
   if (liveCapable(build, live)) out.live = liveBlock(uid);
   out.listen = { cloudStt: cloudSttMode() };
+  // OPENAI IS THE PROVIDER (2026-10-02): the phone talks to our server
+  // (ai/proxy.js) instead of Firebase AI Logic; the names it sends are
+  // OpenAI's, the voice the nearest OpenAI one. The fast voice keeps its
+  // Gemini name until the realtime port ships (Phase C), so the app's Live
+  // path is unchanged until then.
+  const openai = require("../services/ai/openai");
+  if (openai.ready() && process.env.AI_PROVIDER !== "gemini") {
+    const proxy = require("./proxy");
+    const served = proxy.servedModels();
+    out.provider = "openai";
+    out.models = {
+      ...out.models,
+      cloud: served.cloud, cloudFast: served.cloudFast, cloudFallback: served.cloudFallback,
+      tts: served.tts, ttsVoice: proxy.voiceFor(out.models.ttsVoice),
+    };
+  } else {
+    out.provider = "gemini";
+  }
   return out;
 }
 

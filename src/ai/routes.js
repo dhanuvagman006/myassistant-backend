@@ -18,7 +18,8 @@
  * Mounted behind appAuth (server.js). Background, stored-data and
  * multi-user work stays on the server's own agent (agents/runtime.js).
  */
-const router = require("express").Router();
+const express = require("express");
+const router = express.Router();
 const sessions = require("./sessions");
 
 /** The signed-in account, or null (anonymous dev sessions have none). */
@@ -126,6 +127,58 @@ router.post("/turn-audio", turnAudioUpload.fields([{ name: "user", maxCount: 1 }
       res.status(400).json({ error: String(e.message || e).slice(0, 120) });
     }
   });
+
+/**
+ * THE PHONE'S MODEL (2026-10-02, src/ai/proxy.js): Gemini's request shape
+ * in, Gemini's response shape out, OpenAI behind it. `stream: true` in
+ * the body makes it server-sent events, one chunk per `data:` line.
+ */
+router.post("/generate", express.json({ limit: "25mb" }), async (req, res) => {
+  const uid = userOf(req, res);
+  if (!uid) return;
+  const body = req.body || {};
+  const proxy = require("./proxy");
+  if (!body.stream) {
+    try {
+      let last = null;
+      await proxy.generate(body, { stream: false, userId: uid, emit: (j) => { last = j; } });
+      return res.json(last || { candidates: [] });
+    } catch (e) {
+      console.warn("ai/generate failed:", e.message);
+      return res.status(e.status === 429 ? 429 : 502).json({ error: { message: String(e.message || e).slice(0, 200) } });
+    }
+  }
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+  const send = (j) => res.write(`data: ${JSON.stringify(j)}\n\n`);
+  try {
+    await proxy.generate(body, { stream: true, userId: uid, emit: send });
+  } catch (e) {
+    console.warn("ai/generate stream failed:", e.message);
+    send({ error: { message: String(e.message || e).slice(0, 200), status: e.status || 0 } });
+  }
+  res.write("data: [DONE]\n\n");
+  res.end();
+});
+
+/** A short-lived key for the phone's own realtime voice session (Phase C). */
+router.post("/realtime/secret", async (req, res) => {
+  const uid = userOf(req, res);
+  if (!uid) return;
+  try {
+    const openai = require("../services/ai/openai");
+    const b = req.body || {};
+    const out = await openai.realtimeClientSecret({
+      voice: require("./proxy").voiceFor(b.voice), instructions: String(b.instructions || "").slice(0, 60_000),
+      tools: Array.isArray(b.tools) ? b.tools : [],
+    });
+    res.json({ value: out.value, expiresAt: out.expiresAt, model: out.model });
+  } catch (e) {
+    res.status(502).json({ error: String(e.message || e).slice(0, 200) });
+  }
+});
 
 router.post("/firebase-token", async (req, res) => {
   const uid = userOf(req, res);
