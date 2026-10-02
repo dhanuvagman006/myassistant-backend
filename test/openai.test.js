@@ -264,6 +264,9 @@ function fake(handler) {
       assert.deepStrictEqual(out, { session: { id: "live_1" }, transport: { type: "webrtc", sdp: "answer" } });
       assert.strictEqual(O.GPT_LIVE_AGENT.delegation.responses.tools.length, 1, "the agent itself is never changed");
       await assert.rejects(O.liveSession({ sdp: " " }), /SDP offer/);
+      // OpenAI's own search wins over ours; stay_silent is the voice's business.
+      const cfg = O.liveSessionConfig({ tools: ["web_search", "stay_silent", "set_alarm"].map((name) => ({ name, description: "d", parameters: { type: "object", properties: {} } })) });
+      assert.deepStrictEqual(cfg.delegation.responses.tools.map((t) => t.type + ":" + (t.name || "")), ["web_search:", "function:set_alarm"]);
     });
 
     await check("the router keeps its contracts on top: reply, stream, tools, transcript", async () => {

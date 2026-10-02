@@ -594,9 +594,31 @@ const GPT_LIVE_AGENT = Object.freeze({
  */
 async function liveSession({ sdp, instructions = "", backendInstructions = "", tools = [], user = "" } = {}) {
   if (typeof sdp !== "string" || !sdp.trim()) throw new OpenAIError("gpt-live: an SDP offer is required", 400, "");
+  return call("/live/sessions", {
+    body: { session: liveSessionConfig({ instructions, backendInstructions, tools }), transport: { type: "webrtc", sdp } },
+    ...(user ? { headers: { "OpenAI-Safety-Identifier": safetyId(user) } } : {}),
+    timeoutMs: 20_000,
+  });
+}
+
+/**
+ * OPENAI'S OWN TOOLS FIRST (the owner, 2026-10-02: "let OpenAI's built-in
+ * function run; if it doesn't have one, run our function"). An app function
+ * that does what a built-in does is left out: our web_search beside
+ * OpenAI's made the backend call ours and wait on the phone ("I'm just
+ * fetching…" for three minutes). stay_silent is the voice's own business.
+ */
+const GPT_LIVE_SKIP = new Set(["stay_silent"]);
+
+/** The session GPT-Live is started with (also what a server-side test opens). */
+function liveSessionConfig({ instructions = "", backendInstructions = "", tools = [] } = {}) {
   const a = GPT_LIVE_AGENT;
   const r = a.delegation.responses;
-  const session = {
+  const builtIn = new Set(r.tools.map((t) => t.type));
+  const own = toTools(tools)
+    .map((t) => ({ type: "function", ...t.function }))
+    .filter((t) => !builtIn.has(t.name) && !GPT_LIVE_SKIP.has(t.name));
+  return {
     model: env("GPT_LIVE_MODEL", a.model),
     ...(instructions ? { instructions: String(instructions).slice(0, 48_000) } : {}),
     audio: { output: { voice: env("GPT_LIVE_VOICE", a.audio.output.voice) } },
@@ -607,15 +629,10 @@ async function liveSession({ sdp, instructions = "", backendInstructions = "", t
         model: env("GPT_LIVE_BACKEND_MODEL", r.model),
         reasoning: { ...r.reasoning },
         ...(backendInstructions ? { instructions: String(backendInstructions).slice(0, 48_000) } : {}),
-        tools: [...r.tools.map((t) => ({ ...t })), ...toTools(tools).map((t) => ({ type: "function", ...t.function }))],
+        tools: [...r.tools.map((t) => ({ ...t })), ...own],
       },
     },
   };
-  return call("/live/sessions", {
-    body: { session, transport: { type: "webrtc", sdp } },
-    ...(user ? { headers: { "OpenAI-Safety-Identifier": safetyId(user) } } : {}),
-    timeoutMs: 20_000,
-  });
 }
 
 /** One person to OpenAI's abuse checks, never their id itself. */
@@ -694,7 +711,7 @@ const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); 
 
 module.exports = {
   ready, key, models, VOICES, OpenAIError, isBusy, busy: () => Date.now() < busyUntil,
-  chat, transcribe, speak, speakStream, imageGenerate, imageEdit, realtimeClientSecret, liveSession, GPT_LIVE_AGENT, webSearch, plausibleTranscript,
+  chat, transcribe, speak, speakStream, imageGenerate, imageEdit, realtimeClientSecret, liveSession, liveSessionConfig, GPT_LIVE_AGENT, webSearch, plausibleTranscript,
   // for tests
   fromSimple, fromContents, toTools, wavWrap, imageSize,
 };

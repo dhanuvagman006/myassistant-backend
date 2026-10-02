@@ -202,6 +202,27 @@ router.post("/realtime/secret", async (req, res) => {
  * session with OpenAI and return the answer. The voice gets the style and
  * the conversation; the backend model gets the same prompt to choose tools by.
  */
+/**
+ * The app's functions for GPT-Live, built here from the registry: the
+ * phone's copy has been through its own declaration format and back, and
+ * with it every delegation failed ("Responses handoff incomplete",
+ * 2026-10-02). The phone's list is the fallback.
+ */
+function liveToolsFor(uid, fromPhone) {
+  try {
+    require("./context");
+    const registry = require("../tools/registry");
+    const live = require("./liveTools");
+    const { jsonSchema } = require("./context");
+    const names = live.liveNames(registry.list(), { must: [] });
+    const decls = live.capDeclarations(registry.declarations({ userId: uid, deviceCaps: null, only: names }), names);
+    if (decls.length) return decls.map((d) => ({ name: d.name, description: d.description, parameters: jsonSchema(d.parameters) }));
+  } catch (e) {
+    console.error(`ai: gpt-live tools from the registry failed: ${String(e.message || e).slice(0, 160)}`);
+  }
+  return Array.isArray(fromPhone) ? fromPhone : [];
+}
+
 router.post("/live/session", async (req, res) => {
   const uid = userOf(req, res);
   if (!uid) return;
@@ -215,7 +236,7 @@ router.post("/live/session", async (req, res) => {
         "\n\nAnything that needs a tool, the app, saved facts or current information: hand it to the backend, then say its result.",
       backendInstructions: prompt +
         "\n\nYou are the backend of a spoken conversation: use the tools, then return a short, grounded result to be said aloud.",
-      tools: Array.isArray(b.tools) ? b.tools : [],
+      tools: liveToolsFor(uid, b.tools),
     });
     res.status(201).json({ session: { id: out.session && out.session.id }, transport: out.transport });
   } catch (e) {
