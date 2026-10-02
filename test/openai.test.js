@@ -216,6 +216,7 @@ function fake(handler) {
         assert.strictEqual(s.audio.input.format.rate, 24000);
         assert.strictEqual(s.audio.input.turn_detection.type, "server_vad");
         assert.strictEqual(s.audio.input.turn_detection.silence_duration_ms, 800);
+        assert.strictEqual(s.audio.input.turn_detection.interrupt_response, false, "only the button interrupts");
         assert.strictEqual(s.audio.input.noise_reduction.type, "near_field");
         assert.strictEqual(s.audio.input.transcription.model, "gpt-4o-transcribe");
         assert.strictEqual(s.audio.input.transcription.language, "kn");

@@ -504,13 +504,16 @@ async function realtimeClientSecret({ voice, instructions = "", tools = [], mode
   // to seconds on Kannada and the phone gave up ("no answer").
   // OPENAI_RT_VAD=semantic switches.
   const turn = env("OPENAI_RT_VAD", "server") === "semantic"
-    ? { type: "semantic_vad", eagerness: env("OPENAI_RT_EAGERNESS", "high"), create_response: true, interrupt_response: true }
+    ? { type: "semantic_vad", eagerness: env("OPENAI_RT_EAGERNESS", "high"), create_response: true, interrupt_response: false }
     : {
         // 0.7 (2 Oct, "it even considers the background noises"): a TV or a
         // voice across the room stays under it; their own voice, near the
         // phone, does not.
         type: "server_vad", threshold: Number(env("OPENAI_RT_VAD_THRESHOLD", "0.7")), prefix_padding_ms: 300,
-        silence_duration_ms: Math.max(300, Math.min(2000, Number(silenceMs) || 800)), create_response: true, interrupt_response: true,
+        // interrupt_response false (the owner, 2 Oct: "remove interruption
+        // completely and add a button"): a voice in the room never cuts her
+        // off; the phone's Interrupt button does (response.cancel).
+        silence_duration_ms: Math.max(300, Math.min(2000, Number(silenceMs) || 800)), create_response: true, interrupt_response: false,
       };
   const lang = String(language || "").slice(0, 2).toLowerCase();
   const j = await call("/realtime/client_secrets", {
