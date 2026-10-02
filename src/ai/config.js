@@ -106,6 +106,8 @@ const liveModel = () =>
 // stays open. AI_LIVE=off turns it off (the app keeps the cascade);
 // AI_LIVE_MODEL, AI_LIVE_VOICE and AI_LIVE_SILENCE_MS override.
 const LIVE_BUILD = 135;
+// From this build the phone takes OpenAI's names and our server's model port.
+const OPENAI_BUILD = 146;
 // Sulafat first (the client, 2026-09-30: "best voice as default" — the
 // warm one); the rest as before.
 const LIVE_VOICES = ["Sulafat", "Callirrhoe", "Achernar", "Aoede", "Vindemiatrix", "Kore", "Charon", "Achird"];
@@ -268,8 +270,10 @@ async function forUser(userId, { build, live } = {}) {
   // OpenAI's, the voice the nearest OpenAI one. The fast voice keeps its
   // Gemini name until the realtime port ships (Phase C), so the app's Live
   // path is unchanged until then.
+  // Only an app that knows the server port (build 146+) is told so: an
+  // older build would hand these names to Firebase AI Logic and break.
   const openai = require("../services/ai/openai");
-  if (openai.ready() && process.env.AI_PROVIDER !== "gemini") {
+  if (openai.ready() && process.env.AI_PROVIDER !== "gemini" && Number.isFinite(b) && b >= OPENAI_BUILD) {
     const proxy = require("./proxy");
     const served = proxy.servedModels();
     out.provider = "openai";
@@ -278,6 +282,9 @@ async function forUser(userId, { build, live } = {}) {
       cloud: served.cloud, cloudFast: served.cloudFast, cloudFallback: served.cloudFallback,
       tts: served.tts, ttsVoice: proxy.voiceFor(out.models.ttsVoice),
     };
+    // The fast voice runs on OpenAI Realtime (Phase C): the phone opens the
+    // socket itself with a key from POST /ai/realtime/secret.
+    if (out.live) out.live = { ...out.live, model: served.live, voice: proxy.voiceFor(out.live.voice) };
   } else {
     out.provider = "gemini";
   }
@@ -287,6 +294,6 @@ async function forUser(userId, { build, live } = {}) {
 module.exports = {
   forUser, voiceFor, speechLanguage, cloudModel, cloudFastModel, cloudFallbackModel,
   thinkingLevel, ttsModel, expressiveTtsModel, ttsStyle, liveModel, liveModelFor, cloudSttMode,
-  liveBlock, liveCapable, liveOn, LIVE_BUILD, LIVE_VOICES,
+  liveBlock, liveCapable, liveOn, LIVE_BUILD, OPENAI_BUILD, LIVE_VOICES,
   VOICES, LIBRARY_VOICES, EXPRESSIVE_BUILD, TOOL_VERBS, FRESH_WORDS, NO_GROUNDING, groundingOn,
 };

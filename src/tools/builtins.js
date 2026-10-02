@@ -5469,7 +5469,7 @@ function registerBuiltins() {
         return { ok: false, error: "the news could not be fetched just now" };
       }
       const LABEL = {
-        settings: "your settings", home: "Home", hub: "the Hub", chat: "Chat",
+        settings: "your settings", home: "Home", hub: "the Hub", chat: "your messages", nearby: "Nearby",
         documents: "your documents", clients: "your clients",
         finance: "your finances", stocks: "your stocks",
         diagnostics: "diagnostics", mcp: "your connected servers",

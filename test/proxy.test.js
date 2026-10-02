@@ -127,15 +127,22 @@ const collect = () => { const out = []; return { out, emit: (j) => out.push(j) }
 
     await check("the served config says openai and carries OpenAI names", async () => {
       const cfg = require("../src/ai/config");
-      const out = await cfg.forUser(0, { build: 145 });
+      const out = await cfg.forUser(0, { build: 146 });
       assert.strictEqual(out.provider, "openai");
       assert.strictEqual(out.models.cloud, "gpt-4.1-mini");
       assert.strictEqual(out.models.tts, "gpt-4o-mini-tts");
       assert.ok(require("../src/services/ai/openai").VOICES.includes(out.models.ttsVoice), out.models.ttsVoice);
+      assert.strictEqual(out.live.model, "gpt-realtime", "the fast voice runs on realtime");
+      assert.ok(require("../src/services/ai/openai").VOICES.includes(out.live.voice), out.live.voice);
+      // An app that predates the server port keeps Gemini's names.
+      const old = await cfg.forUser(0, { build: 145 });
+      assert.strictEqual(old.provider, "gemini");
+      assert.match(old.models.cloud, /gemini/);
+      assert.match(old.live.model, /gemini/);
       const saved = process.env.OPENAI_API_KEY;
       delete process.env.OPENAI_API_KEY;
       try {
-        assert.strictEqual((await cfg.forUser(0, { build: 145 })).provider, "gemini");
+        assert.strictEqual((await cfg.forUser(0, { build: 146 })).provider, "gemini");
       } finally {
         process.env.OPENAI_API_KEY = saved;
       }
