@@ -108,7 +108,8 @@ async function runCreateEventPoster(args, ctx) {
     if (gen) {
       const prompt = `An eye-catching, professionally designed poster for this: ${request.replace(/"/g, "'")}. ` +
         "Set the event's name as a bold headline and the date, time and place clearly below it, using only the " +
-        "facts given, every word spelled exactly. Vivid, polished, high-end print design. No other text.";
+        "facts given, every word spelled exactly. Vivid, polished, high-end print design. No other text, and no " +
+        "people, faces, gods or figures unless the request describes them.";
       return gen.execute({ prompt, aspect: args.format === "story" ? "story" : args.format === "square" ? "square" : "portrait", _raw: true }, ctx);
     }
   }

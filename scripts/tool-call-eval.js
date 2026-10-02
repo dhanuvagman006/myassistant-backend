@@ -71,7 +71,8 @@ const CASES = [
   ["Did you call Ravi?", ["check_recent_actions"]],
   ["Open the news", ["open_app_screen"]],
   ["Prepare me for my meeting with Suresh tomorrow", ["prepare_meeting"]],
-  ["Make a poster for our Diwali party on Friday at 7 pm", ["create_event_poster"]],
+  // 2026-10-02: posters are generated outright; the studio only on request.
+  ["Make a poster for our Diwali party on Friday at 7 pm", ["generate_image", "create_event_poster"]],
   ["Write a short speech for my sister's wedding", ["present_text"]],
   ["Make me a PPT on solar energy", ["create_document"]],
   ["Who is Devi Shetty?", ["web_search"]],
@@ -134,6 +135,11 @@ async function askRealtime(system, decls, text) {
       } else if (e.type === "error") {
         done(null, new Error(JSON.stringify(e.error).slice(0, 200)));
       } else if (e.type === "response.done") {
+        const st = e.response && e.response.status;
+        if (st && st !== "completed") {
+          const why = JSON.stringify((e.response && e.response.status_details) || {});
+          return done(null, Object.assign(new Error(`response ${st} ${why.slice(0, 160)}`), { rateLimited: /rate|limit|quota/i.test(why) }));
+        }
         done({ calls, args, said: said.trim() });
       }
     };
@@ -142,7 +148,17 @@ async function askRealtime(system, decls, text) {
 }
 
 async function ask(system, decls, text) {
-  if (ENGINE === "realtime") return askRealtime(system, decls, text);
+  if (ENGINE === "realtime") {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await askRealtime(system, decls, text);
+      } catch (e) {
+        // ~18k tokens a session against the account's tokens-per-minute.
+        if (!e.rateLimited || attempt >= 3) throw e;
+        await new Promise((res) => setTimeout(res, 30_000));
+      }
+    }
+  }
   const out = await openai.chat({
     model: MODEL, system, messages: [{ role: "user", content: text }],
     declarations: decls, temperature: 0.2, maxTokens: 200, timeoutMs: 60_000,

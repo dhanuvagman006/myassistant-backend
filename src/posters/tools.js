@@ -51,7 +51,8 @@ function greetingPrompt(args) {
   return `A beautiful, festive ${occasion} greeting card poster${colour}, portrait, rich colours, ` +
     "an ornate decorative frame, soft glowing bokeh light, flowers and celebratory details, polished " +
     `professional print design. Print exactly these words, spelled exactly as written: ${words.join(", ")}. ` +
-    "No other text anywhere.";
+    "No other text anywhere. A decorative design only: no people, faces, gods or figures unless described " +
+    "(2026-10-02: a card for 'Ravi Shankar' came back with Lord Shiva on it).";
 }
 const svc = require("./service");
 
