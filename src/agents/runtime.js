@@ -78,27 +78,6 @@ const BACKGROUND_DEVICE_TOOLS = new Set([
 const BACKGROUND_TURN_TIMEOUT_MS =
   Number(process.env.BACKGROUND_TURN_TIMEOUT_MS) || 90_000;
 
-/**
- * CALLS ON THIS PHONE. Owner, 2026-09-24: "the calls should be connected —
- * it should report when we have any missed calls, or any info if user
- * asks about calls". App build 107 reads the phone's own call log
- * (phone_calls); an older app cannot, so it keeps the rule that stopped
- * "you haven't missed any calls" being invented out of thin air.
- */
-function callsRule(appBuild) {
-  if (Number(appBuild) >= 107) {
-    return "- CALLS ON THIS PHONE: 'any missed calls?', 'who called me today?', "
-      + "'did Ravi call?', 'when did mom last call', 'call history' → phone_calls "
-      + "(filter missed / incoming / outgoing / all; person when they name someone; "
-      + "since_hours 720 for 'when did X last call'). Say only 'Checking your calls.' "
-      + "— the phone answers with a [SYSTEM] line; say what it found in one or two "
-      + "short sentences and offer to call back. Never guess call history: until "
-      + "that line arrives you do not know whether they missed any calls. 'Did YOU "
-      + "call X' is check_recent_actions; what was SAID on a call is call_recall.\n";
-  }
-  return "- CALL HISTORY: you cannot see the phone's missed or recent calls unless "
-    + "a tool returns them — never say they have or have not missed calls.\n";
-}
 
 function systemPrompt(extra = "", { appBuild } = {}) {
   // One prompt for every path since 2026-10-02 (ai/voicePrompt.js); the
