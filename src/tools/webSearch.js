@@ -31,7 +31,6 @@ function providerChain() {
   if (process.env.BRAVE_SEARCH_API_KEY) chain.push("brave");
   if (process.env.TAVILY_API_KEY) chain.push("tavily");
   if (process.env.GOOGLE_CSE_KEY && process.env.GOOGLE_CSE_CX) chain.push("google");
-  if (process.env.GEMINI_API_KEY) chain.push("gemini");
   chain.push("wikipedia");
   return chain;
 }
@@ -471,99 +470,6 @@ const BACKENDS = {
       snippet: x.content,
       url: x.url,
     }));
-  },
-
-  async gemini(q) {
-    // MODEL CHOICE MATTERS HERE, measured 2026-08-29: Google meters the
-    // built-in Google Search grounding PER MODEL FAMILY. On this key every
-    // gemini-3.x model 429s on grounded requests (free-tier allowance is
-    // spent/absent) while gemini-2.5-flash grounds fine — which is exactly
-    // why the all-2.5 era assistant "just had" real-time info. So search
-    // runs on 2.5 by default even though chat runs on 3.5. When the 2.5
-    // family retires (2026-10-16) set GEMINI_SEARCH_MODEL, or the main
-    // model takes over automatically below.
-    const { envModel } = require("../services/ai/router");
-    // Every model has its OWN tiny free-tier daily bucket (~20/day on the
-    // flash models, measured), so grounding walks a CHAIN of buckets
-    // instead of dying with the first.
-    const chain = [
-      envModel("GEMINI_SEARCH_MODEL", "gemini-2.5-flash"),
-      envModel("GEMINI_MODEL", "gemini-3.5-flash-lite"),
-      "gemini-flash-lite-latest",
-      "gemini-3.6-flash",
-    ].filter((m, i, a) => a.indexOf(m) === i);
-    const attempt = async (model) => {
-      const r = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-goog-api-key": process.env.GEMINI_API_KEY,
-          },
-          signal: AbortSignal.timeout(12_000),
-          body: JSON.stringify({
-            contents: [
-              {
-                role: "user",
-                parts: [
-                  {
-                    text:
-                      "Search the web and answer concisely and factually, with " +
-                      "concrete figures where they exist: " + q,
-                  },
-                ],
-              },
-            ],
-            tools: [{ googleSearch: {} }],
-            // Skip pre-answer reasoning either way: search+compose needs
-            // none, and it costs ~0.8s measured (2.7s vs 3.5s per query).
-            ...(/^gemini-3/i.test(model)
-              ? { generationConfig: { thinkingConfig: { thinkingLevel: "LOW" } } }
-              : /^gemini-2\.5-flash/i.test(model)
-                ? { generationConfig: { thinkingConfig: { thinkingBudget: 0 } } }
-                : {}),
-          }),
-        }
-      );
-      return r;
-    };
-    let r;
-    for (const model of chain) {
-      r = await attempt(model);
-      // 404 = model retired; 429 = that model's bucket is spent for now.
-      // Either way the next bucket may still have allowance.
-      if (r.status !== 429 && r.status !== 404) break;
-    }
-    if (r.status === 429) {
-      // Every bucket is momentarily dry. This text is READ BY THE MODEL as
-      // the tool result — make it an instruction, not a shrug, so the
-      // assistant answers instead of refusing ("who is the PM of India"
-      // must never die because a rate limiter coughed).
-      throw new Error(
-        "web search is rate-limited for a few minutes. Do NOT refuse the " +
-          "user's question: answer it from your own knowledge if you know " +
-          "it, and briefly mention you couldn't double-check it live just " +
-          "now. Only if you genuinely do not know the answer, say so and " +
-          "suggest trying again in a few minutes."
-      );
-    }
-    if (!r.ok) throw new Error(`gemini grounding ${r.status}`);
-    const d = await r.json();
-    const answer =
-      d.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("").trim() || "";
-    if (!answer) throw new Error("gemini grounding returned nothing");
-    const sources = (d.candidates?.[0]?.groundingMetadata?.groundingChunks || [])
-      .map((c) => ({
-        title: c.web?.title || "source",
-        snippet: "",
-        url: c.web?.uri || "",
-      }))
-      .filter((s) => s.url)
-      .slice(0, 5);
-    // The grounded answer itself is the digest; sources ride along for the
-    // on-screen citation cards.
-    return [{ title: "Web answer", snippet: answer, url: "" }, ...sources];
   },
 
   async google(q) {

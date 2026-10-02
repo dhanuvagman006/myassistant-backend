@@ -27,7 +27,7 @@ process.env.DATABASE_URL =
 process.env.NODE_ENV = process.env.NODE_ENV || "test";
 process.env.JWT_SECRET = "poster-studio-" + Math.random().toString(36).slice(2) + Date.now();
 for (const k of [
-  "GEMINI_API_KEY", "GEMINI_FALLBACK_KEYS", "GEMINI_IMAGE_API_KEY", "GEMINI_IMAGE_BILLING",
+  "OPENAI_API_KEY", "GEMINI_FALLBACK_KEYS", "GEMINI_IMAGE_API_KEY", "GEMINI_IMAGE_BILLING",
   "GEMINI_IMAGE_MODEL", "CF_ACCOUNT_ID", "CF_API_TOKEN", "CF_IMAGE_MODEL", "CF_FALLBACK_IMAGE_MODEL",
   "FAL_KEY", "FAL_IMAGES", "HF_TOKEN", "HF_IMAGE_MODEL", "TOGETHER_API_KEY", "TOGETHER_IMAGE_MODEL",
   "IMAGE_PROVIDER_ORDER", "IMAGE_KEYLESS", "IMAGE_PROMPT_ENHANCE", "POSTER_AI",
@@ -62,11 +62,12 @@ globalThis.fetch = async (input, init = {}) => {
   const call = { url, host: u.hostname, path: u.pathname, headers, body, init };
   calls.push(call);
   const miss = (what) => json(500, { error: { message: `stub: no ${what}` } });
-  if (u.hostname === "generativelanguage.googleapis.com") {
-    const model = (u.pathname.match(/models\/([^:]+):/) || [])[1] || "";
-    call.model = model;
-    if (/image/i.test(model)) return H.geminiImage ? H.geminiImage(call) : miss("gemini image");
-    return H.geminiText ? H.geminiText(call) : miss("gemini text");
+  if (u.hostname === "api.openai.com") {
+    const form = init.body instanceof FormData ? init.body : null;
+    call.model = (body && body.model) || (form ? String(form.get("model") || "") : "");
+    if (form) call.form = Object.fromEntries([...form.keys()].map((k) => [k, form.get(k)]));
+    if (/\/images\//.test(u.pathname)) return H.openaiImage ? H.openaiImage(call) : miss("openai image");
+    return H.openaiText ? H.openaiText(call) : miss("openai text");
   }
   if (u.hostname === "api.cloudflare.com") return H.cf ? H.cf(call) : miss("cloudflare");
   if (u.hostname === "fal.run") return H.fal ? H.fal(call) : miss("fal");
@@ -92,7 +93,7 @@ function fakePng(w, h, size = 30 * 1024) {
   b.writeUInt32BE(h, 20);
   return b;
 }
-const geminiText = (text) => json(200, { candidates: [{ content: { parts: [{ text }] } }] });
+const geminiText = (text) => json(200, { model: "gpt-4.1-mini", choices: [{ message: { content: text }, finish_reason: "stop" }] });
 const imageResponse = (buf, type = "image/jpeg") => new Response(buf, { status: 200, headers: { "content-type": type } });
 
 /* ------------------------------------------------------------------ */
@@ -154,13 +155,13 @@ function withEnv(vars, fn) {
 
   await atest("ordered by quality among the AVAILABLE providers, per purpose", () => withEnv({
     CF_ACCOUNT_ID: "acct", CF_API_TOKEN: "tok", FAL_KEY: "fk",
-    GEMINI_API_KEY: "gk", GEMINI_IMAGE_BILLING: "on",
+    OPENAI_API_KEY: "gk", GEMINI_IMAGE_BILLING: "on",
   }, () => {
     fresh();
-    assert.deepStrictEqual(imagegen.providerOrder("photo"), ["gemini", "fal-zimage", "cf-klein", "fal-qwen", "cf-schnell"]);
-    assert.deepStrictEqual(imagegen.providerOrder("text"), ["gemini", "fal-qwen", "cf-klein", "fal-zimage", "cf-schnell"]);
+    assert.deepStrictEqual(imagegen.providerOrder("photo"), ["openai", "fal-zimage", "cf-klein", "fal-qwen", "cf-schnell"]);
+    assert.deepStrictEqual(imagegen.providerOrder("text"), ["openai", "fal-qwen", "cf-klein", "fal-zimage", "cf-schnell"]);
     assert.deepStrictEqual(imagegen.providerOrder("background"), imagegen.providerOrder("photo"));
-    process.env.GEMINI_IMAGE_BILLING = "off";
+    delete process.env.OPENAI_API_KEY;
     delete process.env.FAL_KEY;
     assert.deepStrictEqual(imagegen.providerOrder("photo"), ["cf-klein", "cf-schnell"]);
     process.env.IMAGE_PROVIDER_ORDER = "cf-schnell,nonsense,cf-klein";
@@ -340,49 +341,48 @@ function withEnv(vars, fn) {
   console.log("\nGemini image");
   /* ================================================================ */
 
-  await atest("billing on: responseModalities IMAGE + imageConfig.aspectRatio, key in a header", () => withEnv({
-    GEMINI_API_KEY: "gem-key", GEMINI_IMAGE_BILLING: "on", GEMINI_IMAGE_MODEL: "gemini-2.5-flash-image",
+  await atest("the picture model gets the prompt, the canvas for the shape, and the key in a header", () => withEnv({
+    OPENAI_API_KEY: "gem-key",
   }, async () => {
     fresh();
     const png = fakePng(1080, 1350);
     let seen = null;
-    H.geminiImage = (call) => {
+    H.openaiImage = (call) => {
       seen = call;
-      return json(200, { candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: png.toString("base64") } }] } }] });
+      return json(200, { data: [{ b64_json: png.toString("base64") }] });
     };
     const img = await imagegen.generateImage("a festival of lights", { aspect: "poster" });
-    assert.strictEqual(seen.model, "gemini-3.1-flash-image", "the retired 2.5 model is never called");
-    assert.deepStrictEqual(seen.body.generationConfig, { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: "4:5" } });
-    assert.strictEqual(seen.headers.get("x-goog-api-key"), "gem-key");
+    assert.strictEqual(seen.model, "gpt-image-1");
+    assert.strictEqual(seen.body.size, "1024x1536", "a poster is a tall canvas");
+    assert.strictEqual(seen.body.n, 1);
+    assert.strictEqual(seen.headers.get("authorization"), "Bearer gem-key");
     assert.ok(!/key=/.test(seen.url), "no key in the URL");
-    assert.strictEqual(img.provider, "gemini:gemini-3.1-flash-image");
+    assert.strictEqual(img.provider, "openai:gpt-image-1");
     assert.ok(img.buffer.equals(png));
-    assert.strictEqual(imagegen.geminiImageModel(), "gemini-3.1-flash-image");
   }));
 
-  await atest("9:16 asks Gemini for 9:16; a field it rejects is dropped once, the image still comes", () => withEnv({
-    GEMINI_API_KEY: "g", GEMINI_IMAGE_BILLING: "on",
+  await atest("9:16 asks for the tall canvas, once", () => withEnv({
+    OPENAI_API_KEY: "g",
   }, async () => {
     fresh();
     const png = fakePng(1080, 1920);
     const bodies = [];
-    H.geminiImage = (call) => {
+    H.openaiImage = (call) => {
       bodies.push(call.body);
-      if (call.body.generationConfig.imageConfig) return json(400, { error: { message: "Unknown name \"imageConfig\"" } });
-      return json(200, { candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: png.toString("base64") } }] } }] });
+      return json(200, { data: [{ b64_json: png.toString("base64") }] });
     };
     const img = await imagegen.generateImage("a tall waterfall", { aspect: "story" });
-    assert.strictEqual(bodies[0].generationConfig.imageConfig.aspectRatio, "9:16");
-    assert.deepStrictEqual(bodies[1].generationConfig, { responseModalities: ["IMAGE"] });
+    assert.strictEqual(bodies.length, 1);
+    assert.strictEqual(bodies[0].size, "1024x1536");
     assert.ok(img.buffer.equals(png));
   }));
 
-  await atest("billing off: Gemini image is never called", () => withEnv({
-    GEMINI_API_KEY: "g", GEMINI_IMAGE_BILLING: "off",
+  await atest("no key: the picture model is never called", () => withEnv({
+    OPENAI_API_KEY: "",
   }, async () => {
     fresh();
     let hit = 0;
-    H.geminiImage = () => { hit++; return json(429, {}); };
+    H.openaiImage = () => { hit++; return json(429, {}); };
     H.poll = () => imageResponse(fakeJpeg(1024, 1024));
     await imagegen.generateImage("a quiet lake", { aspect: "square" });
     assert.strictEqual(hit, 0);
@@ -393,10 +393,10 @@ function withEnv(vars, fn) {
   /* ================================================================ */
 
   await atest("a failed text call is skipped: the words go on, the no-text rule still added", () => withEnv({
-    GEMINI_API_KEY: "g",
+    OPENAI_API_KEY: "g",
   }, async () => {
     fresh();
-    H.geminiText = () => json(500, { error: { message: "stub: down" } });
+    H.openaiText = () => json(500, { error: { message: "stub: down" } });
     const e = await imagePrompt.enhancePrompt("Diwali sale", { purpose: "background" });
     assert.strictEqual(e.enhanced, false);
     assert.match(e.prompt, /^Diwali sale\./);
@@ -404,10 +404,10 @@ function withEnv(vars, fn) {
   }));
 
   await atest("a slow text call is cut at its deadline", () => withEnv({
-    GEMINI_API_KEY: "g", IMAGE_PROMPT_TIMEOUT_MS: "1000",
+    OPENAI_API_KEY: "g", IMAGE_PROMPT_TIMEOUT_MS: "1000",
   }, async () => {
     fresh();
-    H.geminiText = (call) => new Promise((resolve, reject) => {
+    H.openaiText = (call) => new Promise((resolve, reject) => {
       const t = setTimeout(() => resolve(geminiText('{"prompt":"late"}')), 5000);
       call.init.signal?.addEventListener("abort", () => { clearTimeout(t); reject(Object.assign(new Error("aborted"), { name: "TimeoutError" })); });
     });
@@ -418,25 +418,25 @@ function withEnv(vars, fn) {
   }));
 
   await atest("an answer is used, deity notes kept, quoted words stripped from a background", () => withEnv({
-    GEMINI_API_KEY: "g",
+    OPENAI_API_KEY: "g",
   }, async () => {
     fresh();
     let sent = null;
-    H.geminiText = (call) => {
+    H.openaiText = (call) => {
       sent = call;
       return geminiText(JSON.stringify({ prompt: 'Lord Krishna under a kadamba tree at golden hour, 85mm, warm rim light, with the words "Happy Janmashtami" in gold' }));
     };
     const hints = imagegen.subjectHints("Krishna");
     const e = await imagePrompt.enhancePrompt("Krishna background", { purpose: "background", mustKeep: hints });
     assert.strictEqual(e.enhanced, true);
-    assert.strictEqual(sent.model, "gemini-flash-lite-latest");
-    assert.strictEqual(sent.body.generationConfig.responseMimeType, "application/json");
+    assert.strictEqual(sent.model, "gpt-4.1-mini");
+    assert.strictEqual(sent.body.response_format.type, "json_object");
     assert.doesNotMatch(e.prompt, /Happy Janmashtami/);
     assert.match(e.prompt, /BLUE skin/);
     assert.match(e.prompt, /no text, no letters/);
   }));
 
-  await atest("switched off, or no key: no text call at all", () => withEnv({ IMAGE_PROMPT_ENHANCE: "off", GEMINI_API_KEY: "g" }, async () => {
+  await atest("switched off, or no key: no text call at all", () => withEnv({ IMAGE_PROMPT_ENHANCE: "off", OPENAI_API_KEY: "g" }, async () => {
     fresh();
     const n = calls.length;
     const e = await imagePrompt.enhancePrompt("a cat", { purpose: "photo" });
@@ -571,10 +571,10 @@ function withEnv(vars, fn) {
     assert.strictEqual((await post("/posters/ai/background", { prompt: "x" })).status, 401);
   });
 
-  await atest("POST /posters/ai/design: the model's JSON, checked, in the user's timezone", () => withEnv({ GEMINI_API_KEY: "g" }, async () => {
+  await atest("POST /posters/ai/design: the model's JSON, checked, in the user's timezone", () => withEnv({ OPENAI_API_KEY: "g" }, async () => {
     fresh();
     let sent = null;
-    H.geminiText = (call) => {
+    H.openaiText = (call) => {
       sent = call;
       return geminiText(JSON.stringify({
         title: "Diwali Sale", subtitle: "", dateISO: "", timeText: "", location: "Main Street Store",
@@ -595,14 +595,14 @@ function withEnv(vars, fn) {
     assert.ok(d.date && /^2026-10-0[3-9]$/.test(d.date) || d.date === null);
     assert.ok(d.missing.includes("location"));
     assert.strictEqual(d.source, "ai");
-    const input = JSON.parse(sent.body.contents[0].parts[0].text);
+    const input = JSON.parse(sent.body.messages[sent.body.messages.length - 1].content);
     assert.strictEqual(input.request, "Poster for our Diwali sale this Saturday");
     assert.ok(input.todayISO && input.brand.name === "Ravi Stores");
   }));
 
-  await atest("the design model down: the facts code can find, and a clear missing list", () => withEnv({ GEMINI_API_KEY: "g" }, async () => {
+  await atest("the design model down: the facts code can find, and a clear missing list", () => withEnv({ OPENAI_API_KEY: "g" }, async () => {
     fresh();
-    H.geminiText = () => json(503, { error: { message: "busy" } });
+    H.openaiText = () => json(503, { error: { message: "busy" } });
     const r = await post("/posters/ai/design", { request: "Team meeting tomorrow at 4pm at the Conference Room" }, U);
     assert.strictEqual(r.status, 200);
     const d = r.body.design;
@@ -682,10 +682,10 @@ function withEnv(vars, fn) {
   const ctx = (extra = {}) => ({ userId: U, tzOffsetMin: 330, appBuild: 135, source: "voice", ...extra });
 
   await atest("create_event_poster: open_poster_studio with the checked design and the background", () => withEnv({
-    GEMINI_API_KEY: "g", CF_ACCOUNT_ID: "a", CF_API_TOKEN: "t",
+    OPENAI_API_KEY: "g", CF_ACCOUNT_ID: "a", CF_API_TOKEN: "t",
   }, async () => {
     fresh();
-    H.geminiText = (call) => {
+    H.openaiText = (call) => {
       const sys = JSON.stringify(call.body.systemInstruction || call.body);
       if (/lay out event posters/.test(sys)) {
         return geminiText(JSON.stringify({ title: "Annual Day", location: "Town Hall", timeText: "6 PM", style: "festive", backgroundPrompt: "golden stage lights", missing: [] }));

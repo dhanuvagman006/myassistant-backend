@@ -42,10 +42,10 @@ async function checkBolnaBalance({ now = Date.now(), fetchImpl = fetch } = {}) {
   return { wallet, low: false };
 }
 
-/** Called by imageEdit when the image model answers 429: once a day is enough. */
-async function geminiImageQuota(note) {
+/** Called by the picture modules when the image model answers 429: once a day is enough. */
+async function imageQuota(note) {
   await require("../feedback/store").alert(
-    "Photo edits are off: the Gemini image model is out of quota (429) — billing on the key, or the daily limit",
+    "Pictures are off: the image model is out of quota (429) — top up or raise the limit on the OpenAI key",
     { details: String(note || "").slice(0, 300), windowMs: DAY },
   ).catch(() => {});
 }
@@ -58,4 +58,4 @@ async function sweep({ now = Date.now() } = {}) {
   return b && b.low ? 1 : 0;
 }
 
-module.exports = { checkBolnaBalance, geminiImageQuota, sweep, _reset() { lastBalanceCheck = 0; } };
+module.exports = { checkBolnaBalance, imageQuota, sweep, _reset() { lastBalanceCheck = 0; } };

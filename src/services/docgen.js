@@ -32,7 +32,7 @@ const { envModel } = require("./ai/router");
 
 // Unset, the alias Google keeps current: the old default, gemini-2.5-flash,
 // answers new users 404 "no longer available" (2026-09-25).
-const DOC_MODEL = () => envModel("GEMINI_DOC_MODEL", "gemini-flash-latest");
+const DOC_MODEL = () => envModel("OPENAI_DOC_MODEL", require("./ai/openai").models.smart());
 
 /** Authoring thinking budget. 0 = fastest, which is the product default
  *  ("time is precious"); raise via env if a deck ever reads thin — no
@@ -255,40 +255,13 @@ function authorPrompt(kind, o) {
 }
 
 async function authorSpec(kind, o) {
-  const keys = require("./ai/keys");
-  const model = DOC_MODEL();
-  const generationConfig = {
-    response_mime_type: "application/json",
-    temperature: 0.7,
-    maxOutputTokens: 16384,
-  };
-  if (/^gemini-2\.5-flash/i.test(model)) {
-    generationConfig.thinkingConfig = { thinkingBudget: DOC_THINKING() };
-  }
-  // One spent key must not mean "no documents today" — see ai/keys.js.
-  const data = await keys.withKeyRotation(model, async (key) => {
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-goog-api-key": key },
-        signal: AbortSignal.timeout(75_000), // inside the tool's own 120s budget
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: authorPrompt(kind, o) }] }],
-          generationConfig,
-        }),
-      }
-    );
-    if (!r.ok) {
-      const body = await r.text().catch(() => "");
-      throw Object.assign(
-        new Error(`the writer is busy (${r.status})${body ? ": " + body.slice(0, 160) : ""}`),
-        { status: r.status, body }
-      );
-    }
-    return r.json();
+  const openai = require("./ai/openai");
+  const { text } = await openai.chat({
+    messages: [{ role: "user", content: authorPrompt(kind, o) }],
+    system: "You write documents and answer with the JSON asked for, nothing else.",
+    json: true, temperature: 0.7, maxTokens: 16384, timeoutMs: 75_000, // inside the tool's own 120s budget
+    model: DOC_MODEL(),
   });
-  const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") || "";
   let spec;
   try {
     spec = JSON.parse(text);

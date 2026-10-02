@@ -44,7 +44,7 @@ process.env.JWT_SECRET = "e2e-g5-session-secret-0123456789abcdefghijklmnop";
 process.env.MCP_SECRET_KEY = "e2e-g5-credential-key-0123456789abcdefghijkl";
 // Nothing here may reach a real provider, and the dev back doors stay shut.
 for (const k of [
-  "GEMINI_API_KEY", "OPENAI_API_KEY", "AUTH_DISABLED", "ALLOW_APP_KEY", "APP_API_KEY",
+  "OPENAI_API_KEY", "OPENAI_API_KEY", "AUTH_DISABLED", "ALLOW_APP_KEY", "APP_API_KEY",
   "ALLOW_DEV_PHONE_VERIFY", "METRICS_TOKEN", "PLIVO_AUTH_TOKEN", "BOLNA_API_KEY",
   "GOOGLE_PLACES_API_KEY", "RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "TAVILY_API_KEY",
   "GOOGLE_CSE_KEY", "HEYGEN_API_KEY", "BEY_API_KEY", "YOUTUBE_API_KEY", "FASHN_API_KEY",

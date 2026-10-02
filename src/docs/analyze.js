@@ -8,7 +8,6 @@ const { envModel } = require("../services/ai/router");
 const { extractText } = require("./extract");
 // Unset, the alias Google keeps current: gemini-2.5-flash, the old
 // default, answers new users 404 (2026-09-25).
-const MODEL = () => envModel("GEMINI_VISION_MODEL", "gemini-flash-latest");
 
 // What the multimodal call can read as BYTES. Everything else (Word,
 // Excel, PowerPoint, CSV, plain text) is turned into text first — see
@@ -73,54 +72,26 @@ function mailPrompt(m) {
  * `meta.mail`; without it the request is byte-identical to before.
  */
 async function analyzeDocument(buffer, mime, filename = "", opts = {}) {
-  const keys = require("../services/ai/keys");
-  if (!keys.pool().length) return null;
+  const openai = require("../services/ai/openai");
+  if (!openai.ready()) return null;
 
-  // Office/text formats: read the words out first, then analyse those.
-  let parts;
+  // A PDF or a picture goes to the model as itself; anything else as text.
+  let message;
   if (NATIVE.has(mime)) {
-    parts = [
-      { inline_data: { mime_type: mime, data: buffer.toString("base64") } },
-      { text: PROMPT },
-    ];
+    message = { role: "user", content: PROMPT, images: [{ mime, data: buffer, filename: filename || "document" }] };
   } else {
     const text = await extractText(buffer, mime, filename);
     if (!text) return null;
-    parts = [
-      { text: `The document is named "${filename || "document"}". Its full contents follow.\n\n${text.slice(0, 120000)}` },
-      { text: PROMPT },
-    ];
+    message = { role: "user", content: `The document is named "${filename || "document"}". Its full contents follow.\n\n${text.slice(0, 120000)}\n\n${PROMPT}` };
   }
-  if (opts && opts.mail) parts.push({ text: mailPrompt(opts.mail) });
+  if (opts && opts.mail) message.content += `\n\n${mailPrompt(opts.mail)}`;
 
   try {
-    // One spent key must not mean a shared document arrives with no title
-    // and no searchable text — see services/ai/keys.js.
-    const data = await keys.withKeyRotation(MODEL(), async (key) => {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${MODEL()}:generateContent`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json", "x-goog-api-key": key },
-          signal: AbortSignal.timeout(45_000),
-          body: JSON.stringify({
-            contents: [{ role: "user", parts }],
-            generationConfig: {
-              response_mime_type: "application/json",
-              temperature: 0.2,
-            },
-          }),
-        }
-      );
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        throw Object.assign(new Error(`analyze ${res.status}`), { status: res.status, body });
-      }
-      return res.json();
+    const { text: reply } = await openai.chat({
+      messages: [message], system: "You read documents and answer with the JSON asked for, nothing else.",
+      json: true, temperature: 0.2, timeoutMs: 45_000, model: openai.models.smart(),
     });
-    const text =
-      data.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") || "";
-    const j = JSON.parse(text);
+    const j = JSON.parse(reply);
     const meta = {
       title: j.title,
       category: j.category,

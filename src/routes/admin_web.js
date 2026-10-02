@@ -1479,7 +1479,7 @@ router.get("/api/debug", async (req, res) => {
 
   const env = (k) => Boolean(process.env[k] && process.env[k].length > 2);
   const integrations = {
-    gemini: env("GEMINI_API_KEY"),
+    openai: env("OPENAI_API_KEY"),
     heygen_avatar: env("HEYGEN_API_KEY"),
     razorpay_payments: env("RAZORPAY_KEY_ID"),
     google_places: env("GOOGLE_PLACES_API_KEY"),
@@ -1491,14 +1491,13 @@ router.get("/api/debug", async (req, res) => {
 
   const probes = {};
   if (String(req.query.probe) === "1") {
-    // Gemini: model list is a free metadata call.
+    // OpenAI: the model list is a free metadata call.
     try {
-      const r = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models?pageSize=1&key=${process.env.GEMINI_API_KEY}`,
-        { signal: AbortSignal.timeout(8000) }
-      );
-      probes.gemini = r.ok ? "ok" : `HTTP ${r.status}`;
-    } catch (e) { probes.gemini = e.message; }
+      const r = await fetch("https://api.openai.com/v1/models?limit=1", {
+        headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}` }, signal: AbortSignal.timeout(8000),
+      });
+      probes.openai = r.ok ? "ok" : `HTTP ${r.status}`;
+    } catch (e) { probes.openai = e.message; }
     // HeyGen: public avatar catalog.
     try {
       const heygen = require("../avatar/heygen");

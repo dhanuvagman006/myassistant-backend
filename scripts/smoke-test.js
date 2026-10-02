@@ -17,7 +17,7 @@ process.env.JWT_SECRET =
   process.env.JWT_SECRET || "ci-smoke-secret-0123456789abcdefghijklmnopqrstuv";
 process.env.NODE_ENV = "test";
 // CI has no real keys; boot must not depend on them.
-process.env.GEMINI_API_KEY = process.env.GEMINI_API_KEY || "ci-dummy-key";
+process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || "ci-dummy-key";
 // Set so the metrics guard is exercised; unset Plivo so its webhooks are closed.
 process.env.METRICS_TOKEN = "smoke-metrics-token";
 delete process.env.PLIVO_AUTH_TOKEN;

@@ -504,14 +504,14 @@ async function design(uid, { request, format = "portrait", brand = {}, tzOffsetM
   const when = resolveWhen(req, { now, tzOffsetMin });
   let raw = null;
   let source = "fallback";
-  if (process.env.GEMINI_API_KEY) {
+  if (require("../services/ai/openai").ready()) {
     try {
       const router = require("../services/ai/router");
       const { reply } = await router.generateReply(
         [{ role: "user", content: JSON.stringify(modelDesignInput({ request: req, brand: b, when, today, format: fmt })) }],
         {
           system: DESIGN_SYSTEM, json: true,
-          model: router.envModel("POSTER_DESIGN_MODEL", "gemini-flash-lite-latest"),
+          model: router.envModel("POSTER_DESIGN_MODEL", router.chatModel()),
           modelEnv: "POSTER_DESIGN_MODEL",
           timeoutMs: envNum("POSTER_DESIGN_TIMEOUT_MS", 10_000, 1000),
           noRetry: true, thinking: "LOW",

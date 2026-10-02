@@ -134,91 +134,28 @@ function budget() {
 /* GEMINI                                                              */
 /* ------------------------------------------------------------------ */
 
-const GEMINI_IMAGE_DEFAULT = "gemini-3.1-flash-image";
-const GEMINI_COOLDOWN_MS = 6 * 3600_000;
-let geminiBlockedUntil = 0; // module-level: one quota hit quiets it for hours
-let geminiImageConfigOk = true; // off for good if the API rejects the field
-
-/** 'on' | 'auto' | 'off' — see the header. */
-function geminiImageMode() {
-  const v = String(process.env.GEMINI_IMAGE_BILLING || "auto").toLowerCase();
-  return v === "on" || v === "off" ? v : "auto";
-}
-
-function geminiImageKey() {
-  return process.env.GEMINI_IMAGE_API_KEY || process.env.GEMINI_API_KEY || "";
-}
-
-/** gemini-2.5-flash-image shuts down on 2026-10-02: never a default, and
- *  an env var still naming it is replaced rather than left to 404. */
-function geminiImageModel() {
-  const m = String(process.env.GEMINI_IMAGE_MODEL || "").trim();
-  if (!m) return GEMINI_IMAGE_DEFAULT;
-  if (/gemini-2\.5-flash-image/i.test(m)) {
-    console.warn(`imagegen: GEMINI_IMAGE_MODEL=${m} is retired (2026-10-02) — using ${GEMINI_IMAGE_DEFAULT}`);
-    return GEMINI_IMAGE_DEFAULT;
-  }
-  return m;
-}
-
-function geminiBody(prompt, ratio, withConfig) {
-  const body = { contents: [{ role: "user", parts: [{ text: prompt }] }] };
-  body.generationConfig = { responseModalities: ["IMAGE"] };
-  if (withConfig) body.generationConfig.imageConfig = { aspectRatio: ratio };
-  return body;
-}
-
-function geminiAvailable() {
-  return geminiImageMode() !== "off" && !!geminiImageKey() && Date.now() >= geminiBlockedUntil;
-}
-
-async function tryGemini(prompt, { shape, timeoutMs = 40_000 } = {}) {
-  if (!geminiAvailable()) return null;
-  const model = geminiImageModel();
-  const ratio = (shape || SHAPES.square).ratio;
-  for (const withConfig of geminiImageConfigOk ? [true, false] : [false]) {
-    let r;
-    try {
-      r = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": geminiImageKey() },
-          body: JSON.stringify(geminiBody(prompt, ratio, withConfig)),
-          signal: AbortSignal.timeout(Math.max(1000, timeoutMs)),
-        }
-      );
-    } catch (e) {
-      console.warn("imagegen gemini:", e.message);
-      return null;
-    }
-    if (r.status === 429 || r.status === 403) {
-      // 'on' means billing exists, so a 429 is a real rate limit: minutes.
-      const on = geminiImageMode() === "on" && r.status === 429;
-      geminiBlockedUntil = Date.now() + (on ? 10 * 60_000 : GEMINI_COOLDOWN_MS);
-      console.warn(`imagegen: ${model} quota-blocked (${r.status}), cooling down`);
-      return null;
-    }
-    if (r.status === 400 && withConfig) {
-      const t = await r.text().catch(() => "");
-      if (/imageConfig|aspectRatio|Unknown name/i.test(t)) {
-        geminiImageConfigOk = false;
-        continue; // once more without the shape
-      }
-      return null;
-    }
-    if (!r.ok) return null;
-    const d = await r.json().catch(() => null);
-    const img = require("./imageEdit").harvestImage(d);
-    if (!img) return null;
-    return { ...img, provider: `gemini:${model}` };
-  }
-  return null;
-}
-
 /* ------------------------------------------------------------------ */
-/* FAL                                                                 */
+/* OpenAI gpt-image-1 (2026-10-02): the one picture model — it makes a   */
+/* picture from words and edits one it is given (imageEdit.js).         */
 /* ------------------------------------------------------------------ */
+function openaiAvailable() {
+  const openai = require("./ai/openai");
+  return openai.ready() && !openai.busy();
+}
+
+async function tryOpenAI(prompt, { shape, timeoutMs = 90_000 } = {}) {
+  const openai = require("./ai/openai");
+  if (!openai.ready()) return null;
+  const s = shape || SHAPES.square;
+  try {
+    const img = await openai.imageGenerate(prompt, { width: s.width, height: s.height, timeoutMs });
+    return { ...img, provider: `openai:${openai.models.image()}` };
+  } catch (e) {
+    console.warn("imagegen openai:", e.message);
+    if (e.status === 429) require("../ops/alerts").imageQuota(`gpt-image-1: 429`).catch(() => {});
+    return null;
+  }
+}
 
 const fal = require("./fal");
 
@@ -522,7 +459,7 @@ async function tryPollinations(prompt, { aspect, shape, seed, ownPrompt = false,
 
 /** name → {available(), run(prompt, opts)}. */
 const PROVIDERS = {
-  gemini: { available: geminiAvailable, run: tryGemini },
+  openai: { available: openaiAvailable, run: tryOpenAI },
   "fal-zimage": {
     available: () => fal.falReady() && !fal.coolingDown(),
     run: (p, o) => tryFal(p, { ...o, kind: "photo" }),
@@ -545,8 +482,8 @@ const PROVIDERS = {
 
 /** Best first, per purpose. Background is a photo-like scene with no words. */
 const QUALITY_ORDER = {
-  photo: ["gemini", "fal-zimage", "cf-klein", "fal-qwen", "cf-schnell", "huggingface", "together"],
-  text: ["gemini", "fal-qwen", "cf-klein", "fal-zimage", "cf-schnell", "huggingface", "together"],
+  photo: ["openai", "fal-zimage", "cf-klein", "fal-qwen", "cf-schnell", "huggingface", "together"],
+  text: ["openai", "fal-qwen", "cf-klein", "fal-zimage", "cf-schnell", "huggingface", "together"],
 };
 QUALITY_ORDER.background = QUALITY_ORDER.photo;
 
@@ -568,8 +505,7 @@ function keylessOn() {
 
 /** Which providers this deployment would try, in order, for the health probe. */
 function configuredProviders(purpose = "photo") {
-  const out = providerOrder(purpose).map((n) =>
-    n === "gemini" && geminiImageMode() === "auto" ? "gemini (probing: set GEMINI_IMAGE_BILLING=on once billed)" : n);
+  const out = providerOrder(purpose).slice();
   if (keylessOn()) out.push("pollinations (keyless, ≤1024 px)");
   return out;
 }
@@ -749,47 +685,11 @@ let videoBlockedUntil = 0;
  * Returns { buffer, mime } or null when the plan doesn't allow it.
  */
 async function tryVeoVideo(prompt) {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key || Date.now() < videoBlockedUntil) return null;
-  const model = process.env.VEO_MODEL || "veo-3.1-fast-generate-preview";
-  const base = "https://generativelanguage.googleapis.com/v1beta";
-  try {
-    const start = await fetch(`${base}/models/${model}:predictLongRunning?key=${key}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ instances: [{ prompt }] }),
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (start.status === 429 || start.status === 403) {
-      videoBlockedUntil = Date.now() + GEMINI_COOLDOWN_MS;
-      return null;
-    }
-    if (!start.ok) return null;
-    const op = await start.json();
-    // Poll up to ~3 minutes — Veo fast typically lands in 30-90s.
-    for (let i = 0; i < 36; i++) {
-      await new Promise((r) => setTimeout(r, 5000));
-      const s = await fetch(`${base}/${op.name}?key=${key}`, {
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!s.ok) continue;
-      const d = await s.json();
-      if (!d.done) continue;
-      const uri =
-        d.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri ||
-        d.response?.generatedVideos?.[0]?.video?.uri;
-      if (!uri) return null;
-      const v = await fetch(uri.includes("key=") ? uri : `${uri}&key=${key}`, {
-        signal: AbortSignal.timeout(60_000),
-      });
-      if (!v.ok) return null;
-      return { buffer: Buffer.from(await v.arrayBuffer()), mime: "video/mp4" };
-    }
-    return null;
-  } catch (e) {
-    console.warn("imagegen veo:", e.message);
-    return null;
-  }
+  // Video generation rode on Gemini's Veo; with Gemini gone (2026-10-02)
+  // there is no video model wired yet. Null means "not available", which
+  // the video job reports honestly. Sora through OpenAI is the candidate.
+  void prompt;
+  return null;
 }
 
 /** Tests only: forget cooldowns learnt from earlier stubbed answers. */
@@ -803,6 +703,6 @@ function _reset() {
 module.exports = {
   generateImage, tryVeoVideo, jpegSize, shapeOf, shapeName, configuredProviders,
   withSubjectHints, subjectHints, providerOrder, wantsText, SHAPES,
-  geminiImageModel, geminiImageMode, geminiBody, cfDecode, fitEdge,
-  _test: { tryGemini, tryFal, tryCloudflare, tryPollinations, _reset },
+  cfDecode, fitEdge,
+  _test: { tryOpenAI, tryFal, tryCloudflare, tryPollinations, _reset },
 };

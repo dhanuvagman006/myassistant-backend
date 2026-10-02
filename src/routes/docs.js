@@ -364,7 +364,7 @@ router.get("/", async (req, res) => {
   // SELF-HEAL: docs whose analysis never landed (saved while the Gemini
   // key was missing or broken) OR that were analyzed before full-text
   // extraction existed get another background attempt now.
-  if (!process.env.GEMINI_API_KEY) return;
+  if (!require("../services/ai/openai").ready()) return;
   for (const row of rows) {
     if ((row.title && row.full_text) || healAttempted.has(row.id) || STORE_ONLY.has(row.mime)) continue;
     // Never an email document: analyzeInBackground writes a memory fact

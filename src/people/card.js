@@ -13,7 +13,6 @@ const { envModel } = require("../services/ai/router");
 const db = require("../db");
 
 // Unset, the alias Google keeps current (2.5 Flash answers new users 404).
-const MODEL = () => envModel("GEMINI_VISION_MODEL", "gemini-flash-latest");
 
 const PROMPT = `This is a photo of a business / visiting card. Read it and reply
 with STRICT JSON only (no markdown):
@@ -31,36 +30,14 @@ const clean = (v, n) => String(v || "").replace(/\s+/g, " ").trim().slice(0, n);
 
 /** @returns {Promise<object|null>} the card's fields, or null on failure */
 async function readCard(buffer, mime) {
-  const keys = require("../services/ai/keys");
-  if (!keys.pool().length) return null;
+  const openai = require("../services/ai/openai");
+  if (!openai.ready()) return null;
   try {
-    const data = await keys.withKeyRotation(MODEL(), async (key) => {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${MODEL()}:generateContent`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json", "x-goog-api-key": key },
-          signal: AbortSignal.timeout(30_000),
-          body: JSON.stringify({
-            contents: [{
-              role: "user",
-              parts: [
-                { inline_data: { mime_type: mime, data: buffer.toString("base64") } },
-                { text: PROMPT },
-              ],
-            }],
-            generationConfig: { response_mime_type: "application/json", temperature: 0.1 },
-          }),
-        }
-      );
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        throw Object.assign(new Error(`card ${res.status}`), { status: res.status, body });
-      }
-      return res.json();
+    const { text: reply } = await openai.chat({
+      messages: [{ role: "user", content: PROMPT, images: [{ mime, data: buffer }] }],
+      system: "You read business cards and answer with the JSON asked for, nothing else.", json: true, temperature: 0.1, timeoutMs: 30_000,
     });
-    const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") || "";
-    return normalise(JSON.parse(text));
+    return normalise(JSON.parse(reply));
   } catch (e) {
     console.error("card read failed:", e.message);
     return null;

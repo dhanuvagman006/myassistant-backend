@@ -390,21 +390,21 @@ test("reads real pixel dimensions from PNG, JPEG and WEBP headers", () => {
 });
 
 test("people default to a portrait aspect, never a square", () => {
-  assert.strictEqual(edit.geminiAspect("portrait"), "3:4");
-  assert.strictEqual(edit.geminiAspect("auto"), "3:4");
-  assert.strictEqual(edit.geminiAspect(""), "3:4");
-  assert.strictEqual(edit.geminiAspect("square"), "1:1");
-  assert.strictEqual(edit.geminiAspect("wide"), "16:9");
-  assert.strictEqual(edit.geminiAspect("landscape"), "4:3");
+  assert.deepStrictEqual(edit.sizeFor("portrait"), { width: 1024, height: 1536 });
+  assert.deepStrictEqual(edit.sizeFor("auto"), { width: 1024, height: 1536 });
+  assert.deepStrictEqual(edit.sizeFor(""), { width: 1024, height: 1536 });
+  assert.deepStrictEqual(edit.sizeFor("square"), { width: 1024, height: 1024 });
+  assert.deepStrictEqual(edit.sizeFor("wide"), { width: 1536, height: 1024 });
+  assert.deepStrictEqual(edit.sizeFor("landscape"), { width: 1536, height: 1024 });
 });
 
 test("the provider chain puts dedicated try-on models ahead of the editor", () => {
   const names = edit.configured().map((p) => p.name);
-  assert.ok(names.includes("gemini"), "the general editor must always be present");
-  assert.strictEqual(names[names.length - 1], "gemini",
-    "gemini is the fallback; a purpose-built try-on model must be tried first");
+  assert.ok(names.includes("openai"), "the general editor must always be present");
+  assert.strictEqual(names[names.length - 1], "openai",
+    "openai is the fallback; a purpose-built try-on model must be tried first");
   for (const p of edit.configured()) {
-    if (p.name !== "gemini") assert.ok(p.vtoOnly, `${p.name} must not be used for non-garment edits`);
+    if (p.name !== "openai") assert.ok(p.vtoOnly, `${p.name} must not be used for non-garment edits`);
   }
 });
 
@@ -562,8 +562,8 @@ test("the provider chain puts dedicated try-on models ahead of the editor", () =
   });
 
   await atest("with no provider configured the error names the fix, not the user", async () => {
-    const saved = process.env.GEMINI_API_KEY;
-    delete process.env.GEMINI_API_KEY;
+    const saved = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
     try {
       await edit.editImage({
         instruction: "x",
@@ -573,10 +573,10 @@ test("the provider chain puts dedicated try-on models ahead of the editor", () =
     } catch (e) {
       assert.strictEqual(e.code, "no_provider");
       assert.ok(/not configured/i.test(e.message));
-      assert.ok(/GEMINI_API_KEY/.test(e.message), "an operator error must name the env var");
+      assert.ok(/OPENAI_API_KEY/.test(e.message), "an operator error must name the env var");
       assert.ok(!/your photo/i.test(e.message), "must not blame the user's photo for a missing key");
     } finally {
-      if (saved) process.env.GEMINI_API_KEY = saved;
+      if (saved) process.env.OPENAI_API_KEY = saved;
     }
   });
 

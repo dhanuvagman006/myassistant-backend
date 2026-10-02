@@ -53,7 +53,7 @@ process.env.DATA_DIR = DATA_DIR;
 process.env.LIVE_RECORD = "0";
 // Background turns need a key; this one never reaches Google (fetch is
 // blocked below).
-process.env.GEMINI_API_KEY = "g1-e2e-not-a-real-key";
+process.env.OPENAI_API_KEY = "g1-e2e-not-a-real-key";
 process.env.JWT_SECRET = "g1-e2e-" + crypto.randomBytes(12).toString("hex");
 for (const k of [
   "GEMINI_LIVE_MODEL", "GEMINI_LIVE_MODEL_NEXT", "LIVE_BARGE_IN", "LIVE_SILENCE_MS",

@@ -9426,6 +9426,6 @@ function parseWhenMs(when, tzOffsetMin) {
  * otherwise dominates a news page and pushes the article out of the 8 kB
  * budget. What remains collapses to paragraphs.
  */
-const { extractReadableText } = require("./pageText");
+const { extractReadableText, decodeEntities } = require("./pageText");
 
 module.exports = { registerBuiltins, reverseGeocode };

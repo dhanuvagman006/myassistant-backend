@@ -19,7 +19,7 @@ process.env.DATABASE_URL =
   process.env.DATABASE_URL || "postgres://myassistant:localdev@localhost:5432/myassistant";
 process.env.NODE_ENV = process.env.NODE_ENV || "test";
 // No embedding calls from memory writes, and no limiter in the way.
-delete process.env.GEMINI_API_KEY;
+delete process.env.OPENAI_API_KEY;
 delete process.env.OPENAI_API_KEY;
 process.env.SHOPPING_RATE_PER_MIN = "100000";
 process.env.KITCHEN_RATE_PER_MIN = "100000";

@@ -62,18 +62,12 @@ function wantsIdentityChange(instruction) {
   return IDENTITY_CHANGE.test(String(instruction || ""));
 }
 
-function geminiMode() {
-  return require("./imagegen").geminiImageMode();
-}
-
-/** Which edits this deployment can do right now — for the tool's answer. */
-function geminiOk() {
-  return geminiMode() !== "off" && !!(process.env.GEMINI_IMAGE_API_KEY || process.env.GEMINI_API_KEY) &&
-    Date.now() >= geminiBlockedUntil;
+function openaiOk() {
+  return require("./ai/openai").ready();
 }
 
 function available() {
-  const gem = geminiOk();
+  const gem = openaiOk();
   return {
     removeBackground: fal.falReady() || gem,
     transparent: fal.falReady(),
@@ -129,55 +123,12 @@ async function falQwenEdit(img, instruction) {
   return { ...out, provider: `fal:${model}`, transparent: false };
 }
 
-let geminiBlockedUntil = 0;
-
-async function geminiEdit(img, instruction, { width, height } = {}) {
-  const imagegen = require("./imagegen");
-  const { harvestImage } = require("./imageEdit");
-  const key = process.env.GEMINI_IMAGE_API_KEY || process.env.GEMINI_API_KEY;
-  const model = imagegen.geminiImageModel();
-  const body = {
-    contents: [{
-      role: "user",
-      parts: [
-        { text: `${instruction}\n${IDENTITY_RULE}` },
-        { inlineData: { mimeType: img.mime || "image/jpeg", data: img.buffer.toString("base64") } },
-      ],
-    }],
-    generationConfig: {
-      responseModalities: ["IMAGE"],
-      imageConfig: { aspectRatio: nearestRatio(width, height) },
-    },
-  };
-  const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(EDIT_TIMEOUT_MS),
-    }
-  );
-  if (r.status === 429 || r.status === 403) {
-    geminiBlockedUntil = Date.now() + (geminiMode() === "on" && r.status === 429 ? 10 * 60_000 : 6 * 3600_000);
-    throw new PhotoEditError("no_provider", `gemini ${model}: ${r.status} (billing off or quota)`);
-  }
-  if (!r.ok) throw new Error(`gemini ${model}: HTTP ${r.status}`);
-  const img2 = harvestImage(await r.json().catch(() => null));
-  if (!img2) throw new Error(`gemini ${model}: no image back`);
-  return { ...img2, provider: `gemini:${model}`, transparent: false };
+/** gpt-image-1 changes the photo as instructed and hands it back (2026-10-02). */
+async function openaiEdit(img, instruction, { width, height } = {}) {
+  const openai = require("./ai/openai");
+  return openai.imageEdit(instruction, [img], { width, height });
 }
 
-/* ------------------------------------------------------------------ */
-
-/**
- * @param {object} o
- * @param {Buffer} o.buffer   the photo
- * @param {string} o.mime
- * @param {string} o.instruction  what to change, in the user's words
- * @returns {Promise<{buffer, mime, provider, width, height, transparent, op}>}
- * @throws PhotoEditError {code: identity | no_provider | failed | not_image}
- */
 async function editPhoto({ buffer, mime, instruction }) {
   const imageEdit = require("./imageEdit");
   const text = String(instruction || "").replace(/\s+/g, " ").trim().slice(0, 600);
@@ -204,13 +155,13 @@ async function editPhoto({ buffer, mime, instruction }) {
   const steps = op === "remove_background"
     ? [
       { ok: fal.falReady, run: () => falBirefnet(img) },
-      { ok: geminiOk, run: () => geminiEdit(img,
+      { ok: openaiOk, run: () => openaiEdit(img,
         "Remove the background completely and place the main subject on a plain, pure white " +
         "background, with soft even light and clean edges.", inSize) },
     ]
     : [
       { ok: fal.falReady, run: () => falQwenEdit(img, text) },
-      { ok: geminiOk, run: () => geminiEdit(img, text, inSize) },
+      { ok: openaiOk, run: () => openaiEdit(img, text, inSize) },
     ];
 
   const notes = [];

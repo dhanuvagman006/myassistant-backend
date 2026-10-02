@@ -244,8 +244,8 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
       return fetch(dbase, { method: "POST", body: fd });
     };
     // No key: nothing uploaded here may reach a real model.
-    const keys = { GEMINI_API_KEY: process.env.GEMINI_API_KEY, GEMINI_FALLBACK_KEYS: process.env.GEMINI_FALLBACK_KEYS };
-    delete process.env.GEMINI_API_KEY;
+    const keys = { OPENAI_API_KEY: process.env.OPENAI_API_KEY, GEMINI_FALLBACK_KEYS: process.env.GEMINI_FALLBACK_KEYS };
+    delete process.env.OPENAI_API_KEY;
     delete process.env.GEMINI_FALLBACK_KEYS;
     const saved = [];
     try {

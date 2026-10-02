@@ -26,36 +26,6 @@
 
 const PROVIDERS = {
   /** Google Gemini embeddings — same key as the rest of the app. */
-  gemini: {
-    available: () => Boolean(process.env.GEMINI_API_KEY),
-    dims: 768,
-    async embed(texts) {
-      const model = process.env.GEMINI_EMBED_MODEL || "gemini-embedding-001";
-      const r = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:batchEmbedContents`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-goog-api-key": process.env.GEMINI_API_KEY,
-          },
-          signal: AbortSignal.timeout(15_000),
-          body: JSON.stringify({
-            requests: texts.map((t) => ({
-              model: `models/${model}`,
-              content: { parts: [{ text: t }] },
-              outputDimensionality: 768,
-            })),
-          }),
-        }
-      );
-      if (!r.ok) throw new Error(`gemini embed ${r.status}`);
-      const j = await r.json();
-      return (j.embeddings || []).map((e) => e.values);
-    },
-  },
-
-  /** OpenAI-compatible endpoint (also covers local Ollama / LM Studio). */
   openai: {
     available: () => Boolean(process.env.OPENAI_API_KEY),
     dims: 1536,

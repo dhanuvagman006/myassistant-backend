@@ -243,35 +243,18 @@ async function resampleTo(buffer, longEdge) {
 /* line, overridable by env so a rename never needs a redeploy.         */
 /* ------------------------------------------------------------------ */
 
-const GEMINI_COOLDOWN_MS = 30 * 60_000;
-let geminiBlockedUntil = 0;
-let geminiImageConfigOk = true; // off permanently if the API rejects the field
-let preferredShape = null;      // 'interactions' | 'generateContent'
-
-function geminiModels() {
-  const raw = process.env.GEMINI_EDIT_MODELS || "gemini-3-pro-image,gemini-3.1-flash-image";
-  // gemini-2.5-flash-image shuts down on 2026-10-02 (2026-09-30): an env
-  // list still naming it must not spend a round-trip on a 404 per edit.
-  const list = raw.split(",").map((s) => s.trim()).filter((m) => m && !/gemini-2\.5-flash-image/i.test(m));
-  return list.length ? list : ["gemini-3.1-flash-image"];
+/** gpt-image-1's canvas for a named shape. */
+const SIZES = {
+  portrait: { width: 1024, height: 1536 },
+  landscape: { width: 1536, height: 1024 },
+  wide: { width: 1536, height: 1024 },
+  square: { width: 1024, height: 1024 },
+};
+/** People default to a portrait canvas, never a square (Style Studio). */
+function sizeFor(aspect) {
+  return SIZES[String(aspect || "")] || SIZES.portrait;
 }
 
-function geminiAspect(aspect) {
-  const a = String(aspect || "").toLowerCase();
-  if (a.startsWith("port") || a === "3:4") return "3:4";
-  if (a === "9:16" || a === "tall") return "9:16";
-  if (a === "wide" || a === "16:9") return "16:9";
-  if (a.startsWith("land") || a === "4:3") return "4:3";
-  if (a === "square" || a === "1:1") return "1:1";
-  return "3:4"; // people are taller than they are wide
-}
-
-/**
- * Pull an image out of a response whose exact nesting is not documented.
- * A deep walk for "an object carrying base64 image bytes" survives both
- * `candidates[].content.parts[].inlineData` and `output_image`, and any
- * third spelling, without this file having to guess the path.
- */
 function harvestImage(json) {
   const seen = new Set();
   const stack = [json];
@@ -356,100 +339,33 @@ function generateContentBody(instruction, images, aspect, hiQuality, withConfig)
   return body;
 }
 
-async function callGemini(url, headers, body, notes, label) {
-  let r;
+/**
+ * OpenAI gpt-image-1 edits (2026-10-02): the photo goes in, the changed
+ * photo comes out, the person stays the person. A 429 is quota: noted so
+ * editImage reports "switched off" honestly, and the inbox is told.
+ */
+async function tryOpenAI({ instruction, images, aspect, notes, exact }) {
+  const openai = require("./ai/openai");
+  if (!openai.ready()) { notes.push("openai: no key"); return null; }
+  const size = exact?.width && exact?.height ? exact : sizeFor(aspect);
   try {
-    r = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...headers },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(150_000),
-    });
+    const out = await openai.imageEdit(instruction, images, { width: size.width, height: size.height });
+    return { ...out, provider: `openai:${openai.models.image()}` };
   } catch (e) {
-    notes.push(`${label}: ${e.name === "TimeoutError" ? "timed out" : e.message}`);
-    return { fatal: true };
-  }
-  if (r.status === 429) {
-    geminiBlockedUntil = Date.now() + GEMINI_COOLDOWN_MS;
-    notes.push(`${label}: quota exhausted (429) — billing not enabled on the key, or the limit is hit`);
-    require("../ops/alerts").geminiImageQuota(`${label}: 429`).catch(() => {});
-    return { quota: true };
-  }
-  if (!r.ok) {
-    const t = await r.text().catch(() => "");
-    notes.push(`${label}: HTTP ${r.status} ${t.replace(/\s+/g, " ").slice(0, 200)}`);
-    return { status: r.status, text: t };
-  }
-  const json = await r.json().catch(() => null);
-  const img = harvestImage(json);
-  if (img) return { image: img };
-  const said = harvestText(json);
-  notes.push(`${label}: 200 but no image back${said ? ` — said "${said}"` : ""}`);
-  return { empty: true };
-}
-
-async function tryGemini({ instruction, images, aspect, notes, hiQuality }) {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) { notes.push("gemini: no key"); return null; }
-  if (Date.now() < geminiBlockedUntil) { notes.push("gemini: cooling down after a quota error"); return null; }
-
-  // The shape that worked last time goes first; on a cold process both
-  // are tried, newest-documented first.
-  const shapes = preferredShape === "generateContent"
-    ? ["generateContent", "interactions"]
-    : ["interactions", "generateContent"];
-
-  for (const model of geminiModels()) {
-    for (const shape of shapes) {
-      if (shape === "interactions") {
-        const res = await callGemini(
-          "https://generativelanguage.googleapis.com/v1beta/interactions",
-          { "x-goog-api-key": key },
-          interactionsBody(model, instruction, images, aspect, hiQuality),
-          notes, `gemini ${model} (interactions)`
-        );
-        if (res.quota) return null;
-        if (res.image) {
-          preferredShape = "interactions";
-          return { ...res.image, provider: `gemini:${model}` };
-        }
-        continue;
-      }
-
-      // generateContent, with one retry without imageConfig if the API
-      // rejects that field by name.
-      for (const withConfig of geminiImageConfigOk ? [true, false] : [false]) {
-        const res = await callGemini(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-          {},
-          generateContentBody(instruction, images, aspect, hiQuality, withConfig),
-          notes, `gemini ${model} (generateContent${withConfig ? "+imageConfig" : ""})`
-        );
-        if (res.quota) return null;
-        if (res.image) {
-          preferredShape = "generateContent";
-          return { ...res.image, provider: `gemini:${model}` };
-        }
-        if (res.status === 400 && withConfig &&
-            /imageConfig|imageSize|aspectRatio|responseModalities|Unknown name/i.test(res.text || "")) {
-          geminiImageConfigOk = false;
-          continue; // same model, same shape, no config
-        }
-        break;
-      }
+    if (e.status === 429) {
+      notes.push("openai: quota exhausted (429)");
+      require("../ops/alerts").imageQuota(`gpt-image-1 edit: 429`).catch(() => {});
+    } else if (e.status) {
+      notes.push(`openai: HTTP ${e.status} ${String(e.body || "").slice(0, 80)}`);
+    } else {
+      notes.push(`openai: ${/timeout|abort/i.test(String(e.name || e.message)) ? "timed out" : String(e.message).slice(0, 80)}`);
     }
+    return null;
   }
-  return null;
 }
 
-/* ------------------------------------------------------------------ */
-/* THE CHAIN                                                           */
-/* ------------------------------------------------------------------ */
-
-/** A provider entry is {name, when, run}. `when` keeps a garment-specific
- *  virtual-try-on model out of a hairstyle request. */
 const CHAIN = [
-  { name: "gemini", when: () => true, run: tryGemini },
+  { name: "openai", when: () => true, run: tryOpenAI, ready: () => require("./ai/openai").ready() },
 ];
 
 /** Registered at load time by the optional-provider modules below, so a
@@ -470,9 +386,8 @@ class NoProviderError extends Error {
       // that would have changed nothing.
       "Image editing is not configured on this server. " +
       "Style Studio needs an image model that accepts a photo as input — " +
-      "set GEMINI_API_KEY on a billing-enabled Google Cloud project, or " +
-      "FASHN_API_KEY, or the Vertex virtual try-on credentials " +
-      "(VERTEX_PROJECT_ID + VERTEX_SA_JSON)."
+      "set OPENAI_API_KEY (gpt-image-1 edits), or FASHN_API_KEY, or the " +
+      "Vertex virtual try-on credentials (VERTEX_PROJECT_ID + VERTEX_SA_JSON)."
     );
     this.code = "no_provider";
     this.notes = notes;
@@ -567,10 +482,7 @@ function configured() {
     // Gemini counts as ready only when the account can pay for its image
     // model and it is not cooling down after a quota error — otherwise
     // the app offered "Make it" and the server said no (2026-10-01).
-    const ready = p.ready ? p.ready()
-      : p.name === "gemini"
-        ? !!process.env.GEMINI_API_KEY && process.env.GEMINI_IMAGE_BILLING !== "off" && Date.now() >= geminiBlockedUntil
-        : false;
+    const ready = p.ready ? p.ready() : false;
     out.push({ name: p.name, ready, vtoOnly: !!p.vtoOnly });
   }
   return out;
@@ -584,7 +496,7 @@ module.exports = {
   // Exported for the regression tests: the response shape these two walk
   // is the one fact about this integration the documentation would not
   // pin down, so it is the one that must be tested rather than trusted.
-  harvestImage, harvestText, geminiAspect, geminiModels,
+  harvestImage, harvestText, SIZES, sizeFor,
 };
 
 // Optional keyed providers register themselves. Each module is a no-op

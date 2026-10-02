@@ -37,10 +37,10 @@
 /* ------------------------------------------------------------------ */
 
 const INTEGRATIONS = {
-  gemini: {
-    label: "Google Gemini",
-    env: ["GEMINI_API_KEY"],
-    why: "the language, vision and speech models run on it",
+  openai: {
+    label: "OpenAI",
+    env: ["OPENAI_API_KEY"],
+    why: "the language, vision, speech and picture models run on it",
   },
   google_oauth: {
     label: "Google account",
@@ -75,7 +75,7 @@ const INTEGRATIONS = {
   image_edit: {
     label: "an image-editing model",
     // Any ONE of these is enough, which `anyEnv` expresses and `env` cannot.
-    anyEnv: ["GEMINI_API_KEY", "FASHN_API_KEY", "VERTEX_PROJECT_ID"],
+    anyEnv: ["OPENAI_API_KEY", "FASHN_API_KEY"],
     why: "editing a photo needs an image model that accepts a photo as input",
   },
   youtube: {

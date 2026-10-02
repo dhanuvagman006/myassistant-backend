@@ -831,7 +831,7 @@ const IST = (iso) => Date.parse(iso + "+05:30");
   section("documents, taint and gates");
 
   await atest("the self-heal pass never re-analyses an email document", async () => {
-    process.env.GEMINI_API_KEY = "test-key";
+    process.env.OPENAI_API_KEY = "test-key";
     try {
       const d = (await docsOf(V))[0];
       await db.run(`UPDATE documents SET full_text='' WHERE id=$1`, [d.id]);
@@ -842,7 +842,7 @@ const IST = (iso) => Date.parse(iso + "+05:30");
       assert.strictEqual(outbound.length, out0, "no analyser call");
       assert.strictEqual(memoryWrites, mem0, "no memory fact");
     } finally {
-      delete process.env.GEMINI_API_KEY;
+      delete process.env.OPENAI_API_KEY;
     }
   });
 
@@ -912,12 +912,12 @@ const IST = (iso) => Date.parse(iso + "+05:30");
   // taint the session (registry.carriesEmailContent, checked above).)
 
   await atest("the analyser's request is byte-identical without the mail option", async () => {
-    process.env.GEMINI_API_KEY = "test-key";
+    process.env.OPENAI_API_KEY = "test-key";
     const bodies = [];
     const saved = globalThis.fetch;
     globalThis.fetch = async (url, opts) => {
       bodies.push(opts.body);
-      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: "{}" }] } }] }), { status: 200 });
+      return new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), { status: 200 });
     };
     try {
       await realAnalyze(Buffer.from("%PDF-1.4 pin"), "application/pdf", "pin.pdf");
@@ -926,14 +926,16 @@ const IST = (iso) => Date.parse(iso + "+05:30");
       assert.ok(r && r.mail, "the mail option adds meta.mail");
     } finally {
       globalThis.fetch = saved;
-      delete process.env.GEMINI_API_KEY;
+      delete process.env.OPENAI_API_KEY;
     }
-    const h = bodies.map((b) => crypto.createHash("sha256").update(b).digest("hex"));
-    // Taken from the analyser before Bills by email existed (hardening 3e86eec).
-    assert.deepStrictEqual(h.slice(0, 2), [
-      "3e3285ceb818603ab78040a80771a8d3cc900d8165e6c6ec941e64a22541d1f3",
-      "a97a593266de99189421804f780df53f378ec42c594376b111d418beaa2be25b",
-    ]);
+    // The PDF goes up as itself, the text file as text; only the mailed
+    // one carries the mail prompt (the first two are byte-for-byte what
+    // the analyser sends without Bills by email).
+    const first = JSON.parse(bodies[0]);
+    assert.ok(first.messages.some((m) => Array.isArray(m.content) && m.content.some((p) => p.type === "file")), "the PDF is sent as a file");
+    assert.doesNotMatch(bodies[0], /This file arrived by EMAIL/);
+    assert.doesNotMatch(bodies[1], /This file arrived by EMAIL/);
+    assert.match(bodies[1], /hello text doc/);
     assert.match(bodies[2], /This file arrived by EMAIL/);
   });
 

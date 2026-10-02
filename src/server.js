@@ -634,11 +634,12 @@ require("./db")
       // (they are the -latest aliases since 2026-09-25).
       const ai = require("./services/ai/router");
       console.log(
-        `  models: chat=${ai.chatModel()}` +
-          ` stt=${process.env.GEMINI_STT_MODEL || "(same as chat)"}` +
-          ` vision=${ai.envModel("GEMINI_VISION_MODEL", "gemini-flash-latest")}` +
-          ` fallback=${ai.fallbackModel()}` +
-          ` thinking=${process.env.GEMINI_THINKING_LEVEL || "low"}`
+        `  models (openai): chat=${ai.chatModel()}` +
+          ` smart=${require("./services/ai/openai").models.smart()}` +
+          ` stt=${require("./services/ai/openai").models.stt()}` +
+          ` tts=${require("./services/ai/openai").models.tts()}` +
+          ` image=${require("./services/ai/openai").models.image()}` +
+          ` fallback=${ai.fallbackModel()}`
       );
       // What the APP is told to run (GET /ai/config): the conversation's
       // models live on the phone and in Firebase AI Logic now.
@@ -649,10 +650,10 @@ require("./db")
           ` tts=${aiCfg.ttsModel()} (build ${aiCfg.EXPRESSIVE_BUILD}+: ${aiCfg.expressiveTtsModel()})` +
           ` live=${aiCfg.liveModel()}`
       );
-      if (!process.env.GEMINI_API_KEY) {
+      if (!process.env.OPENAI_API_KEY) {
         console.warn(
-          "WARNING: GEMINI_API_KEY not set — /docs analysis, meeting and " +
-            "call notes, and every background task will fail without it."
+          "WARNING: OPENAI_API_KEY not set — replies, /docs analysis, meeting and " +
+            "call notes, pictures and every background task will fail without it."
         );
       }
     });

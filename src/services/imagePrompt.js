@@ -90,13 +90,13 @@ async function enhancePrompt(words, { purpose = "photo", style = "", shape = "",
   const plain = (skipped) => ({ prompt: withRules(raw, purpose).slice(0, 1600), enhanced: false, skipped });
   if (!raw) return plain("empty");
   if (!enabled()) return plain("off");
-  if (!process.env.GEMINI_API_KEY) return plain("no key");
+  if (!require("./ai/openai").ready()) return plain("no key");
   // A prompt the assistant already wrote at length is left alone: the
   // call would cost a request of the shared free quota and add little.
   if (purpose !== "background" && raw.split(" ").length >= 60) return plain("already detailed");
 
   const router = require("./ai/router");
-  const model = router.envModel("IMAGE_PROMPT_MODEL", "gemini-flash-lite-latest");
+  const model = router.envModel("IMAGE_PROMPT_MODEL", router.chatModel());
   try {
     const { reply } = await router.generateReply(
       [{

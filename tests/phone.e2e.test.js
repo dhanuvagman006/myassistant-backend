@@ -19,7 +19,6 @@ process.env.NODE_ENV = process.env.NODE_ENV || "test";
 
 const assert = require("assert");
 const db = require("../src/db");
-const stream = require("../src/phone/plivoStream");
 const brief = require("../src/phone/callBrief");
 
 let passed = 0;
@@ -29,38 +28,6 @@ async function atest(name, fn) {
 }
 
 (async () => {
-  console.log("\nthe XML Plivo is handed");
-
-  await atest("the stream is bidirectional — anything else is listen-only", () => {
-    const xml = stream.streamXml("wss://x/phone/plivo/1/t", "https://x/status");
-    // Without this attribute Plivo streams the caller to us and plays
-    // nothing back. The call would connect, bill, and be one-way.
-    assert.match(xml, /bidirectional="true"/);
-    // Plivo rejects audioTrack outbound/both when bidirectional is on.
-    assert.match(xml, /audioTrack="inbound"/);
-    // The conversation IS the call: without this the call ends when the
-    // XML document does.
-    assert.match(xml, /keepCallAlive="true"/);
-    assert.match(xml, /<Stream [^>]*>wss:\/\/x\/phone\/plivo\/1\/t<\/Stream>/);
-  });
-
-  await atest("the audio formats match Gemini Live on both legs", () => {
-    assert.strictEqual(stream.IN_RATE, 16000, "Gemini Live consumes 16 kHz PCM");
-    assert.strictEqual(stream.OUT_RATE, 24000, "Gemini Live emits 24 kHz PCM");
-    const xml = stream.streamXml("wss://x/a/b", "");
-    // L16, not mu-law: asking for the rate Gemini already speaks means no
-    // transcode and no resampling on either leg.
-    assert.match(xml, /contentType="audio\/x-l16;rate=16000"/);
-    assert.doesNotMatch(xml, /mulaw/i, "mu-law would cost a decode and two resamples per frame");
-  });
-
-  await atest("a missing status callback does not emit an empty attribute", () => {
-    const xml = stream.streamXml("wss://x/a/b", "");
-    assert.doesNotMatch(xml, /statusCallbackUrl=""/);
-  });
-
-  console.log("\nwhat the agent carries onto the call");
-
   await atest("the brief names the task and who is being called", async () => {
     const p = await brief.build(43, {
       task: "Ask the dealer for the price of an X5 and negotiate",
@@ -111,16 +78,6 @@ async function atest(name, fn) {
   });
 
   console.log("\nbarge-in");
-
-  await atest("the bridge clears queued audio when talked over", () => {
-    const fs = require("fs");
-    const src = fs.readFileSync(__dirname + "/../src/phone/plivoStream.js", "utf8");
-    // Gemini reports `interrupted`; Plivo's clearAudio discards what is
-    // queued. Without it the agent talks over someone answering it.
-    assert.match(src, /sc\.interrupted/);
-    assert.match(src, /event: "clearAudio"/);
-    assert.match(src, /streamId/);
-  });
 
   await atest("the app's own conversation path was not touched", () => {
     const fs = require("fs");

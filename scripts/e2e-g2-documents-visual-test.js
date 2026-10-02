@@ -48,10 +48,10 @@ process.env.JWT_SECRET = "e2e-g2-" + Math.random().toString(36).slice(2) + Date.
 // to exist so the code paths that check for a key run.
 const PRIMARY_KEY = "e2e-g2-fake-primary-key";
 const FALLBACK_KEY = "e2e-g2-fake-fallback-key";
-process.env.GEMINI_API_KEY = PRIMARY_KEY;
+process.env.OPENAI_API_KEY = PRIMARY_KEY;
 for (const k of [
   "GEMINI_FALLBACK_KEYS", "GEMINI_VISION_MODEL", "GEMINI_DOC_MODEL", "GEMINI_IMAGE_MODEL",
-  "CF_ACCOUNT_ID", "CF_API_TOKEN", "HF_TOKEN", "TOGETHER_API_KEY", "OPENAI_API_KEY",
+  "CF_ACCOUNT_ID", "CF_API_TOKEN", "HF_TOKEN", "TOGETHER_API_KEY",
   "EMBEDDING_PROVIDER", "AUTH_DISABLED", "ALLOW_APP_KEY", "BOLNA_API_KEY",
 ]) delete process.env[k];
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-g2-"));
@@ -88,10 +88,72 @@ const reply = (status, obj) =>
   });
 const geminiText = (text) => ({ status: 200, json: { candidates: [{ content: { parts: [{ text }] } }] } });
 
+/**
+ * OPENAI ON THE WIRE (2026-10-02). The responders below still speak the
+ * Gemini shapes the assertions were written against; this branch turns an
+ * OpenAI request into that `call` (parts with inline_data for a picture
+ * or a PDF, the prompt text, the model, the key) and a Gemini-shaped
+ * answer back into OpenAI's (choices / data[].b64_json).
+ */
+function openaiCall(u, init) {
+  const key = (new Headers(init.headers || {}).get("authorization") || "").replace(/^Bearer\s+/i, "");
+  let body = {};
+  if (typeof init.body === "string") { try { body = JSON.parse(init.body); } catch (_) {} }
+  const parts = [];
+  if (/\/images\//.test(u.pathname)) {
+    const prompt = init.body instanceof FormData ? String(init.body.get("prompt") || "") : String(body.prompt || "");
+    parts.push({ text: prompt });
+    return { model: body.model || (init.body instanceof FormData ? String(init.body.get("model") || "") : "") || "gpt-image-1", key, text: prompt, parts, body, image: true };
+  }
+  const sys = [];
+  for (const m of body.messages || []) {
+    // The system line is not a part the assertions look at: parts[0] is the picture.
+    if (m.role === "system") { sys.push(String(m.content || "")); continue; }
+    if (typeof m.content === "string") { parts.push({ text: m.content }); continue; }
+    for (const p of m.content || []) {
+      if (p.type === "text") parts.push({ text: p.text });
+      else if (p.type === "image_url") {
+        const mm = /^data:([^;]+);base64,(.*)$/.exec(p.image_url.url || "");
+        if (mm) parts.push({ inline_data: { mime_type: mm[1], data: mm[2] } });
+      } else if (p.type === "file") {
+        const mm = /^data:([^;]+);base64,(.*)$/.exec(p.file.file_data || "");
+        if (mm) parts.push({ inline_data: { mime_type: mm[1], data: mm[2] } });
+      }
+    }
+  }
+  const text = [...sys, ...parts.map((p) => p.text)].filter(Boolean).join("\n");
+  return { model: body.model || "", key, text, parts, body, image: false };
+}
+function fromGeminiShape(out, call) {
+  if (out.json && Array.isArray(out.json.candidates)) {
+    const parts = out.json.candidates.flatMap((c) => (c.content && c.content.parts) || []);
+    if (call.image) {
+      const img = parts.find((p) => p.inlineData || p.inline_data);
+      const d = img && (img.inlineData || img.inline_data);
+      return { status: out.status, json: d ? { data: [{ b64_json: d.data }] } : { data: [] } };
+    }
+    const text = parts.map((p) => p.text).filter(Boolean).join("");
+    return { status: out.status, json: { model: call.model, choices: [{ message: { content: text }, finish_reason: "stop" }] } };
+  }
+  return out;
+}
+
 globalThis.fetch = async (input, init = {}) => {
   const url = typeof input === "string" ? input : String(input?.url || input);
   if (/^http:\/\/127\.0\.0\.1:\d+\//.test(url)) return realFetch(input, init);
   const u = new URL(url);
+  if (u.hostname === "api.openai.com") {
+    if (/\/embeddings$/.test(u.pathname)) {
+      return reply(503, { error: { message: "stub: embeddings off (lexical path)" } });
+    }
+    const call = openaiCall(u, init);
+    geminiCalls.push(call);
+    const kind = call.image ? "image" : kindOf(call.model, call.text);
+    const fn = R[kind];
+    if (!fn) return reply(500, { error: { message: `stub: no responder for ${kind}` } });
+    const out = fromGeminiShape(await fn(call), call);
+    return reply(out.status, out.json !== undefined ? out.json : out.text || "");
+  }
   if (u.hostname === "generativelanguage.googleapis.com") {
     if (/:batchEmbedContents$/.test(u.pathname)) {
       return reply(503, { error: { message: "stub: embeddings off (lexical path)" } });
@@ -752,19 +814,10 @@ const MIME = {
     /* ============================================================== */
     console.log("\nkey pool — the camera must survive one spent key");
     /* ============================================================== */
-    await atest("the document analyser survives one spent key: it rotates to the fallback key", async () => {
-      process.env.GEMINI_FALLBACK_KEYS = FALLBACK_KEY;
-      const spent = { status: 429, json: { error: { code: 429, message: "Resource has been exhausted (e.g. check quota)." } } };
-      R.analyze = async (call) => (call.key === PRIMARY_KEY ? spent : geminiText(JSON.stringify({
-        title: "Receipt — Big Bazaar", category: "receipt", doc_date: "", expires_on: "", summary: "₹640.",
-        tags: ["receipt"], full_text: "Big Bazaar ₹640" })));
-      try {
-        const meta = await require("../src/docs/analyze").analyzeDocument(fakeJpeg(), "image/jpeg", "r.jpg");
-        assert.strictEqual(meta && meta.title, "Receipt — Big Bazaar", "analysis used the fallback key");
-        // (Its camera half — /vision on the fallback key — went with /vision.)
-      } finally {
-        delete process.env.GEMINI_FALLBACK_KEYS;
-      }
+    await atest("a model out of quota leaves the document saved, without analysis, and never throws", async () => {
+      R.analyze = async () => ({ status: 429, json: { error: { code: "rate_limit_exceeded", message: "You exceeded your current quota" } } });
+      const meta = await require("../src/docs/analyze").analyzeDocument(fakeJpeg(), "image/jpeg", "r.jpg");
+      assert.strictEqual(meta, null, "no analysis, no exception");
     });
 
     /* ============================================================== */
