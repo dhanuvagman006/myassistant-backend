@@ -40,7 +40,10 @@ function userOf(req, res) {
 router.get("/config", async (req, res) => {
   const uid = userOf(req, res);
   if (!uid) return;
-  res.json(await require("./config").forUser(uid, { build: req.query.build, live: req.query.live }));
+  // The app says its build in the X-App-Build header on every call (the
+  // query form is for scripts); without it a build-gated switch never flips.
+  const build = req.query.build || req.get("X-App-Build");
+  res.json(await require("./config").forUser(uid, { build, live: req.query.live }));
 });
 
 router.post("/context", async (req, res) => {
