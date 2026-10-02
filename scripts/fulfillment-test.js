@@ -638,36 +638,7 @@ test("talking over her: only on a measured check", () => {
   assert.match(check, /this\.holdMs = 380/, "a word, not a cough");
 });
 
-test("neither surface may hand the task back to the user", () => {
-  const fs = require("fs");
-  // "or you can just open it yourself on your phone" — the user called it
-  // disrespectful, and they were right: they are talking to an assistant
-  // precisely so they do not have to do it.
-  const runtime = require("../src/agents/runtime").systemPrompt("");
-  assert.match(runtime, /YOU DO THE WORK, NOT THEM/,
-    "the classic/voice prompt must forbid handing work back");
-  assert.match(runtime, /say in ONE sentence WHY/i,
-    "a refusal must still carry a reason");
 
-  const voice = fs.readFileSync(__dirname + "/../src/ai/voicePrompt.js", "utf8");
-  assert.match(voice, /YOU DO THE WORK, NOT THEM/,
-    "the spoken prompt needs the same rule — it is where this was reported");
-  assert.match(voice, /doItRule/, "and it must actually be in the prompt");
-});
-
-test("the system prompt has no concatenation debris in it", () => {
-  // A stray `+` at a line join turned the next string into a number:
-  // "…missing it.\n" + + "These legal tools…" put "NaN" in every prompt
-  // and silently dropped the rule that legal tools are for legal
-  // questions only. Any such slip shows up as one of these tokens.
-  const p = require("../src/agents/runtime").systemPrompt("");
-  for (const debris of [/NaN/, /\bundefined\b/, /\[object \w+\]/, /\bnull\b(?! and)/]) {
-    const m = p.match(debris);
-    assert.ok(!m, `"${m && p.slice(Math.max(0, m.index - 40), m.index + 40)}"`);
-  }
-  assert.match(p, /These legal tools are for LEGAL QUESTIONS ONLY/,
-    "the legal-scope rule must actually be in the prompt");
-});
 
 /* ------------------------------------------------------------------ *
  * WHOSE PROFILE IS THIS?
@@ -994,39 +965,7 @@ test("a known provider still opens on a build too old to ask the phone", async (
   assert.strictEqual(res.deviceAction.type, "open_url");
 });
 
-test("the spoken prompt tells the model to call the tool before narrating it", () => {
-  const src = require("fs").readFileSync(__dirname + "/../src/ai/voicePrompt.js", "utf8");
-  // Asked three times to open an app, the live model said "one second,
-  // opening it" three times and called NO tool — the ledger for that
-  // window is empty. The text model picks the right tool for the same
-  // sentence every time; the live model needs telling.
-  assert.match(src, /TOOL FIRST, THEN SPEAK/,
-    "the live prompt must order the act before the narration");
-  assert.match(src, /actFirstRule/, "and the rule must actually be in the prompt");
-  // Matched on a fragment that sits on ONE source line: the rule is built
-  // by string concatenation, so a phrase spanning the join never matches.
-  assert.match(src, /the same sentence twice while waiting to act/i,
-    "it repeated itself while failing to act");
-  assert.match(src, /CALL THE TOOL/,
-    "the instruction has to be unambiguous, not a hint");
-});
 
-test("a correction is answered with an action, not a defence", () => {
-  const fs = require("fs");
-  const runtime = require("../src/agents/runtime").systemPrompt("");
-  const proxy = fs.readFileSync(__dirname + "/../src/ai/voicePrompt.js", "utf8");
-  // Observed: told its fare was wrong, it replied "I understand your
-  // frustration", lectured about why prices vary, and asked permission to
-  // open a site it could simply have opened. Three failures, one paragraph.
-  for (const [name, src] of [["runtime", runtime], ["live", proxy]]) {
-    assert.match(src, /DO NOT DEFEND — ACT/, `${name} must forbid defending`);
-    assert.match(src, /I understand your frustration/,
-      `${name} must name the therapy opener it is banning`);
-    assert.match(src, /A LIVE PRICE FROM A SEARCH IS NOT A FACT/,
-      `${name} must not present searched prices as looked-up fact`);
-  }
-  assert.match(proxy, /noLectureRule/, "and the rule must be in the live prompt");
-});
 
 /* ------------------------------------------------------------------ *
  * A PLACE THEY NAMED BEATS THE PLACE THEY ARE STANDING

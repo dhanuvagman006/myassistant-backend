@@ -657,8 +657,10 @@ const tmpUploads = () => filesIn(os.tmpdir()).filter((f) => /^(avatar|note)-\d+-
     const ctx = fs.readFileSync(path.join(__dirname, "..", "src", "ai", "context.js"), "utf8");
     assert.match(ctx, /m\.status = 'unread' AND m\.to_phone_number = \$1\s+AND m\.media = ''/,
       "the conversation would read the note aloud and mark it read before the popup sees it");
-    const voice = fs.readFileSync(path.join(__dirname, "..", "src", "ai", "voicePrompt.js"), "utf8");
-    assert.match(voice, /send_video_note/, "the spoken prompt never routes video notes to the tool");
+    // Since 2026-10-02 the prompt carries no per-tool rules: the tool's own
+    // description routes a video note.
+    const desc = (require("../src/tools/registry").get("send_video_note") || {}).description || "";
+    assert.match(desc, /video/i, "the tool describes itself");
   });
 
   await atest("the chat thread says what an attachment IS (type, title), so a clip or PDF is not opened as a photo", async () => {

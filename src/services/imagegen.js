@@ -603,6 +603,9 @@ function subjectHints(prompt) {
  */
 function withSubjectHints(prompt) {
   const p = String(prompt || "");
+  // A prompt that rules figures out gets none: a name like "Shankar" on a
+  // card must not summon Lord Shiva (2 Oct).
+  if (/\bno (people|figures|faces|gods)\b|decorative design only/i.test(p)) return p;
   const hits = subjectHints(p).filter((h) => !p.includes(h));
   if (!hits.length) return p;
   return `${p}. ${hits.join(". ")}.`;

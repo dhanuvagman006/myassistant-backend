@@ -51,8 +51,10 @@ function greetingPrompt(args) {
   return `A beautiful, festive ${occasion} greeting card poster${colour}, portrait, rich colours, ` +
     "an ornate decorative frame, soft glowing bokeh light, flowers and celebratory details, polished " +
     `professional print design. Print exactly these words, spelled exactly as written: ${words.join(", ")}. ` +
-    "No other text anywhere. A decorative design only: no people, faces, gods or figures unless described " +
-    "(2026-10-02: a card for 'Ravi Shankar' came back with Lord Shiva on it).";
+    // The rule only, no story: an earlier note here named "Ravi Shankar" and
+    // "Lord Shiva", and the image code's deity matcher then put Shiva on
+    // every card (the client's daughter's card, 2 Oct).
+    "No other text anywhere. A decorative design only: no people, faces, gods or figures.";
 }
 const svc = require("./service");
 

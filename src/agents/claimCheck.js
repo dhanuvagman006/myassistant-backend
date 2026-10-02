@@ -319,7 +319,11 @@ const FAMILIES = [
             // "Saved Ravi's home address" (2026-09-30).
             "remember_address",
             // "Saved your shortcut" (2026-09-27).
-            "create_shortcut", "update_shortcut", "delete_shortcut"],
+            "create_shortcut", "update_shortcut", "delete_shortcut",
+            // Pictures, cards and documents land in their documents (2 Oct:
+            // a card that WAS saved was followed by "That wasn't saved").
+            "generate_image", "make_greeting_poster", "create_event_poster", "edit_my_photo",
+            "show_pictures", "create_document", "present_text", "deep_research"],
     claim: /\b(logged|recorded|noted it down|saved (it |that )?(to|in) your|saved (the|your) shortcut|filed under|i'?ve (written|saved)|written that down)\b/i,
     // सहेज/सेव/नोट कर…, ಉಳಿಸ/ಸೇವ್ ಮಾಡ…, சேமிக்க…, సేవ్ చేస…, സേവ് ചെയ്…
     claimIntl: /(सहेज|सेव\s*कर|नोट\s*कर|लिख\s*दिया|ಉಳಿಸ|ಸೇವ್\s*ಮಾಡ|ಬರೆದಿ|சேமிக்க|குறித்து|సేవ్\s*చేస|రాశా|സേവ്\s*ചെയ്|എഴുതി)/,

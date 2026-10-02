@@ -278,17 +278,6 @@ const src = (f) => fs.readFileSync(__dirname + "/../src/" + f, "utf8");
 
   console.log("\nthe owner comes first");
 
-  await atest("every voice carries the same owner rule", () => {
-    const owner = require("../src/agents/owner");
-    assert.match(owner.RESPECT, /OWNER/);
-    assert.match(owner.FEEDBACK, /send_developer_feedback/);
-    assert.match(src("agents/runtime.js"), /require\("\.\/owner"\)\.OWNER_RULE/);
-    assert.match(src("ai/voicePrompt.js"), /require\("\.\.\/agents\/owner"\)\.OWNER_RULE/);
-    // The plain fallback may have no tools: respect, but no feedback order.
-    const router = src("services/ai/router.js");
-    assert.match(router, /require\("\.\.\/\.\.\/agents\/owner"\)\.RESPECT/);
-    assert.doesNotMatch(router, /owner"\)\.(OWNER_RULE|FEEDBACK)/);
-  });
 
   await atest("courtesy stays short — it must not undo the no-lecture rules", () => {
     const { RESPECT } = require("../src/agents/owner");

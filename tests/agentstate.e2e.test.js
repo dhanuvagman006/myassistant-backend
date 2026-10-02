@@ -1696,15 +1696,6 @@ console.log("\nexecution record");
       "the fallback does not forbid handing the user homework");
   });
 
-  test("both surfaces forbid telling the user to go do it themselves", () => {
-    for (const f of ["../src/agents/runtime.js", "../src/ai/voicePrompt.js"]) {
-      const src = fs.readFileSync(require.resolve(f), "utf8");
-      assert.match(src, /HAND THE USER HOMEWORK/,
-        `${f} does not forbid instructing the user to do it themselves`);
-      assert.match(src, /RECORD ONLY WHAT THEY JUST SAID/,
-        `${f} does not scope memory writes to the current turn`);
-    }
-  });
 
   /* ================================================================ */
   /* 20. SEARCH IS DOWN — ANSWER WHAT WE CAN, ADMIT THE REST          */

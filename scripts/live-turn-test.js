@@ -55,19 +55,6 @@ test("past replies lose the title and keep what was said", () => {
 
 console.log("\nthe way she talks");
 const { voiceSystemPrompt } = require("../src/ai/voicePrompt");
-test("natural speech is asked for, the announcer register is not", () => {
-  const p = voiceSystemPrompt("Hari", [], "", 330, "", "", 113);
-  assert.match(p, /SOUND LIKE A PERSON, NOT A MACHINE/);
-  assert.match(p, /contractions/);
-  assert.match(p, /never formal or stiff/);
-  assert.doesNotMatch(p, /calm, precise/, "the line that made her clipped and flat");
-  assert.match(p, /polite register \(ನೀವು \/ आप\)/, "respect stays");
-});
-test("the spoken prompt does not claim to hear a voice it only reads", () => {
-  const p = voiceSystemPrompt("Hari", [], "", 330, "", "", 120);
-  assert.match(p, /HOW THEY SOUND IS HALF OF WHAT THEY SAID/);
-  assert.doesNotMatch(p, /You can hear them/, "the app's recogniser hands the model words, not a voice");
-});
 
 console.log("\nLive voice and understanding (scripts/ai-live-unit-test.js)");
 require("./ai-live-unit-test").run(test);

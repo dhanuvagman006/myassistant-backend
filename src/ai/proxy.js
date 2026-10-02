@@ -37,6 +37,48 @@ const partsOf = (c) => (c && Array.isArray(c.parts) ? c.parts : []);
 const textOf = (c) => partsOf(c).filter((p) => typeof p.text === "string").map((p) => p.text).join("\n");
 const systemOf = (body) => textOf(body.systemInstruction || body.system_instruction) || "";
 
+/**
+ * NO TAGS ON THE SCREEN OR IN THE VOICE (2 Oct: "<sincere and apologetic>"
+ * and "<stay_silent>" reached the owner). A leading delivery note written
+ * without "tone:" becomes the tone note the app understands; any other
+ * angle-bracket word goes. "x < 5" is left alone (a tag starts with a letter).
+ */
+const STRAY_TAG = /<\s*(?!tone\s*:)[A-Za-z][A-Za-z _,'&-]{0,58}>/gi;
+function cleanText(text, atStart = true) {
+  let out = String(text || "");
+  if (atStart) {
+    out = out.replace(/^(\s*)<\s*(?!tone\s*:)([A-Za-z][A-Za-z ,'&-]{2,58}?)\s*>/i,
+      (m, sp, inner) => (/\s/.test(inner) || /^(warm|calm|bright|gentle|sincere|cheerful|firm|playful|serious)/i.test(inner) ? `${sp}<tone: ${inner.trim()}>` : sp));
+  }
+  return out.replace(STRAY_TAG, "").replace(/[ \t]{2,}/g, " ");
+}
+/** The same for a reply that streams: a tag split across pieces is held until it closes. */
+function tagFilter() {
+  let pending = "";
+  let started = false;
+  const run = (text) => {
+    const out = cleanText(text, !started);
+    if (text.trim()) started = true;
+    return out;
+  };
+  return {
+    push(delta) {
+      pending += String(delta || "");
+      const lt = pending.lastIndexOf("<");
+      let cut = pending.length;
+      if (lt >= 0 && pending.indexOf(">", lt) < 0 && pending.length - lt <= 64) cut = lt;
+      const ready = pending.slice(0, cut);
+      pending = pending.slice(cut);
+      return ready ? run(ready) : "";
+    },
+    flush() {
+      const rest = pending;
+      pending = "";
+      return rest ? run(rest) : "";
+    },
+  };
+}
+
 /** A `<tone: warm, unhurried>` note at the head of a sentence → the manner, and the words. */
 function splitTone(text) {
   const m = /^\s*<tone:\s*([^>]{1,120})>\s*/i.exec(String(text || ""));
@@ -64,7 +106,9 @@ async function generate(body, { stream = false, emit, userId } = {}) {
 
   // Spoken audio: the sentence (with its tone note) → speech.
   if (modalities.includes("AUDIO")) {
-    const { instructions, text } = splitTone(textOf(last));
+    const split = splitTone(cleanText(textOf(last)));
+    const instructions = split.instructions;
+    const text = split.text.replace(/<[^<>\n]{1,60}>/g, " ").replace(/\s{2,}/g, " ").trim();
     const speech = gen.speechConfig || gen.speech_config || {};
     const voiceName = speech.voiceConfig?.prebuiltVoiceConfig?.voiceName || speech.voice_config?.prebuilt_voice_config?.voice_name || speech.voiceName || "";
     const audioPart = (b) => ({ inlineData: { mimeType: "audio/pcm;rate=24000", data: b.toString("base64") } });
@@ -132,7 +176,10 @@ async function generate(body, { stream = false, emit, userId } = {}) {
     emit(chunk(responseParts(out), { finishReason: "STOP", grounding }));
     return;
   }
-  const out = await openai.chat({ ...common, stream: true, onDelta: (d) => emit(chunk([{ text: d }])) });
+  const tags = tagFilter();
+  const out = await openai.chat({ ...common, stream: true, onDelta: (d) => { const t = tags.push(d); if (t) emit(chunk([{ text: t }])); } });
+  const tail = tags.flush();
+  if (tail) emit(chunk([{ text: tail }]));
   const calls = out.functionCalls.map((c) => ({ functionCall: { name: c.name, args: c.args, id: c.id } }));
   // The text already went out as it came; the calls and the end go last.
   emit(chunk(calls, { finishReason: "STOP", grounding }));
@@ -140,7 +187,8 @@ async function generate(body, { stream = false, emit, userId } = {}) {
 
 function responseParts(out) {
   const parts = [];
-  if (out.text) parts.push({ text: out.text });
+  const text = cleanText(out.text || "");
+  if (text.trim()) parts.push({ text });
   for (const c of out.functionCalls) parts.push({ functionCall: { name: c.name, args: c.args, id: c.id } });
   return parts;
 }
@@ -156,4 +204,4 @@ function servedModels() {
   };
 }
 
-module.exports = { generate, voiceFor, splitTone, servedModels, TTS_VOICES, REALTIME_VOICES, chunk };
+module.exports = { generate, voiceFor, splitTone, servedModels, TTS_VOICES, REALTIME_VOICES, chunk, cleanText, tagFilter };

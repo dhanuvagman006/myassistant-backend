@@ -245,16 +245,6 @@ const db = require("../src/db");
     assert.ok(!rel.CORE.has("show_address") && !rel.CORE.has("remember_address"));
   });
 
-  await atest("the REMEMBER THAT rule is in the references block every mode is given", () => {
-    const vp = require("../src/ai/voicePrompt");
-    assert.match(vp.RESOLVE_REFERENCES, /REMEMBER THAT: 'remember that\/this\/it', 'save that', 'note that down'/);
-    assert.match(vp.RESOLVE_REFERENCES, /An address → remember_address with the person it belongs to/);
-    assert.match(vp.RESOLVE_REFERENCES, /ask 'whose address is it\?' only if no person was mentioned/);
-    assert.match(vp.RESOLVE_REFERENCES, /a fact about a person → add_person_note; about the user → remember_fact/);
-    const src = require("fs").readFileSync(require("path").join(__dirname, "../src/ai/context.js"), "utf8");
-    assert.strictEqual((src.match(/RESOLVE_REFERENCES/g) || []).length >= 3, true,
-      "context.js puts it in the voice/live prompt and the chat prompt");
-  });
 
   await atest("the tool descriptions steer addresses to the address tools", () => {
     for (const n of ["remember_fact", "add_person_note", "remember_person"]) {

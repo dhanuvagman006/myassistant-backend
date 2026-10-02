@@ -336,7 +336,7 @@ async function transcribe(buffer, mime, { language = "", hint = "", prompt = "",
   form.append("response_format", "json");
   const lang = String(language || hint || "").trim().slice(0, 2).toLowerCase();
   if (lang && /^[a-z]{2}$/.test(lang) && lang !== "un") form.append("language", lang);
-  const hintText = prompt || (LANGUAGE_NAMES[lang] && lang !== "en" ? `${LANGUAGE_NAMES[lang]} speech; the speaker may mix in English words.` : "");
+  const hintText = prompt || transcriptionHint(lang || "en");
   if (hintText) form.append("prompt", String(hintText).slice(0, 800));
   const j = await call("/audio/transcriptions", { form, timeoutMs });
   const text = String(j.text || "").trim();
@@ -354,7 +354,8 @@ function transcriptionHint(lang = "") {
   const name = LANGUAGE_NAMES[lang] || "English";
   return `An Indian speaker from Karnataka speaking ${name}${name === "English" ? " (sometimes Kannada)" : " and English"}. ` +
     "Write English words in English letters. Local names: Shetty, Bhat, Hegde, Rao, Adhikari, Bhandary, Mangaluru, " +
-    "Udupi, Moodbidri, Bengaluru, Puttur.";
+    "Udupi, Moodbidri, Bengaluru, Puttur. Transcribe only the person speaking to the phone: background TV, " +
+    "music and distant voices are not speech — when there is no clear speech, write nothing.";
 }
 
 const LANGUAGE_NAMES = {
@@ -505,7 +506,10 @@ async function realtimeClientSecret({ voice, instructions = "", tools = [], mode
   const turn = env("OPENAI_RT_VAD", "server") === "semantic"
     ? { type: "semantic_vad", eagerness: env("OPENAI_RT_EAGERNESS", "high"), create_response: true, interrupt_response: true }
     : {
-        type: "server_vad", threshold: Number(env("OPENAI_RT_VAD_THRESHOLD", "0.6")), prefix_padding_ms: 300,
+        // 0.7 (2 Oct, "it even considers the background noises"): a TV or a
+        // voice across the room stays under it; their own voice, near the
+        // phone, does not.
+        type: "server_vad", threshold: Number(env("OPENAI_RT_VAD_THRESHOLD", "0.7")), prefix_padding_ms: 300,
         silence_duration_ms: Math.max(300, Math.min(2000, Number(silenceMs) || 800)), create_response: true, interrupt_response: true,
       };
   const lang = String(language || "").slice(0, 2).toLowerCase();
@@ -550,7 +554,8 @@ async function realtimeClientSecret({ voice, instructions = "", tools = [], mode
  * Returns { text, sources: [{title, url}], queries, usage, model }.
  */
 async function webSearch(query, { model, location, timeoutMs = 45_000 } = {}) {
-  const tool = { type: "web_search" };
+  // "low" context: the facts arrive in about half the time (2 Oct, "need faster").
+  const tool = { type: "web_search", search_context_size: env("OPENAI_SEARCH_CONTEXT", "low") };
   if (location && (location.city || location.country)) {
     tool.user_location = {
       type: "approximate", country: String(location.country || "IN").toUpperCase().slice(0, 2),

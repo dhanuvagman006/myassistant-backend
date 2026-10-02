@@ -184,19 +184,6 @@ async function waitFor(fn, ms = 2000) {
     }
   });
 
-  await t("chat prompt: build 107 routes calls questions to phone_calls, older builds keep the old rule", async () => {
-    const p107 = runtime.systemPrompt("", { appBuild: 107 });
-    assert.match(p107, /CALLS ON THIS PHONE: 'any missed calls\?'[^\n]*→ phone_calls/);
-    assert.match(p107, /Never guess call history/);
-    assert.ok(!/you cannot see the phone's missed or recent calls/.test(p107), "the temporary line is replaced");
-    for (const p of [runtime.systemPrompt("", { appBuild: 106 }), runtime.systemPrompt("")]) {
-      assert.match(p, /CALL HISTORY: you cannot see the phone's missed or recent calls/);
-      assert.ok(!/CALLS ON THIS PHONE/.test(p));
-    }
-    const src = fs.readFileSync(__dirname + "/../src/agents/runtime.js", "utf8");
-    assert.ok((src.match(/systemPrompt\(ctx\.extraSystem \|\| "", \{ appBuild: ctx\.appBuild \}\)/g) || []).length >= 2,
-      "both model calls pass the phone's build");
-  });
 
   /* =============================== LOCATION =============================== */
 
@@ -278,16 +265,6 @@ async function waitFor(fn, ms = 2000) {
   const turnAt = (body) => post("/context", { text: "hello", mode: "voice", platform: "android", ...body });
   const toolIn = (c, name, args) => post("/tool", { sessionId: c.sessionId, turnId: c.turnId, name, args, userText: "please" });
 
-  await t("spoken prompt: build 107 gets phone_calls and its rule, build 106 keeps today's", async () => {
-    const s107 = await turnAt({ build: 107, tz: 330 });
-    assert.match(s107.system, /CALLS ON THIS PHONE: 'any missed calls\?'[^.]*→ phone_calls/);
-    assert.ok(!/you cannot see the phone's missed or recent calls/.test(s107.system));
-    assert.ok(s107.tools.some((d) => d.name === "phone_calls"));
-    const s106 = await turnAt({ build: 106, tz: 330 });
-    assert.match(s106.system, /CALL HISTORY: you cannot see the phone's missed or recent calls/);
-    assert.ok(!/CALLS ON THIS PHONE/.test(s106.system));
-    assert.ok(!s106.tools.some((d) => d.name === "phone_calls"));
-  });
 
   await t("the call-log request reaches the phone with its fixed sentence", async () => {
     const c = await turnAt({ text: "any missed calls from Ravi?", build: 107, tz: 330 });

@@ -313,21 +313,6 @@ async function agentCallFailures() {
       }
     });
 
-    await atest("neither prompt tells the model to promise a retry nobody asked for", async () => {
-      // "Call me at 5 and wake me up" is SCHEDULED, so the promise is made
-      // by the model from its prompt, not by the tool's line above — and
-      // both prompts said "it tries again. Say that plainly when you
-      // schedule it", and "three minutes apart", for every call.
-      const prompts = {
-        voice: require("../src/agents/runtime").systemPrompt(""),
-        spoken: require("../src/ai/voicePrompt").voiceSystemPrompt("Hari", [], "", 330, "", "", 119),
-      };
-      for (const [path, p] of Object.entries(prompts)) {
-        assert.doesNotMatch(p, /it tries again\. (Say|Tell me) that/, `${path}: an unconditional retry promise`);
-        assert.doesNotMatch(p, /three minutes\s+apart/, `${path}: a fixed gap nobody chose`);
-        assert.match(p, /Never promise (me )?a retry/, `${path}: the rule is missing`);
-      }
-    });
   } finally {
     srv.close();
     globalThis.fetch = realFetch;

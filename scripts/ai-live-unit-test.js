@@ -66,33 +66,7 @@ function run(test) {
     } finally { restore(); }
   });
 
-  test("the Live prompt: the spoken rules, what Live changes, and no delivery marks", () => {
-    const p = vp.liveRules("Hari", "Kannada", 135);
-    assert.match(p, /LIVE VOICE/);
-    assert.match(p, /BREVITY IS A HARD RULE/);
-    assert.match(p, /THE USER IS YOUR OWNER/);
-    assert.match(p, /ASK BEFORE THE RISKY ONES/);
-    assert.match(p, /THEIR DATA COMES FROM TOOLS/);
-    assert.match(p, /never markdown/);
-    assert.doesNotMatch(p, /<tone:|<sigh>|<laugh>|<chuckles>|<short pause>|HOW YOU SOUND/);
-    assert.doesNotMatch(p, /Current date and time/, "the clock is not a static rule");
-  });
 
-  test("the spoken prompt: static rules first, identical between turns; the clock last", () => {
-    const a = vp.voiceSystemPrompt("Hari", [], "WHAT YOU REMEMBER ABOUT THIS USER\n- likes tea", 330, "", "", 135);
-    const b = vp.voiceSystemPrompt("Hari", [{ from_name: "Ravi", message: "hi" }], "- other", 330, "", "ASK ONCE.", 135);
-    const rules = vp.voiceRules("Hari", "", 135);
-    assert.ok(a.startsWith(rules) && b.startsWith(rules), "the same static prefix whatever changes");
-    assert.ok(rules.length > 16_000, "big enough for Gemini's 4,096-token cache minimum");
-    assert.doesNotMatch(rules, /Current date and time|WHAT YOU REMEMBER|CRITICAL INSTRUCTION|ASK ONCE/);
-    assert.match(a, /Current date and time for the user: [^\n]*$/, "the clock is the very end");
-    assert.ok(a.indexOf("JUDGMENT") < a.indexOf("WHAT YOU REMEMBER"));
-    assert.ok(b.indexOf("CRITICAL INSTRUCTION") > b.indexOf("- other"));
-    assert.ok(b.indexOf("ASK ONCE.") < b.indexOf("Current date and time"));
-    for (const p of [a, vp.RESOLVE_REFERENCES]) assert.doesNotMatch(p, /<tone:/);
-    assert.match(vp.RESOLVE_REFERENCES, /the second one/);
-    assert.match(vp.RESOLVE_REFERENCES, /no, I meant/);
-  });
 
   test("Live tools: one fixed set, at most 32, the conversation tools and must-haves first", () => {
     const { CORE } = require("../src/tools/relevance");

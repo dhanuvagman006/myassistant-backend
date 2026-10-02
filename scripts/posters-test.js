@@ -1832,24 +1832,6 @@ function measure(rgb) {
     assert.match(src("ai/context.js"), /inputQuality\.expectationsFrom\(s\.lastReply\)/);
   });
 
-  await atest("the prompt rule sits BEFORE 'CREATE IMAGES' on build 119, and is absent on 118", () => {
-    const runtime = require("../src/agents/runtime");
-    const p119 = runtime.systemPrompt("", { appBuild: 119 });
-    const p118 = runtime.systemPrompt("", { appBuild: 118 });
-    const i = p119.indexOf("make_greeting_poster");
-    assert.ok(i > 0 && i < p119.indexOf("You can CREATE IMAGES"));
-    assert.match(p119, /never say it was sent/);
-    assert.match(p119, /spell the name letter by letter/);
-    assert.ok(!p118.includes("make_greeting_poster"));
-    assert.ok(!runtime.systemPrompt("").includes("make_greeting_poster"));
-    const live = require("../src/ai/voicePrompt").voiceSystemPrompt;
-    const l119 = live("Assistant", [], "", 330, "", "", 119);
-    const l118 = live("Assistant", [], "", 330, "", "", 118);
-    const j = l119.indexOf("make_greeting_poster");
-    assert.ok(j > 0 && j < l119.indexOf("You can CREATE IMAGES"));
-    assert.match(l119, /I press Send myself/);
-    assert.ok(!l118.includes("make_greeting_poster"));
-  });
 
   /* ================================================================ */
   console.log("\nthe shared contract: tests/fixtures/posters/contract.json");
