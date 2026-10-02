@@ -108,6 +108,9 @@ const liveModel = () =>
 const LIVE_BUILD = 135;
 // From this build the phone takes OpenAI's names and our server's model port.
 const OPENAI_BUILD = 146;
+// From this build the phone can hold a GPT-Live conversation over WebRTC.
+const GPT_LIVE_BUILD = 154;
+const gptLiveOn = () => !/^(off|0|false|no)$/i.test(String(process.env.GPT_LIVE || "on").trim());
 // Sulafat first (the client, 2026-09-30: "best voice as default" — the
 // warm one); the rest as before.
 const LIVE_VOICES = ["Sulafat", "Callirrhoe", "Achernar", "Aoede", "Vindemiatrix", "Kore", "Charon", "Achird"];
@@ -285,6 +288,11 @@ async function forUser(userId, { build, live } = {}) {
     // The fast voice runs on OpenAI Realtime (Phase C): the phone opens the
     // socket itself with a key from POST /ai/realtime/secret.
     if (out.live) out.live = { ...out.live, model: served.live, voice: proxy.voiceFor(out.live.voice), voices: proxy.REALTIME_VOICES.slice() };
+    // GPT-LIVE (the owner's agent, 2026-10-02): 154+ opens it over WebRTC
+    // through POST /ai/live/session. GPT_LIVE=off keeps Realtime.
+    if (out.live && gptLiveOn() && b >= GPT_LIVE_BUILD) {
+      out.live = { ...out.live, transport: "gpt-live", model: openai.GPT_LIVE_AGENT.model, voice: openai.GPT_LIVE_AGENT.audio.output.voice };
+    }
   } else {
     out.provider = "gemini";
   }

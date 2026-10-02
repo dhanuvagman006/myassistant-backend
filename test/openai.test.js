@@ -242,6 +242,30 @@ function fake(handler) {
       await O.realtimeClientSecret({ language: "en" });
     });
 
+    await check("gpt-live: the owner's agent exactly, plus the prompt and the app's functions, over webrtc", async () => {
+      fake(({ url, body, init }) => {
+        assert.match(url, /\/live\/sessions$/);
+        const s = body.session;
+        assert.strictEqual(s.model, "gpt-live-1");
+        assert.deepStrictEqual(s.audio, { output: { voice: "gleam" } });
+        assert.strictEqual(s.instructions, "talk");
+        const r = s.delegation.responses;
+        assert.strictEqual(s.delegation.type, "responses");
+        assert.strictEqual(r.model, "gpt-5.6-terra");
+        assert.strictEqual(r.parallel_tool_calls, false);
+        assert.deepStrictEqual(r.reasoning, { effort: "medium" });
+        assert.strictEqual(r.instructions, "tools");
+        assert.deepStrictEqual(r.tools.map((t) => t.type + ":" + (t.name || "")), ["web_search:", "function:set_timer"]);
+        assert.deepStrictEqual(body.transport, { type: "webrtc", sdp: "v=0" });
+        assert.match(String(init.headers["OpenAI-Safety-Identifier"]), /^[0-9a-f]{32}$/);
+        return { session: { id: "live_1" }, transport: { type: "webrtc", sdp: "answer" } };
+      });
+      const out = await O.liveSession({ sdp: "v=0", instructions: "talk", backendInstructions: "tools", user: 56, tools: [{ name: "set_timer", description: "d", parameters: { type: "OBJECT", properties: {} } }] });
+      assert.deepStrictEqual(out, { session: { id: "live_1" }, transport: { type: "webrtc", sdp: "answer" } });
+      assert.strictEqual(O.GPT_LIVE_AGENT.delegation.responses.tools.length, 1, "the agent itself is never changed");
+      await assert.rejects(O.liveSession({ sdp: " " }), /SDP offer/);
+    });
+
     await check("the router keeps its contracts on top: reply, stream, tools, transcript", async () => {
       const R = require("../src/services/ai/router");
       fake(({ url, body }) => {

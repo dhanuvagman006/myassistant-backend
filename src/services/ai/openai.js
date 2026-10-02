@@ -555,12 +555,72 @@ async function realtimeClientSecret({ voice, instructions = "", tools = [], mode
       },
     },
     // Per user, hashed: OpenAI's abuse checks see one person, not our whole key.
-    ...(user ? { headers: { "OpenAI-Safety-Identifier": require("crypto").createHash("sha256").update(String(user)).digest("hex").slice(0, 32) } } : {}),
+    ...(user ? { headers: { "OpenAI-Safety-Identifier": safetyId(user) } } : {}),
     timeoutMs: 15_000,
   });
   const value = j.value || (j.client_secret && j.client_secret.value) || "";
   if (!value) throw new OpenAIError("openai realtime: no client secret in the answer", 0, JSON.stringify(j).slice(0, 200));
   return { value, expiresAt: Number(j.expires_at || (j.client_secret && j.client_secret.expires_at) || 0), model: m };
+}
+
+// ---------------------------------------------------------------- GPT-Live
+
+/**
+ * THE OWNER'S GPT-LIVE AGENT (handoff of 2026-10-02), kept exactly as he
+ * gave it; anything it leaves out is OpenAI's default. Env may swap a name
+ * (GPT_LIVE_MODEL, GPT_LIVE_VOICE, GPT_LIVE_BACKEND_MODEL) without a release.
+ */
+const GPT_LIVE_AGENT = Object.freeze({
+  model: "gpt-live-1",
+  audio: { output: { voice: "gleam" } },
+  delegation: {
+    type: "responses",
+    responses: {
+      parallel_tool_calls: false,
+      model: "gpt-5.6-terra",
+      reasoning: { effort: "medium" },
+      tools: [{ type: "web_search" }],
+    },
+  },
+});
+
+/**
+ * Starts a GPT-Live conversation for the phone's WebRTC offer. The key
+ * stays here: GPT-Live has no client secret, the server creates the
+ * session and hands back OpenAI's SDP answer. On top of the agent: the
+ * conversation prompt for the voice, and the app's own functions (beside
+ * web search) for the backend model, which picks them; the phone runs them.
+ * Returns { session: { id }, transport: { type, sdp } } as OpenAI sent it.
+ */
+async function liveSession({ sdp, instructions = "", backendInstructions = "", tools = [], user = "" } = {}) {
+  if (typeof sdp !== "string" || !sdp.trim()) throw new OpenAIError("gpt-live: an SDP offer is required", 400, "");
+  const a = GPT_LIVE_AGENT;
+  const r = a.delegation.responses;
+  const session = {
+    model: env("GPT_LIVE_MODEL", a.model),
+    ...(instructions ? { instructions: String(instructions).slice(0, 48_000) } : {}),
+    audio: { output: { voice: env("GPT_LIVE_VOICE", a.audio.output.voice) } },
+    delegation: {
+      type: a.delegation.type,
+      responses: {
+        parallel_tool_calls: r.parallel_tool_calls,
+        model: env("GPT_LIVE_BACKEND_MODEL", r.model),
+        reasoning: { ...r.reasoning },
+        ...(backendInstructions ? { instructions: String(backendInstructions).slice(0, 48_000) } : {}),
+        tools: [...r.tools.map((t) => ({ ...t })), ...toTools(tools).map((t) => ({ type: "function", ...t.function }))],
+      },
+    },
+  };
+  return call("/live/sessions", {
+    body: { session, transport: { type: "webrtc", sdp } },
+    ...(user ? { headers: { "OpenAI-Safety-Identifier": safetyId(user) } } : {}),
+    timeoutMs: 20_000,
+  });
+}
+
+/** One person to OpenAI's abuse checks, never their id itself. */
+function safetyId(user) {
+  return require("crypto").createHash("sha256").update(String(user)).digest("hex").slice(0, 32);
 }
 
 /**
@@ -634,7 +694,7 @@ const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); 
 
 module.exports = {
   ready, key, models, VOICES, OpenAIError, isBusy, busy: () => Date.now() < busyUntil,
-  chat, transcribe, speak, speakStream, imageGenerate, imageEdit, realtimeClientSecret, webSearch, plausibleTranscript,
+  chat, transcribe, speak, speakStream, imageGenerate, imageEdit, realtimeClientSecret, liveSession, GPT_LIVE_AGENT, webSearch, plausibleTranscript,
   // for tests
   fromSimple, fromContents, toTools, wavWrap, imageSize,
 };

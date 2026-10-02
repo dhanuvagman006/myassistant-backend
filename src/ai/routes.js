@@ -197,6 +197,33 @@ router.post("/realtime/secret", async (req, res) => {
   }
 });
 
+/**
+ * GPT-LIVE (2026-10-02): the phone sends its WebRTC offer, we create the
+ * session with OpenAI and return the answer. The voice gets the style and
+ * the conversation; the backend model gets the same prompt to choose tools by.
+ */
+router.post("/live/session", async (req, res) => {
+  const uid = userOf(req, res);
+  if (!uid) return;
+  const b = req.body || {};
+  try {
+    const openai = require("../services/ai/openai");
+    const prompt = String(b.instructions || "");
+    const out = await openai.liveSession({
+      sdp: b.sdp, user: uid,
+      instructions: VOICE_STYLE + "\n\n" + prompt +
+        "\n\nAnything that needs a tool, the app, saved facts or current information: hand it to the backend, then say its result.",
+      backendInstructions: prompt +
+        "\n\nYou are the backend of a spoken conversation: use the tools, then return a short, grounded result to be said aloud.",
+      tools: Array.isArray(b.tools) ? b.tools : [],
+    });
+    res.status(201).json({ session: { id: out.session && out.session.id }, transport: out.transport });
+  } catch (e) {
+    console.error(`ai: gpt-live session failed uid=${uid}: ${String(e.message || e).slice(0, 200)}`);
+    res.status(e.status === 400 ? 400 : 502).json({ error: String(e.message || e).slice(0, 200) });
+  }
+});
+
 router.post("/firebase-token", async (req, res) => {
   const uid = userOf(req, res);
   if (!uid) return;
