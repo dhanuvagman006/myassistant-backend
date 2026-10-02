@@ -94,6 +94,35 @@ async function check(name, fn) {
     }
   });
 
+  await check("several pictures: only the person's, the same photo once, full-size before thumbnails", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (/api\.search\.brave\.com/.test(String(url))) {
+        return { ok: true, json: async () => ({ results: [
+          { title: "Virat Kohli thumbnail", url: "https://a.in/t", properties: { url: "https://img.in/thumb.jpg" } },
+          { title: "Virat Kohli at the nets", url: "https://a.in/1", properties: { url: "https://img.in/1.jpg" } },
+          { title: "Someone else entirely", url: "https://a.in/x", properties: { url: "https://img.in/x.jpg" } },
+          { title: "Virat Kohli celebrates", url: "https://a.in/2", properties: { url: "https://img.in/2.jpg" } },
+          { title: "Virat Kohli (same photo, other site)", url: "https://b.in/2", properties: { url: "https://img.in/2-copy.jpg" } },
+          { title: "Virat Kohli portrait", url: "https://a.in/3", properties: { url: "https://img.in/3.jpg" } },
+        ] }) };
+      }
+      return { ok: false, status: 404, headers: { get: () => "" }, json: async () => ({}) };
+    };
+    const big = (n) => new Uint8Array(20_000).fill(n);
+    imageFor = (url) => ({
+      "https://img.in/thumb.jpg": new Uint8Array(6000).fill(9),
+      "https://img.in/1.jpg": big(1), "https://img.in/2.jpg": big(2), "https://img.in/2-copy.jpg": big(2),
+      "https://img.in/3.jpg": big(3), "https://img.in/x.jpg": big(7),
+    })[url] || null;
+    try {
+      const got = await P.findPictures("Virat Kohli", 6);
+      assert.deepStrictEqual(got.map((g) => g.url), ["https://img.in/1.jpg", "https://img.in/2.jpg", "https://img.in/3.jpg", "https://img.in/thumb.jpg"]);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })();

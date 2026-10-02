@@ -230,7 +230,11 @@ async function findPictures(subject, want = 6) {
   }
   const crypto = require("crypto");
   const out = [];
+  const small = [];
   const hashes = new Set();
+  // A thumbnail under 15 KB looks blurred full screen: kept back, used
+  // only when the bigger photos run out.
+  const MIN_BYTES = 15_000;
   // Twice as many as wanted, fetched together: some links are dead or tiny.
   for (let i = 0; i < pool.length && out.length < want; i += want * 2) {
     const batch = pool.slice(i, i + want * 2);
@@ -240,10 +244,10 @@ async function findPictures(subject, want = 6) {
       const h = crypto.createHash("sha1").update(g.buffer).digest("hex");
       if (hashes.has(h)) continue;
       hashes.add(h);
-      out.push(g);
+      (g.buffer.length >= MIN_BYTES ? out : small).push(g);
     }
   }
-  return out;
+  return out.concat(small).slice(0, want);
 }
 
 module.exports = { findPicture, findPictures, braveImages, wikipediaImages, fetchImage, nameMatch, searchQuery, looksLikePerson, splitSubject };
