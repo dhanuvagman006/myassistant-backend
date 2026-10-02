@@ -166,6 +166,12 @@ router.post("/generate", express.json({ limit: "25mb" }), async (req, res) => {
   res.end();
 });
 
+/** How she sounds on the fast voice (the owner, 2026-10-02: "there is no emotion in the voice"). */
+const VOICE_STYLE =
+  "VOICE: speak like a warm, quick-witted person, not a reader — lively, natural intonation, real " +
+  "feeling that follows what they say (delight, concern, a smile in the voice, calm firmness when it " +
+  "is serious). Short sentences, no filler, never read a list aloud. Match their language and energy.";
+
 /** A short-lived key for the phone's own realtime voice session (Phase C). */
 router.post("/realtime/secret", async (req, res) => {
   const uid = userOf(req, res);
@@ -174,7 +180,8 @@ router.post("/realtime/secret", async (req, res) => {
     const openai = require("../services/ai/openai");
     const b = req.body || {};
     const out = await openai.realtimeClientSecret({
-      voice: require("./proxy").voiceFor(b.voice), instructions: String(b.instructions || "").slice(0, 60_000),
+      voice: require("./proxy").voiceFor(b.voice),
+      instructions: (VOICE_STYLE + "\n\n" + String(b.instructions || "")).slice(0, 60_000),
       tools: Array.isArray(b.tools) ? b.tools : [],
     });
     res.json({ value: out.value, expiresAt: out.expiresAt, model: out.model });

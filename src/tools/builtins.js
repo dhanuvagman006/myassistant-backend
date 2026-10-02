@@ -4642,12 +4642,19 @@ function registerBuiltins() {
       "a signature or a real person's photo goes to make_greeting_poster " +
       "whenever that tool is offered — this tool would invent a stranger's " +
       "face and misspell the names.\n" +
-      // Poster Studio (2026-09-30): the words of an event poster are set
-      // by the app in real fonts, never painted by an image model.
-      "NOT FOR A POSTER, FLYER OR BANNER WITH WORDS — an event, a sale, an " +
-      "announcement ('make a poster for our event tomorrow') goes to " +
-      "create_event_poster whenever that tool is offered: the app sets the " +
-      "words over a generated background, so nothing is misspelt.",
+      // Posters with words (2026-10-02): gpt-image-1 sets words correctly,
+      // so a poster is generated outright; the studio only on request.
+      "A POSTER, FLYER, BANNER OR CARD WITH WORDS IS MADE HERE: put the " +
+      "exact words to print in double quotes in the prompt and say where " +
+      "they sit and how large ('a bold headline \"Grand Diwali Sale\" across " +
+      "the top, \"Saturday 7 PM, MG Road\" smaller below'). Only the facts " +
+      "the user gave go on it. If the ONE fact a poster cannot do without " +
+      "is missing — what it is for, or an event's date — ask ONE short " +
+      "question first instead of inventing it; otherwise make it now and " +
+      "offer changes after. The studio (create_event_poster) only when they " +
+      "want THEIR OWN PHOTO on it, a gallery picture, or ask for the studio; " +
+      "a card with a real person's name, wishes or signature is " +
+      "make_greeting_poster when offered.",
     risk: "low",
     deviceAction: true,
     // The image chain's own budget is 75 s (imagegen.js); the default 30 s
@@ -4697,7 +4704,9 @@ function registerBuiltins() {
         // enhance: a short prompt-writer pass (skipped when the prompt is
         // already rich or the text model is unavailable); aiUpscale: fal
         // esrgan when the provider came back far too small.
-        const img = await generateImage(prompt, { aspect: args.aspect, enhance: true, aiUpscale: true });
+        // Quoted words are the poster's text: the enhancer must not
+        // rewrite them, so a prompt that carries any is used as written.
+        const img = await generateImage(prompt, { aspect: args.aspect, enhance: !/"[^"]{2,}"/.test(prompt), aiUpscale: true });
         const docs = require("../docs/store");
         const ext = img.mime === "image/png" ? "png" : "jpg";
         const row = await docs.createDocument(ctx.userId, {

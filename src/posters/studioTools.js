@@ -53,10 +53,24 @@ function isWordsPoster(text) {
   return POSTER_WORDS.test(t) && EVENT_HINT.test(t) && !PERSON_CARD.test(t);
 }
 
-/** generate_image hands "a poster for our event" to the studio when the app has it. */
+/** What makes a poster the STUDIO's: their own photo, the gallery, or the studio by name. */
+const WANTS_STUDIO =
+  /\b(my|our|his|her|this|that) (own )?(photo|picture|pic|image|selfie)s?\b|\bfrom (my |the )?gallery\b|\bposter studio\b|\b(image|photo) picker\b|\b(choose|pick|select) a (photo|picture)\b|\bedit the words\b/i;
+
+/**
+ * generate_image hands a poster to the studio only when the user wants
+ * the studio: their own photo on it, a picture from the gallery, or the
+ * studio by name. Since 2026-10-02 the image model (gpt-image-1) sets
+ * words correctly itself, so a plain "make a poster for X" is generated
+ * outright (the owner: "did I say open the image picker?"). Without the
+ * OpenAI image model the old rule stands: the studio sets the words.
+ */
 function shouldRouteToStudio(args, ctx) {
   if (!studio.aiOn() || buildOf(ctx) < studioMinBuild()) return false;
-  return isWordsPoster(ctx && ctx.userText) || isWordsPoster(args && args.prompt);
+  const text = String((ctx && ctx.userText) || "");
+  const prompt = String((args && args.prompt) || "");
+  if (!require("../services/ai/openai").ready()) return isWordsPoster(text) || isWordsPoster(prompt);
+  return WANTS_STUDIO.test(text) || WANTS_STUDIO.test(prompt);
 }
 
 /** bg: 'ready' | 'running' | 'none' (it failed or was not started). */
@@ -238,9 +252,10 @@ function registerStudioTools(registry) {
     risk: "low",
     timeoutMs: 35_000,
     description:
-      "A POSTER, FLYER, BANNER OR INVITATION WITH WORDS for an event, a sale or an announcement — " +
-      "'make a poster for our event tomorrow', 'a flyer for the Diwali sale on Saturday', 'a banner " +
-      "for the team meeting at 4'. Pass the user's request in their own words. The poster studio " +
+      "THE POSTER STUDIO — only when the user wants it: THEIR OWN PHOTO on the poster, a picture " +
+      "from their gallery, the words laid out to edit by hand, or 'open the poster studio'. A plain " +
+      "'make a poster for our event tomorrow' is generate_image, which sets the words itself. " +
+      "Pass the user's request in their own words. The poster studio " +
       "opens on the phone: the words are set in real fonts over an AI background, so nothing is " +
       "misspelt. Only facts the user said go on it — anything missing (the place, the time) comes " +
       "back in `missing`; ask for it, never invent it. NOT for a greeting card with a real person's " +

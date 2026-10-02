@@ -75,7 +75,7 @@ function fake(handler) {
     await check("a reply with a tool call, and json mode", async () => {
       fake(({ url, body }) => {
         assert.match(url, /\/chat\/completions$/);
-        assert.strictEqual(body.model, "gpt-4.1-mini");
+        assert.strictEqual(body.model, "gpt-4.1");
         assert.strictEqual(body.response_format.type, "json_object");
         return { model: "gpt-4.1-mini", usage: { total_tokens: 9 }, choices: [{ finish_reason: "tool_calls", message: { content: '{"a":1}', tool_calls: [{ id: "c1", type: "function", function: { name: "note", arguments: '{"text":"hi"}' } }] } }] };
       });
@@ -124,7 +124,7 @@ function fake(handler) {
     await check("speech comes back as 24 kHz pcm with the manner asked for", async () => {
       fake(({ url, body }) => {
         assert.match(url, /\/audio\/speech$/);
-        assert.strictEqual(body.voice, "coral");
+        assert.strictEqual(body.voice, "marin");
         assert.strictEqual(body.response_format, "pcm");
         assert.strictEqual(body.instructions, "warm and unhurried");
         return new Response(Buffer.alloc(4800), { status: 200, headers: { "content-type": "audio/pcm" } });
@@ -171,6 +171,25 @@ function fake(handler) {
       }
     });
 
+    await check("web search: one Responses call; the answer loses its inline citation markers, the sources are unique", async () => {
+      fake(({ url, body }) => {
+        assert.match(url, /\/responses$/);
+        assert.strictEqual(body.tools[0].type, "web_search");
+        assert.deepStrictEqual(body.tools[0].user_location, { type: "approximate", country: "IN", city: "Mangalore" });
+        assert.deepStrictEqual(body.tool_choice, { type: "web_search" });
+        assert.strictEqual(body.input, "first flight to Bangalore?");
+        return { model: "gpt-4.1-mini", usage: { total_tokens: 100 }, output: [
+          { type: "web_search_call", status: "completed", action: { type: "search", queries: ["first flight mangalore bangalore"], sources: [{ type: "url", url: "https://a.in/x?utm_source=openai", title: "A" }] } },
+          { type: "message", content: [{ type: "output_text", text: "The first flight is 6E 542 at 8:45 AM. ([a.in](https://a.in/x?utm_source=openai)) It lands at 9:50. ([b.in](https://b.in/y))", annotations: [
+            { type: "url_citation", url: "https://a.in/x?utm_source=openai", title: "A" }, { type: "url_citation", url: "https://b.in/y", title: "B" }] }] },
+        ] };
+      });
+      const r = await O.webSearch("first flight to Bangalore?", { location: { country: "in", city: "Mangalore" } });
+      assert.strictEqual(r.text, "The first flight is 6E 542 at 8:45 AM. It lands at 9:50.");
+      assert.deepStrictEqual(r.sources, [{ title: "A", url: "https://a.in/x" }, { title: "B", url: "https://b.in/y" }]);
+      assert.deepStrictEqual(r.queries, ["first flight mangalore bangalore"]);
+    });
+
     await check("the realtime key: pcm 24 kHz, semantic vad, input transcription, the voice, the tools", async () => {
       fake(({ url, body }) => {
         assert.match(url, /\/realtime\/client_secrets$/);
@@ -208,7 +227,7 @@ function fake(handler) {
       assert.strictEqual(t.text, "ok");
       assert.deepStrictEqual(await R.transcribeAudio(Buffer.alloc(10), "audio/wav"), { text: "hello", language: "unknown" });
       assert.strictEqual(R.isGemini3("anything"), false);
-      assert.strictEqual(R.chatModel(), "gpt-4.1-mini");
+      assert.strictEqual(R.chatModel(), "gpt-4.1");
     });
   } finally {
     globalThis.fetch = realFetch;

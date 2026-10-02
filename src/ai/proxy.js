@@ -15,8 +15,8 @@ const openai = require("../services/ai/openai");
 
 const TTS_VOICES = {
   // The names the app's pickers still show → the nearest OpenAI voice.
-  Fola: "coral", Kore: "sage", Aoede: "nova", Puck: "echo", Charon: "onyx", Fenrir: "ash",
-  Sulafat: "coral", Callirrhoe: "shimmer", Achernar: "nova", Vindemiatrix: "sage", Achird: "verse",
+  Fola: "marin", Kore: "sage", Aoede: "nova", Puck: "echo", Charon: "onyx", Fenrir: "ash",
+  Sulafat: "marin", Callirrhoe: "shimmer", Achernar: "nova", Vindemiatrix: "sage", Achird: "verse",
   Zephyr: "alloy", Leda: "shimmer", Orus: "onyx", Autonoe: "nova", Enceladus: "ash",
 };
 
@@ -89,11 +89,14 @@ async function generate(body, { stream = false, emit, userId } = {}) {
       const results = found && found.ok ? (Array.isArray(found.data) ? found.data : found.data?.results || []) : [];
       const pages = found && found.ok && found.data && found.data.pages ? found.data.pages : [];
       if (results.length) {
+        const answer = results[0] && results[0].answer ? results[0] : null;
         sys += "\n\nFRESH FACTS FROM THE WEB (use these, cite nothing else as current):\n" +
-          results.slice(0, 6).map((r, i) => `${i + 1}. ${r.title} — ${r.snippet}`).join("\n") +
+          (answer
+            ? `${answer.snippet}\nSources: ${results.slice(1, 6).map((r) => r.title).join("; ")}`
+            : results.slice(0, 6).map((r, i) => `${i + 1}. ${r.title} — ${r.snippet}`).join("\n")) +
           (pages.length ? "\n" + pages.map((p) => `From ${p.site}: ${p.lines.join(" | ")}`).join("\n") : "");
         grounding = {
-          groundingChunks: results.slice(0, 6).map((r) => ({ web: { uri: r.url, title: r.title } })),
+          groundingChunks: results.filter((r) => r.url && !r.answer).slice(0, 6).map((r) => ({ web: { uri: r.url, title: r.title } })),
           groundingSupports: [], webSearchQueries: [q],
         };
       }
@@ -129,7 +132,7 @@ function responseParts(out) {
 function servedModels() {
   return {
     cloud: openai.models.chat(),
-    cloudFast: openai.models.chat(),
+    cloudFast: openai.models.fast(),
     cloudFallback: openai.models.fallback(),
     tts: openai.models.tts(),
     live: openai.models.realtime(),

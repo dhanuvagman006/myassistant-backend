@@ -28,6 +28,9 @@ const TIMEOUT_MS = 8000;
  */
 function providerChain() {
   const chain = [];
+  // OpenAI's own search first (2026-10-02): it reads the pages and writes
+  // the answer. SEARCH_PROVIDER=brave puts the old chain back in front.
+  if (require("../services/ai/openai").ready() && process.env.SEARCH_PROVIDER !== "brave") chain.push("openai");
   if (process.env.BRAVE_SEARCH_API_KEY) chain.push("brave");
   if (process.env.TAVILY_API_KEY) chain.push("tavily");
   if (process.env.GOOGLE_CSE_KEY && process.env.GOOGLE_CSE_CX) chain.push("google");
@@ -215,10 +218,12 @@ async function run(query, ctx = {}) {
       ok: true,
       data: results,
       // Compact digest for the model to summarise from.
-      speak: results
-        .slice(0, 5)
-        .map((r, i) => `${i + 1}. ${r.title} — ${r.snippet}`)
-        .join("\n"),
+      speak: used === "openai"
+        ? results[0].snippet
+        : results
+            .slice(0, 5)
+            .map((r, i) => `${i + 1}. ${r.title} — ${r.snippet}`)
+            .join("\n"),
       ...(fallback
         ? {
             note:
@@ -242,7 +247,7 @@ async function run(query, ctx = {}) {
     if (!fallback && process.env.SEARCH_DEEP_READ !== "off") {
       const pt = require("./pageText");
       const kind = pt.figureKind(q);
-      if (pt.wantsFigures(q) && !pt.hasFigures(results, kind)) {
+      if (used !== "openai" && pt.wantsFigures(q) && !pt.hasFigures(results, kind)) {
         const pages = await deepRead(results, { kind });
         if (pages.length) {
           out.data = { results, pages };
@@ -274,6 +279,22 @@ async function run(query, ctx = {}) {
 }
 
 const BACKENDS = {
+  /**
+   * OPENAI — the first provider since 2026-10-02: one call searches, reads
+   * the pages and writes the answer with its sources, so the brain gets
+   * the figures themselves (a flight time, today's rate) instead of six
+   * snippets to guess from. The answer is the first result, marked
+   * `answer: true`; the sources follow it as plain results.
+   */
+  async openai(q) {
+    const openai = require("../services/ai/openai");
+    const r = await openai.webSearch(q, { location: { country: process.env.SEARCH_COUNTRY || "IN" } });
+    if (!r.text) return [];
+    return [
+      { title: "Answer from a live web search (just now)", snippet: r.text.slice(0, 1500), url: r.sources[0] ? r.sources[0].url : "", answer: true },
+      ...r.sources.map((src) => ({ title: src.title, snippet: "", url: src.url })),
+    ];
+  },
   /**
    * WIKIPEDIA — keyless, unmetered, never blocked. The last resort under
    * every quota so search is never fully dead: testers hit "my search

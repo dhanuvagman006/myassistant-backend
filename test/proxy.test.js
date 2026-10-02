@@ -68,7 +68,7 @@ const collect = () => { const out = []; return { out, emit: (j) => out.push(j) }
     await check("a spoken sentence: the tone note becomes the manner, the audio comes back as a part", async () => {
       fake(({ url, body }) => {
         assert.match(url, /\/audio\/speech$/);
-        assert.strictEqual(body.voice, "coral");
+        assert.strictEqual(body.voice, "marin");
         assert.strictEqual(body.instructions, "warm, unhurried");
         assert.strictEqual(body.input, "Good morning, Sir.");
         return new Response(Buffer.alloc(2400), { status: 200 });
@@ -99,9 +99,12 @@ const collect = () => { const out = []; return { out, emit: (j) => out.push(j) }
     await check("a fresh-facts question is grounded on our search, with the pages as grounding chunks", async () => {
       const ws = require("../src/tools/webSearch");
       const realRun = ws.run;
-      ws.run = async (q) => ({ ok: true, data: [{ title: "IndiGo timetable", snippet: "06:45 to Bangalore", url: "https://x.in/t" }] });
+      ws.run = async (q) => ({ ok: true, data: [
+        { title: "Answer from a live web search (just now)", snippet: "The first flight is 6E 542 at 06:45.", url: "https://x.in/t", answer: true },
+        { title: "IndiGo timetable", snippet: "", url: "https://x.in/t" },
+      ] });
       fake(({ body }) => {
-        assert.match(body.messages[0].content, /FRESH FACTS FROM THE WEB[\s\S]*IndiGo timetable/);
+        assert.match(body.messages[0].content, /FRESH FACTS FROM THE WEB[\s\S]*6E 542 at 06:45[\s\S]*Sources: IndiGo timetable/);
         assert.ok(!body.tools, "no function tools on a search turn");
         return { choices: [{ message: { content: "The first flight is at 6:45." } }] };
       });
@@ -117,10 +120,10 @@ const collect = () => { const out = []; return { out, emit: (j) => out.push(j) }
     });
 
     await check("the app's voice names map to OpenAI voices; unknown names take the default", () => {
-      assert.strictEqual(P.voiceFor("Fola"), "coral");
+      assert.strictEqual(P.voiceFor("Fola"), "marin");
       assert.strictEqual(P.voiceFor("Charon"), "onyx");
       assert.strictEqual(P.voiceFor("verse"), "verse");
-      assert.strictEqual(P.voiceFor("Nobody"), "coral");
+      assert.strictEqual(P.voiceFor("Nobody"), "marin");
       assert.deepStrictEqual(P.splitTone("<tone: firm> Pay by Friday."), { instructions: "firm", text: "Pay by Friday." });
       assert.deepStrictEqual(P.splitTone("Plain."), { instructions: "", text: "Plain." });
     });
@@ -129,7 +132,8 @@ const collect = () => { const out = []; return { out, emit: (j) => out.push(j) }
       const cfg = require("../src/ai/config");
       const out = await cfg.forUser(0, { build: 146 });
       assert.strictEqual(out.provider, "openai");
-      assert.strictEqual(out.models.cloud, "gpt-4.1-mini");
+      assert.strictEqual(out.models.cloud, "gpt-4.1");
+      assert.strictEqual(out.models.cloudFast, "gpt-4.1-mini");
       assert.strictEqual(out.models.tts, "gpt-4o-mini-tts");
       assert.ok(require("../src/services/ai/openai").VOICES.includes(out.models.ttsVoice), out.models.ttsVoice);
       assert.strictEqual(out.live.model, "gpt-realtime", "the fast voice runs on realtime");

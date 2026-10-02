@@ -35,12 +35,17 @@ function env(name, fallback) {
   return v && /^[a-z0-9.:_-]+$/i.test(v) ? v : fallback;
 }
 const models = {
-  chat: () => env("OPENAI_MODEL", "gpt-4.1-mini"),
+  // gpt-4.1 for the brain since 2026-10-02 (the owner on the mini: "acting
+  // like a dumb"); the mini stays for the fast paths and as the fallback.
+  chat: () => env("OPENAI_MODEL", "gpt-4.1"),
+  fast: () => env("OPENAI_FAST_MODEL", "gpt-4.1-mini"),
   smart: () => env("OPENAI_SMART_MODEL", "gpt-4.1"),
   fallback: () => env("OPENAI_FALLBACK_MODEL", "gpt-4.1-mini"),
+  search: () => env("OPENAI_SEARCH_MODEL", "gpt-4.1-mini"),
   stt: () => env("OPENAI_STT_MODEL", "gpt-4o-transcribe"),
   tts: () => env("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
-  ttsVoice: () => env("OPENAI_TTS_VOICE", "coral"),
+  // marin: OpenAI's newest, most natural voice (gpt-4o-mini-tts and gpt-realtime).
+  ttsVoice: () => env("OPENAI_TTS_VOICE", "marin"),
   image: () => env("OPENAI_IMAGE_MODEL", "gpt-image-1"),
   realtime: () => env("OPENAI_REALTIME_MODEL", "gpt-realtime"),
   embed: () => env("OPENAI_EMBED_MODEL", "text-embedding-3-small"),
@@ -385,7 +390,7 @@ function imageSize(width, height) {
 }
 
 /** A picture from words. Returns { buffer, mime: "image/png" }. */
-async function imageGenerate(prompt, { width, height, quality = "medium", timeoutMs = 90_000 } = {}) {
+async function imageGenerate(prompt, { width, height, quality = env("OPENAI_IMAGE_QUALITY", "high"), timeoutMs = 90_000 } = {}) {
   const j = await call("/images/generations", {
     body: { model: models.image(), prompt: String(prompt).slice(0, 4000), n: 1, size: imageSize(width, height), quality, output_format: "png" },
     timeoutMs,
@@ -394,7 +399,7 @@ async function imageGenerate(prompt, { width, height, quality = "medium", timeou
 }
 
 /** A picture changed as instructed, keeping what the instruction keeps. images: [{buffer, mime}] */
-async function imageEdit(prompt, images, { width, height, quality = "medium", timeoutMs = 120_000 } = {}) {
+async function imageEdit(prompt, images, { width, height, quality = env("OPENAI_IMAGE_QUALITY", "high"), timeoutMs = 120_000 } = {}) {
   const form = new FormData();
   form.append("model", models.image());
   form.append("prompt", String(prompt).slice(0, 4000));
@@ -448,9 +453,77 @@ async function realtimeClientSecret({ voice, instructions = "", tools = [], mode
   return { value, expiresAt: Number(j.expires_at || (j.client_secret && j.client_secret.expires_at) || 0), model: m };
 }
 
+/**
+ * OPENAI'S OWN WEB SEARCH (2026-10-02, the owner: "the web search is not
+ * working properly … use all the tools available"). One Responses call
+ * searches, reads the pages and writes the answer with its sources — the
+ * figures themselves, not a list of snippets for the brain to guess from.
+ * Returns { text, sources: [{title, url}], queries, usage, model }.
+ */
+async function webSearch(query, { model, location, timeoutMs = 45_000 } = {}) {
+  const tool = { type: "web_search" };
+  if (location && (location.city || location.country)) {
+    tool.user_location = {
+      type: "approximate", country: String(location.country || "IN").toUpperCase().slice(0, 2),
+      ...(location.city ? { city: String(location.city).slice(0, 60) } : {}),
+      ...(location.region ? { region: String(location.region).slice(0, 60) } : {}),
+    };
+  }
+  const j = await call("/responses", {
+    body: {
+      model: model || models.search(),
+      tools: [tool],
+      tool_choice: { type: "web_search" },
+      include: ["web_search_call.action.sources"],
+      instructions:
+        "Answer the question directly from what you find — the figures, names, times and dates — in at " +
+        "most four sentences, plain text, no headings or bullet points. Prefer today's information for " +
+        "anything that changes (prices, timings, news, weather, availability). If the web does not say, " +
+        "say so in one line; never guess a figure.",
+      input: String(query || "").slice(0, 600),
+    },
+    timeoutMs,
+  });
+  let text = "";
+  const sources = [];
+  const queries = [];
+  for (const o of j.output || []) {
+    if (o.type === "web_search_call") {
+      const a = o.action || {};
+      if (Array.isArray(a.queries)) queries.push(...a.queries);
+      else if (a.query) queries.push(a.query);
+      for (const src of a.sources || []) if (src && src.url) sources.push({ title: src.title || hostOf(src.url), url: src.url });
+    } else if (o.type === "message") {
+      for (const c of o.content || []) {
+        if (c.type !== "output_text") continue;
+        text += c.text || "";
+        for (const an of c.annotations || []) {
+          if (an.type === "url_citation" && an.url) sources.push({ title: an.title || hostOf(an.url), url: an.url });
+        }
+      }
+    }
+  }
+  // The inline "([site](url))" markers read badly aloud; the sources carry them.
+  text = text
+    .replace(/\s*\((?:\[[^\]]*\]\([^)\s]*\)(?:,\s*)?)+\)/g, "")
+    .replace(/\[([^\]]+)\]\([^)\s]*\)/g, "$1")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+  const seen = new Set();
+  const unique = [];
+  for (const src of sources) {
+    const url = src.url.replace(/([?&])utm_source=openai(&|$)/, (m, p, tail) => (tail ? p : "")).replace(/[?&]$/, "");
+    if (seen.has(url)) continue;
+    seen.add(url);
+    unique.push({ title: src.title, url });
+  }
+  return { text, sources: unique.slice(0, 8), queries, usage: j.usage || null, model: j.model || model || models.search() };
+}
+const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return String(u); } };
+
 module.exports = {
   ready, key, models, VOICES, OpenAIError, isBusy, busy: () => Date.now() < busyUntil,
-  chat, transcribe, speak, imageGenerate, imageEdit, realtimeClientSecret,
+  chat, transcribe, speak, imageGenerate, imageEdit, realtimeClientSecret, webSearch,
   // for tests
   fromSimple, fromContents, toTools, wavWrap, imageSize,
 };
