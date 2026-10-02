@@ -47,6 +47,8 @@ const models = {
   // marin: OpenAI's newest, most natural voice (gpt-4o-mini-tts and gpt-realtime).
   ttsVoice: () => env("OPENAI_TTS_VOICE", "marin"),
   image: () => env("OPENAI_IMAGE_MODEL", "gpt-image-1"),
+  // Edits on a model measured for it (2026-10-02: gpt-image-1.5, ~25 s).
+  imageEdit: () => env("OPENAI_IMAGE_EDIT_MODEL", env("OPENAI_IMAGE_MODEL", "gpt-image-1")),
   realtime: () => env("OPENAI_REALTIME_MODEL", "gpt-realtime"),
   embed: () => env("OPENAI_EMBED_MODEL", "text-embedding-3-small"),
 };
@@ -347,6 +349,14 @@ async function transcribe(buffer, mime, { language = "", hint = "", prompt = "",
   return { text, language: lang || String(j.language || "") };
 }
 
+/** What the transcriber is told about who is speaking (names spelled the local way). */
+function transcriptionHint(lang = "") {
+  const name = LANGUAGE_NAMES[lang] || "English";
+  return `An Indian speaker from Karnataka speaking ${name}${name === "English" ? " (sometimes Kannada)" : " and English"}. ` +
+    "Write English words in English letters. Local names: Shetty, Bhat, Hegde, Rao, Adhikari, Bhandary, Mangaluru, " +
+    "Udupi, Moodbidri, Bengaluru, Puttur.";
+}
+
 const LANGUAGE_NAMES = {
   en: "English", hi: "Hindi", kn: "Kannada", ml: "Malayalam", ta: "Tamil", te: "Telugu", mr: "Marathi",
   bn: "Bengali", gu: "Gujarati", pa: "Punjabi", or: "Odia", ur: "Urdu", ar: "Arabic",
@@ -460,7 +470,7 @@ async function imageGenerate(prompt, { width, height, quality = env("OPENAI_IMAG
 /** A picture changed as instructed, keeping what the instruction keeps. images: [{buffer, mime}] */
 async function imageEdit(prompt, images, { width, height, quality = env("OPENAI_IMAGE_QUALITY", "high"), timeoutMs = 120_000 } = {}) {
   const form = new FormData();
-  form.append("model", models.image());
+  form.append("model", models.imageEdit());
   form.append("prompt", String(prompt).slice(0, 4000));
   form.append("n", "1");
   form.append("size", imageSize(width, height));
@@ -511,9 +521,13 @@ async function realtimeClientSecret({ voice, instructions = "", tools = [], mode
             noise_reduction: { type: env("OPENAI_RT_NOISE", "near_field") },
             turn_detection: turn,
             // What the owner said, as text, so the phone can caption and log the turn.
+            // ALWAYS their language, English included (2026-10-02: the client
+            // switched to English, the hint went, and "Mr. Shankar Bhat" came
+            // back in Urdu script). Never a language they do not speak.
             transcription: {
-              model: env("OPENAI_RT_STT_MODEL", "gpt-4o-mini-transcribe"),
-              ...(/^[a-z]{2}$/.test(lang) && lang !== "en" ? { language: lang } : {}),
+              model: env("OPENAI_RT_STT_MODEL", "gpt-4o-transcribe"),
+              ...(/^[a-z]{2}$/.test(lang) ? { language: lang } : {}),
+              prompt: transcriptionHint(lang),
             },
           },
           output: { format: { type: "audio/pcm", rate: 24000 }, voice: VOICES.includes(String(voice || "")) ? voice : models.ttsVoice() },

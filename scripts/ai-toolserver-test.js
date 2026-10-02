@@ -64,7 +64,10 @@ for (const f of ["generateWithTools", "generateWithToolsStream", "generateReply"
     // said (background extraction, as every turn always has); nothing else
     // on these routes may reach a model.
     const sys = String((b && b.system) || (a && a.system) || "");
-    modelCalls.push({ f, head: sys.slice(0, 90), extraction: f === "generateReply" && /durable personal facts|COMMITMENTS/.test(sys) });
+    modelCalls.push({ f, head: sys.slice(0, 90), extraction: f === "generateReply" && /durable personal facts|COMMITMENTS/.test(sys),
+      // A deep_research job a case queued may run before the suite ends: a
+      // background job, not the tool server answering (flaked twice, 2 Oct).
+      background: /You plan web research/.test(sys) });
     throw new Error("no model on the tool server");
   };
 }
@@ -888,7 +891,7 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
     });
 
     await atest("nothing here called a model", () => {
-      assert.deepStrictEqual(modelCalls.filter((c) => !c.extraction).map((c) => `${c.f}: ${c.head}`), [], "a model was called on the tool server");
+      assert.deepStrictEqual(modelCalls.filter((c) => !c.extraction && !c.background).map((c) => `${c.f}: ${c.head}`), [], "a model was called on the tool server");
       assert.ok(modelCalls.some((c) => c.extraction), "a recorded turn is still learnt from");
       assert.ok(!outbound.some((u) => /generativelanguage|:generateContent|BidiGenerateContent/.test(u)), outbound.join("\n"));
     });

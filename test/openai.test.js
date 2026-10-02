@@ -217,14 +217,22 @@ function fake(handler) {
         assert.strictEqual(s.audio.input.turn_detection.type, "server_vad");
         assert.strictEqual(s.audio.input.turn_detection.silence_duration_ms, 800);
         assert.strictEqual(s.audio.input.noise_reduction.type, "near_field");
-        assert.strictEqual(s.audio.input.transcription.model, "gpt-4o-mini-transcribe");
+        assert.strictEqual(s.audio.input.transcription.model, "gpt-4o-transcribe");
         assert.strictEqual(s.audio.input.transcription.language, "kn");
+        assert.match(s.audio.input.transcription.prompt, /Kannada and English/);
         assert.strictEqual(s.audio.output.voice, "sage");
         assert.deepStrictEqual(s.tools[0], { type: "function", name: "set_timer", description: "d", parameters: { type: "object", properties: { minutes: { type: "integer" } } } });
         return { value: "ek_1", expires_at: 1234 };
       });
       const out = await O.realtimeClientSecret({ voice: "sage", instructions: "be kind", language: "kn", silenceMs: 800, tools: [{ name: "set_timer", description: "d", parameters: { type: "OBJECT", properties: { minutes: { type: "INTEGER" } } } }] });
       assert.deepStrictEqual(out, { value: "ek_1", expiresAt: 1234, model: "gpt-realtime" });
+      // English keeps its hint too: never left to guess (it guessed Urdu).
+      fake(({ body }) => {
+        assert.strictEqual(body.session.audio.input.transcription.language, "en");
+        assert.match(body.session.audio.input.transcription.prompt, /English \(sometimes Kannada\)/);
+        return { value: "ek_2", expires_at: 1 };
+      });
+      await O.realtimeClientSecret({ language: "en" });
     });
 
     await check("the router keeps its contracts on top: reply, stream, tools, transcript", async () => {
