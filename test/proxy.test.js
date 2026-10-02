@@ -138,6 +138,8 @@ const collect = () => { const out = []; return { out, emit: (j) => out.push(j) }
       assert.ok(require("../src/services/ai/openai").VOICES.includes(out.models.ttsVoice), out.models.ttsVoice);
       assert.strictEqual(out.live.model, "gpt-realtime", "the fast voice runs on realtime");
       assert.ok(require("../src/services/ai/openai").VOICES.includes(out.live.voice), out.live.voice);
+      assert.strictEqual(out.live.voices[0], "marin", "the picker offers OpenAI's voices, best first");
+      assert.ok(out.live.voices.every((v) => require("../src/services/ai/openai").VOICES.includes(v)), String(out.live.voices));
       // An app that predates the server port keeps Gemini's names.
       const old = await cfg.forUser(0, { build: 145 });
       assert.strictEqual(old.provider, "gemini");

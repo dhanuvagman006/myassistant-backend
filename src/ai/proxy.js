@@ -20,6 +20,12 @@ const TTS_VOICES = {
   Zephyr: "alloy", Leda: "shimmer", Orus: "onyx", Autonoe: "nova", Enceladus: "ash",
 };
 
+/**
+ * The voices the fast-voice picker offers on OpenAI, best first: marin and
+ * cedar are the realtime model's most natural (a woman's, a man's).
+ */
+const REALTIME_VOICES = ["marin", "cedar", "coral", "sage", "shimmer", "verse", "ballad", "ash"];
+
 /** The OpenAI voice for a name the app knows, or the served default. */
 function voiceFor(name) {
   const n = String(name || "").trim();
@@ -150,4 +156,4 @@ function servedModels() {
   };
 }
 
-module.exports = { generate, voiceFor, splitTone, servedModels, TTS_VOICES, chunk };
+module.exports = { generate, voiceFor, splitTone, servedModels, TTS_VOICES, REALTIME_VOICES, chunk };

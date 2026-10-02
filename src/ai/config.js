@@ -284,7 +284,7 @@ async function forUser(userId, { build, live } = {}) {
     };
     // The fast voice runs on OpenAI Realtime (Phase C): the phone opens the
     // socket itself with a key from POST /ai/realtime/secret.
-    if (out.live) out.live = { ...out.live, model: served.live, voice: proxy.voiceFor(out.live.voice) };
+    if (out.live) out.live = { ...out.live, model: served.live, voice: proxy.voiceFor(out.live.voice), voices: proxy.REALTIME_VOICES.slice() };
   } else {
     out.provider = "gemini";
   }
