@@ -1548,7 +1548,8 @@ console.log("\nexecution record");
     const imgCase = engine.slice(
       engine.indexOf("case 'show_image':"),
       engine.indexOf("case 'translator':"));
-    assert.match(imgCase, /onShowDocuments\?\.call\(\[doc\]\)/,
+    // Several pictures of a person go to the same gallery (2026-10-02).
+    assert.match(imgCase, /onShowDocuments\?\.call\(all\.isNotEmpty \? all : \[doc\]\)/,
       "a generated image does not open full screen");
 
     // The old conversation screen is gone, and nothing may reference it.

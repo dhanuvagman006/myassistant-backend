@@ -110,28 +110,22 @@ async function weather(q, ctx = {}) {
     };
   }
 
-  const url =
-    `https://api.open-meteo.com/v1/forecast?latitude=${spot.latitude}&longitude=${spot.longitude}` +
-    "&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m" +
-    "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code" +
-    "&timezone=auto&forecast_days=3";
-  const r = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT) });
-  if (!r.ok) throw new Error(`forecast ${r.status}`);
-  const j = await r.json();
-  const c = j.current || {};
-  const d = j.daily || {};
+  // The same source as the weather tool and the Home card (OpenWeatherMap,
+  // Open-Meteo when it is down), so the assistant never says two things.
   const where = spot.name + (spot.admin1 ? `, ${spot.admin1}` : "");
+  const w = await require("../services/tools/weather").getWeather({ lat: spot.latitude, lng: spot.longitude, city: where });
+  if (!w) throw new Error("no forecast");
+  const c = w.current || {};
   const now =
-    `${where}: ${Math.round(c.temperature_2m)}°C, ${WMO[c.weather_code] || "—"}, ` +
-    `humidity ${c.relative_humidity_2m}%, wind ${Math.round(c.wind_speed_10m)} km/h`;
-  const days = (d.time || []).slice(0, 3).map((t, i) =>
-    `${t}: ${Math.round(d.temperature_2m_min[i])}–${Math.round(d.temperature_2m_max[i])}°C, ` +
-    `${WMO[d.weather_code[i]] || "—"}, rain ${d.precipitation_probability_max[i]}%`
+    `${where}: ${Math.round(c.tempC)}°C, ${c.condition || "—"}, ` +
+    `humidity ${c.humidity}%, wind ${Math.round(c.windKmh)} km/h`;
+  const days = (w.days || []).slice(0, 3).map((d) =>
+    `${d.date}: ${Math.round(d.minC)}–${Math.round(d.maxC)}°C, ${d.condition || "—"}, rain ${d.rainChance}%`
   );
   return {
     ok: true,
-    provider: "open-meteo",
-    data: { place: where, current: c, daily: d },
+    provider: w.provider || "open-meteo",
+    data: { place: where, current: c, days: w.days },
     speak: [now, ...days].join("\n"),
     note:
       "This is the real forecast from the meteorological service, not a web " +

@@ -4502,11 +4502,11 @@ function registerBuiltins() {
   registry.register({
     name: "show_pictures",
     description:
-      "SHOW A PICTURE of a person, place, animal or thing, right here in " +
+      "SHOW PICTURES of a person, place, animal or thing, right here in " +
       "the app — 'show me a picture of Virat Kohli', 'show me the Taj " +
-      "Mahal', 'how does a golden retriever look', 'show me an image of " +
-      "Rashmika'. It finds a real photo on the web and pops it up full " +
-      "screen on the phone. This is THE tool for any picture/image/photo " +
+      "Mahal', 'how does a golden retriever look', 'show me images of " +
+      "Rashmika'. It finds several real photos on the web and opens them " +
+      "full screen to swipe through. This is THE tool for any picture/image/photo " +
       "request; never open Instagram, Google Images or any other app for " +
       "one unless the user said that app's name. For a picture that does " +
       "not exist yet ('draw me…', 'make a poster') use generate_image.",
@@ -4531,9 +4531,9 @@ function registerBuiltins() {
       const hint =
         "Say in one line that no picture was found. Do not open any app " +
         "unless the user names one; never open Instagram for this.";
-      let pic;
+      let pics;
       try {
-        pic = await require("./pictures").findPicture(subject);
+        pics = await require("./pictures").findPictures(subject, Number(process.env.PICTURES_SHOWN) || 6);
       } catch (e) {
         if (e.code === "unsure") {
           // A stranger's face is worse than no picture (feedback #15).
@@ -4550,54 +4550,59 @@ function registerBuiltins() {
         }
         return { ok: false, error: `picture lookup failed: ${String(e.message).slice(0, 100)}`, data: { hint } };
       }
-      if (!pic) return { ok: false, error: `no picture of ${subject} found`, data: { hint } };
+      if (!pics || !pics.length) return { ok: false, error: `no picture of ${subject} found`, data: { hint } };
       const docs = require("../docs/store");
       const title = `Picture — ${subject}`;
-      const ext = pic.mime === "image/png" ? "png" : pic.mime === "image/webp" ? "webp" : pic.mime === "image/gif" ? "gif" : "jpg";
-      let row;
-      try {
-        row = await docs.createDocument(ctx.userId, {
+      const saveOne = async (pic, i) => {
+        const ext = pic.mime === "image/png" ? "png" : pic.mime === "image/webp" ? "webp" : pic.mime === "image/gif" ? "gif" : "jpg";
+        const row = await docs.createDocument(ctx.userId, {
           buffer: pic.buffer,
-          filename: `picture-${Date.now()}.${ext}`,
+          filename: `picture-${Date.now()}-${i + 1}.${ext}`,
           mime: pic.mime,
           note: subject,
         });
-      } catch (e) {
-        return { ok: false, error: `could not save the picture: ${String(e.message).slice(0, 100)}`, data: { hint } };
-      }
-      let credit = pic.source || "the web";
-      if (!pic.source && pic.page) {
-        try { credit = new URL(pic.page).hostname.replace(/^www\./, ""); } catch (_) { /* keep */ }
-      }
-      const updated = await docs
-        .setMetadata(ctx.userId, row.id, {
-          title,
-          category: "other",
-          docDate: new Date().toISOString().slice(0, 10),
-          summary: `A picture of ${subject}, from ${credit}.`,
-          tags: ["picture", "web"],
-          fullText: `Picture of ${subject}. Source: ${credit}${pic.page ? " " + pic.page : ""}`,
-        })
-        .catch(() => null);
+        let credit = pic.source || "the web";
+        if (!pic.source && pic.page) {
+          try { credit = new URL(pic.page).hostname.replace(/^www\./, ""); } catch (_) { /* keep */ }
+        }
+        const updated = await docs
+          .setMetadata(ctx.userId, row.id, {
+            title: pics.length > 1 ? `${title} (${i + 1})` : title,
+            category: "other",
+            docDate: new Date().toISOString().slice(0, 10),
+            summary: `A picture of ${subject}, from ${credit}.`,
+            tags: ["picture", "web"],
+            fullText: `Picture of ${subject}. Source: ${credit}${pic.page ? " " + pic.page : ""}`,
+          })
+          .catch(() => null);
+        return { row, credit, client: docs.toClient(updated || row) };
+      };
+      const saved = (await Promise.all(pics.map((p, i) => saveOne(p, i).catch(() => null)))).filter(Boolean);
+      if (!saved.length) return { ok: false, error: "could not save the pictures", data: { hint } };
+      const first = saved[0];
+      const n = saved.length;
       return {
         ok: true,
         data: {
           shown: true,
           subject,
-          source: credit,
-          documentId: row.id,
+          count: n,
+          sources: [...new Set(saved.map((s) => s.credit))],
+          documentId: first.row.id,
           note:
-            "The picture is on the user's screen NOW, inside this app. " +
-            "Say so in a few words; do not open any other app.",
+            `${n === 1 ? "The picture is" : `${n} pictures are`} on the user's screen NOW, inside this app` +
+            `${n > 1 ? ", to swipe through" : ""}. Say so in a few words; do not open any other app.`,
         },
         deviceAction: {
           type: "show_image",
-          doc_id: row.id,
+          doc_id: first.row.id,
           prompt: subject,
           title,
-          document: docs.toClient(updated || row),
+          // An app before build 149 shows `document` (the first); 149+ the gallery.
+          document: first.client,
+          documents: saved.map((s) => s.client),
         },
-        speak: `Here is ${subject}.`,
+        speak: n > 1 ? `Here are ${n} pictures of ${subject}.` : `Here is ${subject}.`,
       };
     },
   });

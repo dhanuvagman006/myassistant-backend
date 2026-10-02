@@ -200,4 +200,50 @@ async function findPicture(subject) {
   return null;
 }
 
-module.exports = { findPicture, braveImages, wikipediaImages, fetchImage, nameMatch, searchQuery, looksLikePerson, splitSubject };
+/**
+ * SEVERAL PICTURES (2026-10-02, the owner: "I need multiple images of the
+ * person I ask for, the way ChatGPT shows them"). The same search and the
+ * same name check as findPicture, fetched in parallel; the same photo met
+ * twice (another site, the same bytes) is kept once. Up to `want`.
+ */
+async function findPictures(subject, want = 6) {
+  const q = String(subject || "").trim();
+  if (!q) return [];
+  const person = looksLikePerson(q);
+  const candidates = [...(await braveImages(searchQuery(q), 24))];
+  if (candidates.length < want && person) candidates.push(...(await braveImages(q, 12)));
+  if (candidates.length < 2) candidates.push(...(await wikipediaImages(splitSubject(q).name)));
+  const seen = new Set();
+  const pool = [];
+  let matched = false;
+  for (const c of candidates) {
+    if (seen.has(c.url)) continue;
+    seen.add(c.url);
+    if (person && !nameMatch(q, c)) continue;
+    matched = true;
+    pool.push(c);
+  }
+  if (person && candidates.length && !matched) {
+    const err = new Error(`found pictures, but none that is surely ${splitSubject(q).name}`);
+    err.code = "unsure";
+    throw err;
+  }
+  const crypto = require("crypto");
+  const out = [];
+  const hashes = new Set();
+  // Twice as many as wanted, fetched together: some links are dead or tiny.
+  for (let i = 0; i < pool.length && out.length < want; i += want * 2) {
+    const batch = pool.slice(i, i + want * 2);
+    const got = await Promise.all(batch.map((c) => fetchImage(c.url).then((img) => (img ? { ...img, ...c } : null)).catch(() => null)));
+    for (const g of got) {
+      if (!g || out.length >= want) continue;
+      const h = crypto.createHash("sha1").update(g.buffer).digest("hex");
+      if (hashes.has(h)) continue;
+      hashes.add(h);
+      out.push(g);
+    }
+  }
+  return out;
+}
+
+module.exports = { findPicture, findPictures, braveImages, wikipediaImages, fetchImage, nameMatch, searchQuery, looksLikePerson, splitSubject };
