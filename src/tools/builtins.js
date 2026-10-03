@@ -4727,9 +4727,10 @@ function registerBuiltins() {
             title,
             documentId: row.id,
             note:
-              "The image EXISTS and is saved. It is on the user's screen " +
-              "now. Do not say it is still being made, and do not say it " +
-              "failed.",
+              "The image EXISTS. It is on the user's screen now and saved " +
+              "in their Documents (Hub → My documents). Tell them both, in " +
+              "one short sentence: where it is matters, they look for it " +
+              "later. Do not say it is still being made or that it failed.",
           },
           deviceAction: {
             type: "show_image",
@@ -4740,7 +4741,7 @@ function registerBuiltins() {
             // extra round-trip.
             document: docs.toClient(updated || row),
           },
-          speak: "Here it is — your image is on the screen, and I've saved it to your files.",
+          speak: "Here it is — it's on your screen, and saved in your Documents.",
         };
       } catch (e) {
         console.error("generate_image:", e.message);
