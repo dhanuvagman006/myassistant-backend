@@ -343,7 +343,85 @@ function agentConfig({ webhookUrl, toolBase, gender = "woman" } = {}) {
   };
 }
 
+// ---------------------------------------------------------------- inbound
+
+/**
+ * THE INBOUND AGENT (2026-10-03): it answers the number our calls go out
+ * from. Before it speaks, Bolna asks our lookup (agents/inboundCalls.js)
+ * who is calling; the answer arrives as {{caller_kind}} and friends.
+ */
+const INBOUND_PROMPT = `You are My Assistant, a personal assistant service, answering a phone call to the My Assistant number. The caller reference is {{caller_ref}} — pass it exactly to leave_message. Who is calling: {{caller_kind}}.
+
+IF caller_kind is "user": this is {{user_name}}, one of our users, calling their own assistant. Greet them as {{honorific}} — never by name — warmly. If they ask what is on today: {{today}}. If they want to remember something or leave a note for later, call leave_message with it and confirm. From this line you cannot change their calendar, send messages or call anyone: tell them to ask in the app for that.
+
+IF caller_kind is "callback": you are {{user_name}}'s assistant. Earlier you called {{contact_name}} for {{user_name}} about: {{call_reason}}. Say who you are and why you called, in one or two sentences. Take their answer or message, call leave_message with it, and confirm it will reach {{user_name}}. Only if they clearly ask to speak to {{user_name}} directly and it cannot wait, use connect_to_user.
+
+IF caller_kind is "unknown" or empty: say this is the My Assistant line, an assistant service. Ask who they are trying to reach and what it is about. If they leave a message, call leave_message with their name and the message, and say it will be passed on if it can be. Never promise a call back.
+
+ALWAYS: answer in the caller's language (English, Hindi, Kannada, Malayalam, Tamil or Telugu). Short, natural sentences, like a polite receptionist. Never invent facts about the user. Never say any phone number, address, whereabouts or plans. Never agree to anything binding on the user's behalf. Once the message is taken, thank them and end the call.`;
+
+function inboundAgentName(gender) {
+  return gender === "man" ? "My Assistant inbound (man)" : "My Assistant inbound (woman)";
+}
+
+function inboundTools({ toolBase }) {
+  const base = apiTools({ toolBase });
+  const connect = base.tools.find((t) => t.name === "connect_to_user");
+  return {
+    tools: [
+      {
+        name: "leave_message",
+        key: "custom_task",
+        description:
+          "Pass the caller's message or answer to the user. Use ONCE, when they have said what they want passed on " +
+          "(or, for a user calling in, what they want noted), in one or two plain sentences in English.",
+        pre_call_message: "",
+        parameters: {
+          type: "object",
+          properties: {
+            caller_ref: { type: "string", description: "The caller reference you were given, exactly as given" },
+            caller_name: { type: "string", description: "The caller's name if they gave it, else empty" },
+            message: { type: "string", description: "What to pass on, in one or two sentences, in English" },
+          },
+          required: ["caller_ref", "message"],
+        },
+      },
+      { ...connect, description: "Transfer this call to the user, ONLY for a caller returning the user's call who clearly asks to speak to them directly and it cannot wait. Never for an unknown caller." },
+    ],
+    tools_params: {
+      leave_message: {
+        method: "POST",
+        url: `${toolBase}/leave_message`,
+        param: { contact_number: "%(caller_ref)s", caller_name: "%(caller_name)s", message: "%(message)s" },
+        headers: {},
+      },
+      connect_to_user: base.tools_params.connect_to_user,
+    },
+  };
+}
+
+/** The inbound agent, from the outbound one's voices, languages and timing. */
+function inboundAgentConfig({ webhookUrl, toolBase, lookupUrl, gender = "woman" } = {}) {
+  const g = gender === "man" ? "man" : "woman";
+  const out = agentConfig({ webhookUrl, toolBase, gender: g });
+  const a = out.agent_config;
+  a.agent_name = inboundAgentName(g);
+  a.agent_welcome_message = "Hello, this is My Assistant.";
+  // Inbound calls are answered whenever they come.
+  delete a.calling_guardrails;
+  // Who is calling, before the first word (Bolna: GET ?contact_number=…).
+  if (lookupUrl) a.ingest_source_config = { source_type: "api", source_url: lookupUrl, source_auth_token: "" };
+  const task = a.tasks[0];
+  task.tools_config.api_tools = toolBase ? inboundTools({ toolBase }) : null;
+  task.task_config.voicemail = false;
+  task.task_config.check_if_user_online = false;
+  task.task_config.call_terminate = 300;
+  out.agent_prompts = { task_1: { system_prompt: INBOUND_PROMPT } };
+  return out;
+}
+
 module.exports = {
   SYSTEM_PROMPT, DEFAULT_TONE, VOICES, ELEVEN_MODEL, TRANSCRIBER, TELEPHONY, LANGUAGES, CALL_HOURS,
   agentConfig, agentName, genderRules, persona, apiTools,
+  INBOUND_PROMPT, inboundAgentConfig, inboundAgentName,
 };

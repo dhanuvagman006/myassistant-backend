@@ -774,6 +774,9 @@ function settle(rec) {
           notes: rec.notes || [],
           voice: rec.gender || "woman",
           language: rec.language ? rec.language.code : "en",
+          // Who was dialled, so a call back can be matched to this user
+          // (agents/inboundCalls.js).
+          to_last10: String(rec.to || "").replace(/\D/g, "").slice(-10),
         },
       })
       .catch(() => {});
@@ -1048,6 +1051,7 @@ async function toolFreeTime({ call_ref, day }) {
 async function tool(name, body) {
   if (name === "note_for_user") return toolNote(body || {});
   if (name === "check_free_time") return toolFreeTime(body || {});
+  if (name === "leave_message") return require("./inboundCalls").leaveMessage(body || {});
   return { ok: false, error: "unknown tool" };
 }
 

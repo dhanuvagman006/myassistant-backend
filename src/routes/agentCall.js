@@ -184,6 +184,18 @@ function providerWebhook(envKey, handle) {
       res.json({ ok: false, error: "tool failed" });
     }
   });
+  // INBOUND CALLER LOOKUP (2026-10-03): before the inbound agent speaks,
+  // Bolna asks who is calling (GET, ?contact_number=…, 3 s budget).
+  r.get("/inbound/:secret", async (req, res) => {
+    const key = process.env[envKey] || "";
+    const want = crypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
+    if (!key || !safeEqual(String(req.params.secret || ""), want)) {
+      return res.status(404).json({ error: "not found" });
+    }
+    const lookup = require("../agents/inboundCalls").lookup(String(req.query.contact_number || ""));
+    const timeout = new Promise((ok) => setTimeout(() => ok({ caller_kind: "unknown" }), 2500));
+    res.json(await Promise.race([lookup, timeout]));
+  });
   return r;
 }
 
