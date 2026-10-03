@@ -28,7 +28,7 @@ const LIVE_ORDER = [
   // The wow tools (2026-09-30). "What's my day" stays daily_brief below:
   // Live speaks the brief itself in its own voice, faster than the
   // play_daily_brief player.
-  "prepare_meeting", "create_event_poster", "generate_image",
+  "prepare_meeting", "generate_image",
   // "Show me a picture of X" pops it up in the app (2026-10-01); it used
   // to open Instagram.
   "show_pictures",
@@ -43,9 +43,6 @@ const LIVE_ORDER = [
   // send_developer_feedback before the cap: OWNER_RULE asks for it on
   // every unhappy turn, and past 40 names the tail is cut (2026-10-01).
   "send_developer_feedback",
-  // Photo cards are what the client actually makes by voice (20 of his
-  // last 200 turns, 2026-10-01) and they were past the cap in Live.
-  "make_greeting_poster", "change_poster",
   "edit_my_photo", "create_document", "present_text",
   // Past the cap on purpose (2026-10-01, the tool-call eval): the three
   // below pushed create_document / present_text / edit_my_photo out, and

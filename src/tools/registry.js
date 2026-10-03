@@ -301,13 +301,6 @@ const SEED_WORLD = new Set([
   "plan_my_day", "complete_priority", "add_habit", "check_habit", "start_focus",
   // 2026-09-26: a clip in the user's own face and voice, to another person.
   "send_video_note",
-  // 2026-09-26: photo cards — a new card and its picker, a share, a photo
-  // cleaned or kept. NOT change_poster: it only edits the undoable draft on
-  // his screen (and is read back), so one-word answers — "bigger", "pink",
-  // "flowers" — must reach it; it stays in a claim family, which is what
-  // files it for the claim checker. make_greeting_poster continuing a card
-  // is let through GATE 1 by its draftEdit flag instead.
-  "make_greeting_poster", "share_poster", "improve_old_photo",
   // 2026-09-27: writes into the user's Notion, which others may share.
   "notion_add", "notion_create_page",
 ]);
@@ -380,10 +373,6 @@ const SEED_REPEAT = new Set([
   "uninstall_app",
   // One stutter would queue two clips of the owner's manual work.
   "send_video_note",
-  // Photo cards (2026-09-26): a stutter must not start two cards or open
-  // WhatsApp twice. change_poster is NOT here — "bigger" said twice is
-  // two steps up, and both are meant.
-  "make_greeting_poster", "share_poster", "improve_old_photo",
   // A stutter must not add the same items to a Notion page twice.
   "notion_add", "notion_create_page",
 ]);

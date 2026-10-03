@@ -353,9 +353,8 @@ function registerBuiltins() {
   // Momentum: Today's 3, habits, focus and "how am I doing?" (2026-09-25).
   require("../momentum/tools").registerMomentumTools(registry);
 
-  // Photo cards (2026-09-26): a gift card with his words, a real photo and
-  // his signature, drawn on the phone — no AI. App build 119+.
-  require("../posters/tools").registerPosterTools(registry);
+  // Photo cards and the Poster Studio are gone (owner, 2026-10-02): a card
+  // or poster is generate_image, OpenAI's image model, directly.
   // Connected apps (2026-09-27): Notion, for users who linked it on build 120+.
   require("../connectors/notion/tools").registerNotionTools(registry);
 
@@ -4639,14 +4638,6 @@ function registerBuiltins() {
       "results (that is what 'download' means), or open_webpage so they can " +
       "see the official one. Generation is for pictures that did not exist " +
       "until they asked for them.\n" +
-      // Photo cards (2026-09-26). Conditional on purpose: an app older
-      // than build 119 is not offered make_greeting_poster, and keeps
-      // today's behaviour here for a plain picture card.
-      "NOT FOR A GREETING CARD CARRYING A REAL PERSON: a birthday, " +
-      "anniversary or wedding card with a name, their own dictated wishes, " +
-      "a signature or a real person's photo goes to make_greeting_poster " +
-      "whenever that tool is offered — this tool would invent a stranger's " +
-      "face and misspell the names.\n" +
       // Posters with words (2026-10-02): gpt-image-1 sets words correctly,
       // so a poster is generated outright; the studio only on request.
       "A POSTER, FLYER, BANNER OR CARD WITH WORDS IS MADE HERE: put the " +
@@ -4657,9 +4648,7 @@ function registerBuiltins() {
       "is missing — what it is for, or an event's date — ask ONE short " +
       "question first instead of inventing it; otherwise make it now and " +
       "offer changes after. Birthday and greeting cards too: their name " +
-      "and wishes in quotes. The studio (create_event_poster) or the card " +
-      "maker (make_greeting_poster) ONLY when they ask for it by name or " +
-      "want THEIR OWN PHOTO or signature on it.",
+      "and wishes in quotes, and no real person's face unless they ask.",
     risk: "low",
     deviceAction: true,
     // The image chain's own budget is 75 s (imagegen.js); the default 30 s
@@ -4697,13 +4686,6 @@ function registerBuiltins() {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
       const prompt = String(args.prompt || "").trim().slice(0, 1400);
       if (!prompt) return { ok: false, error: "describe what to draw" };
-      // A poster WITH WORDS reached this tool anyway: the studio sets the
-      // words in real fonts (2026-09-30). Only for app builds that have it.
-      const studioTools = require("../posters/studioTools");
-      if (studioTools.shouldRouteToStudio(args, ctx)) {
-        const request = studioTools.isWordsPoster(ctx.userText) ? ctx.userText : prompt;
-        return studioTools.runCreateEventPoster({ request }, ctx);
-      }
       try {
         const { generateImage } = require("../services/imagegen");
         // enhance: a short prompt-writer pass (skipped when the prompt is
@@ -4861,10 +4843,8 @@ function registerBuiltins() {
       "cousin's wedding'.\n" +
       // 2026-09-26: "restore this old photo of my father" used to land
       // here and edit the user's OWN saved selfie — never the old photo.
-      "AN OLD PHOTO, OR ANYONE ELSE'S PHOTO ('make my father's old photo " +
-      "clear', 'make this old picture nice') goes to improve_old_photo " +
-      "whenever that tool is offered: this tool can only edit the user's " +
-      "own saved Style Studio photo.\n" +
+      "It can only edit the user's own saved Style Studio photo, never an " +
+      "old photo or anyone else's.\n" +
       "It uses the photo they saved in Style Studio, edits it, and the " +
       "result appears full-screen on their phone and is saved to their " +
       "files. Takes ten to sixty seconds — say you're on it, then let the " +
@@ -4975,15 +4955,9 @@ function registerBuiltins() {
         if (v) params[k] = v;
       }
       // An old photo is never restored by editing the user's own selfie
-      // (2026-09-26): from build 119 the photo is picked on the phone and
-      // cleaned up there. Older builds keep today's behaviour.
-      if (recipe === "restore" &&
-          Number(ctx.appBuild) >= require("../posters/tools").POSTER_MIN_BUILD) {
-        return {
-          ok: false,
-          error: "use_improve_old_photo",
-          note: "Call improve_old_photo instead — it lets the user pick the photo. Nothing was made.",
-        };
+      // (2026-09-26); the photo-card restore went with the cards (2026-10-02).
+      if (recipe === "restore") {
+        return { ok: false, error: "restore_unavailable", note: "Restoring an old photo is not available. Nothing was made." };
       }
       // The occasion recipe reads `occasion`; an outfit description handed
       // to it belongs in its notes rather than being dropped.

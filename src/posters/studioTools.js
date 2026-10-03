@@ -257,33 +257,7 @@ async function runEditMyPhoto(args, ctx) {
 }
 
 function registerStudioTools(registry) {
-  registry.register({
-    name: "create_event_poster",
-    minAppBuild: studioMinBuild(),
-    deviceAction: true,
-    risk: "low",
-    timeoutMs: 35_000,
-    description:
-      "THE POSTER STUDIO — only when the user wants it: THEIR OWN PHOTO on the poster, a picture " +
-      "from their gallery, the words laid out to edit by hand, or 'open the poster studio'. A plain " +
-      "'make a poster for our event tomorrow' is generate_image, which sets the words itself. " +
-      "Pass the user's request in their own words. The poster studio " +
-      "opens on the phone: the words are set in real fonts over an AI background, so nothing is " +
-      "misspelt. Only facts the user said go on it — anything missing (the place, the time) comes " +
-      "back in `missing`; ask for it, never invent it. NOT for a greeting card with a real person's " +
-      "name, photo or signature (make_greeting_poster), and NOT for a picture with no words " +
-      "(generate_image).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        request: { type: "string", description: "What the poster is for, in the user's own words — every fact they gave." },
-        format: { type: "string", enum: Object.keys(studio.FORMATS), description: "portrait (4:5, default), story (9:16, for a status), square." },
-      },
-      required: ["request"],
-    },
-    execute: runCreateEventPoster,
-  });
-
+  // create_event_poster went with the Poster Studio (owner, 2026-10-02).
   registry.register({
     name: "edit_my_photo",
     deviceAction: true,
