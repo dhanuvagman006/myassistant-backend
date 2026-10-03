@@ -126,7 +126,7 @@ function fake(handler) {
         assert.match(url, /\/audio\/speech$/);
         assert.strictEqual(body.voice, "shimmer");
         assert.strictEqual(body.response_format, "pcm");
-        assert.strictEqual(body.instructions, "warm and unhurried");
+        assert.strictEqual(body.instructions, `${O.ACCENT} warm and unhurried`);
         return new Response(Buffer.alloc(4800), { status: 200, headers: { "content-type": "audio/pcm" } });
       });
       const out = await O.speak("Hello there", { voice: "not-a-voice", instructions: "warm and unhurried" });

@@ -170,7 +170,12 @@ router.post("/generate", express.json({ limit: "25mb" }), async (req, res) => {
 const VOICE_STYLE =
   "VOICE: speak like a warm, quick-witted person, not a reader — lively, natural intonation, real " +
   "feeling that follows what they say (delight, concern, a smile in the voice, calm firmness when it " +
-  "is serious). Short sentences, no filler, never read a list aloud. Match their language and energy.";
+  "is serious). Short sentences, no filler, never read a list aloud. Match their language and energy.\n" +
+  // The owner, 2026-10-03: never an American accent for Indian languages.
+  "ACCENT: always an Indian accent, never American or British. Kannada, Hindi, Malayalam, Tamil, " +
+  "Telugu and every Indian language with its own native pronunciation, like a native speaker; " +
+  "English in a natural Indian English accent; mixed Kannada-English or Hindi-English the way " +
+  "people in India speak it.";
 
 // From this build the phone answers all of a response's tool calls together.
 const PARALLEL_TOOLS_BUILD = 154;

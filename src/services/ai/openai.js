@@ -400,7 +400,23 @@ function wavWrap(pcm, rate = 16000) {
  * phone plays); "mp3" for a file. `instructions` is the manner: "warm and
  * unhurried", "firm" — the same tone words the rest of the app uses.
  */
+/**
+ * AN INDIAN VOICE (the owner, 2026-10-03: "it should not bring that American
+ * accent … Indian accent only for Indian languages"). Every spoken line is
+ * told so; VOICE_ACCENT=off drops it.
+ */
+const ACCENT =
+  "Accent: always Indian, never American or British. Kannada, Hindi, Malayalam, Tamil, Telugu and " +
+  "every Indian language in its own native pronunciation, like a native speaker from that state; " +
+  "English in a natural Indian English accent; Kannada-English or Hindi-English mixed the way people " +
+  "in India speak it.";
+function withAccent(instructions = "") {
+  if (/^(off|0|false|no)$/i.test(String(process.env.VOICE_ACCENT || "").trim())) return instructions;
+  return instructions ? `${ACCENT} ${instructions}` : ACCENT;
+}
+
 async function speak(text, { voice, instructions = "", format = "pcm", timeoutMs = 90_000 } = {}) {
+  instructions = withAccent(instructions);
   const v = VOICES.includes(String(voice || "")) ? voice : models.ttsVoice();
   const r = await call("/audio/speech", {
     body: {
@@ -421,6 +437,7 @@ async function speak(text, { voice, instructions = "", format = "pcm", timeoutMs
  * onChunk gets 24 kHz 16-bit PCM in whole samples. Returns the byte count.
  */
 async function speakStream(text, { voice, instructions = "", onChunk = () => {}, timeoutMs = 90_000, firstBytes = 4800, chunkBytes = 19_200 } = {}) {
+  instructions = withAccent(instructions);
   const v = VOICES.includes(String(voice || "")) ? voice : models.ttsVoice();
   const r = await call("/audio/speech", {
     body: {
@@ -711,7 +728,7 @@ const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); 
 
 module.exports = {
   ready, key, models, VOICES, OpenAIError, isBusy, busy: () => Date.now() < busyUntil,
-  chat, transcribe, speak, speakStream, imageGenerate, imageEdit, realtimeClientSecret, liveSession, liveSessionConfig, GPT_LIVE_AGENT, webSearch, plausibleTranscript,
+  chat, transcribe, speak, speakStream, imageGenerate, imageEdit, realtimeClientSecret, liveSession, liveSessionConfig, GPT_LIVE_AGENT, ACCENT, webSearch, plausibleTranscript,
   // for tests
   fromSimple, fromContents, toTools, wavWrap, imageSize,
 };

@@ -69,7 +69,7 @@ const collect = () => { const out = []; return { out, emit: (j) => out.push(j) }
       fake(({ url, body }) => {
         assert.match(url, /\/audio\/speech$/);
         assert.strictEqual(body.voice, "shimmer");
-        assert.strictEqual(body.instructions, "warm, unhurried");
+        assert.strictEqual(body.instructions, `${require("../src/services/ai/openai").ACCENT} warm, unhurried`);
         assert.strictEqual(body.input, "Good morning, Sir.");
         return new Response(Buffer.alloc(2400), { status: 200 });
       });
