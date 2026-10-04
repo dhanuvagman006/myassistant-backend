@@ -609,10 +609,10 @@ const GPT_LIVE_AGENT = Object.freeze({
  * web search) for the backend model, which picks them; the phone runs them.
  * Returns { session: { id }, transport: { type, sdp } } as OpenAI sent it.
  */
-async function liveSession({ sdp, instructions = "", backendInstructions = "", tools = [], user = "" } = {}) {
+async function liveSession({ sdp, instructions = "", backendInstructions = "", tools = [], user = "", voice = "" } = {}) {
   if (typeof sdp !== "string" || !sdp.trim()) throw new OpenAIError("gpt-live: an SDP offer is required", 400, "");
   return call("/live/sessions", {
-    body: { session: liveSessionConfig({ instructions, backendInstructions, tools }), transport: { type: "webrtc", sdp } },
+    body: { session: liveSessionConfig({ instructions, backendInstructions, tools, voice }), transport: { type: "webrtc", sdp } },
     ...(user ? { headers: { "OpenAI-Safety-Identifier": safetyId(user) } } : {}),
     timeoutMs: 20_000,
   });
@@ -628,7 +628,7 @@ async function liveSession({ sdp, instructions = "", backendInstructions = "", t
 const GPT_LIVE_SKIP = new Set(["stay_silent"]);
 
 /** The session GPT-Live is started with (also what a server-side test opens). */
-function liveSessionConfig({ instructions = "", backendInstructions = "", tools = [] } = {}) {
+function liveSessionConfig({ instructions = "", backendInstructions = "", tools = [], voice = "" } = {}) {
   const a = GPT_LIVE_AGENT;
   const r = a.delegation.responses;
   const builtIn = new Set(r.tools.map((t) => t.type));
@@ -638,7 +638,7 @@ function liveSessionConfig({ instructions = "", backendInstructions = "", tools 
   return {
     model: env("GPT_LIVE_MODEL", a.model),
     ...(instructions ? { instructions: String(instructions).slice(0, 48_000) } : {}),
-    audio: { output: { voice: env("GPT_LIVE_VOICE", a.audio.output.voice) } },
+    audio: { output: { voice: require("../../ai/liveVoices").has(voice) ? String(voice).toLowerCase() : env("GPT_LIVE_VOICE", a.audio.output.voice) } },
     delegation: {
       type: a.delegation.type,
       responses: {
@@ -672,6 +672,7 @@ async function webSearch(query, { model, location, timeoutMs = 45_000 } = {}) {
       type: "approximate", country: String(location.country || "IN").toUpperCase().slice(0, 2),
       ...(location.city ? { city: String(location.city).slice(0, 60) } : {}),
       ...(location.region ? { region: String(location.region).slice(0, 60) } : {}),
+      timezone: String(location.timezone || env("SEARCH_TIMEZONE", "Asia/Kolkata")),
     };
   }
   const j = await call("/responses", {
@@ -681,6 +682,8 @@ async function webSearch(query, { model, location, timeoutMs = 45_000 } = {}) {
       tool_choice: { type: "web_search" },
       include: ["web_search_call.action.sources"],
       instructions:
+        `Today is ${new Date().toLocaleDateString("en-IN", { timeZone: env("SEARCH_TIMEZONE", "Asia/Kolkata"), dateStyle: "full" })}. ` +
+        "Answer only from the pages you found, never from memory. " +
         "Answer the question directly from what you find — the figures, names, times and dates — in at " +
         "most four sentences, plain text, no headings or bullet points. Prefer today's information for " +
         "anything that changes (prices, timings, news, weather, availability). If the web does not say, " +

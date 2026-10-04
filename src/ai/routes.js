@@ -166,6 +166,32 @@ router.post("/generate", express.json({ limit: "25mb" }), async (req, res) => {
   res.end();
 });
 
+/**
+ * THE DRAFT PAD (2026-10-04): writes or edits the pad's text, streamed as
+ * `data: {"t": "..."}` lines and `data: [DONE]` (see ./draft.js).
+ */
+router.post("/draft", express.json({ limit: "2mb" }), async (req, res) => {
+  const uid = userOf(req, res);
+  if (!uid) return;
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  if (typeof body.instruction !== "string" || !body.instruction.trim()) {
+    return res.status(400).json({ error: "instruction required" });
+  }
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+  const send = (j) => res.write(`data: ${JSON.stringify(j)}\n\n`);
+  try {
+    await require("./draft").streamDraft(body, (t) => send({ t }));
+  } catch (e) {
+    console.warn("ai/draft failed:", e.message);
+    send({ error: { message: String(e.message || e).slice(0, 200), status: e.status || 0 } });
+  }
+  res.write("data: [DONE]\n\n");
+  res.end();
+});
+
 /** How she sounds on the fast voice (the owner, 2026-10-02: "there is no emotion in the voice"). */
 const VOICE_STYLE =
   "VOICE: speak like a warm, quick-witted person, not a reader — lively, natural intonation, real " +
@@ -238,15 +264,39 @@ router.post("/live/session", async (req, res) => {
     const out = await openai.liveSession({
       sdp: b.sdp, user: uid,
       instructions: VOICE_STYLE + "\n\n" + prompt +
-        "\n\nAnything that needs a tool, the app, saved facts or current information: hand it to the backend, then say its result.",
+        "\n\nAnything that needs a tool, the app, saved facts or current information: hand it to the backend, then say its result." +
+        " Drafting, writing or changing any text (email, letter, message, the draft on screen): ALWAYS hand it to the backend — never say the text aloud.",
       backendInstructions: prompt +
         "\n\nYou are the backend of a spoken conversation: use the tools, then return a short, grounded result to be said aloud.",
       tools: liveToolsFor(uid, b.tools),
+      voice: String(b.voice || ""),
     });
     res.status(201).json({ session: { id: out.session && out.session.id }, transport: out.transport });
   } catch (e) {
     console.error(`ai: gpt-live session failed uid=${uid}: ${String(e.message || e).slice(0, 200)}`);
     res.status(e.status === 400 ? 400 : 502).json({ error: String(e.message || e).slice(0, 200) });
+  }
+});
+
+/** The voices the picker offers (ai/liveVoices.js), grouped by the app. */
+router.get("/voices", (req, res) => {
+  const uid = userOf(req, res);
+  if (!uid) return;
+  const lv = require("./liveVoices");
+  res.json({ voices: lv.CATALOG, default: lv.DEFAULT_VOICE });
+});
+
+/** A voice's own sample (recorded once from GPT-Live, then kept). */
+router.get("/voices/:id/sample", async (req, res) => {
+  const uid = userOf(req, res);
+  if (!uid) return;
+  try {
+    const wav = await require("./liveVoices").sample(req.params.id);
+    if (!wav) return res.status(404).json({ error: "no such voice" });
+    res.set("Content-Type", "audio/wav").set("Cache-Control", "private, max-age=604800").send(wav);
+  } catch (e) {
+    console.error(`ai: voice sample ${req.params.id} failed: ${String(e.message || e).slice(0, 160)}`);
+    res.status(502).json({ error: "sample not ready, try again" });
   }
 });
 

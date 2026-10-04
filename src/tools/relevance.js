@@ -29,7 +29,7 @@
 
 const CORE = new Set([
   // Holding the conversation
-  "end_conversation", "present_text", "recall_conversation",
+  "end_conversation", "present_text", "draft_text", "edit_draft", "recall_conversation",
   // Knowing the user
   "remember_fact", "recall_memory", "lookup_person", "update_my_profile",
   // The things asked for constantly, in any context

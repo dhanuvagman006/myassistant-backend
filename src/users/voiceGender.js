@@ -30,6 +30,8 @@ const VOICE_GENDER = {
   enceladus: "male", iapetus: "male", umbriel: "male", algieba: "male",
   algenib: "male", rasalgethi: "male", alnilam: "male", schedar: "male",
   achird: "male", zubenelgenubi: "male", sadaltager: "male",
+  // OpenAI's voices (ai/liveVoices.js, 2026-10-03).
+  ...Object.fromEntries(require("../ai/liveVoices").CATALOG.map((v) => [v.id, v.gender])),
 };
 
 /** The names people actually pick, including the Indian ones. */

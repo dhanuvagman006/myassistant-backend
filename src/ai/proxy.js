@@ -30,6 +30,8 @@ const REALTIME_VOICES = ["shimmer", "marin", "cedar", "coral", "sage", "verse", 
 function voiceFor(name) {
   const n = String(name || "").trim();
   if (openai.VOICES.includes(n)) return n;
+  const twin = require("./liveVoices").ttsVoiceFor(n);
+  if (twin) return twin;
   return TTS_VOICES[n] || openai.models.ttsVoice();
 }
 

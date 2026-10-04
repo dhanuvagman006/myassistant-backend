@@ -4268,8 +4268,9 @@ function registerBuiltins() {
   registry.register({
     name: "present_text",
     description:
-      "Put a WRITTEN piece on the user's screen — a speech, meeting script, " +
-      "talking points, email draft, plan, list, or a decision breakdown. " +
+      "Put a WRITTEN piece on the user's screen to READ — a speech, meeting script, " +
+      "talking points, plan, list, or a decision breakdown. Emails, letters and " +
+      "anything they will edit or send go to draft_text instead. " +
       "YOU write the full content; the phone shows it in a reader the user " +
       "can scroll, copy and share. Use whenever the user asks you to " +
       "write/draft/generate/prepare something meant to be READ or REUSED " +
@@ -4301,6 +4302,68 @@ function registerBuiltins() {
         ok: true,
         deviceAction: { type: "show_text", title, content },
         speak: "It's on your screen — tell me if you want any part changed.",
+      };
+    },
+  });
+
+  // ---------------- DRAFT PAD (2026-10-04) ----------------
+  //
+  // The phone writes the text itself, streamed from POST /ai/draft, so the
+  // words appear as they are written and an edit works on what is on the
+  // pad right now (the user may have typed in it). These tools only open
+  // the pad and pass the instruction along.
+  registry.register({
+    name: "draft_text",
+    description:
+      "Open the editable draft pad and write something the user will edit, save or send: an " +
+      "email, letter, cover letter, message, application, post, essay, script, notice. Put " +
+      "EVERYTHING they said about it (recipient, purpose, points, tone, language, length) in " +
+      "`instruction`; the pad writes it live on screen. Do not write the text yourself.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Short title ('Leave letter to manager')." },
+        instruction: { type: "string", description: "What to write, with every detail the user gave." },
+      },
+      required: ["title", "instruction"],
+    },
+    async execute(args) {
+      const title = String(args.title || "").trim().slice(0, 120) || "Draft";
+      const instruction = String(args.instruction || "").trim().slice(0, 4000);
+      if (!instruction) return { ok: false, error: "what should I write?" };
+      return {
+        ok: true,
+        deviceAction: { type: "open_draft", title, instruction },
+        speak: "Writing it on your screen now — tell me anything to change.",
+      };
+    },
+  });
+
+  registry.register({
+    name: "edit_draft",
+    description:
+      "Change the text in the draft pad (a draft being written, or text they pasted to edit): " +
+      "'change the second paragraph', 'make it more formal', 'add a line about Monday', 'keep " +
+      "going', 'translate it to Kannada'. Put their exact request in `instruction`; only that " +
+      "part changes.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        instruction: { type: "string", description: "The change, in their words, with every detail." },
+      },
+      required: ["instruction"],
+    },
+    async execute(args) {
+      const instruction = String(args.instruction || "").trim().slice(0, 4000);
+      if (!instruction) return { ok: false, error: "what should I change?" };
+      return {
+        ok: true,
+        deviceAction: { type: "edit_draft", instruction },
+        speak: "Changing it now.",
       };
     },
   });

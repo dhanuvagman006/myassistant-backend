@@ -175,7 +175,7 @@ function fake(handler) {
       fake(({ url, body }) => {
         assert.match(url, /\/responses$/);
         assert.strictEqual(body.tools[0].type, "web_search");
-        assert.deepStrictEqual(body.tools[0].user_location, { type: "approximate", country: "IN", city: "Mangalore" });
+        assert.deepStrictEqual(body.tools[0].user_location, { type: "approximate", country: "IN", city: "Mangalore", timezone: "Asia/Kolkata" });
         assert.deepStrictEqual(body.tool_choice, { type: "web_search" });
         assert.strictEqual(body.input, "first flight to Bangalore?");
         return { model: "gpt-4.1-mini", usage: { total_tokens: 100 }, output: [

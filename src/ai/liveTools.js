@@ -43,7 +43,7 @@ const LIVE_ORDER = [
   // send_developer_feedback before the cap: OWNER_RULE asks for it on
   // every unhappy turn, and past 40 names the tail is cut (2026-10-01).
   "send_developer_feedback",
-  "edit_my_photo", "create_document", "present_text",
+  "draft_text", "edit_draft", "edit_my_photo", "create_document", "present_text",
   // Past the cap on purpose (2026-10-01, the tool-call eval): the three
   // below pushed create_document / present_text / edit_my_photo out, and
   // "make me a PPT" went to send_developer_feedback. Nobody searches

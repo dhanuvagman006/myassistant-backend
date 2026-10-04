@@ -205,7 +205,8 @@ function liveCapable(build, flag) {
  * expressive model; an older one keeps a prebuilt voice.
  */
 function voiceFor(profile, { expressive = false } = {}) {
-  const ok = (v) => Boolean(v) && (VOICES.has(v) || (expressive && LIBRARY_VOICES.has(v)));
+  const ok = (v) => Boolean(v) && (VOICES.has(v) || (expressive && LIBRARY_VOICES.has(v)) ||
+    require("./liveVoices").has(v));
   const chosen = profile && profile.assistant && profile.assistant.voice;
   if (ok(chosen)) return chosen;
   try {
@@ -291,7 +292,13 @@ async function forUser(userId, { build, live } = {}) {
     // GPT-LIVE (the owner's agent, 2026-10-02): 154+ opens it over WebRTC
     // through POST /ai/live/session. GPT_LIVE=off keeps Realtime.
     if (out.live && gptLiveOn() && b >= GPT_LIVE_BUILD) {
-      out.live = { ...out.live, transport: "gpt-live", model: openai.GPT_LIVE_AGENT.model, voice: openai.GPT_LIVE_AGENT.audio.output.voice };
+      // Their chosen voice (one list for live and spoken replies, 2026-10-03).
+      const lv = require("./liveVoices");
+      out.live = {
+        ...out.live, transport: "gpt-live", model: openai.GPT_LIVE_AGENT.model,
+        voice: lv.has(voice) ? String(voice).toLowerCase() : lv.DEFAULT_VOICE,
+        voices: lv.CATALOG.map((v) => v.id),
+      };
     }
   } else {
     out.provider = "gemini";
