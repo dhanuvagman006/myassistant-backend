@@ -4561,17 +4561,23 @@ function registerBuiltins() {
     },
   });
 
+  // GOOGLE, DIRECTLY (owner, 2026-10-04): "show me pictures of X" and
+  // "show me the search results for X" open Google Images / Google Search
+  // on the phone with the query filled in — the real results, nothing
+  // downloaded or guessed. (show_pictures used to fetch photos into the app.)
+  const googleUrl = (q, images) =>
+    `https://www.google.com/search?${images ? "udm=2&" : ""}q=${encodeURIComponent(q)}`;
+
   registry.register({
     name: "show_pictures",
     description:
-      "SHOW PICTURES of a person, place, animal or thing, right here in " +
-      "the app — 'show me a picture of Virat Kohli', 'show me the Taj " +
-      "Mahal', 'how does a golden retriever look', 'show me images of " +
-      "Rashmika'. It finds several real photos on the web and opens them " +
-      "full screen to swipe through. This is THE tool for any picture/image/photo " +
-      "request; never open Instagram, Google Images or any other app for " +
-      "one unless the user said that app's name. For a picture that does " +
-      "not exist yet ('draw me…', 'make a poster') use generate_image.",
+      "SHOW PICTURES of anything — 'show me a picture of Virat Kohli', 'show " +
+      "me the Taj Mahal', 'how does a golden retriever look', 'images of " +
+      "Rashmika'. Opens GOOGLE IMAGES on the phone with the search filled in. " +
+      "This is THE tool for any picture/image/photo request; never open " +
+      "Instagram or another app for one unless the user named it. For a " +
+      "picture that does not exist yet ('draw me…', 'make a poster') use " +
+      "generate_image.",
     risk: "low",
     deviceAction: true,
     inputSchema: {
@@ -4586,85 +4592,39 @@ function registerBuiltins() {
       },
       required: ["subject"],
     },
-    async execute(args, ctx = {}) {
-      if (!ctx.userId) return { ok: false, error: "not signed in" };
-      const subject = String(args.subject || "").trim().slice(0, 120);
+    async execute(args) {
+      const subject = String(args.subject || "").trim().slice(0, 200);
       if (!subject) return { ok: false, error: "say who or what to show" };
-      const hint =
-        "Say in one line that no picture was found. Do not open any app " +
-        "unless the user names one; never open Instagram for this.";
-      let pics;
-      try {
-        pics = await require("./pictures").findPictures(subject, Number(process.env.PICTURES_SHOWN) || 6);
-      } catch (e) {
-        if (e.code === "unsure") {
-          // A stranger's face is worse than no picture (feedback #15).
-          return {
-            ok: false,
-            error: e.message,
-            data: {
-              hint:
-                "Say in one line that you found pictures but none you are sure is " +
-                "this person, and ask for one more detail (their work, their town) " +
-                "if they want to try again. Never show a guess as if it were them.",
-            },
-          };
-        }
-        return { ok: false, error: `picture lookup failed: ${String(e.message).slice(0, 100)}`, data: { hint } };
-      }
-      if (!pics || !pics.length) return { ok: false, error: `no picture of ${subject} found`, data: { hint } };
-      const docs = require("../docs/store");
-      const title = `Picture — ${subject}`;
-      const saveOne = async (pic, i) => {
-        const ext = pic.mime === "image/png" ? "png" : pic.mime === "image/webp" ? "webp" : pic.mime === "image/gif" ? "gif" : "jpg";
-        const row = await docs.createDocument(ctx.userId, {
-          buffer: pic.buffer,
-          filename: `picture-${Date.now()}-${i + 1}.${ext}`,
-          mime: pic.mime,
-          note: subject,
-        });
-        let credit = pic.source || "the web";
-        if (!pic.source && pic.page) {
-          try { credit = new URL(pic.page).hostname.replace(/^www\./, ""); } catch (_) { /* keep */ }
-        }
-        const updated = await docs
-          .setMetadata(ctx.userId, row.id, {
-            title: pics.length > 1 ? `${title} (${i + 1})` : title,
-            category: "other",
-            docDate: new Date().toISOString().slice(0, 10),
-            summary: `A picture of ${subject}, from ${credit}.`,
-            tags: ["picture", "web"],
-            fullText: `Picture of ${subject}. Source: ${credit}${pic.page ? " " + pic.page : ""}`,
-          })
-          .catch(() => null);
-        return { row, credit, client: docs.toClient(updated || row) };
-      };
-      const saved = (await Promise.all(pics.map((p, i) => saveOne(p, i).catch(() => null)))).filter(Boolean);
-      if (!saved.length) return { ok: false, error: "could not save the pictures", data: { hint } };
-      const first = saved[0];
-      const n = saved.length;
       return {
         ok: true,
-        data: {
-          shown: true,
-          subject,
-          count: n,
-          sources: [...new Set(saved.map((s) => s.credit))],
-          documentId: first.row.id,
-          note:
-            `${n === 1 ? "The picture is" : `${n} pictures are`} on the user's screen NOW, inside this app` +
-            `${n > 1 ? ", to swipe through" : ""}. Say so in a few words; do not open any other app.`,
-        },
-        deviceAction: {
-          type: "show_image",
-          doc_id: first.row.id,
-          prompt: subject,
-          title,
-          // An app before build 149 shows `document` (the first); 149+ the gallery.
-          document: first.client,
-          documents: saved.map((s) => s.client),
-        },
-        speak: n > 1 ? `Here are ${n} pictures of ${subject}.` : `Here is ${subject}.`,
+        deviceAction: { type: "open_url", url: googleUrl(subject, true) },
+        speak: `Opening Google Images for ${subject}.`,
+      };
+    },
+  });
+
+  registry.register({
+    name: "show_search_results",
+    description:
+      "SHOW SEARCH RESULTS on screen — 'show me the search results for X', " +
+      "'google X', 'search X on Google', 'open the results for X', 'show me " +
+      "websites about X'. Opens GOOGLE SEARCH on the phone with the query " +
+      "filled in. Use this when the user wants to SEE results; to ANSWER a " +
+      "question yourself use web_search instead.",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: { query: { type: "string", description: "What to search for, as the user said it." } },
+      required: ["query"],
+    },
+    async execute(args) {
+      const query = String(args.query || "").trim().slice(0, 300);
+      if (!query) return { ok: false, error: "say what to search for" };
+      return {
+        ok: true,
+        deviceAction: { type: "open_url", url: googleUrl(query, false) },
+        speak: `Opening Google for ${query}.`,
       };
     },
   });
@@ -5087,7 +5047,7 @@ function registerBuiltins() {
       "Instagram', 'show me Virat Kohli on X', 'open WhatsApp'. This DOES " +
       "open the app on their phone; say you're opening it.\n" +
       "NOT FOR PICTURES: 'show me a picture/image/photo of X' is " +
-      "show_pictures, which shows it inside this app. Use open_app only " +
+      "show_pictures (Google Images); search results are show_search_results. Use open_app only " +
       "when the user NAMED the app (Instagram, YouTube, Google…).\n" +
       "OPENING SOMEONE'S PROFILE: put their NAME in `person`, exactly as " +
       "the user said it. Works for ANYONE — a head of state, a cricketer, " +

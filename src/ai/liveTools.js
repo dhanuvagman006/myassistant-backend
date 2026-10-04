@@ -31,7 +31,7 @@ const LIVE_ORDER = [
   "prepare_meeting", "generate_image",
   // "Show me a picture of X" pops it up in the app (2026-10-01); it used
   // to open Instagram.
-  "show_pictures",
+  "show_pictures", "show_search_results",
   // "Open the news / my calendar": this app's own screens (2026-09-30,
   // it was past the cap, so Live opened other apps or said "not connected").
   "open_app_screen", "open_named_app", "phone_control", "play_music",

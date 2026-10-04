@@ -455,6 +455,7 @@ async function init() {
 
   // Connected apps: Notion (tokens encrypted like the MCP secrets).
   await require("./connectors/notion/store").migrate((sql) => pool.query(sql));
+  await require("./connectors/apps").migrate((sql) => pool.query(sql));
 
   // Document intelligence: chunk + embedding store for semantic retrieval.
   await require("./docs/intelligence").migrate((sql) => pool.query(sql));

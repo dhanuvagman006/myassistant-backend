@@ -270,6 +270,11 @@ app.use("/google", appAuth, require("./google/routes"));
   app.use("/connect/notion",
     rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true }), notion.publicRouter);
   app.use("/connections", appAuth, notion.appRouter);
+  // Other connected apps (2026-10-04): standard OAuth 2, after Notion's routes.
+  const apps = require("./connectors/apps");
+  app.use("/connect/app",
+    rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true }), apps.publicRouter);
+  app.use("/connections", appAuth, apps.appRouter);
 }
 
 

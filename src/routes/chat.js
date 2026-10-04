@@ -358,12 +358,16 @@ router.post("/send", async (req, res) => {
   );
   if (recipient.fcm_token && !(await mutedBy(recipient.id, uid))) {
     try {
-      const me = await one(`SELECT name FROM users WHERE id=$1`, [uid]);
+      const me = await one(`SELECT name, phone_number FROM users WHERE id=$1`, [uid]);
+      // LIKE A CHAT APP (owner, 2026-10-04): who and what, and a tap opens
+      // the conversation (build 158+ reads direct_message; older builds
+      // just open the app).
+      const who = String(me?.name || "").split(" ")[0] || "New message";
       await require("../services/push").sendNotification(
         recipient.fcm_token,
-        me?.name ? `${me.name.split(" ")[0]} sent you a message` : "New message",
-        "Open the app to read it.",
-        { kind: "agent_message" }
+        who,
+        text.slice(0, 140),
+        { kind: "direct_message", fromPhone: String(me?.phone_number || ""), fromName: String(me?.name || who) }
       );
     } catch (_) {}
   }

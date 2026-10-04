@@ -278,6 +278,30 @@ async function migrate(exec) {
     -- showed with "This message was deleted"; removing it outright just
     -- leaves the old text on their screen forever.
     ALTER TABLE chat_group_messages ADD COLUMN IF NOT EXISTS deleted INTEGER NOT NULL DEFAULT 0;
+
+    -- TEAM TASK LISTS (owner, 2026-10-04). A list is a native group
+    -- message: the message row carries task_list_id, the tasks live here.
+    -- Each task is set (never toggled) by the member who taps it, in one
+    -- row update, so two people tapping at once cannot corrupt it: the
+    -- last explicit choice wins and everyone is shown who made it.
+    ALTER TABLE chat_group_messages ADD COLUMN IF NOT EXISTS task_list_id BIGINT;
+    CREATE TABLE IF NOT EXISTS chat_task_lists (
+      id         BIGSERIAL PRIMARY KEY,
+      group_id   BIGINT  NOT NULL,
+      created_by INTEGER NOT NULL,
+      title      TEXT    NOT NULL DEFAULT '',
+      created_at BIGINT  NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS chat_task_items (
+      id       BIGSERIAL PRIMARY KEY,
+      list_id  BIGINT  NOT NULL REFERENCES chat_task_lists(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL,
+      text     TEXT    NOT NULL,
+      done_by  INTEGER,
+      done_at  BIGINT  NOT NULL DEFAULT 0,
+      version  INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_task_items_list ON chat_task_items(list_id, position);
     ALTER TABLE agent_messages      ADD COLUMN IF NOT EXISTS deleted INTEGER NOT NULL DEFAULT 0;
   `);
 }

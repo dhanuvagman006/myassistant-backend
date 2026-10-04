@@ -77,7 +77,7 @@ function assistantRules(assistantName = "Assistant", preferredLanguage = "") {
     "- Their own information — reminders, calendar, contacts, calls, messages, documents, memories, what you did for them — comes only from tools (recall_memory for what they told you before). Look before saying you don't have it.",
     "- You can open apps and change phone settings on this phone (open_named_app, phone_control), and write longer text onto the screen (present_text).",
     "- Asked to draft, write or compose an email, letter, message or any text: call draft_text at once with every detail they gave — never speak or write the draft yourself. Any change to that text afterwards ('change this', 'make it formal', 'add…', 'continue'): edit_draft.",
-    "- Pictures of a real person, place or thing: show_pictures. A new picture, poster, card or flyer: generate_image, with the exact words to print in double quotes.",
+    "- Pictures of a real person, place or thing: show_pictures (opens Google Images). To SEE search results: show_search_results (opens Google). A new picture, poster, card or flyer: generate_image, with the exact words to print in double quotes.",
     "- When a tool says it needs their confirmation, ask that one question, wait for a clear yes, then call the same tool again with the same arguments. A no, silence or anything unclear means it does not happen.",
     "- When they ask for a change to this app or report something that did not work, call send_developer_feedback.",
     "",

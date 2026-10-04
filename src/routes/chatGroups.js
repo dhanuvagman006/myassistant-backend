@@ -14,6 +14,9 @@
  *   POST   /chat/groups/:id/clear      clear MY copy of the history
  *   POST   /chat/groups/:id/mute       {muted}
  *   DELETE /chat/groups/:id/messages/:mid?everyone=1
+ *   POST   /chat/groups/:id/tasks                       {title, items:[text]} share a task list
+ *   GET    /chat/groups/:id/tasks/:listId               one list, fresh
+ *   POST   /chat/groups/:id/tasks/:listId/items/:itemId {done} tick / untick
  *
  * His ask, 2026-09-22: a new-chat button for people already using the
  * app, an invite section for those who are not, groups built from the
@@ -33,7 +36,7 @@
  * has implicitly agreed to.
  */
 const router = require("express").Router();
-const { query, one, run } = require("../db");
+const { query, one, run, tx } = require("../db");
 
 const uidOf = (req) => {
   const n = Number(req.user?.sub);
@@ -243,7 +246,7 @@ router.get("/groups/:id", async (req, res) => {
         [gid, uid]
       ),
       query(
-        `SELECT m.id, m.from_user_id, m.body, m.via, m.deleted, m.created_at, u.name
+        `SELECT m.id, m.from_user_id, m.body, m.via, m.deleted, m.created_at, m.task_list_id, u.name
            FROM chat_group_messages m
            LEFT JOIN users u ON u.id = m.from_user_id
           WHERE m.group_id = $1
@@ -284,6 +287,10 @@ router.get("/groups/:id", async (req, res) => {
       ).catch(() => {});
     }
 
+    const lists = await loadLists(
+      rows.filter((r) => r.task_list_id && Number(r.deleted) !== 1).map((r) => Number(r.task_list_id))
+    );
+
     res.json({
       group: {
         id: gid,
@@ -304,6 +311,9 @@ router.get("/groups/:id", async (req, res) => {
           deleted: Number(r.deleted) === 1,
           mine: Number(r.from_user_id) === uid,
           at: Number(r.created_at),
+          ...(r.task_list_id && Number(r.deleted) !== 1 && lists.get(Number(r.task_list_id))
+            ? { tasks: lists.get(Number(r.task_list_id)) }
+            : {}),
         }))
         .reverse(),
     });
@@ -495,6 +505,174 @@ router.delete("/groups/:id/messages/:mid", async (req, res) => {
     [uid, mid]
   ).catch(() => {});
   res.json({ deleted: "me" });
+});
+
+/* ------------------------------------------------------------------ */
+/* TEAM TASK LISTS (owner, 2026-10-04)                                 */
+/* ------------------------------------------------------------------ */
+/*
+ * A list is a native message (chat_group_messages.task_list_id), so it
+ * sits in the thread, scrolls with it, can be unsent like any message, and
+ * is opened again from there. ANY member may tick or untick ANY task.
+ *
+ * CONCURRENCY. A tap sends the state the member wants ({done:true|false}),
+ * never "toggle": two people tapping the same task at once each get what
+ * they asked for, in one atomic row update, and the final state names the
+ * last one. Every change returns the whole list and tells the others'
+ * phones (a silent push) to refetch, so all screens converge.
+ */
+
+const MAX_TASKS = 30;
+
+/** listId -> {id, title, createdBy, items:[{id,text,doneBy,doneByName,doneAt}]} */
+async function loadLists(ids) {
+  const out = new Map();
+  if (!ids.length) return out;
+  const [lists, items] = await Promise.all([
+    query(`SELECT id, title, created_by FROM chat_task_lists WHERE id = ANY($1::bigint[])`, [ids]),
+    query(
+      `SELECT i.id, i.list_id, i.text, i.done_by, i.done_at, u.name AS done_name
+         FROM chat_task_items i LEFT JOIN users u ON u.id = i.done_by
+        WHERE i.list_id = ANY($1::bigint[]) ORDER BY i.list_id, i.position`,
+      [ids]
+    ),
+  ]);
+  for (const l of lists) {
+    out.set(Number(l.id), { id: Number(l.id), title: l.title || "", createdBy: Number(l.created_by), items: [] });
+  }
+  for (const i of items) {
+    const l = out.get(Number(i.list_id));
+    if (!l) continue;
+    l.items.push({
+      id: Number(i.id),
+      text: i.text,
+      doneBy: i.done_by == null ? null : Number(i.done_by),
+      doneByName: i.done_by == null ? "" : i.done_name || "",
+      doneAt: Number(i.done_at) || 0,
+    });
+  }
+  return out;
+}
+
+/** The list if it belongs to this group and its message is not unsent. */
+async function listInGroup(listId, gid) {
+  return one(
+    `SELECT l.id FROM chat_task_lists l
+       JOIN chat_group_messages m ON m.task_list_id = l.id AND m.deleted = 0
+      WHERE l.id = $1 AND l.group_id = $2`,
+    [listId, gid]
+  ).catch(() => null);
+}
+
+/** Tell the other members: a notification ([text]) or a silent refresh. */
+async function tellMembers(gid, uid, text) {
+  const push = require("../services/push");
+  const rows = await query(
+    `SELECT u.fcm_token,
+            COALESCE((SELECT muted FROM chat_prefs p WHERE p.user_id = x.user_id
+                       AND p.kind='group' AND p.ref = x.group_id::text), 0) AS muted
+       FROM chat_group_members x JOIN users u ON u.id = x.user_id
+      WHERE x.group_id=$1 AND x.user_id <> $2 AND u.fcm_token IS NOT NULL`,
+    [gid, uid]
+  ).catch(() => []);
+  const g = text ? await one(`SELECT title FROM chat_groups WHERE id=$1`, [gid]).catch(() => null) : null;
+  for (const m of rows) {
+    const silent = !text || Number(m.muted) === 1;
+    push
+      .send(m.fcm_token, silent ? null : g?.title || "Group", silent ? null : text, {
+        kind: silent ? "group_tasks" : "group_message",
+        groupId: String(gid),
+      })
+      .catch(() => {});
+  }
+}
+
+router.post("/groups/:id/tasks", async (req, res) => {
+  const uid = me(req, res);
+  if (uid === null) return;
+  const gid = Number(req.params.id);
+  const title = String(req.body?.title || "").trim().slice(0, 120);
+  const items = (Array.isArray(req.body?.items) ? req.body.items : [])
+    .map((t) => String(t || "").replace(/\s+/g, " ").trim().slice(0, 200))
+    .filter(Boolean);
+  if (!Number.isInteger(gid) || !items.length) {
+    return res.status(400).json({ error: "add at least one task" });
+  }
+  if (items.length > MAX_TASKS) return res.status(400).json({ error: `up to ${MAX_TASKS} tasks` });
+  if (!(await membership(gid, uid))) return res.status(404).json({ error: "not in that group" });
+  try {
+    const now = Date.now();
+    const msg = await tx(async (c) => {
+      const l = (await c.query(
+        `INSERT INTO chat_task_lists (group_id, created_by, title, created_at)
+         VALUES ($1,$2,$3,$4) RETURNING id`, [gid, uid, title, now])).rows[0];
+      await c.query(
+        `INSERT INTO chat_task_items (list_id, position, text)
+         SELECT $1, n, t FROM unnest($2::text[]) WITH ORDINALITY AS x(t, n)`,
+        [l.id, items]
+      );
+      return (await c.query(
+        `INSERT INTO chat_group_messages (group_id, from_user_id, body, via, created_at, task_list_id)
+         VALUES ($1,$2,$3,'user',$4,$5) RETURNING id, created_at, task_list_id`,
+        [gid, uid, `Task list: ${title || `${items.length} tasks`}`, now, l.id])).rows[0];
+    });
+    const lists = await loadLists([Number(msg.task_list_id)]);
+    res.status(201).json({ id: Number(msg.id), at: Number(msg.created_at), tasks: lists.get(Number(msg.task_list_id)) });
+    const u = await one(`SELECT name FROM users WHERE id=$1`, [uid]).catch(() => null);
+    const first = String(u?.name || "").split(" ")[0] || "Someone";
+    tellMembers(gid, uid, `${first} shared a task list${title ? `: ${title}` : ""}`).catch(() => {});
+  } catch (e) {
+    console.error("task list create:", e.message);
+    res.status(502).json({ error: "could not share that list" });
+  }
+});
+
+router.get("/groups/:id/tasks/:listId", async (req, res) => {
+  const uid = me(req, res);
+  if (uid === null) return;
+  const gid = Number(req.params.id);
+  const lid = Number(req.params.listId);
+  if (!Number.isInteger(gid) || !Number.isInteger(lid)) return res.status(400).json({ error: "bad request" });
+  if (!(await membership(gid, uid))) return res.status(404).json({ error: "not in that group" });
+  if (!(await listInGroup(lid, gid))) return res.status(404).json({ error: "no such list" });
+  const lists = await loadLists([lid]).catch(() => new Map());
+  if (!lists.get(lid)) return res.status(502).json({ error: "could not load that list" });
+  res.json({ tasks: lists.get(lid) });
+});
+
+router.post("/groups/:id/tasks/:listId/items/:itemId", async (req, res) => {
+  const uid = me(req, res);
+  if (uid === null) return;
+  const gid = Number(req.params.id);
+  const lid = Number(req.params.listId);
+  const iid = Number(req.params.itemId);
+  if (![gid, lid, iid].every(Number.isInteger) || typeof req.body?.done !== "boolean") {
+    return res.status(400).json({ error: "done (true or false) required" });
+  }
+  if (!(await membership(gid, uid))) return res.status(404).json({ error: "not in that group" });
+  if (!(await listInGroup(lid, gid))) return res.status(404).json({ error: "no such list" });
+  const done = req.body.done;
+  try {
+    // One atomic statement; a repeat of the same choice changes nothing.
+    const row = await one(
+      `UPDATE chat_task_items
+          SET done_by = CASE WHEN $3 THEN $4::int ELSE NULL END,
+              done_at = CASE WHEN $3 THEN $5::bigint ELSE 0 END,
+              version = version + 1
+        WHERE id = $1 AND list_id = $2
+          AND (done_by IS NULL) = $3
+        RETURNING id`,
+      [iid, lid, done, uid, Date.now()]
+    );
+    const exists = row || (await one(`SELECT id FROM chat_task_items WHERE id=$1 AND list_id=$2`, [iid, lid]));
+    if (!exists) return res.status(404).json({ error: "no such task" });
+    const lists = await loadLists([lid]);
+    res.json({ tasks: lists.get(lid) });
+    if (row) tellMembers(gid, uid, null).catch(() => {});
+  } catch (e) {
+    console.error("task tick:", e.message);
+    res.status(502).json({ error: "could not update that task" });
+  }
 });
 
 /** One upsert for every per-conversation setting. */

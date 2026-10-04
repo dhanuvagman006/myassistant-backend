@@ -57,7 +57,8 @@ appRouter.get("/", async (req, res) => {
     }
   }
   res.setHeader("Cache-Control", "no-store");
-  res.json({ connections: [card] });
+  const more = await require("../apps").cards(uid);
+  res.json({ connections: [card, ...more] });
 });
 
 /** Starts per user: 5 in 10 minutes. */

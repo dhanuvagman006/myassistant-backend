@@ -124,7 +124,7 @@ const FAMILIES = [
       "enable_usage_tracking", "order_food", "book_ride", "book_movie_tickets",
       "try_a_look", "present_text", "draft_text", "edit_draft", "generate_image", "generate_video",
       // show_pictures pops a photo on the phone ("Here is X") — same claim.
-      "show_pictures",
+      "show_pictures", "show_search_results",
       // Poster Studio, photo edits and meeting prep open a screen (2026-09-30).
       "create_event_poster", "edit_my_photo", "prepare_meeting",
       // Screens inside this app. "Opening your settings" is the same claim.
@@ -323,7 +323,7 @@ const FAMILIES = [
             // Pictures, cards and documents land in their documents (2 Oct:
             // a card that WAS saved was followed by "That wasn't saved").
             "generate_image", "make_greeting_poster", "create_event_poster", "edit_my_photo",
-            "show_pictures", "create_document", "present_text", "deep_research"],
+            "create_document", "present_text", "deep_research"],
     claim: /\b(logged|recorded|noted it down|saved (it |that )?(to|in) your|saved (the|your) shortcut|filed under|i'?ve (written|saved)|written that down)\b/i,
     // सहेज/सेव/नोट कर…, ಉಳಿಸ/ಸೇವ್ ಮಾಡ…, சேமிக்க…, సేవ్ చేస…, സേവ് ചെയ്…
     claimIntl: /(सहेज|सेव\s*कर|नोट\s*कर|लिख\s*दिया|ಉಳಿಸ|ಸೇವ್\s*ಮಾಡ|ಬರೆದಿ|சேமிக்க|குறித்து|సేవ్\s*చేస|రాశా|സേവ്\s*ചെയ്|എഴുതി)/,

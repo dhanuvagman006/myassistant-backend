@@ -250,6 +250,11 @@ const PINS = [
     rx: /\b(picture|pictures|image|images|photo|photos|pic|pics)\b|\bhow does\b.*\blook\b|\bwhat does\b.*\blook like\b/i,
     tools: ["show_pictures"],
   },
+  // "Show me the search results for X", "google X" (2026-10-04).
+  {
+    rx: /\b(search results?|google (it|that|this)|google\b.*\bfor|on google|search (for )?.+ on google|^google\b)/i,
+    tools: ["show_search_results"],
+  },
 ];
 function pinnedFor(text, live) {
   const t = String(text || "");

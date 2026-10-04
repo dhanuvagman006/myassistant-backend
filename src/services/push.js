@@ -37,10 +37,9 @@ async function send(fcmToken, title, body, data) {
   if (!fcmToken) return { ok: false, stale: false, skipped: true, error: "no device token" };
 
   const message = {
-    notification: {
-      title,
-      body,
-    },
+    // No title and no body = a silent data-only push (the app refreshes a
+    // screen without showing anything — e.g. a group's task list changed).
+    ...(title || body ? { notification: { title, body } } : {}),
     // HIGH priority, explicitly. The default is "normal", which Android
     // (Samsung especially) defers in doze and app-standby — measured on
     // the SM-E156B: normal-priority sends were ACCEPTED by FCM and never
