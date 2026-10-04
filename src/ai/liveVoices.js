@@ -201,13 +201,27 @@ function upTo(pcm, runs, k, rate = 24000) {
   return Buffer.concat(parts);
 }
 
+/**
+ * As loud as it can be without clipping (peak at -1 dBFS): her recorded
+ * hello came out far quieter than her live voice (2026-10-04).
+ */
+function louder(pcm) {
+  const n = Math.floor(pcm.length / 2);
+  let peak = 1;
+  for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(pcm.readInt16LE(i * 2)));
+  const gain = Math.min(8, (32767 * 0.89) / peak);
+  const out = Buffer.alloc(n * 2);
+  for (let i = 0; i < n; i++) out.writeInt16LE(Math.round(pcm.readInt16LE(i * 2) * gain), i * 2);
+  return out;
+}
+
 const GREETING_LINE = /^[\p{L} .,!?'’-]{2,60}$/u;
 async function greeting(id, line) {
   const v = byId(id);
   const text = String(line || "").trim();
   if (!v || !GREETING_LINE.test(text)) return null;
   const key = require("crypto").createHash("sha1").update(`${v.id}|${text}`).digest("hex").slice(0, 16);
-  const file = path.join(DIR, `greet-${key}.wav`);
+  const file = path.join(DIR, `greet2-${key}.wav`);
   try {
     return await fs.promises.readFile(file);
   } catch (_) {}
@@ -231,7 +245,7 @@ async function greeting(id, line) {
         if (!pcm) console.warn(`greeting ${v.id}: take ${i + 1} did not say the line, again`);
       }
       if (!pcm) throw new Error("no clean greeting take");
-      const wav = openai.wavWrap(pcm, 24000);
+      const wav = openai.wavWrap(louder(pcm), 24000);
       await fs.promises.mkdir(DIR, { recursive: true });
       await fs.promises.writeFile(file, wav);
       return wav;
