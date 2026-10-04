@@ -183,11 +183,22 @@ function voicedRuns(pcm, rate = 24000) {
   return runs;
 }
 
-/** The take from the first run to the end of run [k] (80 ms kept around). */
+/**
+ * Runs 0..k of the take, joined with a natural 200 ms pause (a long gap
+ * after "Hello Sir," sounded broken), 80 ms of air kept at each end.
+ */
 function upTo(pcm, runs, k, rate = 24000) {
   const pad = Math.round(rate * 0.08);
   const n = Math.floor(pcm.length / 2);
-  return pcm.subarray(Math.max(0, runs[0][0] - pad) * 2, Math.min(n, runs[k][1] + pad) * 2);
+  const gap = Buffer.alloc(Math.round(rate * 0.2) * 2);
+  const parts = [];
+  for (let i = 0; i <= k; i++) {
+    const from = i === 0 ? Math.max(0, runs[i][0] - pad) : runs[i][0];
+    const to = i === k ? Math.min(n, runs[i][1] + pad) : runs[i][1];
+    if (i > 0) parts.push(gap);
+    parts.push(pcm.subarray(from * 2, to * 2));
+  }
+  return Buffer.concat(parts);
 }
 
 const GREETING_LINE = /^[\p{L} .,!?'’-]{2,60}$/u;
