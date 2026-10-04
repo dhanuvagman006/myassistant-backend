@@ -68,7 +68,7 @@ function sampleLine(v) {
  * Records one voice from GPT-Live: a spoken "hello" goes in, its reply —
  * told to say exactly the sample line — is kept as 24 kHz PCM.
  */
-async function record(v, { timeoutMs = 30_000 } = {}) {
+async function record(v, { timeoutMs = 30_000, line = null } = {}) {
   const openai = require("../services/ai/openai");
   const hello = await openai.speak("Hello! Please introduce yourself.", { format: "pcm" });
   const helloPcm = Buffer.isBuffer(hello) ? hello : Buffer.from(hello.buffer || hello.audio || hello);
@@ -98,7 +98,7 @@ async function record(v, { timeoutMs = 30_000 } = {}) {
       session: {
         model: "gpt-live-1",
         instructions:
-          `When you are greeted, say exactly this one sentence and nothing else: "${sampleLine(v)}" ` +
+          `When you are greeted, say exactly this and nothing else: "${line || sampleLine(v)}" ` +
           openai.ACCENT,
         audio: { format: { type: "audio/pcm", rate: 24000 }, output: { voice: v.id } },
       },
@@ -147,4 +147,62 @@ async function sample(id) {
   return making.get(v.id);
 }
 
-module.exports = { CATALOG, DEFAULT_VOICE, has, byId, ttsVoiceFor, sample, record, sampleLine };
+/**
+ * THE ORB'S HELLO, IN HER LIVE VOICE (owner, 2026-10-04: "hello sir every
+ * time I tap, in the exact same voice"). GPT-Live ignores a "greet now"
+ * instruction too often, so the line is recorded once per voice and
+ * wording from GPT-Live itself, kept on disk, and the phone plays it the
+ * instant the orb is tapped.
+ */
+/** 16-bit mono PCM: her first phrase only, without the quiet around it (80 ms kept). */
+function trimSilence(pcm, rate = 24000) {
+  const win = rate / 50; // 20 ms
+  const loud = (i) => {
+    let sum = 0;
+    for (let j = i; j < i + win && j * 2 + 1 < pcm.length; j++) {
+      const x = pcm.readInt16LE(j * 2);
+      sum += x * x;
+    }
+    return Math.sqrt(sum / win) > 400;
+  };
+  const n = Math.floor(pcm.length / 2);
+  let a = 0;
+  while (a < n && !loud(a)) a += win;
+  // Only her FIRST phrase: she sometimes adds a line after a pause
+  // ("Hello Sir! … I am your AI assistant"); 400 ms of quiet ends it.
+  let b = a;
+  let quiet = 0;
+  for (let i = a; i < n; i += win) {
+    if (loud(i)) {
+      b = i;
+      quiet = 0;
+    } else if (++quiet >= 20) break;
+  }
+  if (a >= b) return pcm;
+  const pad = Math.round(rate * 0.08);
+  return pcm.subarray(Math.max(0, a - pad) * 2, Math.min(n, b + win + pad) * 2);
+}
+
+const GREETING_LINE = /^[\p{L} .,!'’-]{2,60}$/u;
+async function greeting(id, line) {
+  const v = byId(id);
+  const text = String(line || "").trim();
+  if (!v || !GREETING_LINE.test(text)) return null;
+  const key = require("crypto").createHash("sha1").update(`${v.id}|${text}`).digest("hex").slice(0, 16);
+  const file = path.join(DIR, `greet-${key}.wav`);
+  try {
+    return await fs.promises.readFile(file);
+  } catch (_) {}
+  if (!making.has(key)) {
+    making.set(key, (async () => {
+      const pcm = trimSilence(await record(v, { line: text }));
+      const wav = require("../services/ai/openai").wavWrap(pcm, 24000);
+      await fs.promises.mkdir(DIR, { recursive: true });
+      await fs.promises.writeFile(file, wav);
+      return wav;
+    })().finally(() => making.delete(key)));
+  }
+  return making.get(key);
+}
+
+module.exports = { CATALOG, DEFAULT_VOICE, has, byId, ttsVoiceFor, sample, greeting, record, sampleLine };

@@ -300,6 +300,20 @@ router.get("/voices/:id/sample", async (req, res) => {
   }
 });
 
+/** The orb's hello in a Live voice: ?line=Hello Sir! (recorded once, then kept). */
+router.get("/voices/:id/greeting", async (req, res) => {
+  const uid = userOf(req, res);
+  if (!uid) return;
+  try {
+    const wav = await require("./liveVoices").greeting(req.params.id, req.query.line);
+    if (!wav) return res.status(400).json({ error: "unknown voice or line" });
+    res.set("Content-Type", "audio/wav").set("Cache-Control", "private, max-age=604800").send(wav);
+  } catch (e) {
+    console.error(`ai: greeting ${req.params.id} failed: ${String(e.message || e).slice(0, 160)}`);
+    res.status(502).json({ error: "greeting not ready, try again" });
+  }
+});
+
 router.post("/firebase-token", async (req, res) => {
   const uid = userOf(req, res);
   if (!uid) return;
