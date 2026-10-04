@@ -154,36 +154,43 @@ async function sample(id) {
  * wording from GPT-Live itself, kept on disk, and the phone plays it the
  * instant the orb is tapped.
  */
-/** 16-bit mono PCM: her first phrase only, without the quiet around it (80 ms kept). */
-function trimSilence(pcm, rate = 24000) {
+/**
+ * Her speech in a 16-bit mono PCM take, as runs of sound split by pauses of
+ * 300 ms or more: [[startSample, endSample], ...].
+ */
+function voicedRuns(pcm, rate = 24000) {
   const win = rate / 50; // 20 ms
-  const loud = (i) => {
+  const n = Math.floor(pcm.length / 2);
+  const runs = [];
+  let start = -1;
+  let last = -1;
+  for (let i = 0; i + win <= n; i += win) {
     let sum = 0;
-    for (let j = i; j < i + win && j * 2 + 1 < pcm.length; j++) {
+    for (let j = i; j < i + win; j++) {
       const x = pcm.readInt16LE(j * 2);
       sum += x * x;
     }
-    return Math.sqrt(sum / win) > 400;
-  };
-  const n = Math.floor(pcm.length / 2);
-  let a = 0;
-  while (a < n && !loud(a)) a += win;
-  // Only her FIRST phrase: she sometimes adds a line after a pause
-  // ("Hello Sir! … I am your AI assistant"); 400 ms of quiet ends it.
-  let b = a;
-  let quiet = 0;
-  for (let i = a; i < n; i += win) {
-    if (loud(i)) {
-      b = i;
-      quiet = 0;
-    } else if (++quiet >= 20) break;
+    if (Math.sqrt(sum / win) > 400) {
+      if (start < 0) start = i;
+      else if (i - last > rate * 0.3) {
+        runs.push([start, last + win]);
+        start = i;
+      }
+      last = i;
+    }
   }
-  if (a >= b) return pcm;
-  const pad = Math.round(rate * 0.08);
-  return pcm.subarray(Math.max(0, a - pad) * 2, Math.min(n, b + win + pad) * 2);
+  if (start >= 0) runs.push([start, last + win]);
+  return runs;
 }
 
-const GREETING_LINE = /^[\p{L} .,!'’-]{2,60}$/u;
+/** The take from the first run to the end of run [k] (80 ms kept around). */
+function upTo(pcm, runs, k, rate = 24000) {
+  const pad = Math.round(rate * 0.08);
+  const n = Math.floor(pcm.length / 2);
+  return pcm.subarray(Math.max(0, runs[0][0] - pad) * 2, Math.min(n, runs[k][1] + pad) * 2);
+}
+
+const GREETING_LINE = /^[\p{L} .,!?'’-]{2,60}$/u;
 async function greeting(id, line) {
   const v = byId(id);
   const text = String(line || "").trim();
@@ -195,8 +202,25 @@ async function greeting(id, line) {
   } catch (_) {}
   if (!making.has(key)) {
     making.set(key, (async () => {
-      const pcm = trimSilence(await record(v, { line: text }));
-      const wav = require("../services/ai/openai").wavWrap(pcm, 24000);
+      // CHECKED BY EAR (2026-10-04): she sometimes cuts the line short or
+      // adds to it ("…today? I'm your assistant"). The take is split at its
+      // pauses and the SHORTEST opening that, transcribed, is exactly the
+      // line is kept; otherwise it is recorded again.
+      const openai = require("../services/ai/openai");
+      const norm = (t) => String(t || "").toLowerCase().replace(/[^\p{L} ]/gu, "").replace(/\s+/g, " ").trim();
+      let pcm = null;
+      for (let i = 0; i < 4 && !pcm; i++) {
+        const take = await record(v, { line: text });
+        const runs = voicedRuns(take);
+        for (let k = 0; k < Math.min(runs.length, 4) && !pcm; k++) {
+          const part = upTo(take, runs, k);
+          const heard = await openai.transcribe(openai.wavWrap(part, 24000), "audio/wav").catch(() => null);
+          if (heard && norm(heard.text) === norm(text)) pcm = part;
+        }
+        if (!pcm) console.warn(`greeting ${v.id}: take ${i + 1} did not say the line, again`);
+      }
+      if (!pcm) throw new Error("no clean greeting take");
+      const wav = openai.wavWrap(pcm, 24000);
       await fs.promises.mkdir(DIR, { recursive: true });
       await fs.promises.writeFile(file, wav);
       return wav;
