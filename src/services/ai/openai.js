@@ -513,6 +513,13 @@ function fromImageResponse(j) {
 
 // ---------------------------------------------------------------- realtime
 
+// Keep spoken replies concise by default; operators can raise this through
+// OPENAI_RT_MAX_OUTPUT_TOKENS after measuring real voice-task usage.
+function realtimeMaxOutputTokens() {
+  const n = Math.round(Number(env("OPENAI_RT_MAX_OUTPUT_TOKENS", "512")));
+  return Number.isFinite(n) ? Math.max(128, Math.min(4096, n)) : 512;
+}
+
 /**
  * A short-lived key the phone uses to open its own realtime voice session
  * (the app never sees OPENAI_API_KEY). Returns { value, expiresAt, model }.
@@ -560,7 +567,7 @@ async function realtimeClientSecret({ voice, instructions = "", tools = [], mode
           output: { format: { type: "audio/pcm", rate: 24000 }, voice: VOICES.includes(String(voice || "")) ? voice : models.ttsVoice() },
         },
         output_modalities: ["audio"],
-        max_output_tokens: "inf",
+        max_output_tokens: realtimeMaxOutputTokens(),
         ...(/^gpt-realtime-2/.test(m) ? { reasoning: { effort: env("OPENAI_RT_REASONING", "low") } } : {}),
         ...(tools.length ? {
           tools: toTools(tools).map((t) => ({ type: "function", ...t.function })),

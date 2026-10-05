@@ -110,7 +110,10 @@ const LIVE_BUILD = 135;
 const OPENAI_BUILD = 146;
 // From this build the phone can hold a GPT-Live conversation over WebRTC.
 const GPT_LIVE_BUILD = 154;
-const gptLiveOn = () => !/^(off|0|false|no)$/i.test(String(process.env.GPT_LIVE || "on").trim());
+// Realtime WebSocket is the cost-aware default: app-open prewarming costs
+// no session duration by itself. GPT-Live remains an explicit opt-in because
+// its connected sessions are billed by elapsed time, including silence.
+const gptLiveOn = () => !/^(off|0|false|no)$/i.test(String(process.env.GPT_LIVE || "off").trim());
 // Sulafat first (the client, 2026-09-30: "best voice as default" — the
 // warm one); the rest as before.
 const LIVE_VOICES = ["Sulafat", "Callirrhoe", "Achernar", "Aoede", "Vindemiatrix", "Kore", "Charon", "Achird"];
@@ -177,7 +180,7 @@ function liveBlock(userId) {
     // speech. End stays high, so the user's own pause still ends a turn.
     startSensitivity: "low",
     endSensitivity: "high",
-    idleCloseSec: 180, // a session warmed on app-open lasts a look around the app
+      idleCloseSec: 900, // keep the prewarmed live session ready across app use
     // Live's affective dialog: her tone follows the feeling in their voice
     // and her words (the client, 2026-09-30). OFF: the Firebase Live
     // endpoint refused the setup with it on (2026-09-30, "closed before
@@ -284,20 +287,20 @@ async function forUser(userId, { build, live } = {}) {
     out.models = {
       ...out.models,
       cloud: served.cloud, cloudFast: served.cloudFast, cloudFallback: served.cloudFallback,
-      tts: served.tts, ttsVoice: proxy.voiceFor(out.models.ttsVoice),
+      tts: served.tts, ttsVoice: proxy.DEFAULT_VOICE,
     };
     // The fast voice runs on OpenAI Realtime (Phase C): the phone opens the
     // socket itself with a key from POST /ai/realtime/secret.
-    if (out.live) out.live = { ...out.live, model: served.live, voice: proxy.voiceFor(out.live.voice), voices: proxy.REALTIME_VOICES.slice() };
-    // GPT-LIVE (the owner's agent, 2026-10-02): 154+ opens it over WebRTC
-    // through POST /ai/live/session. GPT_LIVE=off keeps Realtime.
+    if (out.live) out.live = { ...out.live, model: served.live, voice: proxy.DEFAULT_VOICE, voices: proxy.REALTIME_VOICES.slice() };
+    // GPT-LIVE (the owner's agent, 2026-10-02): 154+ can opt in over WebRTC
+    // through POST /ai/live/session. Keep it explicit: duration billing makes
+    // it a poor default for a socket prewarmed on every app open.
     if (out.live && gptLiveOn() && b >= GPT_LIVE_BUILD) {
-      // Their chosen voice (one list for live and spoken replies, 2026-10-03).
-      const lv = require("./liveVoices");
+      // Keep the optional WebRTC transport on the same voice as Realtime.
       out.live = {
         ...out.live, transport: "gpt-live", model: openai.GPT_LIVE_AGENT.model,
-        voice: lv.has(voice) ? String(voice).toLowerCase() : lv.DEFAULT_VOICE,
-        voices: lv.CATALOG.map((v) => v.id),
+        voice: proxy.DEFAULT_VOICE,
+        voices: [proxy.DEFAULT_VOICE],
       };
     }
   } else {

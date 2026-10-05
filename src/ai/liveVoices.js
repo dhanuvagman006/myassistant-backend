@@ -220,8 +220,10 @@ async function greeting(id, line) {
   const v = byId(id);
   const text = String(line || "").trim();
   if (!v || !GREETING_LINE.test(text)) return null;
-  const key = require("crypto").createHash("sha1").update(`${v.id}|${text}`).digest("hex").slice(0, 16);
-  const file = path.join(DIR, `greet2-${key}.wav`);
+  // Version the shared greeting asset. Earlier cached takes could have been
+  // made with a different voice identity; never serve those to this build.
+  const key = require("crypto").createHash("sha1").update(`shared-female-v3|${v.id}|${text}`).digest("hex").slice(0, 16);
+  const file = path.join(DIR, `greet3-${key}.wav`);
   try {
     return await fs.promises.readFile(file);
   } catch (_) {}

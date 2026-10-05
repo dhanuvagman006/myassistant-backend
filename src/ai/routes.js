@@ -218,7 +218,7 @@ router.post("/realtime/secret", async (req, res) => {
     const out = await openai.realtimeClientSecret({
       language, silenceMs: cfg.liveBlock(uid).silenceMs, user: uid,
       parallelTools: (Number(req.get("X-App-Build")) || 0) >= PARALLEL_TOOLS_BUILD,
-      voice: require("./proxy").voiceFor(b.voice),
+      voice: require("./proxy").DEFAULT_VOICE,
       instructions: (VOICE_STYLE + "\n\n" + String(b.instructions || "")).slice(0, 60_000),
       tools: Array.isArray(b.tools) ? b.tools : [],
     });
@@ -269,7 +269,7 @@ router.post("/live/session", async (req, res) => {
       backendInstructions: prompt +
         "\n\nYou are the backend of a spoken conversation: use the tools, then return a short, grounded result to be said aloud.",
       tools: liveToolsFor(uid, b.tools),
-      voice: String(b.voice || ""),
+      voice: require("./proxy").DEFAULT_VOICE,
     });
     res.status(201).json({ session: { id: out.session && out.session.id }, transport: out.transport });
   } catch (e) {
@@ -300,8 +300,8 @@ router.get("/voices/:id/sample", async (req, res) => {
   }
 });
 
-/** The orb's hello in a Live voice: ?line=Hello Sir! (recorded once, then kept). */
-router.get("/voices/:id/greeting", async (req, res) => {
+/** The orb's hello in a Live voice: generated once per voice and shared. */
+async function serveGreeting(req, res) {
   const uid = userOf(req, res);
   if (!uid) return;
   try {
@@ -312,7 +312,12 @@ router.get("/voices/:id/greeting", async (req, res) => {
     console.error(`ai: greeting ${req.params.id} failed: ${String(e.message || e).slice(0, 160)}`);
     res.status(502).json({ error: "greeting not ready, try again" });
   }
-});
+}
+
+// Keep the old path working for installed builds. v3 has a new shared asset
+// namespace so no stale greeting recorded with an older voice can be served.
+router.get("/voices/:id/greeting", serveGreeting);
+router.get("/voices/:id/greeting-v3", serveGreeting);
 
 router.post("/firebase-token", async (req, res) => {
   const uid = userOf(req, res);
