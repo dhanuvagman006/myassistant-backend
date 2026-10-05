@@ -20,19 +20,15 @@ const TTS_VOICES = {
   Zephyr: "alloy", Leda: "shimmer", Orus: "onyx", Autonoe: "nova", Enceladus: "ash",
 };
 
-/**
- * The voices the fast-voice picker offers on OpenAI: shimmer, the default
- * (the owner, 2026-10-02), then marin and cedar (a woman's, a man's).
- */
-const REALTIME_VOICES = ["shimmer", "marin", "cedar", "coral", "sage", "verse", "ballad", "ash"];
+/** One voice across the greeting, Realtime conversation, and spoken replies. */
+const DEFAULT_VOICE = "marin";
+const REALTIME_VOICES = [DEFAULT_VOICE];
 
-/** The OpenAI voice for a name the app knows, or the served default. */
+/** Compatibility mapper: legacy voice names all resolve to the one selected voice. */
 function voiceFor(name) {
-  const n = String(name || "").trim();
-  if (openai.VOICES.includes(n)) return n;
-  const twin = require("./liveVoices").ttsVoiceFor(n);
-  if (twin) return twin;
-  return TTS_VOICES[n] || openai.models.ttsVoice();
+  // Keep old client/profile preferences from splitting the spoken greeting
+  // and the Realtime session into different voices.
+  return DEFAULT_VOICE;
 }
 
 const partsOf = (c) => (c && Array.isArray(c.parts) ? c.parts : []);
@@ -206,4 +202,4 @@ function servedModels() {
   };
 }
 
-module.exports = { generate, voiceFor, splitTone, servedModels, TTS_VOICES, REALTIME_VOICES, chunk, cleanText, tagFilter };
+module.exports = { generate, voiceFor, splitTone, servedModels, TTS_VOICES, REALTIME_VOICES, DEFAULT_VOICE, chunk, cleanText, tagFilter };

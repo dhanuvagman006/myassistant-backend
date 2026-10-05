@@ -88,15 +88,22 @@ async function omGetWeather(where) {
 }
 
 /** One-paragraph plain text for the AI context. */
-function describe(w) {
+function describe(w, unit = "c") {
   if (!w) return "";
   const c = w.current;
   const today = w.days[0], tomorrow = w.days[1];
+  const temp = (value) => {
+    if (!Number.isFinite(value)) return "unknown";
+    return unit === "f"
+      ? Math.round(value * 9 / 5 + 32)
+      : value;
+  };
+  const suffix = unit === "f" ? "°F" : "°C";
   let s =
-    `Weather in ${w.label} right now: ${c.condition}, ${c.tempC}°C ` +
-    `(feels like ${c.feelsC}°C), humidity ${c.humidity}%, wind ${c.windKmh} km/h.`;
-  if (today) s += ` Today: ${today.condition}, ${today.minC}–${today.maxC}°C, ${today.rainChance}% chance of rain.`;
-  if (tomorrow) s += ` Tomorrow: ${tomorrow.condition}, ${tomorrow.minC}–${tomorrow.maxC}°C, ${tomorrow.rainChance}% rain.`;
+    `Weather in ${w.label} right now: ${c.condition}, ${temp(c.tempC)}${suffix} ` +
+    `(feels like ${temp(c.feelsC)}${suffix}), humidity ${c.humidity}%, wind ${c.windKmh} km/h.`;
+  if (today) s += ` Today: ${today.condition}, ${temp(today.minC)}–${temp(today.maxC)}${suffix}, ${today.rainChance}% chance of rain.`;
+  if (tomorrow) s += ` Tomorrow: ${tomorrow.condition}, ${temp(tomorrow.minC)}–${temp(tomorrow.maxC)}${suffix}, ${tomorrow.rainChance}% rain.`;
   return s;
 }
 

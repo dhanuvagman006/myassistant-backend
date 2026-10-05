@@ -39,7 +39,7 @@ const CATALOG = [
 ].map((v) => ({ ...v, name: v.id[0].toUpperCase() + v.id.slice(1) }));
 
 const IDS = new Set(CATALOG.map((v) => v.id));
-const DEFAULT_VOICE = "gleam";
+const DEFAULT_VOICE = "marin";
 // What gpt-4o-mini-tts can say (the classic, typed-reply voice).
 const TTS_VOICES = new Set(["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"]);
 
@@ -220,32 +220,20 @@ async function greeting(id, line) {
   const v = byId(id);
   const text = String(line || "").trim();
   if (!v || !GREETING_LINE.test(text)) return null;
-  const key = require("crypto").createHash("sha1").update(`${v.id}|${text}`).digest("hex").slice(0, 16);
-  const file = path.join(DIR, `greet2-${key}.wav`);
+  // Version the shared greeting asset. Earlier cached takes could have been
+  // made with a different voice identity; never serve those to this build.
+  const key = require("crypto").createHash("sha1").update(`shared-female-v4|${v.id}|${text}`).digest("hex").slice(0, 16);
+  const file = path.join(DIR, `greet4-${key}.wav`);
   try {
     return await fs.promises.readFile(file);
   } catch (_) {}
   if (!making.has(key)) {
     making.set(key, (async () => {
-      // CHECKED BY EAR (2026-10-04): she sometimes cuts the line short or
-      // adds to it ("…today? I'm your assistant"). The take is split at its
-      // pauses and the SHORTEST opening that, transcribed, is exactly the
-      // line is kept; otherwise it is recorded again.
       const openai = require("../services/ai/openai");
-      const norm = (t) => String(t || "").toLowerCase().replace(/[^\p{L} ]/gu, "").replace(/\s+/g, " ").trim();
-      let pcm = null;
-      for (let i = 0; i < 4 && !pcm; i++) {
-        const take = await record(v, { line: text });
-        const runs = voicedRuns(take);
-        for (let k = 0; k < Math.min(runs.length, 4) && !pcm; k++) {
-          const part = upTo(take, runs, k);
-          const heard = await openai.transcribe(openai.wavWrap(part, 24000), "audio/wav").catch(() => null);
-          if (heard && norm(heard.text) === norm(text)) pcm = part;
-        }
-        if (!pcm) console.warn(`greeting ${v.id}: take ${i + 1} did not say the line, again`);
-      }
-      if (!pcm) throw new Error("no clean greeting take");
-      const wav = openai.wavWrap(louder(pcm), 24000);
+      // Use the same OpenAI voice preset as the conversation. Generate this
+      // fixed line once and share/cache it; never synthesize it on mic tap.
+      const audio = await openai.speak(text, { voice: v.id, format: "pcm" });
+      const wav = openai.wavWrap(Buffer.from(audio.buffer), 24000);
       await fs.promises.mkdir(DIR, { recursive: true });
       await fs.promises.writeFile(file, wav);
       return wav;

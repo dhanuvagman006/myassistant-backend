@@ -385,18 +385,48 @@ function registerBuiltins() {
           type: "string",
           description: "City name. Omit to use the user's current area.",
         },
+        unit: {
+          type: "string",
+          enum: ["c", "f"],
+          description: "Temperature unit: celsius or fahrenheit.",
+        },
       },
     },
     async execute(args, ctx) {
+      if (args.location != null &&
+          (typeof args.location !== "string" || !args.location.trim())) {
+        return { ok: false, error: "location must be a non-empty string" };
+      }
+      const unit = args.unit == null ? "c" : args.unit;
+      if (unit !== "c" && unit !== "f") {
+        return { ok: false, error: "unit must be c or f" };
+      }
       // getWeather takes {city, lat, lng}, not a bare string — passing the
       // string made every lookup return null ("weather service returned
       // nothing") since where.city was always undefined. A named city wins;
       // otherwise fall back to the device's coordinates.
       const w = args.location
-        ? await weather.getWeather({ city: String(args.location) })
+        ? await weather.getWeather({ city: args.location.trim() })
         : await weather.getWeather({ city: ctx.city, lat: ctx.lat, lng: ctx.lng });
       if (!w) return { ok: false, error: "weather service returned nothing" };
-      return { ok: true, data: w, speak: weather.describe(w) };
+      const fahrenheit = (c) => Math.round(c * 9 / 5 + 32);
+      const current = w.current || {};
+      const days = Array.isArray(w.days) ? w.days : [];
+      const data = unit === "f" ? {
+        ...w,
+        unit: "f",
+        current: {
+          ...current,
+          tempF: Number.isFinite(current.tempC) ? fahrenheit(current.tempC) : null,
+          feelsF: Number.isFinite(current.feelsC) ? fahrenheit(current.feelsC) : null,
+        },
+        days: days.map((day) => ({
+          ...day,
+          maxF: Number.isFinite(day.maxC) ? fahrenheit(day.maxC) : null,
+          minF: Number.isFinite(day.minC) ? fahrenheit(day.minC) : null,
+        })),
+      } : { ...w, unit };
+      return { ok: true, data, speak: weather.describe(w, unit) };
     },
   });
 
@@ -5049,6 +5079,11 @@ function registerBuiltins() {
       "NOT FOR PICTURES: 'show me a picture/image/photo of X' is " +
       "show_pictures (Google Images); search results are show_search_results. Use open_app only " +
       "when the user NAMED the app (Instagram, YouTube, Google…).\n" +
+      "YOUTUBE VIDEO REQUESTS: for 'open/play/show me a video of X' or " +
+      "'search YouTube for X', set app='youtube' and put the full subject " +
+      "in query. This opens YouTube video search results for that subject. " +
+      "Do NOT omit query or treat a video subject as a channel/profile. " +
+      "Only use person/handle for an explicitly requested YouTube channel.\n" +
       "OPENING SOMEONE'S PROFILE: put their NAME in `person`, exactly as " +
       "the user said it. Works for ANYONE — a head of state, a cricketer, " +
       "a regional actor, a friend. The handle is established from the live " +
@@ -5103,6 +5138,28 @@ function registerBuiltins() {
     async execute(args, ctx = {}) {
       const q = String(args.query || "").trim();
       const enc = encodeURIComponent(q);
+      const app = args.app;
+      // Video subjects are searches, not channel handles. Use YouTube's
+      // Android intent URL so the installed YouTube app receives and keeps
+      // the search query instead of sometimes dropping it on its home feed.
+      const spokenYoutubeSubject = app === "youtube"
+        ? String(ctx.userText || "").match(
+          /\b(?:open|play|show|find|search(?:\s+for)?)\s+(?:me\s+)?(?:a\s+|the\s+)?(?:youtube\s+)?videos?\s+(?:of|about|on|for)\s+(.+?)\s*[.!?]*$/i,
+        )?.[1]?.trim()
+        : "";
+      const youtubeQuery = q || (app === "youtube"
+        ? String(args.person || spokenYoutubeSubject || "").trim()
+        : "");
+      if (app === "youtube" && youtubeQuery) {
+        const yt = require("../fulfillment/youtube");
+        const url = yt.searchUrl(youtubeQuery, ctx.platform);
+        return {
+          ok: true,
+          data: { url, mode: "search", handle: null },
+          deviceAction: { type: "open_url", url },
+          speak: `Opening YouTube results for ${youtubeQuery}.`,
+        };
+      }
       // A handle the USER typed or spoke wins. Failing that, a single-token
       // query IS a handle — "open instagram someusername" arrives that way.
       const raw = String(args.handle || "").trim().replace(/^@/, "");
@@ -5201,7 +5258,6 @@ function registerBuiltins() {
         spotify: "https://open.spotify.com/",
       };
 
-      const app = args.app;
       if (!HOME[app]) return { ok: false, error: `unknown app ${app}` };
 
       let url;

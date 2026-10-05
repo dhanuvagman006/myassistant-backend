@@ -194,7 +194,7 @@ router.post("/draft", express.json({ limit: "2mb" }), async (req, res) => {
 
 /** How she sounds on the fast voice (the owner, 2026-10-02: "there is no emotion in the voice"). */
 const VOICE_STYLE =
-  "VOICE: speak like a warm, quick-witted person, not a reader — lively, natural intonation, real " +
+  "VOICE: use Marin, a natural, clear, warm female voice. Speak with formal courtesy and deep respect, never curtly or over-familiarly; sound like a considerate person, not a reader — lively, natural intonation, real " +
   "feeling that follows what they say (delight, concern, a smile in the voice, calm firmness when it " +
   "is serious). Short sentences, no filler, never read a list aloud. Match their language and energy.\n" +
   // The owner, 2026-10-03: never an American accent for Indian languages.
@@ -218,7 +218,7 @@ router.post("/realtime/secret", async (req, res) => {
     const out = await openai.realtimeClientSecret({
       language, silenceMs: cfg.liveBlock(uid).silenceMs, user: uid,
       parallelTools: (Number(req.get("X-App-Build")) || 0) >= PARALLEL_TOOLS_BUILD,
-      voice: require("./proxy").voiceFor(b.voice),
+      voice: require("./proxy").DEFAULT_VOICE,
       instructions: (VOICE_STYLE + "\n\n" + String(b.instructions || "")).slice(0, 60_000),
       tools: Array.isArray(b.tools) ? b.tools : [],
     });
@@ -228,48 +228,20 @@ router.post("/realtime/secret", async (req, res) => {
   }
 });
 
-/**
- * GPT-LIVE (2026-10-02): the phone sends its WebRTC offer, we create the
- * session with OpenAI and return the answer. The voice gets the style and
- * the conversation; the backend model gets the same prompt to choose tools by.
- */
-/**
- * The app's functions for GPT-Live, built here from the registry: the
- * phone's copy has been through its own declaration format and back, and
- * with it every delegation failed ("Responses handoff incomplete",
- * 2026-10-02). The phone's list is the fallback.
- */
-function liveToolsFor(uid, fromPhone) {
-  try {
-    require("./context");
-    const registry = require("../tools/registry");
-    const live = require("./liveTools");
-    const { jsonSchema } = require("./context");
-    const names = live.liveNames(registry.list(), { must: [] });
-    const decls = live.capDeclarations(registry.declarations({ userId: uid, deviceCaps: null, only: names }), names);
-    if (decls.length) return decls.map((d) => ({ name: d.name, description: d.description, parameters: jsonSchema(d.parameters) }));
-  } catch (e) {
-    console.error(`ai: gpt-live tools from the registry failed: ${String(e.message || e).slice(0, 160)}`);
-  }
-  return Array.isArray(fromPhone) ? fromPhone : [];
-}
-
+/** Creates GPT-Live with the server-owned, immutable agent configuration. */
 router.post("/live/session", async (req, res) => {
   const uid = userOf(req, res);
   if (!uid) return;
   const b = req.body || {};
   try {
     const openai = require("../services/ai/openai");
-    const prompt = String(b.instructions || "");
+    const transport = b.transport && typeof b.transport === "object" ? b.transport : null;
+    if (transport && transport.type !== "webrtc") {
+      return res.status(400).json({ error: "transport.type must be webrtc" });
+    }
     const out = await openai.liveSession({
-      sdp: b.sdp, user: uid,
-      instructions: VOICE_STYLE + "\n\n" + prompt +
-        "\n\nAnything that needs a tool, the app, saved facts or current information: hand it to the backend, then say its result." +
-        " Drafting, writing or changing any text (email, letter, message, the draft on screen): ALWAYS hand it to the backend — never say the text aloud.",
-      backendInstructions: prompt +
-        "\n\nYou are the backend of a spoken conversation: use the tools, then return a short, grounded result to be said aloud.",
-      tools: liveToolsFor(uid, b.tools),
-      voice: String(b.voice || ""),
+      sdp: transport ? transport.sdp : b.sdp,
+      user: uid,
     });
     res.status(201).json({ session: { id: out.session && out.session.id }, transport: out.transport });
   } catch (e) {
@@ -300,8 +272,8 @@ router.get("/voices/:id/sample", async (req, res) => {
   }
 });
 
-/** The orb's hello in a Live voice: ?line=Hello Sir! (recorded once, then kept). */
-router.get("/voices/:id/greeting", async (req, res) => {
+/** The orb's hello in a Live voice: generated once per voice and shared. */
+async function serveGreeting(req, res) {
   const uid = userOf(req, res);
   if (!uid) return;
   try {
@@ -312,7 +284,13 @@ router.get("/voices/:id/greeting", async (req, res) => {
     console.error(`ai: greeting ${req.params.id} failed: ${String(e.message || e).slice(0, 160)}`);
     res.status(502).json({ error: "greeting not ready, try again" });
   }
-});
+}
+
+// Keep old paths working for installed builds. v4 invalidates clips generated
+// with an earlier voice source.
+router.get("/voices/:id/greeting", serveGreeting);
+router.get("/voices/:id/greeting-v3", serveGreeting);
+router.get("/voices/:id/greeting-v4", serveGreeting);
 
 router.post("/firebase-token", async (req, res) => {
   const uid = userOf(req, res);
