@@ -314,10 +314,11 @@ async function serveGreeting(req, res) {
   }
 }
 
-// Keep the old path working for installed builds. v3 has a new shared asset
-// namespace so no stale greeting recorded with an older voice can be served.
+// Keep old paths working for installed builds. v4 invalidates clips generated
+// with an earlier voice source.
 router.get("/voices/:id/greeting", serveGreeting);
 router.get("/voices/:id/greeting-v3", serveGreeting);
+router.get("/voices/:id/greeting-v4", serveGreeting);
 
 router.post("/firebase-token", async (req, res) => {
   const uid = userOf(req, res);

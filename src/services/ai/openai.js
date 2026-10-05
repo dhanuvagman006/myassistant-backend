@@ -44,9 +44,9 @@ const models = {
   search: () => env("OPENAI_SEARCH_MODEL", "gpt-4.1-mini"),
   stt: () => env("OPENAI_STT_MODEL", "gpt-4o-transcribe"),
   tts: () => env("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
-  // shimmer (the owner's session spec, 2026-10-02): the live voice and the
-  // spoken fallback sound the same.
-  ttsVoice: () => env("OPENAI_TTS_VOICE", "shimmer"),
+  // Keep the cached greeting, spoken fallback, and Realtime conversation on
+  // one voice preset. coral is also available in the Realtime API.
+  ttsVoice: () => env("OPENAI_TTS_VOICE", "coral"),
   image: () => env("OPENAI_IMAGE_MODEL", "gpt-image-1"),
   // Edits on a model measured for it (2026-10-02: gpt-image-1.5, ~25 s).
   imageEdit: () => env("OPENAI_IMAGE_EDIT_MODEL", env("OPENAI_IMAGE_MODEL", "gpt-image-1")),
@@ -559,7 +559,7 @@ async function realtimeClientSecret({ voice, instructions = "", tools = [], mode
             // switched to English, the hint went, and "Mr. Shankar Bhat" came
             // back in Urdu script). Never a language they do not speak.
             transcription: {
-              model: env("OPENAI_RT_STT_MODEL", "whisper-1"),
+              model: env("OPENAI_RT_STT_MODEL", "gpt-4o-mini-transcribe"),
               ...(/^[a-z]{2}$/.test(lang) ? { language: lang } : {}),
               prompt: transcriptionHint(lang),
             },
@@ -567,6 +567,7 @@ async function realtimeClientSecret({ voice, instructions = "", tools = [], mode
           output: { format: { type: "audio/pcm", rate: 24000 }, voice: VOICES.includes(String(voice || "")) ? voice : models.ttsVoice() },
         },
         output_modalities: ["audio"],
+        include: ["item.input_audio_transcription.logprobs"],
         max_output_tokens: realtimeMaxOutputTokens(),
         ...(/^gpt-realtime-2/.test(m) ? { reasoning: { effort: env("OPENAI_RT_REASONING", "low") } } : {}),
         ...(tools.length ? {
