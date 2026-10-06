@@ -112,7 +112,10 @@ const OPENAI_BUILD = 146;
 // 163 since 2026-10-06: the server builds each user's agent from the
 // instruction and tools the phone sends, and plays a recorded opening;
 // builds 154-162 send neither and would get an agent with no app tools.
-const GPT_LIVE_BUILD = 163;
+// 164 since 2026-10-06 (production): 163 sent tool results with a
+// delegation_id GPT-Live refuses, so every tool turn went silent after
+// "one moment". 163 stays on Realtime, which answers.
+const GPT_LIVE_BUILD = 164;
 // Realtime WebSocket is the cost-aware default: app-open prewarming costs
 // no session duration by itself. GPT-Live remains an explicit opt-in because
 // its connected sessions are billed by elapsed time, including silence.
