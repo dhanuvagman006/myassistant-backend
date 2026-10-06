@@ -51,12 +51,15 @@ const delegateMaxOutput = () => {
 // session, tools first and in a fixed order, so OpenAI's prompt cache bills
 // them at the cached rate (a tenth) after the first call. Nothing per-turn
 // (a clock, a counter) may go into either.
-// No tool maximum is documented for Live; the Responses API's function
-// limit is the practical one. Past it the lowest-priority tools drop.
-const MAX_TOOLS = 128;
+// EVERY TOOL (2026-10-06, measured): the delegated model accepted all 147
+// tools a user is offered in one call (~24k input tokens, cached after the
+// first call of a session); the old cap of 128 silently dropped 36, among
+// them search_flights, book_ride and the patient tools. This is only a
+// guard against a runaway catalogue.
+const MAX_TOOLS = 256;
 const TOOL_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
 const MAX_TOOL_DESC = 1024;
-const MAX_TOOLS_BYTES = 400_000;
+const MAX_TOOLS_BYTES = 800_000;
 const MAX_BACKEND_PROMPT = 60_000;
 
 /** The user's pick if it is a gpt-live-1 voice, else the natural default. */
@@ -230,6 +233,6 @@ function sessionConfig({ profile = null, voice = "", tools = [], instructions = 
 
 module.exports = {
   MODEL, DEFAULT_VOICE, NATURAL_VOICES, LIVE_VOICE_IDS, MAX_TOOLS,
-  sessionConfig, voiceFor, titleFor, openingFor, openingInstruction, toolsFor, cleanSchema,
+  sessionConfig, voiceFor, delegateReasoning, titleFor, openingFor, openingInstruction, toolsFor, cleanSchema,
   liveInstructions, backendInstructions, delegateModel,
 };

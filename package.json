@@ -50,6 +50,8 @@
     "test:readback": "node scripts/readback-test.js",
     "test:live": "node scripts/live-turn-test.js",
     "test:gptlive": "node scripts/gpt-live-test.js",
+    "e2e:gptlive": "node --env-file=.env scripts/gpt-live-e2e.js",
+    "check:gptlive-tools": "node --env-file=.env scripts/gpt-live-tools-check.js",
     "test:ai": "node scripts/ai-toolserver-test.js",
     "test:kitchen": "node scripts/kitchen-test.js",
     "test:appfunctions": "node scripts/appfunctions-test.js",

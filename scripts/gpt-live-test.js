@@ -105,7 +105,7 @@ test("tools: the app's own web_search replaces the hosted one", () => {
 });
 
 test("tools: bad names and duplicates dropped, capped in the phone's order", () => {
-  const raw = [tool("ok_1"), tool("ok_1"), tool("bad name"), { name: "" }, null, ...Array.from({ length: 200 }, (_, i) => tool(`t_${i}`))];
+  const raw = [tool("ok_1"), tool("ok_1"), tool("bad name"), { name: "" }, null, ...Array.from({ length: g.MAX_TOOLS + 50 }, (_, i) => tool(`t_${i}`))];
   const fns = g.toolsFor(raw).filter((t) => t.type === "function");
   assert.strictEqual(fns.length, g.MAX_TOOLS);
   assert.strictEqual(fns[0].name, "ok_1");
