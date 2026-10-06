@@ -39,7 +39,7 @@ const CATALOG = [
 ].map((v) => ({ ...v, name: v.id[0].toUpperCase() + v.id.slice(1) }));
 
 const IDS = new Set(CATALOG.map((v) => v.id));
-const DEFAULT_VOICE = "marin";
+const DEFAULT_VOICE = "coral";
 // What gpt-4o-mini-tts can say (the classic, typed-reply voice).
 const TTS_VOICES = new Set(["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"]);
 

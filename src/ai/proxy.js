@@ -21,7 +21,7 @@ const TTS_VOICES = {
 };
 
 /** One voice across the greeting, Realtime conversation, and spoken replies. */
-const DEFAULT_VOICE = "marin";
+const DEFAULT_VOICE = "coral";
 const REALTIME_VOICES = [DEFAULT_VOICE];
 
 /** Compatibility mapper: legacy voice names all resolve to the one selected voice. */
