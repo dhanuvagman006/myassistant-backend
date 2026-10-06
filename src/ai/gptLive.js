@@ -109,10 +109,18 @@ function cleanSchema(s, depth = 0) {
 }
 
 /**
+ * OPENAI'S OWN TOOLS FIRST (the owner, 2026-10-02: "let OpenAI's built-in
+ * function run; if it doesn't have one, run our function"). Hosted web
+ * search answers without a round trip through the phone, so the app's own
+ * web_search is left out; stay_silent is the voice's own business, not the
+ * backend's.
+ */
+const SKIP_FOR_BACKEND = new Set(["web_search", "stay_silent"]);
+
+/**
  * The phone's tool list ({name, description, parameters}) as Responses
  * function tools, in the phone's order (its priority), deduplicated and
- * capped. Hosted web search joins only when the app has no web_search of
- * its own (the names would clash).
+ * capped, after OpenAI's hosted web search.
  */
 function toolsFor(raw) {
   const seen = new Set();
@@ -121,7 +129,7 @@ function toolsFor(raw) {
   for (const t of Array.isArray(raw) ? raw : []) {
     if (fns.length >= MAX_TOOLS) break;
     const name = t && typeof t.name === "string" ? t.name.trim() : "";
-    if (!TOOL_NAME.test(name) || seen.has(name)) continue;
+    if (!TOOL_NAME.test(name) || seen.has(name) || SKIP_FOR_BACKEND.has(name)) continue;
     const fn = {
       type: "function",
       name,
@@ -138,7 +146,7 @@ function toolsFor(raw) {
     seen.add(name);
     fns.push(fn);
   }
-  return seen.has("web_search") ? fns : [{ type: "web_search" }, ...fns];
+  return [{ type: "web_search" }, ...fns];
 }
 
 /** The voice model's prompt: how she sounds, the greeting rule, when to delegate. */
@@ -189,6 +197,10 @@ function backendInstructions(appContext) {
     "## Task instructions",
     "Use the tools to actually do what was asked. Prefer the most specific tool. Call several tools when the task needs them. " +
       "Never invent tool results or claim an action you did not perform.",
+    // 2026-10-06, the tools check: "Call me at 8 and remind me…" placed the
+    // call at once instead of at 8.
+    "Anything asked for a LATER time (\"call me at 8\", \"message him tomorrow\", \"remind me in an hour\") is scheduled " +
+      "with schedule_task or create_reminder, never done now.",
     ctx ? "## About the user and the app\n" + ctx : "",
     "## Return the result",
     "Return a short, spoken-style result for the voice model to say: one or two sentences, no lists, links or formatting. " +

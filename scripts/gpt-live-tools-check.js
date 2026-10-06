@@ -56,8 +56,11 @@ async function responses(body) {
     return j;
   }
 }
-const callsOf = (j) => (j.output || []).filter((o) => o.type === "function_call")
-  .map((o) => ({ name: o.name, args: (() => { try { return JSON.parse(o.arguments || "{}"); } catch (_) { return {}; } })() }));
+// OpenAI's hosted search shows as a web_search_call item: it counts as web_search.
+const callsOf = (j) => (j.output || []).filter((o) => o.type === "function_call" || o.type === "web_search_call")
+  .map((o) => o.type === "web_search_call"
+    ? { name: "web_search", args: {} }
+    : { name: o.name, args: (() => { try { return JSON.parse(o.arguments || "{}"); } catch (_) { return {}; } })() });
 
 async function pool(items, n, fn) {
   const out = new Array(items.length);
@@ -111,7 +114,11 @@ async function pool(items, n, fn) {
         j = await responses({ previous_response_id: j.id, instructions: backend, tools, input: outputs, tool_choice: "auto", parallel_tool_calls: true, reasoning: { effort: gptLive.delegateReasoning() }, max_output_tokens: 1024 });
       }
       const got = calls.map((c) => c.name);
-      const ok = want.length === 0 ? got.length === 0 || got.every((n) => n === "stay_silent" || n === "end_conversation") : got.some((n) => want.includes(n));
+      // stay_silent is the voice's, not the backend's: silence is right there.
+      const quiet = want.length === 0 || want.every((w) => w === "stay_silent");
+      const ok = quiet
+        ? got.length === 0 || got.every((n) => n === "stay_silent" || n === "end_conversation")
+        : got.some((n) => want.includes(n));
       return { text, want, got, calls, ok };
     } catch (e) {
       return { text, want, got: [], calls: [], ok: false, error: e.message };

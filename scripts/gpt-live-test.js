@@ -98,10 +98,10 @@ test("tools: every phone tool, non-strict, lowercase schema, valid required", ()
   assert.strictEqual(tools.length, 3);
 });
 
-test("tools: the app's own web_search replaces the hosted one", () => {
-  const tools = g.toolsFor([tool("web_search"), tool("get_weather")]);
-  assert.ok(!tools.some((t) => t.type === "web_search"));
-  assert.deepStrictEqual(tools.map((t) => t.name), ["web_search", "get_weather"]);
+test("tools: OpenAI's own web search first; the app's web_search and stay_silent left out", () => {
+  const tools = g.toolsFor([tool("web_search"), tool("stay_silent"), tool("get_weather")]);
+  assert.deepStrictEqual(tools[0], { type: "web_search" });
+  assert.deepStrictEqual(tools.slice(1).map((t) => t.name), ["get_weather"]);
 });
 
 test("tools: bad names and duplicates dropped, capped in the phone's order", () => {

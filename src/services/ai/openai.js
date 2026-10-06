@@ -14,7 +14,7 @@
  *   OPENAI_STT_MODEL        gpt-4o-transcribe
  *   OPENAI_TTS_MODEL        gpt-4o-mini-tts  (voice OPENAI_TTS_VOICE, default shimmer)
  *   OPENAI_IMAGE_MODEL      gpt-image-1      make AND edit pictures
- *   OPENAI_REALTIME_MODEL   gpt-realtime-mini the phone's fast voice
+ *   OPENAI_REALTIME_MODEL   gpt-realtime-2.1 the phone's fast voice (reasoning OPENAI_RT_REASONING, low)
  *   OPENAI_EMBED_MODEL      text-embedding-3-small (memory/embeddings.js)
  *
  * The callers' contracts are unchanged (services/ai/router.js): what was
@@ -53,7 +53,9 @@ const models = {
   image: () => env("OPENAI_IMAGE_MODEL", "gpt-image-1"),
   // Edits on a model measured for it (2026-10-02: gpt-image-1.5, ~25 s).
   imageEdit: () => env("OPENAI_IMAGE_EDIT_MODEL", env("OPENAI_IMAGE_MODEL", "gpt-image-1")),
-  realtime: () => env("OPENAI_REALTIME_MODEL", "gpt-realtime-mini"),
+  // gpt-realtime-2.1, never -mini (2026-10-06, production): -mini refuses
+  // parallel_tool_calls with tools, so every Realtime session failed (502).
+  realtime: () => env("OPENAI_REALTIME_MODEL", "gpt-realtime-2.1"),
   embed: () => env("OPENAI_EMBED_MODEL", "text-embedding-3-small"),
 };
 
