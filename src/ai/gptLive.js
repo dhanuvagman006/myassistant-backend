@@ -30,12 +30,17 @@ const LIVE_VOICE_IDS = new Set([
 // The voices OpenAI marks as recorded from a person ("Source: Natural"),
 // plus marin and cedar, its flagship speech-to-speech voices. Generated
 // voices (delta, cinder, beacon, quartz) are never the default.
-// TWO OR THREE, ALL NATURAL (testers, 2026-10-06: "10 voices also speaking
-// like ai … 2 to 3 voices also enough but it must sound natural"): gleam and
-// meridian are recorded from a person; marin is OpenAI's most natural
-// speech-to-speech voice. Two female, one male, so every assistant name has
-// a voice that fits it (users/voiceGender).
-const NATURAL_VOICES = ["gleam", "marin", "meridian"];
+// EVERY VOICE THE ACCOUNT CAN USE (owner, 2026-10-06: "I need all available
+// voice samples provided by OpenAI"). Natural (recorded from a person)
+// first, then OpenAI's speech-to-speech voices, then the generated ones.
+// Measured 2026-10-06: brise, flitz, harema, juni, nira, noeul, nuri,
+// shitan and sillage are in the enum but refused ("Voice session access
+// denied"), so they are not offered.
+const NATURAL_VOICES = [
+  "gleam", "meridian", "willow", "stone", "vesper", "ripple", "bossa", "tempo",
+  "marin", "cedar", "coral", "shimmer", "sage", "alloy", "ash", "ballad", "echo", "verse",
+  "quartz", "delta", "beacon", "cinder",
+];
 const DEFAULT_VOICE = "gleam";
 const DEFAULT_MALE_VOICE = "meridian";
 

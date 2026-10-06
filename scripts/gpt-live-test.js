@@ -58,18 +58,19 @@ test("voice: the phone's pick when valid, else the profile's, else gleam", () =>
   assert.strictEqual(g.sessionConfig({}).session.audio.output.voice, "gleam");
 });
 
-test("three voices offered; a retired pick becomes the offered one of its gender", () => {
-  assert.deepStrictEqual(g.NATURAL_VOICES, ["gleam", "marin", "meridian"]);
-  for (const male of ["tempo", "cedar", "stone", "vesper", "ripple"]) assert.strictEqual(g.voiceFor(male), "meridian", male);
-  for (const female of ["willow", "bossa", "coral", "shimmer"]) assert.strictEqual(g.voiceFor(female), "gleam", female);
-  assert.strictEqual(g.voiceFor("", "tempo"), "meridian");
-  assert.strictEqual(g.voiceFor("nonsense"), "gleam");
+test("every voice the account can use is offered; refused ones are not", () => {
+  assert.strictEqual(g.NATURAL_VOICES.length, 22);
+  assert.strictEqual(g.NATURAL_VOICES[0], "gleam");
+  for (const refused of ["brise", "juni", "nira", "sillage"]) assert.ok(!g.NATURAL_VOICES.includes(refused), refused);
+  const lv = require("../src/ai/liveVoices");
+  for (const v of g.NATURAL_VOICES) assert.ok(lv.byId(v), `${v} has a gender and label`);
+  assert.strictEqual(g.voiceFor("Tempo"), "tempo");
+  assert.strictEqual(g.voiceFor("juni"), "gleam");
 });
 
 test("the default and every natural voice are gpt-live-1 voices", () => {
   assert.ok(g.LIVE_VOICE_IDS.has(g.DEFAULT_VOICE));
   for (const v of g.NATURAL_VOICES) assert.ok(g.LIVE_VOICE_IDS.has(v), v);
-  for (const generated of ["delta", "cinder", "beacon", "quartz"]) assert.ok(!g.NATURAL_VOICES.includes(generated));
 });
 
 test("delegation: Responses on gpt-6-luna, low reasoning, parallel tools", () => {

@@ -26,6 +26,10 @@ const CATALOG = [
   { id: "meridian", gender: "male", accent: "North American", tagline: "Grounded and measured" },
   { id: "tempo", gender: "male", accent: "Brazilian Portuguese", tagline: "Grounded and measured" },
   { id: "cedar", gender: "male", accent: "North American", tagline: "Open and upbeat" },
+  { id: "quartz", gender: "female", accent: "Australian", tagline: "Bright and crisp" },
+  { id: "delta", gender: "female", accent: "Southern U.S.", tagline: "Friendly and easygoing" },
+  { id: "beacon", gender: "male", accent: "Filipino", tagline: "Warm and steady" },
+  { id: "cinder", gender: "male", accent: "Southern U.S.", tagline: "Relaxed and deep" },
   // OpenAI's earlier voices, also on GPT-Live.
   { id: "marin", gender: "female", accent: "North American", tagline: "Natural and clear" },
   { id: "shimmer", gender: "female", accent: "North American", tagline: "Bright and gentle" },
