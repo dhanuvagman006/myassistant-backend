@@ -53,9 +53,17 @@ test("the name is never used for addressing", () => {
 
 test("voice: the phone's pick when valid, else the profile's, else gleam", () => {
   assert.strictEqual(g.sessionConfig({ profile: profile("male"), voice: "Meridian" }).voice, "meridian");
-  assert.strictEqual(g.sessionConfig({ profile: profile("male", "willow"), voice: "Kore" }).voice, "willow");
+  assert.strictEqual(g.sessionConfig({ profile: profile("male", "marin"), voice: "Kore" }).voice, "marin");
   assert.strictEqual(g.sessionConfig({ profile: profile("male", "Charon") }).voice, "gleam");
   assert.strictEqual(g.sessionConfig({}).session.audio.output.voice, "gleam");
+});
+
+test("three voices offered; a retired pick becomes the offered one of its gender", () => {
+  assert.deepStrictEqual(g.NATURAL_VOICES, ["gleam", "marin", "meridian"]);
+  for (const male of ["tempo", "cedar", "stone", "vesper", "ripple"]) assert.strictEqual(g.voiceFor(male), "meridian", male);
+  for (const female of ["willow", "bossa", "coral", "shimmer"]) assert.strictEqual(g.voiceFor(female), "gleam", female);
+  assert.strictEqual(g.voiceFor("", "tempo"), "meridian");
+  assert.strictEqual(g.voiceFor("nonsense"), "gleam");
 });
 
 test("the default and every natural voice are gpt-live-1 voices", () => {
@@ -133,7 +141,7 @@ test("the voice prompt lists the backend's tools and stays under its limit", () 
     if (!out.live || out.live.transport !== "gpt-live") {
       console.log("  --  GET /ai/config gpt-live block (provider is not openai here: skipped)");
     } else {
-      assert.strictEqual(out.live.voice, "gleam");
+      assert.ok(g.NATURAL_VOICES.includes(out.live.voice), out.live.voice);
       assert.deepStrictEqual(out.live.voices, g.NATURAL_VOICES);
       assert.strictEqual(out.live.idleCloseSec, 60);
       assert.strictEqual(out.live.prewarm, true);

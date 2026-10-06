@@ -321,7 +321,9 @@ async function forUser(userId, { build, live } = {}) {
       const gptLive = require("./gptLive");
       out.live = {
         ...out.live, transport: "gpt-live", model: gptLive.MODEL,
-        voice: gptLive.DEFAULT_VOICE,
+        // Their saved voice, or the offered one of its gender when it was
+        // retired: a phone holding "tempo" falls back to THIS, not to gleam.
+        voice: gptLive.voiceFor(profile && profile.assistant && profile.assistant.voice),
         voices: gptLive.NATURAL_VOICES.slice(),
         idleCloseSec: gptLiveIdleSec(),
         prewarm: gptLivePrewarm(),

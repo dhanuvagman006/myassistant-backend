@@ -30,8 +30,23 @@ const LIVE_VOICE_IDS = new Set([
 // The voices OpenAI marks as recorded from a person ("Source: Natural"),
 // plus marin and cedar, its flagship speech-to-speech voices. Generated
 // voices (delta, cinder, beacon, quartz) are never the default.
-const NATURAL_VOICES = ["gleam", "marin", "cedar", "meridian", "willow", "stone", "vesper", "ripple", "bossa", "tempo"];
+// TWO OR THREE, ALL NATURAL (testers, 2026-10-06: "10 voices also speaking
+// like ai … 2 to 3 voices also enough but it must sound natural"): gleam and
+// meridian are recorded from a person; marin is OpenAI's most natural
+// speech-to-speech voice. Two female, one male, so every assistant name has
+// a voice that fits it (users/voiceGender).
+const NATURAL_VOICES = ["gleam", "marin", "meridian"];
 const DEFAULT_VOICE = "gleam";
+const DEFAULT_MALE_VOICE = "meridian";
+
+/** A voice no longer offered becomes the offered one of its gender. */
+function naturalVoice(id) {
+  const v = String(id || "").trim().toLowerCase();
+  if (NATURAL_VOICES.includes(v)) return v;
+  if (!LIVE_VOICE_IDS.has(v)) return null;
+  const known = require("./liveVoices").CATALOG.find((c) => c.id === v);
+  return known && known.gender === "male" ? DEFAULT_MALE_VOICE : DEFAULT_VOICE;
+}
 
 // Responses delegation backend. gpt-6-luna is the cheapest listed model
 // with function calling ($0.10 / $0.50 per 1M tokens, 2026-10) and the one
@@ -62,11 +77,14 @@ const MAX_TOOL_DESC = 1024;
 const MAX_TOOLS_BYTES = 800_000;
 const MAX_BACKEND_PROMPT = 60_000;
 
-/** The user's pick if it is a gpt-live-1 voice, else the natural default. */
+/**
+ * The user's pick when it is offered; a pick that no longer is (tempo,
+ * willow…) becomes the offered voice of the same gender; else the default.
+ */
 function voiceFor(...candidates) {
   for (const c of candidates) {
-    const v = String(c || "").trim().toLowerCase();
-    if (LIVE_VOICE_IDS.has(v)) return v;
+    const v = naturalVoice(c);
+    if (v) return v;
   }
   return DEFAULT_VOICE;
 }
@@ -245,6 +263,6 @@ function sessionConfig({ profile = null, voice = "", tools = [], instructions = 
 
 module.exports = {
   MODEL, DEFAULT_VOICE, NATURAL_VOICES, LIVE_VOICE_IDS, MAX_TOOLS,
-  sessionConfig, voiceFor, delegateReasoning, titleFor, openingFor, openingInstruction, toolsFor, cleanSchema,
+  sessionConfig, voiceFor, naturalVoice, DEFAULT_MALE_VOICE, delegateReasoning, titleFor, openingFor, openingInstruction, toolsFor, cleanSchema,
   liveInstructions, backendInstructions, delegateModel,
 };

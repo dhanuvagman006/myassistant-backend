@@ -115,19 +115,31 @@ async function check(name, voice) {
   const ng = await nameGender(name);
   if (ng === "neutral" || ng === vg) return { ok: true };
 
-  const pick = vg === "female"
-    ? "Kore, Aoede or Leda"
-    : "Fenrir, Charon or Puck";
-  const other = ng === "female" ? "Kore, Aoede or Leda" : "Fenrir, Charon or Puck";
+  // The voices the picker offers right now, by gender — never Gemini's
+  // (Kore, Fenrir…), which the picker stopped showing (testers, 2026-10-06:
+  // the message named voices nobody could find).
+  const label = (id) => id[0].toUpperCase() + id.slice(1);
+  const lv = require("../ai/liveVoices");
+  const offered = (() => {
+    try {
+      if (require("../ai/config").gptLiveOn()) return require("../ai/gptLive").NATURAL_VOICES;
+    } catch (_) { /* fall through to the whole catalogue */ }
+    return lv.CATALOG.map((c) => c.id);
+  })();
+  const fitting = offered.filter((id) => voiceGender(id) === ng).map(label);
+  const list = fitting.length > 1
+    ? `${fitting.slice(0, -1).join(", ")} or ${fitting[fitting.length - 1]}`
+    : fitting[0] || "";
+  const assistant = String(name).trim();
   return {
     ok: false,
     nameGender: ng,
     voiceGender: vg,
+    suggest: fitting.map((n) => n.toLowerCase()),
     message:
-      `"${String(name).trim()}" is a ${ng} name and ${voice} is a ${vg} ` +
-      `voice. Either choose a ${vg} name to go with ${voice}, or switch ` +
-      `the voice to ${other} to keep the name.` +
-      (pick === other ? "" : ""),
+      `${label(String(voice))} is a ${vg} voice, but your assistant is called ${assistant}. ` +
+      (list ? `Pick ${list} to keep the name ${assistant}, or ` : "") +
+      `change the assistant's name first.`,
   };
 }
 
