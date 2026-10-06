@@ -5454,7 +5454,7 @@ function registerBuiltins() {
             "documents", "clients", "finance", "stocks",
             "diagnostics", "mcp", "meetings", "reminders", "call_notes",
             "news", "focus", "avatar_identity", "connected_apps", "shortcuts",
-            "bills_email", "shopping_list", "calendar",
+            "bills_email", "shopping_list", "calendar", "voice_settings",
           ],
           description:
             "settings = the assistant's own settings (voice, name, theme). " +
@@ -5467,7 +5467,11 @@ function registerBuiltins() {
             "bills_email = Bills by email (their private address for " +
             "forwarding bills). shopping_list = their shopping list " +
             "(build 124). calendar = this app's calendar: their events, " +
-            "reminders and holidays (build 140). The " +
+            "reminders and holidays (build 140). voice_settings = choose the " +
+            "assistant's voice: hear each voice's sample and pick one ('open " +
+            "voice settings', 'change your voice', 'I want a different voice'; " +
+            "build 163). Opening it ENDS this conversation, so say one short line " +
+            "first, e.g. 'Opening voice settings.' The " +
             "rest are feature screens.",
         },
       },
@@ -5479,7 +5483,7 @@ function registerBuiltins() {
         "settings", "home", "hub", "chat", "documents", "clients",
         "finance", "stocks", "diagnostics", "mcp", "meetings", "reminders",
         "call_notes", "news", "focus", "avatar_identity", "connected_apps", "shortcuts",
-        "bills_email", "shopping_list", "calendar",
+        "bills_email", "shopping_list", "calendar", "voice_settings",
       ];
       if (!ALLOWED.includes(screen)) {
         return { ok: false, error: `I don't have a screen called "${args.screen}"` };
@@ -5488,6 +5492,10 @@ function registerBuiltins() {
       // available" after hearing that it was opening. (Momentum — the
       // streak, Today's 3, habits — was removed on 2026-09-29.)
       const build = Number(ctx.appBuild) || 0;
+      // The voice picker by voice arrives in build 163 (2026-10-06).
+      if (screen === "voice_settings" && build < 163) {
+        return { ok: false, error: "that screen needs the latest app update — say so, and that the voice can be changed in Settings" };
+      }
       if (screen === "focus" && build && build < 111) {
         return { ok: false, error: "that screen needs the latest app update — say so" };
       }
@@ -5550,6 +5558,7 @@ function registerBuiltins() {
         bills_email: "Bills by email",
         shopping_list: "your shopping list",
         calendar: "your calendar",
+        voice_settings: "voice settings",
       };
       return {
         ok: true,

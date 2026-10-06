@@ -612,6 +612,10 @@ require("./db")
 
     const server = app.listen(port, () => {
       console.log(`MYASSISTANT backend on :${port} (postgres ready)`);
+      // GPT-Live's recorded openings, every natural voice, in the background.
+      if (require("./ai/config").gptLiveOn() && require("./services/ai/openai").ready()) {
+        setTimeout(() => require("./ai/liveVoices").warmOpenings().catch(() => {}), 5000).unref();
+      }
       // A key defined TWICE in .env silently keeps the LAST value, which is
       // a brutal way to lose an afternoon: the file looks right at a glance
       // but the app runs the other value. Call it out loudly at boot.

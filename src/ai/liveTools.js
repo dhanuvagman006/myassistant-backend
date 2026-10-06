@@ -65,13 +65,13 @@ function liveNames(allTools, { must = [] } = {}) {
   return ordered.filter((n) => live.has(n));
 }
 
-/** Gated declarations back in priority order, capped at LIVE_MAX. */
-function capDeclarations(decls, names) {
+/** Gated declarations back in priority order, capped at `max` (LIVE_MAX). */
+function capDeclarations(decls, names, max = LIVE_MAX) {
   const rank = new Map(names.map((n, i) => [n, i]));
   return (decls || [])
     .filter((d) => rank.has(d.name))
     .sort((a, b) => rank.get(a.name) - rank.get(b.name))
-    .slice(0, LIVE_MAX);
+    .slice(0, max);
 }
 
 module.exports = { liveNames, capDeclarations, LIVE_MAX, LIVE_ORDER };

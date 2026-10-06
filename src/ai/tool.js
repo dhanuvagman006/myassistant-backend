@@ -73,15 +73,6 @@ async function runTool(uid, body) {
   const name = String(body.name || "").trim().slice(0, 80);
   let args = body.args == null ? {} : body.args;
   if (typeof args !== "object" || Array.isArray(args)) return fail(400, "args must be an object");
-  if (name === "get_weather" && t.mode === "live") {
-    if (typeof args.location !== "string" || !args.location.trim()) {
-      return fail(400, "location must be a non-empty string");
-    }
-    if (args.unit !== "c" && args.unit !== "f") {
-      return fail(400, "unit must be c or f");
-    }
-    args = { ...args, location: args.location.trim() };
-  }
 
   // Only what this user and this build are offered — never a tool the
   // registry hides from them (unconfigured, denied permission, too old a

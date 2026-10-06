@@ -215,25 +215,51 @@ function louder(pcm) {
   return out;
 }
 
+/**
+ * The line alone: the speech that starts within 1.6 s of her first sound
+ * (a "Hello Sir." is one or two runs), joined naturally; anything the model
+ * added after it is dropped.
+ */
+function openingOnly(pcm, rate = 24000) {
+  const runs = voicedRuns(pcm, rate);
+  if (!runs.length) return pcm;
+  let k = 0;
+  while (k + 1 < runs.length && runs[k + 1][0] - runs[0][0] < rate * 1.6) k++;
+  return upTo(pcm, runs, k, rate);
+}
+
 const GREETING_LINE = /^[\p{L} .,!?'’-]{2,60}$/u;
 async function greeting(id, line) {
   const v = byId(id);
   const text = String(line || "").trim();
   if (!v || !GREETING_LINE.test(text)) return null;
-  // Version the shared greeting asset. Earlier cached takes could have been
-  // made with a different voice identity; never serve those to this build.
-  const key = require("crypto").createHash("sha1").update(`shared-female-v4|${v.id}|${text}`).digest("hex").slice(0, 16);
-  const file = path.join(DIR, `greet4-${key}.wav`);
+  // v5 (2026-10-06): RECORDED FROM GPT-LIVE ITSELF, not text-to-speech. The
+  // TTS model has no gleam/willow/meridian…, so those came out in another
+  // voice. Now the take is the live model saying the line in this voice, so
+  // the opening and the conversation after it are the same voice. Kept at
+  // its natural level (no boost): the phone plays it on the call stream,
+  // like the live audio, so the two sound equally loud.
+  const key = require("crypto").createHash("sha1").update(`gptlive-v5|${v.id}|${text}`).digest("hex").slice(0, 16);
+  const file = path.join(DIR, `greet5-${key}.wav`);
   try {
     return await fs.promises.readFile(file);
   } catch (_) {}
   if (!making.has(key)) {
     making.set(key, (async () => {
       const openai = require("../services/ai/openai");
-      // Use the same OpenAI voice preset as the conversation. Generate this
-      // fixed line once and share/cache it; never synthesize it on mic tap.
-      const audio = await openai.speak(text, { voice: v.id, format: "pcm" });
-      const wav = openai.wavWrap(Buffer.from(audio.buffer), 24000);
+      // CHECKED BY EAR (2026-10-06): a take is transcribed and kept only
+      // when it says the line; measured, 2 of 20 did not ("What?", "Hello
+      // ma'am"). Up to three takes, then the best effort is refused.
+      const words = (s) => String(s || "").toLowerCase().replace(/[^a-z]/g, "");
+      let wav = null;
+      for (let attempt = 1; attempt <= 3 && !wav; attempt++) {
+        const take = openai.wavWrap(openingOnly(await record(v, { line: text })), 24000);
+        const heard = await openai.transcribe(take, "audio/wav", { language: "en" }).catch(() => null);
+        const said = heard && (heard.text != null ? heard.text : heard);
+        if (words(said) === words(text)) wav = take;
+        else console.warn(`voices: ${v.id} take ${attempt} of "${text}" said "${String(said).slice(0, 40)}"`);
+      }
+      if (!wav) throw new Error(`no clean take of "${text}" in ${v.id}`);
       await fs.promises.mkdir(DIR, { recursive: true });
       await fs.promises.writeFile(file, wav);
       return wav;
@@ -242,4 +268,35 @@ async function greeting(id, line) {
   return making.get(key);
 }
 
-module.exports = { CATALOG, DEFAULT_VOICE, has, byId, ttsVoiceFor, sample, greeting, record, sampleLine };
+/**
+ * EVERY OPENING RECORDED AHEAD (2026-10-06, the owner: "save that in our
+ * backend … instantly pull from there"). Each natural GPT-Live voice says
+ * "Hello Sir." and "Hello Madam." once, on the server, at boot, so no user
+ * ever waits for a take: a voice switch on any phone is a ~35 KB download.
+ * One at a time (each take is a short GPT-Live session, about $0.01);
+ * what is already on disk is skipped. Never blocks the server.
+ */
+const OPENING_LINES = ["Hello Sir.", "Hello Madam."];
+async function warmOpenings(voiceIds) {
+  const ids = voiceIds || require("./gptLive").NATURAL_VOICES;
+  let made = 0, kept = 0, failed = 0;
+  for (const id of ids) {
+    for (const line of OPENING_LINES) {
+      const v = byId(id);
+      if (!v) continue;
+      const key = require("crypto").createHash("sha1").update(`gptlive-v5|${v.id}|${line}`).digest("hex").slice(0, 16);
+      const had = fs.existsSync(path.join(DIR, `greet5-${key}.wav`));
+      try {
+        await greeting(id, line);
+        if (had) kept++; else made++;
+      } catch (e) {
+        failed++;
+        console.warn(`voices: opening "${line}" in ${id} failed: ${String(e.message || e).slice(0, 120)}`);
+      }
+    }
+  }
+  console.log(`voices: openings ready (${made} recorded, ${kept} already kept, ${failed} failed)`);
+  return { made, kept, failed };
+}
+
+module.exports = { OPENING_LINES, warmOpenings, CATALOG, DEFAULT_VOICE, has, byId, ttsVoiceFor, sample, greeting, record, sampleLine, openingOnly, voicedRuns };

@@ -228,22 +228,43 @@ router.post("/realtime/secret", async (req, res) => {
   }
 });
 
-/** Creates GPT-Live with the server-owned, immutable agent configuration. */
+/**
+ * Creates a GPT-Live conversation for this user (ai/gptLive.js): their
+ * voice, the opening line by their gender, and a delegated backend with
+ * the tools the phone was given by POST /ai/context. The phone sends
+ * `instructions` (that context) and `tools`; the server decides the rest.
+ * Answers { session:{id}, transport, opening:{text, instruction}, voice }.
+ */
 router.post("/live/session", async (req, res) => {
   const uid = userOf(req, res);
   if (!uid) return;
   const b = req.body || {};
   try {
     const openai = require("../services/ai/openai");
+    const gptLive = require("./gptLive");
     const transport = b.transport && typeof b.transport === "object" ? b.transport : null;
     if (transport && transport.type !== "webrtc") {
       return res.status(400).json({ error: "transport.type must be webrtc" });
     }
+    const profile = await require("../users/context").getProfile(uid).catch(() => null);
+    const built = gptLive.sessionConfig({
+      profile,
+      voice: typeof b.voice === "string" ? b.voice : "",
+      tools: Array.isArray(b.tools) ? b.tools : [],
+      instructions: typeof b.instructions === "string" ? b.instructions : "",
+    });
     const out = await openai.liveSession({
       sdp: transport ? transport.sdp : b.sdp,
+      session: built.session,
       user: uid,
     });
-    res.status(201).json({ session: { id: out.session && out.session.id }, transport: out.transport });
+    console.log(`ai: gpt-live session uid=${uid} voice=${built.voice} backend=${built.session.delegation.responses.model} tools=${built.toolCount}`);
+    res.status(201).json({
+      session: { id: out.session && out.session.id },
+      transport: out.transport,
+      opening: { text: built.opening, instruction: gptLive.openingInstruction(built.opening) },
+      voice: built.voice,
+    });
   } catch (e) {
     console.error(`ai: gpt-live session failed uid=${uid}: ${String(e.message || e).slice(0, 200)}`);
     res.status(e.status === 400 ? 400 : 502).json({ error: String(e.message || e).slice(0, 200) });
@@ -255,6 +276,12 @@ router.get("/voices", (req, res) => {
   const uid = userOf(req, res);
   if (!uid) return;
   const lv = require("./liveVoices");
+  if (require("./config").gptLiveOn()) {
+    // GPT-Live: only the natural voices, so a pick is what she speaks in.
+    const gptLive = require("./gptLive");
+    const natural = new Set(gptLive.NATURAL_VOICES);
+    return res.json({ voices: lv.CATALOG.filter((v) => natural.has(v.id)), default: gptLive.DEFAULT_VOICE });
+  }
   res.json({ voices: lv.CATALOG, default: lv.DEFAULT_VOICE });
 });
 
@@ -291,6 +318,8 @@ async function serveGreeting(req, res) {
 router.get("/voices/:id/greeting", serveGreeting);
 router.get("/voices/:id/greeting-v3", serveGreeting);
 router.get("/voices/:id/greeting-v4", serveGreeting);
+// v5: recorded from GPT-Live itself (liveVoices.greeting).
+router.get("/voices/:id/greeting-v5", serveGreeting);
 
 router.post("/firebase-token", async (req, res) => {
   const uid = userOf(req, res);

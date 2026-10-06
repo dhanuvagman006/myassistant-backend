@@ -109,11 +109,27 @@ const LIVE_BUILD = 135;
 // From this build the phone takes OpenAI's names and our server's model port.
 const OPENAI_BUILD = 146;
 // From this build the phone can hold a GPT-Live conversation over WebRTC.
-const GPT_LIVE_BUILD = 154;
+// 163 since 2026-10-06: the server builds each user's agent from the
+// instruction and tools the phone sends, and plays a recorded opening;
+// builds 154-162 send neither and would get an agent with no app tools.
+const GPT_LIVE_BUILD = 163;
 // Realtime WebSocket is the cost-aware default: app-open prewarming costs
 // no session duration by itself. GPT-Live remains an explicit opt-in because
 // its connected sessions are billed by elapsed time, including silence.
 const gptLiveOn = () => !/^(off|0|false|no)$/i.test(String(process.env.GPT_LIVE || "off").trim());
+// How long a connected GPT-Live session waits unused, microphone closed,
+// before it is closed (GPT_LIVE_IDLE_SEC, 15-900, default 60): it bills
+// $0.05 a minute while nobody speaks (an unused warm-up ~$0.05). Creating
+// one pre-bills 15 s. 60 since 2026-10-06 (the owner: "much more faster"):
+// at 30 a look round Home outlasted it and the tap connected from nothing.
+function gptLiveIdleSec() {
+  const n = Math.round(Number(process.env.GPT_LIVE_IDLE_SEC));
+  return Number.isFinite(n) && n >= 15 && n <= 900 ? n : 60;
+}
+// Connect GPT-Live when the app comes to the front, so the orb tap is
+// answered at once instead of after ~5 s of setup (GPT_LIVE_PREWARM=off
+// connects only at the tap). Costs about $0.025 per unused warm-up.
+const gptLivePrewarm = () => !/^(off|0|false|no)$/i.test(String(process.env.GPT_LIVE_PREWARM || "on").trim());
 // Sulafat first (the client, 2026-09-30: "best voice as default" — the
 // warm one); the rest as before.
 const LIVE_VOICES = ["Sulafat", "Callirrhoe", "Achernar", "Aoede", "Vindemiatrix", "Kore", "Charon", "Achird"];
@@ -296,11 +312,16 @@ async function forUser(userId, { build, live } = {}) {
     // through POST /ai/live/session. Keep it explicit: duration billing makes
     // it a poor default for a socket prewarmed on every app open.
     if (out.live && gptLiveOn() && b >= GPT_LIVE_BUILD) {
-      // Keep the optional WebRTC transport on the same voice as Realtime.
+      // The natural gpt-live-1 voices; the phone sends its pick and the
+      // server validates it again (ai/gptLive.js). A connected session is
+      // billed per second, silence included, so an idle one closes soon.
+      const gptLive = require("./gptLive");
       out.live = {
-        ...out.live, transport: "gpt-live", model: openai.GPT_LIVE_AGENT.model,
-        voice: proxy.DEFAULT_VOICE,
-        voices: [proxy.DEFAULT_VOICE],
+        ...out.live, transport: "gpt-live", model: gptLive.MODEL,
+        voice: gptLive.DEFAULT_VOICE,
+        voices: gptLive.NATURAL_VOICES.slice(),
+        idleCloseSec: gptLiveIdleSec(),
+        prewarm: gptLivePrewarm(),
       };
     }
   } else {
@@ -312,6 +333,6 @@ async function forUser(userId, { build, live } = {}) {
 module.exports = {
   forUser, voiceFor, speechLanguage, cloudModel, cloudFastModel, cloudFallbackModel,
   thinkingLevel, ttsModel, expressiveTtsModel, ttsStyle, liveModel, liveModelFor, cloudSttMode,
-  liveBlock, liveCapable, liveOn, LIVE_BUILD, OPENAI_BUILD, LIVE_VOICES,
+  liveBlock, liveCapable, liveOn, gptLiveOn, LIVE_BUILD, OPENAI_BUILD, LIVE_VOICES,
   VOICES, LIBRARY_VOICES, EXPRESSIVE_BUILD, TOOL_VERBS, FRESH_WORDS, NO_GROUNDING, groundingOn,
 };
