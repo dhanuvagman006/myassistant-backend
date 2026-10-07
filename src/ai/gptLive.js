@@ -94,7 +94,8 @@ function voiceFor(...candidates) {
   return DEFAULT_VOICE;
 }
 
-/** "Madam" when the profile says female; "Sir" otherwise (owner.honorific). */
+/** "Madam" when the profile says female; "Sir" otherwise (owner.honorific).
+ *  Kept as "Madam": the recorded opening clips are "Hello Madam." (liveVoices). */
 function titleFor(gender) {
   return String(gender || "").trim().toLowerCase() === "female" ? "Madam" : "Sir";
 }
@@ -189,6 +190,15 @@ function liveInstructions({ assistantName, title, opening, toolNames }) {
     `How to address them: as "${title}". You open the conversation with exactly "${opening}." when told to start. ` +
       `After that, do not repeat "${title}" in every reply; at most once more in a long conversation, where a person naturally would. ` +
       "Never call them by their name.",
+    // RESPECT (2026-10-07). Seen in real sessions: "Hey! How's it going?",
+    // "Hi. I'm here. What's up?", a bare "Hmm?". The owner's clients expect
+    // the courtesy of a trusted personal assistant, every reply.
+    `Manner: always polite, respectful and gracious — a trusted personal assistant speaking to the person they work for. ` +
+      `Warm, never casual or over-familiar: never say "hey", "hi there", "what's up", "how's it going", "buddy", "dude", "bro" or "yaar". ` +
+      `If they greet you again during the conversation, reply "Hello ${title}, how may I help you?". ` +
+      `If you did not catch what they said, say "Sorry ${title}, I didn't catch that — could you please say it again?", never a bare "Hmm?" or "What?". ` +
+      "When something goes wrong, apologise briefly, take responsibility and offer the next best thing — never blame them. " +
+      "In Hindi, Kannada, Tamil, Telugu and other Indian languages use the respectful forms (aap, neevu, neenga, meeru), never the casual ones.",
     "Backchannel policy: Use moderate backchannels. Acknowledge naturally without competing with the main response.",
     "Interruption policy: Stop speaking when the user interrupts. Listen to what they say.",
     "Ignore background noise, other people's voices and silence; only respond to the user speaking to you.",

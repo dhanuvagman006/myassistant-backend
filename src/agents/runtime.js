@@ -102,7 +102,7 @@ function systemPrompt(extra = "", { appBuild } = {}) {
  */
 async function contextExtra(ctx, state) {
   const sessionState = require("../agents/sessionState");
-  const [block, mem, recent] = await Promise.all([
+  const [block, mem, recent, episodes] = await Promise.all([
     require("../users/context").contextBlock(ctx.userId, { lat: ctx.lat, lng: ctx.lng, tz: ctx.tzOffsetMin, appBuild: ctx.appBuild }),
     // The app's turns (ai/context.js) pass the user's words: only the facts
     // that fit them are sent (2026-09-30). Everyone else gets them all.
@@ -115,6 +115,8 @@ async function contextExtra(ctx, state) {
     require("../memory/recent").recentBlock(ctx.userId, {
       excludeSessionId: ctx.sessionId || "",
     }),
+    // What was talked about on earlier days (memory/episodes.js).
+    require("../memory/episodes").block(ctx.userId).catch(() => ""),
   ]);
   // The user's clock, so "tomorrow 5 pm" resolves in THEIR zone and
   // tool datetimes carry the right offset (bare ones read as UTC).

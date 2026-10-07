@@ -105,6 +105,7 @@ async function scheduledTask(payload, job) {
   let outcome = "";
   let failed = false;
   let retryable = false;
+  let errDetail = ""; // raw error, for the job row only — never the notification
   const jobSessionId = `job:${job.id || job.jobId || Date.now()}`;
   const started = []; // every tool this run began (actedAlready)
   try {
@@ -185,7 +186,13 @@ async function scheduledTask(payload, job) {
     }
   } catch (e) {
     failed = true;
-    outcome = `I couldn't complete it: ${String(e.message).slice(0, 160)}`;
+    // The raw error (provider JSON, stack text) goes to the log only — this
+    // line becomes the user's notification.
+    errDetail = String(e && e.message).slice(0, 160);
+    console.warn(`[scheduled_task] user ${userId} failed:`, String(e && e.message).slice(0, 300));
+    outcome = /quota|429|rate.?limit/i.test(String(e && e.message))
+      ? "I'm sorry — I was too busy to do this at the scheduled time. Please ask me again and I'll take care of it."
+      : "I'm sorry — something went wrong on my side and I couldn't finish this. Please ask me again.";
     retryable = isTransient(e) && !actedAlready(userId, jobSessionId, started);
   }
   if (retryable) {
@@ -197,7 +204,7 @@ async function scheduledTask(payload, job) {
       // No push and no next occurrence: the retry reports, and rolls on.
       try {
         await run(`UPDATE jobs SET last_error=$2, updated_at=$3 WHERE id=$1`, [
-          job.id, `RETRYING in ${mins} min: ${outcome.slice(0, 240)}`, Date.now(),
+          job.id, `RETRYING in ${mins} min: ${errDetail ? `I couldn't complete it: ${errDetail}` : outcome}`.slice(0, 280), Date.now(),
         ]);
       } catch (e) {
         console.error("scheduled_task retry note failed:", e.message);

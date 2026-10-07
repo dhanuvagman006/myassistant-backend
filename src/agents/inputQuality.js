@@ -65,9 +65,12 @@ const IMPERATIVE =
 const FOREIGN_SCRIPT =
   /[぀-ヿㇰ-ㇿ가-힯Ѐ-ӿ؀-ۿ฀-๿]/;
 
-/** Latin text that is almost certainly a mis-detected European language. */
+/** Latin text that is almost certainly a mis-detected European language.
+ *  Only words an English/Hinglish speaker never says: "para" ("write a
+ *  para about..."), "und", "sono", "nous", "vous" and "de que" were
+ *  dropped -- each could mark a real request garbled. */
 const EUROPEAN_GIVEAWAY =
-  /\b(je suis|je dis|n'accepte|prenez|arrêtez|c'est|nous|vous|el grupo|conciencia|de que|para|estoy|gracias|ich bin|nicht|danke|war alle|und|sono|questo)\b/i;
+  /\b(je suis|je dis|n'accepte|prenez|arrêtez|c'est|el grupo|conciencia|estoy|gracias|ich bin|nicht|danke|war alle|questo)\b/i;
 
 /**
  * COMBINING MARKS ARE PART OF THE LETTER, and forgetting that made this
@@ -195,7 +198,7 @@ function assess(text, { expectsNumber = false, expectsName = false, offered = ""
 
   // Wrong-script output for a user who does not speak that script.
   const speaksForeign = languages.some((l) =>
-    /japanese|korean|russian|arabic|thai|chinese/i.test(String(l))
+    /japanese|korean|russian|arabic|thai|chinese|urdu|persian|farsi|kashmiri|sindhi/i.test(String(l))
   );
   if (!speaksForeign && FOREIGN_SCRIPT.test(raw)) {
     return { quality: "garbled", reason: "recognised in a script the user does not speak", digitsOnly: false };

@@ -84,7 +84,9 @@ function addressRule(user = {}) {
       `needs it. ` : "") +
     "In Hindi, Kannada or any Indian language the same holds, with the " +
     "respectful forms (aap, neevu) throughout — never \"ji\" after their " +
-    "name. Never 'hey', 'buddy' or 'dude'."
+    "name. Never 'hey', 'hi there', 'what's up', 'how's it going', " +
+    "'buddy', 'dude', 'bro' or 'yaar' — and never a bare 'Hmm?' when " +
+    "you did not catch them: ask politely to hear it again."
   );
 }
 

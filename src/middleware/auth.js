@@ -99,7 +99,7 @@ async function verifySession(token, { allowAppFn = false } = {}) {
       return { error: "this assistant key was turned off — open My Assistant to turn it back on", status: 401 };
     }
   }
-  return { user, scope };
+  return { user, scope, payload };
 }
 
 /**
@@ -135,7 +135,11 @@ function makeAppAuth({ allowAppFn = false } = {}) {
       }
       return res.status(401).json({ error: "sign in required" });
     } catch (e) {
-      return res.status(401).json({ error: "invalid or expired token" });
+      // verifySession reports every token problem as a value, so a throw
+      // here is the database (restart, dropped connection). 503, not 401:
+      // the app treats 401 as "signed out" and would clear the session.
+      console.warn("[auth] session check failed:", e && e.message);
+      return res.status(503).json({ error: "We're having a brief hiccup — please try again in a moment." });
     }
   };
 }

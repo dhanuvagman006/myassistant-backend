@@ -516,21 +516,27 @@ async function prepare(uid, body) {
   if (fix && Number.isFinite(fix.lat) && Number.isFinite(fix.lng)) {
     require("../people/nearby").touchLocation(uid, fix.lat, fix.lng).catch(() => {});
   }
+  // Summarise one earlier day the user has no summary for yet — off the
+  // reply's path, at most one model call per turn (memory/episodes.js).
+  if (owner) require("../memory/episodes").ensure(uid, tz);
   const lastResults = tm.timed("last", require("./lastResults").block(uid, s, turnId).catch(() => ""));
   let system;
   if (mode === "voice" || mode === "live") {
     // The same personal layer the live socket gave its model: profile,
     // standing rules, memory, the earlier conversation.
-    const [ctxBlock, memBlock, recentBlock, last] = await Promise.all([
+    const [ctxBlock, memBlock, recentBlock, last, episodeBlock] = await Promise.all([
       tm.timed("context", require("../users/context").contextBlock(uid, {
         lat: fix.lat, lng: fix.lng, tz, at: fix.at, appBuild: build,
       }).catch(() => "")),
       tm.timed("memory", require("../agents/memory").memoryBlock(uid, memOpts).catch(() => "")),
       tm.timed("recent", require("../memory/recent").recentBlock(uid, { excludeSessionId: s.id }).catch(() => "")),
       lastResults,
+      // Earlier DAYS, summarised (memory/episodes.js) — what recent's 48 h
+      // window forgot.
+      tm.timed("episodes", require("../memory/episodes").block(uid).catch(() => "")),
     ]);
     tm.reset();
-    let personalContext = [ctxBlock, memBlock, recentBlock].filter(Boolean).join("\n");
+    let personalContext = [ctxBlock, memBlock, episodeBlock, recentBlock].filter(Boolean).join("\n");
     if (recentBlock) personalContext += NEW_CONVERSATION;
     const here = require("../agents/runtime").sessionLines(s.state);
     if (here.length) personalContext += "\n" + here.join("\n");

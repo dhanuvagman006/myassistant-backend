@@ -105,7 +105,7 @@ const FAMILIES = [
     // three times running for enable_usage_tracking while the settings
     // screen was open in front of the user.
     tools: [
-      "open_app", "open_named_app", "open_webpage", "open_service_app",
+      "open_app", "open_named_app", "open_webpage", "open_public_pdf", "open_service_app",
       "open_video_mode", "phone_control", "start_navigation",
       // "Opening GPay with ₹500 for Ravi" — the UPI app on screen.
       "pay_by_upi",

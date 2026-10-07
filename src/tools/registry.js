@@ -273,7 +273,7 @@ const SEED_WORLD = new Set([
   "place_phone_call", "send_agent_message", "send_whatsapp_message",
   "send_document", "send_patient_document", "book_by_calling_business",
   "arrange_meeting_with", "order_food", "book_ride", "book_movie_tickets",
-  "collect_payment", "open_app", "open_webpage", "open_service_app",
+  "collect_payment", "open_app", "open_webpage", "open_public_pdf", "open_service_app",
   "open_video_mode", "start_navigation", "phone_control", "play_music",
   "capture_document", "analyze_camera", "set_alarm", "create_reminder",
   "update_reminder", "schedule_task", "schedule_patient_recall",
@@ -363,7 +363,7 @@ const SEED_REPEAT = new Set([
   "place_phone_call", "book_by_calling_business", "send_agent_message",
   "send_whatsapp_message", "send_document", "send_patient_document",
   "arrange_meeting_with", "order_food", "book_ride", "book_movie_tickets",
-  "collect_payment", "open_app", "open_webpage", "open_service_app",
+  "collect_payment", "open_app", "open_webpage", "open_public_pdf", "open_service_app",
   "start_navigation", "play_music",
   // Every look costs money at a paid image model, so a stutter must not
   // buy two of them. An intentional "try that again" lands after 20 s.

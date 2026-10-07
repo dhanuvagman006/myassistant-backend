@@ -127,6 +127,7 @@ const USER_TABLES = [
   // yet deleted").
   ["live_recordings", "user_id"], // call recordings; the audio goes after commit
   ["conversation_turns", "user_id"], // every question and answer (admin Conversations)
+  ["memory_episodes", "user_id"], // daily summaries of past conversations (memory/episodes.js)
   ["task_outcomes", "user_id"], // agent-call results and transcripts
   ["call_records", "user_id"], // phone-call transcripts and summaries
   ["email_accounts", "user_id"], // their encrypted mail login

@@ -681,7 +681,7 @@ function registerBuiltins() {
     name: "remember_fact",
     description:
       "Store a durable fact about the user or their life so it is remembered " +
-      "in future conversations (preferences, family, work, important dates). " +
+      "in future conversations (preferences, goals, family, work, important dates). " +
       "NOT for a person's address — 'X's address is…', 'X lives at…' (house, " +
       "office, shop) go to remember_address, and 'what's X's address' is show_address.",
     risk: "medium",
@@ -690,6 +690,10 @@ function registerBuiltins() {
       properties: {
         fact: { type: "string", description: "The fact, in third person: 'prefers Kannada'" },
         about: { type: "string", description: "Person this fact concerns, if any" },
+        kind: {
+          type: "string", enum: ["fact", "goal", "preference"],
+          description: "goal = something they are working towards; preference = how they like things done; fact = anything else",
+        },
         importance: { type: "integer", description: "1-5, default 3" },
       },
       required: ["fact"],
@@ -704,6 +708,7 @@ function registerBuiltins() {
       await mem.remember(ctx.userId, {
         fact: args.fact,
         importance: args.importance || 3,
+        kind: require("../agents/memory").cleanKind(args.kind),
         subjectType, subjectId,
       });
       return { ok: true, data: { saved: args.fact }, speak: "I'll remember that." };
@@ -1416,7 +1421,10 @@ function registerBuiltins() {
     description:
       "Find a specific document, optionally belonging to a person — e.g. " +
       "'find Ravi's court notice', 'show me the electricity bill'. Searches " +
-      "INSIDE document contents, not just titles.",
+      "INSIDE document contents, not just titles. ONLY the user's OWN saved " +
+      "files: a public document they want to read — a judgment ('Arnesh " +
+      "Kumar vs State of Bihar pdf'), an Act, a government form, a circular, " +
+      "a research paper — is open_public_pdf.",
     risk: "low",
     inputSchema: {
       type: "object",
@@ -1460,6 +1468,13 @@ function registerBuiltins() {
           error: r.scope
             ? `no documents for ${r.scope} matching that`
             : "no matching documents",
+          data: {
+            hint:
+              "Not among their saved files. If this is a PUBLIC document " +
+              "(a court judgment, an Act, a government form or circular, a " +
+              "paper), call open_public_pdf with the same words now instead " +
+              "of saying it was not found.",
+          },
         };
       }
       const out = { ok: true, data: r.documents };
@@ -4080,6 +4095,105 @@ function registerBuiltins() {
         deviceAction: { type: "open_url", url: parsed.href },
         speak: `Opening ${label} on your screen.`,
       };
+    },
+  });
+
+  // PUBLIC PDFs (2026-10-07). "Arnesh vs State of Bihar pdf" went to
+  // find_document, searched only the user's own files and ended at "I
+  // don't find that in your documents". A public document is found on the
+  // web: the real PDF is opened when one turns up (official sources
+  // first), otherwise the Google results page — never a dead end.
+  registry.register({
+    name: "open_public_pdf",
+    description:
+      "Find and OPEN a PUBLIC document or PDF from the internet on the " +
+      "user's phone — a court judgment ('Arnesh Kumar vs State of Bihar " +
+      "pdf'), an Act or rules, a government form, circular or notification, " +
+      "a syllabus, a research paper, a product manual. Opens the actual " +
+      "PDF when one is found (official .gov.in / .nic.in / court sites " +
+      "preferred), otherwise the search results page. NOT for the user's " +
+      "own saved documents (find_document).",
+    risk: "low",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description:
+            "The document, in full ('Arnesh Kumar vs State of Bihar 2014 " +
+            "Supreme Court judgment') — expand short case names.",
+        },
+      },
+      required: ["query"],
+    },
+    timeoutMs: 25_000,
+    async execute(args, ctx) {
+      const q = String(args.query || "").replace(/\b(pdf|download|open|show me)\b/gi, " ")
+        .replace(/\s+/g, " ").trim().slice(0, 200);
+      if (!q) return { ok: false, error: "empty query" };
+      const google = {
+        ok: true,
+        deviceAction: {
+          type: "open_url",
+          url: `https://www.google.com/search?q=${encodeURIComponent(q + " pdf")}`,
+        },
+        speak: `I couldn't pin down the exact PDF, so I've opened the search results for ${q.slice(0, 60)} — the PDF links are at the top.`,
+      };
+      let results = [];
+      const ws = require("./webSearch");
+      // Brave first: it honours filetype:pdf and returns the files
+      // themselves. The general chain (OpenAI search first) answers with a
+      // summary and a few web pages, which is how the first try ended on
+      // the Google page.
+      if (process.env.BRAVE_SEARCH_API_KEY) {
+        try {
+          results = (await ws.searchWith("brave", `${q} filetype:pdf`)) || [];
+        } catch (_) {}
+      }
+      if (!results.length) {
+        try {
+          const r = await ws.run(`${q} filetype:pdf`, ctx || {});
+          if (r && r.ok && Array.isArray(r.data)) results = r.data;
+        } catch (_) {}
+      }
+      const words = q.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !["the", "and", "state", "versus"].includes(w));
+      const OFFICIAL = /(\.gov\.in|\.nic\.in|sci\.gov\.in|indiacode|egazette|judis|ecourts|indiankanoon\.org|\.ac\.in|\.edu)$/i;
+      const scored = [];
+      for (const x of results) {
+        let u;
+        try { u = new URL(String(x.url || "")); } catch (_) { continue; }
+        if (!/^https?:$/.test(u.protocol)) continue;
+        const isPdf = /\.pdf$/i.test(u.pathname) || /\bpdf\b/i.test(String(x.title || ""));
+        const text = `${x.title || ""} ${x.snippet || ""} ${u.pathname}`.toLowerCase();
+        const hits = words.filter((w) => text.includes(w)).length;
+        const score = (isPdf ? 4 : 0) + (OFFICIAL.test(u.hostname) ? 3 : 0) + hits * 2;
+        if (isPdf && hits >= Math.min(2, words.length)) scored.push({ u, x, score });
+      }
+      scored.sort((a, b) => b.score - a.score);
+      // Drop a link only when it CLEARLY is not the file (404 or a web
+      // page). A check that merely fails proves nothing: government sites
+      // often have expired certificates or resolve badly from a server
+      // while opening fine in the phone's browser.
+      for (const c of scored.slice(0, 3)) {
+        try {
+          const ac = new AbortController();
+          const t = setTimeout(() => ac.abort(), 4000);
+          const head = await fetch(c.u.href, { method: "HEAD", redirect: "follow", signal: ac.signal })
+            .finally(() => clearTimeout(t));
+          const type = String(head.headers.get("content-type") || "");
+          if (head.status === 404 || head.status === 410) continue;
+          if (head.ok && /text\/html/i.test(type)) continue;
+        } catch (_) { /* unverifiable from here — still a good match */ }
+        const source = c.u.hostname.replace(/^www\./, "");
+        return {
+          ok: true,
+          data: { url: c.u.href, title: c.x.title || "", source },
+          deviceAction: { type: "open_url", url: c.u.href },
+          speak: `Opening the PDF of ${q.slice(0, 80)} from ${source}.`,
+        };
+      }
+      return google;
     },
   });
 

@@ -540,4 +540,11 @@ async function deepRead(results, { max = 5, keep = 2, timeoutMs = 8000, kind } =
   return pages.filter(Boolean).slice(0, keep);
 }
 
-module.exports = { run, provider, deepRead };
+/** One named backend, bypassing the chain and the caches — open_public_pdf
+ *  needs raw links (Brave honours filetype:pdf), not an answer. */
+async function searchWith(name, q, opts = {}) {
+  if (!BACKENDS[name]) throw new Error(`no search backend ${name}`);
+  return BACKENDS[name](String(q || "").slice(0, 300), opts);
+}
+
+module.exports = { run, provider, deepRead, searchWith };

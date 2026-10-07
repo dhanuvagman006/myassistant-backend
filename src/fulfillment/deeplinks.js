@@ -124,7 +124,10 @@ function food({ provider = "swiggy", dish, restaurant, platform }) {
  */
 function ride({ provider = "uber", destination, lat, lng, pickupLat, pickupLng, platform }) {
   const p = PROVIDERS[provider] || PROVIDERS.uber;
-  const hasCoords = Number.isFinite(Number(lat)) && Number.isFinite(Number(lng));
+  // Number(null) is 0: an unresolved destination used to become a drop-off
+  // at 0,0 — the Gulf of Guinea (2026-10-07). Real coordinates only.
+  const real = (v) => v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v));
+  const hasCoords = real(lat) && real(lng) && !(Number(lat) === 0 && Number(lng) === 0);
 
   if (provider === "ola") {
     // Ola's documented launch link. Without a drop it opens on pickup.
@@ -139,13 +142,16 @@ function ride({ provider = "uber", destination, lat, lng, pickupLat, pickupLng, 
   }
 
   let url = "https://m.uber.com/ul/?action=setPickup";
-  if (Number.isFinite(Number(pickupLat)) && Number.isFinite(Number(pickupLng))) {
+  if (real(pickupLat) && real(pickupLng)) {
     url += `&pickup[latitude]=${Number(pickupLat)}&pickup[longitude]=${Number(pickupLng)}`;
   } else {
     url += "&pickup=my_location";
   }
   if (hasCoords) {
     url += `&dropoff[latitude]=${Number(lat)}&dropoff[longitude]=${Number(lng)}`;
+  } else if (destination) {
+    // No coordinates: hand Uber the address to search instead.
+    url += `&dropoff[formatted_address]=${enc(destination)}`;
   }
   if (destination) url += `&dropoff[nickname]=${enc(destination)}`;
   return {

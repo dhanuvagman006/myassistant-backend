@@ -16,7 +16,18 @@
 const { query, one, run } = require("../db");
 const { generateReply } = require("../services/ai/router");
 
-const MAX_MEMORIES = 60; // per user; oldest low-importance evicted
+// Per user; the least important (then oldest) evicted past the cap. 150,
+// not 60: goals and preferences joined the facts (2026-10-07), and only
+// the relevant ~15 plus goals/preferences ever reach a prompt.
+const MAX_MEMORIES = 150;
+
+/** What a remembered line is. 'semantic' = an ordinary fact (the default
+ *  every older row carries). */
+const KINDS = new Set(["goal", "preference", "semantic"]);
+const cleanKind = (k) => {
+  const v = String(k || "").trim().toLowerCase();
+  return KINDS.has(v) ? v : "semantic";
+};
 
 /* ------------------------------------------------------------------ */
 /* Read                                                                */
@@ -30,7 +41,7 @@ async function listMemories(userId) {
   // filter it kept coming back here — in recall_memory and in every
   // system prompt via memoryBlock below.
   return query(
-    `SELECT id, fact, importance, created_at FROM agent_memories
+    `SELECT id, fact, importance, created_at, kind FROM agent_memories
       WHERE user_id=$1 AND valid=1 ORDER BY importance DESC, id DESC LIMIT $2`,
     [userId, MAX_MEMORIES]
   );
@@ -130,16 +141,31 @@ function pickMemories(rows, { words = "", limit = 15, now = Date.now() } = {}) {
  * `opts` every fact is sent, as every other caller always had.
  */
 async function memoryBlock(userId, opts) {
-  let rows = await listMemories(userId).catch(() => []);
-  if (!rows.length) return "";
+  const all = await listMemories(userId).catch(() => []);
+  if (!all.length) return "";
+  // GOALS AND PREFERENCES ride on every turn (a handful each): they shape
+  // HOW to answer whatever is asked, so relevance-by-words must not drop
+  // "keep answers short" or "saving for a house". Facts are picked by
+  // relevance as before.
+  const goals = all.filter((r) => r.kind === "goal").slice(0, 8);
+  const prefs = all.filter((r) => r.kind === "preference").slice(0, 10);
+  let facts = all.filter((r) => r.kind !== "goal" && r.kind !== "preference");
   if (opts && scoringOn()) {
-    rows = pickMemories(rows, { words: opts.words || "", limit: Number(opts.limit) > 0 ? Number(opts.limit) : pickCount() });
+    facts = pickMemories(facts, { words: opts.words || "", limit: Number(opts.limit) > 0 ? Number(opts.limit) : pickCount() });
   }
-  const facts = rows.map((r) => "- " + r.fact).join("\n");
+  const list = (rows) => rows.map((r) => "- " + r.fact).join("\n");
+  const parts = [];
+  if (prefs.length) parts.push("How they like things done (follow these without being asked):\n" + list(prefs));
+  if (goals.length) parts.push("Their ongoing goals (help them move these forward when it fits):\n" + list(goals));
+  if (facts.length) parts.push("About them:\n" + list(facts));
   return (
     "\n\nWHAT YOU REMEMBER ABOUT THIS USER (from earlier conversations; " +
-    "use naturally, never recite as a list, never claim to 'have notes'):\n" +
-    facts
+    "use naturally, never recite as a list, never claim to 'have notes'). " +
+    "Tailor every answer to this: never ask again for something already " +
+    "here (their city, language, diet, family, work), and link advice to " +
+    "their goals when it is relevant. If they now ask for something " +
+    "different from a preference here, do what they ask now.\n" +
+    parts.join("\n")
   );
 }
 
@@ -147,7 +173,8 @@ async function memoryBlock(userId, opts) {
 /* Write                                                               */
 /* ------------------------------------------------------------------ */
 
-async function saveMemory(userId, fact, importance = 2) {
+async function saveMemory(userId, fact, importance = 2, kind = "semantic") {
+  const k = cleanKind(kind);
   if (!userId || !fact) return;
   const f = String(fact).trim().slice(0, 300);
   if (!f) return;
@@ -161,16 +188,16 @@ async function saveMemory(userId, fact, importance = 2) {
   if (dup) {
     if (!dup.valid) {
       await run(
-        `UPDATE agent_memories SET valid=1, importance=GREATEST(importance,$3), created_at=$4 WHERE id=$1 AND user_id=$2`,
-        [dup.id, userId, importance, Date.now()]
+        `UPDATE agent_memories SET valid=1, importance=GREATEST(importance,$3), created_at=$4, kind=$5 WHERE id=$1 AND user_id=$2`,
+        [dup.id, userId, importance, Date.now(), k]
       );
     }
     return;
   }
   await run(
-    `INSERT INTO agent_memories (user_id, fact, importance, created_at)
-     VALUES ($1,$2,$3,$4)`,
-    [userId, f, importance, Date.now()]
+    `INSERT INTO agent_memories (user_id, fact, importance, created_at, kind)
+     VALUES ($1,$2,$3,$4,$5)`,
+    [userId, f, importance, Date.now(), k]
   );
   // Evict beyond the cap: KEEP the top rows by importance (newest as the
   // tie-break) and delete the remainder. The old ASC ordering kept the 60
@@ -217,25 +244,40 @@ async function deleteAllMemories(userId) {
 const SELF_RX =
   /\b(my name|i am|i'm|im |call me|i live|i work|i study|i like|i love|i hate|i prefer|my (wife|husband|mom|dad|amma|appa|sister|brother|son|daughter|friend|birthday|exam|job|boss|school|college|city|village)|i can'?t eat|allergic|vegetarian|vegan|remember (that|this)|nanna hesaru|mera naam)\b/i;
 
+// GOALS AND PREFERENCES (2026-10-07): "I want to lose 5 kg", "I'm
+// preparing for UPSC", "keep it short", "don't call me before 9" never
+// matched the self-description words above, so they were never learned
+// and the user had to repeat them every time.
+const GOAL_PREF_RX =
+  /\b(my (goal|target|dream|plan|aim|business|startup|company|team|clients?|diet|routine|habit)|i (want|wish|hope|plan|intend) to|i'?m (trying|planning|preparing|learning|saving|working on|building|starting|aiming)|i (usually|always|never|mostly|normally)|i (don'?t|do not) (like|want|eat|drink)|i'?d rather|from now on|(please )?(always|never) (call|message|remind|wake|tell|use|speak|reply|answer)|don'?t (call|message|remind|disturb|wake) me|(reply|answer|talk|speak) (to me )?in (hindi|kannada|tamil|telugu|malayalam|marathi|bengali|gujarati|english)|(keep|make) (it|answers?|replies) (short|brief|simple|detailed)|every (morning|day|night|evening|week))\b/i;
+
 function looksSelfDescriptive(text) {
-  return SELF_RX.test(String(text || ""));
+  const t = String(text || "");
+  return SELF_RX.test(t) || GOAL_PREF_RX.test(t);
 }
 
 const EXTRACT_PROMPT =
   "You extract durable personal facts from one user message for a personal " +
   "assistant's long-term memory. Return STRICT JSON only — an array of " +
-  'objects: [{"fact":"...","importance":1|2|3}] — no markdown, no prose. ' +
-  "Facts must be about the USER (name, family, city, work, likes, health " +
-  "constraints, important dates), written as short third-person statements " +
-  "(\"User's name is Dhanya\"). importance: 3 = identity/health, 2 = " +
-  "preferences/relationships, 1 = minor. If nothing durable, return []. " +
-  "STRICT EXCLUSIONS — return [] for: anything the user is asking you to " +
-  "RELAY or SEND to someone else ('tell Allen I'm…', 'message Ravi " +
-  "that…' — that is the message, not a fact about the user); quoted or " +
-  "reported speech of other people; hypotheticals, jokes and test " +
-  "phrases; and ANY time-bound plan ('going to Bangalore tomorrow', " +
-  "'meeting at 5', 'next week') — plans belong to reminders, never to " +
-  "permanent memory. Keep only what stays true for months.";
+  'objects: [{"fact":"...","kind":"fact"|"goal"|"preference","importance":1|2|3}] ' +
+  "— no markdown, no prose. Facts must be about the USER, written as short " +
+  "third-person statements (\"User's name is Dhanya\"). kind: \"goal\" = " +
+  "something they are working towards for weeks or longer (\"User wants to " +
+  "lose 5 kg\", \"User is preparing for the UPSC exam\", \"User is raising " +
+  "funds for their startup\"); \"preference\" = how they want things done or " +
+  "what they like (\"User prefers short answers\", \"User wants replies in " +
+  "Kannada\", \"User does not want calls before 9 am\", \"User is " +
+  "vegetarian\"); \"fact\" = everything else durable (name, family, city, " +
+  "work, health, important dates). importance: 3 = identity/health/major " +
+  "goals, 2 = preferences/relationships, 1 = minor. If nothing durable, " +
+  "return []. STRICT EXCLUSIONS — return [] for: anything the user is " +
+  "asking you to RELAY or SEND to someone else ('tell Allen I'm…', " +
+  "'message Ravi that…' — that is the message, not a fact about the user); " +
+  "quoted or reported speech of other people; hypotheticals, jokes and test " +
+  "phrases; one-off requests ('book a cab', 'what's the weather'); and ANY " +
+  "short time-bound plan ('going to Bangalore tomorrow', 'meeting at 5', " +
+  "'next week') — those belong to reminders. Keep only what stays true for " +
+  "weeks or months; never store passwords, OTPs, card or bank numbers.";
 
 /**
  * Fire-and-forget: never throws, never blocks the reply.
@@ -263,7 +305,7 @@ function extractAndStore(userId, userText) {
       if (!Array.isArray(facts)) return;
       for (const f of facts.slice(0, 5)) {
         const imp = [1, 2, 3].includes(f?.importance) ? f.importance : 2;
-        await saveMemory(userId, f?.fact, imp);
+        await saveMemory(userId, f?.fact, imp, f?.kind === "fact" ? "semantic" : f?.kind);
       }
     } catch (_) {
       /* memory is best-effort by design */
@@ -281,4 +323,5 @@ module.exports = {
   deleteFactsContaining,
   extractAndStore,
   looksSelfDescriptive,
+  cleanKind,
 };

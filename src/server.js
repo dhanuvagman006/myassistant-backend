@@ -115,8 +115,11 @@ app.use(
     ],
   })
 );
-app.use(
-  express.json({
+// Routes that declare their own (larger) JSON limit must skip this global
+// 2 MB parser — it runs first, so a photo over ~1.5 MB sent to
+// /ai/generate was refused before the route's 25 MB limit ever applied.
+const OWN_BODY_LIMIT = new Set(["/ai/generate"]);
+const globalJson = express.json({
     limit: "2mb",
     // Razorpay signs the RAW bytes — keep them for webhook verification.
     //
@@ -129,7 +132,9 @@ app.use(
         req.rawBody = buf;
       }
     },
-  })
+  });
+app.use((req, res, next) =>
+  OWN_BODY_LIMIT.has(req.path) ? next() : globalJson(req, res, next)
 );
 
 // Basic abuse protection, per IP. A voice turn costs several requests
@@ -542,8 +547,20 @@ app.use((err, _req, res, _next) => {
   if (err.type === "entity.parse.failed") {
     return res.status(400).json({ error: "invalid JSON body" });
   }
+  if (res.headersSent) return; // a stream already started — nothing to add
+  // Body/upload problems carry their own 4xx status (413 too large, 400
+  // aborted). Pass it through with a kind sentence instead of a bare 500.
+  const status = err.code === "LIMIT_FILE_SIZE" ? 413 : Number(err.status || err.statusCode);
+  if (status >= 400 && status < 500) {
+    const tooBig = status === 413 || err.type === "entity.too.large" || err.code === "LIMIT_FILE_SIZE";
+    return res.status(tooBig ? 413 : status).json({
+      error: tooBig
+        ? "That file is a little too large for me. Could you try a smaller one?"
+        : "Something about that request didn't go through. Please try again.",
+    });
+  }
   console.error("Unhandled error:", err);
-  res.status(500).json({ error: "internal error" });
+  res.status(500).json({ error: "Sorry, something went wrong on our side. Please try again in a moment." });
 });
 
 const port = process.env.PORT || 3000;

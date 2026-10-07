@@ -40,6 +40,9 @@ const CORE = new Set([
   "list_reminders", "schedule_task", "place_phone_call",
   "send_agent_message", "send_whatsapp_message",
   "search_documents", "create_document",
+  // "Arnesh vs State of Bihar pdf" — a public PDF, asked out of nowhere
+  // (2026-10-07); without it the turn only had the user's own files.
+  "open_public_pdf",
   "list_calendar_events", "create_calendar_event",
   "open_named_app", "check_recent_actions",
   // Disappointment rarely names the tool: "this is useless", "why can't

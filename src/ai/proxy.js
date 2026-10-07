@@ -42,8 +42,13 @@ const systemOf = (body) => textOf(body.systemInstruction || body.system_instruct
  * angle-bracket word goes. "x < 5" is left alone (a tag starts with a letter).
  */
 const STRAY_TAG = /<\s*(?!tone\s*:)[A-Za-z][A-Za-z _,'&-]{0,58}>/gi;
+// A delivery note under another name — "<prompt: bright and sunny>",
+// "<style: warm>" (2026-10-07, seen on screen) — is still a tone note.
+const NOTE_ALIAS = /<\s*(?:prompt|style|voice|delivery|manner|mood|note)\s*:\s*([^<>\n]{1,100}?)\s*>/gi;
 function cleanText(text, atStart = true) {
   let out = String(text || "");
+  if (atStart) out = out.replace(/^(\s*)<\s*(?:prompt|style|voice|delivery|manner|mood|note)\s*:/i, "$1<tone:");
+  out = out.replace(NOTE_ALIAS, "");
   if (atStart) {
     out = out.replace(/^(\s*)<\s*(?!tone\s*:)([A-Za-z][A-Za-z ,'&-]{2,58}?)\s*>/i,
       (m, sp, inner) => (/\s/.test(inner) || /^(warm|calm|bright|gentle|sincere|cheerful|firm|playful|serious)/i.test(inner) ? `${sp}<tone: ${inner.trim()}>` : sp));
