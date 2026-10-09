@@ -392,6 +392,28 @@ router.post("/api/users/:id/phone", async (req, res) => {
   res.json({ ok: true, phone: e164 });
 });
 
+/** A user's self-checks (routes/diagnostics.js), newest first; the log only where Help improve allows. */
+router.get("/api/users/:id/diagnostics", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const rows = await sq(
+    `SELECT id, created_at, ran_at, trigger, failed, checks,
+            CASE WHEN ${RV("user_id", "created_at")} THEN log ELSE NULL END AS log,
+            ${RV("user_id", "created_at")} AS readable
+       FROM diag_reports WHERE user_id = $1 ORDER BY id DESC LIMIT 20`, [id]);
+  const req2 = await sq(`SELECT requested_at, done_at FROM diag_requests WHERE user_id = $1`, [id]);
+  res.json({
+    reports: rows.map((r) => ({ ...r, checks: (() => { try { return JSON.parse(r.checks); } catch (_) { return []; } })() })),
+    request: req2[0] || null,
+  });
+});
+
+/** Ask the phone for a self-check: it runs on the next app open or return to the app. */
+router.post("/api/users/:id/diagnostics/request", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: "bad user id" });
+  res.json(await require("./diagnostics").request(id));
+});
+
 router.post("/api/users/:id/push", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const rows = await sq("SELECT fcm_token FROM users WHERE id=$1", [id]);

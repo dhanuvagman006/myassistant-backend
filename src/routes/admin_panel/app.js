@@ -480,6 +480,50 @@ function conversationCard(rows, userId) {
           h("td", {}, latencyPill(c.latency_ms)))))));
 }
 
+/** SELF-CHECKS (2026-10-09): what the phone itself found, check by check, with its log. */
+function selfCheckCard(id) {
+  const body = h("div", {}, loading());
+  const status = h("span", { class: "sub" }, "");
+  const ask = h("button", { class: "btn", onclick: async () => {
+    try {
+      await api("/users/" + id + "/diagnostics/request", { method: "POST" });
+      toast("Asked. It runs the next time they open the app or come back to it.");
+      load();
+    } catch (e) { toast(e.message, true); }
+  } }, "Request self-check");
+  const when = (ms) => new Date(Number(ms)).toLocaleString();
+  async function load() {
+    try {
+      const d = await api("/users/" + id + "/diagnostics");
+      const r = d.request;
+      status.textContent = r && Number(r.done_at) === 0 ? `Requested ${timeAgo(r.requested_at)} — waiting for the phone` : "";
+      if (!d.reports.length) { body.replaceChildren(h("div", { class: "chart-empty" }, "No self-checks yet.")); return; }
+      body.replaceChildren(...d.reports.map((rep, i) => {
+        const log = h("pre", { style: "display:none; max-height:360px; overflow:auto; white-space:pre-wrap; font-size:12px;" },
+          rep.readable ? (rep.log || "(empty)") : "(hidden: Help improve is off)");
+        return h("div", { style: "border-top:1px solid var(--line, #8883); padding:10px 0;" },
+          h("div", { style: "display:flex; gap:8px; align-items:center; flex-wrap:wrap;" },
+            h("strong", {}, when(rep.ran_at || rep.created_at)),
+            h("span", { class: "badge " + (Number(rep.failed) ? "danger" : "good") }, Number(rep.failed) ? `${rep.failed} failed` : "all passed"),
+            h("span", { class: "sub" }, rep.trigger || ""),
+            h("button", { class: "btn", style: "margin-left:auto;", onclick: () => {
+              log.style.display = log.style.display === "none" ? "block" : "none"; } }, "App log")),
+          h("table", { class: "table", style: "margin-top:6px;" },
+            h("tbody", {}, ...rep.checks.map((c) => h("tr", {},
+              h("td", { style: "width:28px;" }, c.ok === true ? "✅" : c.ok === false ? "❌" : "ℹ️"),
+              h("td", { style: "white-space:nowrap;" }, c.name),
+              h("td", {}, c.detail))))),
+          log);
+      }));
+    } catch (e) { body.replaceChildren(h("div", { class: "chart-empty" }, e.message)); }
+  }
+  load();
+  return h("div", { class: "card" },
+    h("div", { style: "display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:6px;" },
+      h("h3", { style: "margin:0;" }, "Self-checks from the phone"), status, h("span", { style: "flex:1" }), ask),
+    body);
+}
+
 async function viewUserDetail(id) {
   shell("#/users", loading());
   const d = await api("/users/" + id);
@@ -603,6 +647,7 @@ async function viewUserDetail(id) {
           h("h3", {}, "Phone ", h("span", { class: "hint" }, "setting a number here also marks it verified")),
           u.phone_number ? h("div", { style: "margin-bottom:10px;" }, "Current: ", h("strong", {}, u.phone_number)) : null,
           h("div", { class: "inline-form" }, phoneInput, phoneBtn)),
+        h("div", { class: "section-gap" }, selfCheckCard(id)),
         h("div", { class: "section-gap" }, conversationCard(d.conversations, id)),
         h("div", { class: "section-gap" }, ledgerCard(id)),
         h("div", { class: "section-gap" }, documentsCard(id, c.docs)),

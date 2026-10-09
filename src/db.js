@@ -495,6 +495,8 @@ async function init() {
 
   // Bills by email: the private address and the emails it received.
   await require("./mailin/store").migrate((sql) => pool.query(sql));
+  // Self-checks from the phones (routes/diagnostics.js).
+  await require("./routes/diagnostics").migrate((sql) => pool.query(sql));
 
   // Live avatar persistence: per-user personas (the brain hookup),
   // session records, and the rolling recent-conversation window.
