@@ -72,7 +72,9 @@ router.get("/directory", async (req, res) => {
     // One pass over the synced address book, joined against verified
     // numbers. A contact with no row in users is someone to invite.
     const rows = await query(
-      `SELECT c.name, c.phone, u.id AS user_id, u.name AS app_name
+      // No u.name (security review 2026-10-09): uploading numbers must not
+      // reveal who owns them — the caller sees only names they saved.
+      `SELECT c.name, c.phone, u.id AS user_id, NULL::text AS app_name
          FROM contacts c
          LEFT JOIN users u
            ON u.phone_number = c.phone AND u.id <> $1

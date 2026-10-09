@@ -497,6 +497,8 @@ async function init() {
   await require("./mailin/store").migrate((sql) => pool.query(sql));
   // Self-checks from the phones (routes/diagnostics.js).
   await require("./routes/diagnostics").migrate((sql) => pool.query(sql));
+  // The spend meter: what every paid call cost, per user (admin dashboard).
+  await require("./ops/spend").migrate((sql) => pool.query(sql));
 
   // Live avatar persistence: per-user personas (the brain hookup),
   // session records, and the rolling recent-conversation window.

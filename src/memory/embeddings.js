@@ -45,6 +45,7 @@ const PROVIDERS = {
       });
       if (!r.ok) throw new Error(`openai embed ${r.status}`);
       const j = await r.json();
+      require("../ops/spend").openai("/embeddings", { model: process.env.OPENAI_EMBED_MODEL || "text-embedding-3-small" }, j);
       return (j.data || []).map((d) => d.embedding);
     },
   },

@@ -357,10 +357,23 @@ function bolnaWebhook(body) {
     "completed", "busy", "no-answer", "no_answer", "failed", "error",
     "canceled", "cancelled", "stopped", "balance-low", "balance_low",
   ]);
+  // "call-disconnected" (2026-10-08, prod): Bolna's word for the line
+  // dropping. After a real conversation a "completed" follows with the
+  // transcript; a call hung up while still ringing gets NOTHING after it,
+  // and the row sat at "dialing" for ever. Nobody spoke → no answer now.
+  if (status === "call-disconnected" && ["dialing", "in_progress"].includes(rec.state)) {
+    const spoke = /^user\s*:/im.test(String(body?.transcript || ""));
+    if (!spoke && !(Number(body?.conversation_duration) > 0)) {
+      handleNoAnswer(rec);
+      return true;
+    }
+  }
+  // What the call cost (ops/spend.js), once per execution.
+  if (TERMINAL.has(status)) require("../ops/spend").bolna(rec.userId, body);
   if (!TERMINAL.has(status)) {
     if (rec.state === "dialing" && /progress|answered|connected|started|ongoing/.test(status)) {
       rec.state = "in_progress";
-    } else if (!["queued", "scheduled", "rescheduled", "ringing", "in-progress", "in_progress"].includes(status)) {
+    } else if (!["queued", "scheduled", "rescheduled", "initiated", "ringing", "in-progress", "in_progress", "call-disconnected"].includes(status)) {
       console.warn("bolna: unfamiliar status", JSON.stringify(status), "— treated as still running");
     }
     return true;

@@ -22,6 +22,7 @@
  */
 const BASE = () => String(process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
 const TIMEOUT_MS = 30_000;
+const spend = require("../../ops/spend");
 
 function key() {
   return String(process.env.OPENAI_API_KEY || "").trim();
@@ -95,7 +96,16 @@ async function call(path, { body, form, timeoutMs = TIMEOUT_MS, raw = false, hea
     if (r.status === 429) busyUntil = Date.now() + 15_000;
     throw new OpenAIError(`openai ${path} ${r.status}: ${text.slice(0, 300) || "(empty body)"}`, r.status, text);
   }
-  return raw ? r : r.json();
+  // The spend meter (ops/spend.js): what this call cost, and for whom.
+  const sent = body || { model: form && typeof form.get === "function" ? String(form.get("model") || "") : "" };
+  if (raw) {
+    // A stream's usage arrives at its end (readStream); speech has none.
+    if (path.startsWith("/audio/speech")) spend.openai(path, sent, null);
+    return r;
+  }
+  const data = await r.json();
+  spend.openai(path, sent, data);
+  return data;
 }
 
 // ---------------------------------------------------------------- messages
@@ -316,6 +326,7 @@ async function readStream(r, model, started, onDelta) {
   if (buf.trim()) take(buf.trim());
   const functionCalls = [...calls.keys()].sort((a, b) => a - b).map((k) => calls.get(k))
     .filter((c) => c.name).map((c) => ({ name: c.name, args: parseArgs(c.args), id: c.id }));
+  if (usage) spend.openai("/chat/completions", { model }, { usage, model });
   return { text: text.trim(), functionCalls, usage, model, ms: Date.now() - started, finish: finishReason };
 }
 

@@ -80,10 +80,32 @@ function saysYes(text) {
 function mayGo({ userId, kind, parts, confirmed, userText = null, unattended = false }) {
   if (unattended) return true;
   const slot = `${userId || "anon"}|${kind}`;
-  const key = (parts || []).map(norm).join("|");
+  // THE WORDS ARE WHAT WAS APPROVED (2026-10-08). The recipient used to be
+  // part of the key too, so picking "Ananth Shetty" from two matches for
+  // "Anant Shetty" read the same message back again — and again. The
+  // message must match exactly; the name only has to be the same person
+  // (the first word starts the same), which a contact pick always is.
+  const [who, ...rest] = (parts || []).map(norm);
+  const key = rest.join("|");
+  // "Anant" and "Ananth": the same person as spelled by the contact list.
+  const first = (s) => String(s || "").split(" ")[0].slice(0, 4);
+  // NO TRANSCRIPT IS NOT A "NO" (2026-10-08). A voice session with no
+  // transcript of the user hands us "" (or a fragment like "uh", "you"):
+  // "" !== "" was never new, so a spoken yes could never pass and every
+  // message call looped on its read-back until the model gave up and
+  // dialled without the message — no relayed call in a week on prod.
+  // Without readable words, the model's confirmed:true after a pause is
+  // the yes, as when no text is known at all.
+  const heard = norm(userText);
+  const unreadable = userText == null || heard.split(" ").filter(Boolean).length === 0 ||
+    (heard.length <= 4 && !saysYes(heard) && !heard.split(" ").some((w) => NO.has(w)));
   const p = pending.get(slot);
   const fresh = p && Date.now() - p.at < TTL_MS;
-  if (confirmed === true && fresh && p.key === key) {
+  if (confirmed === true && fresh && p.key === key && first(p.who) === first(who)) {
+    if (unreadable && Date.now() - p.at > 1500) {
+      pending.delete(slot);
+      return true;
+    }
     // Something new must have been said since the words were read back —
     // the request itself, still the latest thing heard, is not a yes.
     const heardNew = userText == null
@@ -94,7 +116,7 @@ function mayGo({ userId, kind, parts, confirmed, userText = null, unattended = f
       return true;
     }
   }
-  pending.set(slot, { key, heard: norm(userText), at: Date.now() });
+  pending.set(slot, { key, who, heard, at: Date.now() });
   // One slot per user and kind; old ones age out instead of piling up.
   if (pending.size > 5000) pending.delete(pending.keys().next().value);
   return false;

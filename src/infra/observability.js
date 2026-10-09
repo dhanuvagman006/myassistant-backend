@@ -99,7 +99,9 @@ function requestId() {
       logger.info("http", {
         rid: req.requestId,
         method: req.method,
-        path: req.path,
+        // Webhook paths carry their secret (Bolna, the tool hook, Plivo's
+        // per-call tokens): logged as ":secret", never the value.
+        path: redactPath(req.path),
         status: res.statusCode,
         ms,
         // user id only — never the body
@@ -127,6 +129,13 @@ async function timed(name, fn, fields = {}) {
     logger.error("op_failed", { op: name, ms, error: e.message, ...fields });
     throw e;
   }
+}
+
+/** A request path with any webhook secret in it masked. */
+function redactPath(p) {
+  return String(p || "")
+    .replace(/\/(webhook|tool|inbound|hook|cb|callback)\/[A-Za-z0-9_-]{16,}/gi, "/$1/:secret")
+    .replace(/\/[A-Fa-f0-9]{32,}(?=\/|$)/g, "/:secret");
 }
 
 module.exports = { logger, requestId, timed, count, observe, snapshot, redact, METRICS };

@@ -128,7 +128,7 @@ router.post("/google", async (req, res) => {
     });
     respond(res, user, created);
   } catch (e) {
-    console.error("Google verifyIdToken error:", e);
+    console.error("Google verifyIdToken error:", String((e && e.message) || e).slice(0, 200));
     res.status(401).json({ error: "We couldn't confirm your Google sign-in. Please try again." });
   }
 });

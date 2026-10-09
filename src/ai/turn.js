@@ -147,6 +147,9 @@ async function recordTurn(uid, body) {
     console.log(`ai: turn ${mode} ${engine} build=${s.device.build || 0}` +
       part("reply", latencyMs || null) + part("firstAudio", firstAudioMs) + part("play", playMs) +
       part("tools", toolMs) + ` toolCalls=${tools.length}` + (cut ? " cutOff=yes" : "") +
+      // How much of what THEY said reached us (2026-10-08): voice turns on
+      // prod had never recorded a user line, and this shows where it is lost.
+      ` heard=${user.trim().length}${t.owner ? "" : " notOwner"}` +
       (corrected ? " corrected=yes" : ""));
   }
 

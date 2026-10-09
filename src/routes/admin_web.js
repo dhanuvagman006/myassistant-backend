@@ -89,7 +89,7 @@ function setSession(req, res, value, maxAgeS) {
     req.secure || req.get("x-forwarded-proto") === "https" ? "; Secure" : "";
   res.setHeader(
     "Set-Cookie",
-    `${COOKIE}=${encodeURIComponent(value)}; Path=/admin-panel; HttpOnly; SameSite=Lax; Max-Age=${maxAgeS}${secure}`
+    `${COOKIE}=${encodeURIComponent(value)}; Path=/admin-panel; HttpOnly; SameSite=Strict; Max-Age=${maxAgeS}${secure}`
   );
 }
 
@@ -135,6 +135,11 @@ router.post("/api/logout", (req, res) => {
 router.use("/api", (req, res, next) => {
   if (KEY().length < 16) return res.status(503).json({ error: "panel disabled" });
   if (!validToken(cookieOf(req))) return res.status(401).json({ error: "sign in" });
+  // CSRF (security review 2026-10-09): a form on another page can send the
+  // cookie but cannot set a custom header, so every write needs one.
+  if (!["GET", "HEAD", "OPTIONS"].includes(req.method) && req.get("X-Admin-Panel") !== "1") {
+    return res.status(403).json({ error: "missing panel header" });
+  }
   next();
 });
 
@@ -245,6 +250,176 @@ router.get("/api/overview", async (_req, res) => {
       rssMb: Math.round(process.memoryUsage().rss / 1048576),
       node: process.version,
     },
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Dashboard (2026-10-09) — who uses it, how much, and what it costs    */
+/* ------------------------------------------------------------------ */
+
+// Days are India's days: a 1 a.m. turn belongs to the day it was in Bengaluru.
+const TZ = "Asia/Kolkata";
+const dayOf = (col) => `to_char(to_timestamp(${col}/1000.0) AT TIME ZONE '${TZ}','YYYY-MM-DD')`;
+
+/** The last `days` India dates, oldest first. */
+function istDays(days, endMs = Date.now()) {
+  const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" });
+  return [...Array(days)].map((_, i) => fmt.format(new Date(endMs - (days - 1 - i) * 86400_000)));
+}
+const fill = (days, rows, key = "v") => {
+  const by = Object.fromEntries(rows.map((r) => [r.d, Number(r[key]) || 0]));
+  return days.map((d) => ({ d, count: by[d] || 0 }));
+};
+const num = (rows, k = "v") => Number(rows?.[0]?.[k]) || 0;
+
+/**
+ * GET /api/dashboard?days=7|14|30|90 — one call for the whole dashboard:
+ * headline numbers against the period before, daily series, the people
+ * who use it most (and what they cost), spend by feature and model, the
+ * busiest hours, and the signup → active funnel. "Active" = a turn with
+ * the assistant or an action in the audit trail.
+ */
+router.get("/api/dashboard", async (req, res) => {
+  const days = [7, 14, 30, 90].includes(Number(req.query.days)) ? Number(req.query.days) : 30;
+  const now = Date.now();
+  const since = now - days * 86400_000;
+  const prev = since - days * 86400_000;
+  const dayKeys = istDays(days, now);
+  const ACTIVE = `(SELECT user_id, created_at FROM actions_log
+                   UNION ALL
+                   SELECT user_id, created_at FROM conversation_turns WHERE role='user')`;
+  const activeIn = (a, b) => sq(`SELECT COUNT(DISTINCT user_id)::int AS v FROM ${ACTIVE} x WHERE created_at > $1 AND created_at <= $2`, [a, b]);
+  const turnsIn = (a, b) => sq(`SELECT COUNT(*)::int AS v FROM conversation_turns WHERE role='assistant' AND created_at > $1 AND created_at <= $2`, [a, b]);
+  const spendIn = (a, b) => sq(`SELECT COALESCE(SUM(cost_usd),0) AS v FROM ai_spend WHERE at > $1 AND at <= $2`, [a, b]);
+  const signupsIn = (a, b) => sq(`SELECT COUNT(*)::int AS v FROM users WHERE created_at > $1 AND created_at <= $2`, [a, b]);
+
+  const [
+    users, dau, wau, mau, act, actPrev, turns, turnsPrev, spend, spendPrev, signups, signupsPrev,
+    spendToday, voiceSessions, calls, meterSince,
+  ] = await Promise.all([
+    sq(`SELECT COUNT(*)::int AS v FROM users`),
+    activeIn(now - 86400_000, now), activeIn(now - 7 * 86400_000, now), activeIn(now - 30 * 86400_000, now),
+    activeIn(since, now), activeIn(prev, since),
+    turnsIn(since, now), turnsIn(prev, since),
+    spendIn(since, now), spendIn(prev, since),
+    signupsIn(since, now), signupsIn(prev, since),
+    sq(`SELECT COALESCE(SUM(cost_usd),0) AS v FROM ai_spend WHERE ${dayOf("at")} = $1`, [dayKeys[dayKeys.length - 1]]),
+    sq(`SELECT COUNT(*)::int AS v FROM ai_spend WHERE feature='voice_session' AND at > $1`, [since]),
+    sq(`SELECT COUNT(*)::int AS v, COALESCE(SUM(units),0) AS secs FROM ai_spend WHERE feature='phone_call' AND at > $1`, [since]),
+    sq(`SELECT MIN(at) AS v FROM ai_spend`),
+  ]);
+
+  const [activeDaily, turnsDaily, signupsDaily, spendDaily, spendByFeature, spendByModel, heat, topUsers, funnel, sources, versions] =
+    await Promise.all([
+      sq(`SELECT ${dayOf("created_at")} AS d, COUNT(DISTINCT user_id)::int AS v FROM ${ACTIVE} x WHERE created_at > $1 GROUP BY 1`, [since]),
+      sq(`SELECT ${dayOf("created_at")} AS d,
+                 COUNT(*) FILTER (WHERE source LIKE 'ai-live%')::int AS voice,
+                 COUNT(*) FILTER (WHERE source NOT LIKE 'ai-live%')::int AS other
+            FROM conversation_turns WHERE role='assistant' AND created_at > $1 GROUP BY 1`, [since]),
+      sq(`SELECT ${dayOf("created_at")} AS d, COUNT(*)::int AS v FROM users WHERE created_at > $1 GROUP BY 1`, [since]),
+      sq(`SELECT ${dayOf("at")} AS d, feature, SUM(cost_usd) AS v FROM ai_spend WHERE at > $1 GROUP BY 1, 2`, [since]),
+      sq(`SELECT feature, SUM(cost_usd) AS usd, COUNT(*)::int AS n, SUM(tokens_in)::bigint AS tin, SUM(tokens_out)::bigint AS tout
+            FROM ai_spend WHERE at > $1 GROUP BY 1 ORDER BY usd DESC`, [since]),
+      sq(`SELECT model, provider, SUM(cost_usd) AS usd, COUNT(*)::int AS n,
+                 SUM(tokens_in)::bigint AS tin, SUM(tokens_cached)::bigint AS tcached, SUM(tokens_out)::bigint AS tout
+            FROM ai_spend WHERE at > $1 GROUP BY 1, 2 ORDER BY usd DESC LIMIT 12`, [since]),
+      // When people talk to her: weekday (0 = Sunday) × hour, India time.
+      sq(`SELECT EXTRACT(DOW FROM to_timestamp(created_at/1000.0) AT TIME ZONE '${TZ}')::int AS dow,
+                 EXTRACT(HOUR FROM to_timestamp(created_at/1000.0) AT TIME ZONE '${TZ}')::int AS hr,
+                 COUNT(*)::int AS n
+            FROM conversation_turns WHERE role='user' AND created_at > $1 GROUP BY 1, 2`, [since]),
+      sq(`WITH t AS (
+            SELECT user_id, COUNT(*)::int AS turns,
+                   COUNT(*) FILTER (WHERE source LIKE 'ai-live%')::int AS voice,
+                   COUNT(DISTINCT ${dayOf("created_at")})::int AS days,
+                   MAX(created_at) AS last_turn
+              FROM conversation_turns WHERE role='assistant' AND created_at > $1 GROUP BY 1),
+          a AS (SELECT user_id, COUNT(*)::int AS actions, MAX(created_at) AS last_action
+                  FROM actions_log WHERE created_at > $1 GROUP BY 1),
+          s AS (SELECT user_id, SUM(cost_usd) AS usd,
+                       COUNT(*) FILTER (WHERE feature='voice_session')::int AS sessions,
+                       COUNT(*) FILTER (WHERE feature='phone_call')::int AS calls
+                  FROM ai_spend WHERE at > $1 AND user_id IS NOT NULL GROUP BY 1),
+          ids AS (SELECT user_id FROM t UNION SELECT user_id FROM a UNION SELECT user_id FROM s)
+          SELECT ids.user_id, u.name, u.email, u.app_build, u.last_seen_at, u.status,
+                 COALESCE(t.turns,0) AS turns, COALESCE(t.voice,0) AS voice, COALESCE(t.days,0) AS days,
+                 COALESCE(a.actions,0) AS actions, COALESCE(s.usd,0) AS usd,
+                 COALESCE(s.sessions,0) AS sessions, COALESCE(s.calls,0) AS calls,
+                 GREATEST(COALESCE(t.last_turn,0), COALESCE(a.last_action,0)) AS last_active
+            FROM ids JOIN users u ON u.id = ids.user_id
+            LEFT JOIN t ON t.user_id = ids.user_id
+            LEFT JOIN a ON a.user_id = ids.user_id
+            LEFT JOIN s ON s.user_id = ids.user_id
+           ORDER BY COALESCE(t.turns,0) + COALESCE(a.actions,0) DESC, usd DESC
+           LIMIT 50`, [since]),
+      sq(`SELECT COUNT(*)::int AS signed_up,
+                 COUNT(*) FILTER (WHERE phone_verified_at IS NOT NULL)::int AS verified,
+                 COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM conversation_turns c WHERE c.user_id = users.id))::int AS talked,
+                 COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM conversation_turns c WHERE c.user_id = users.id AND c.created_at > $1))::int AS active7
+            FROM users`, [now - 7 * 86400_000]),
+      sq(`SELECT COALESCE(NULLIF(source,''),'unknown') AS source, COUNT(*)::int AS n
+            FROM conversation_turns WHERE role='assistant' AND created_at > $1 GROUP BY 1 ORDER BY n DESC LIMIT 8`, [since]),
+      sq(`SELECT COALESCE(NULLIF(app_build,0), 0) AS build, COUNT(*)::int AS users
+            FROM users WHERE status='active' GROUP BY 1 ORDER BY build DESC LIMIT 8`),
+    ]);
+
+  const turnsBy = Object.fromEntries(turnsDaily.map((r) => [r.d, r]));
+  const features = [...new Set(spendDaily.map((r) => r.feature))];
+  const spendSeries = dayKeys.map((d) => {
+    const row = { d, total: 0 };
+    for (const r of spendDaily) {
+      if (r.d !== d) continue;
+      row[r.feature] = Number(r.v) || 0;
+      row.total += Number(r.v) || 0;
+    }
+    return row;
+  });
+  const billed = await require("../ops/spend").billed(days).catch(() => null);
+  const activeNow = num(act);
+  res.json({
+    days, tz: TZ, usdInr: Number(process.env.USD_INR) > 0 ? Number(process.env.USD_INR) : 88,
+    kpis: {
+      users: num(users), dau: num(dau), wau: num(wau), mau: num(mau),
+      active: activeNow, activePrev: num(actPrev),
+      turns: num(turns), turnsPrev: num(turnsPrev),
+      spend: num(spend), spendPrev: num(spendPrev), spendToday: num(spendToday),
+      signups: num(signups), signupsPrev: num(signupsPrev),
+      costPerActive: activeNow ? num(spend) / activeNow : 0,
+      voiceSessions: num(voiceSessions), calls: num(calls), callMinutes: Math.round(num(calls, "secs") / 60),
+      stickiness: num(mau) ? num(dau) / num(mau) : 0,
+    },
+    series: {
+      active: fill(dayKeys, activeDaily),
+      signups: fill(dayKeys, signupsDaily),
+      turns: dayKeys.map((d) => ({ d, voice: turnsBy[d]?.voice || 0, other: turnsBy[d]?.other || 0 })),
+      spend: spendSeries, features,
+    },
+    spendByFeature: spendByFeature.map((r) => ({ feature: r.feature, usd: Number(r.usd) || 0, n: r.n, tin: Number(r.tin) || 0, tout: Number(r.tout) || 0 })),
+    spendByModel: spendByModel.map((r) => ({ ...r, usd: Number(r.usd) || 0, tin: Number(r.tin) || 0, tcached: Number(r.tcached) || 0, tout: Number(r.tout) || 0 })),
+    heat,
+    topUsers: topUsers.map((u) => ({ ...u, usd: Number(u.usd) || 0 })),
+    funnel: funnel[0] || {}, sources, versions,
+    billed, // OpenAI's own bill (OPENAI_ADMIN_KEY), or null
+    meterSince: num(meterSince),
+  });
+});
+
+/** One user's spend: per day and per feature, for their detail page. */
+router.get("/api/users/:id/spend", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const days = 30;
+  const since = Date.now() - days * 86400_000;
+  const [daily, byFeature, total] = await Promise.all([
+    sq(`SELECT ${dayOf("at")} AS d, SUM(cost_usd) AS v FROM ai_spend WHERE user_id=$1 AND at > $2 GROUP BY 1`, [id, since]),
+    sq(`SELECT feature, SUM(cost_usd) AS usd, COUNT(*)::int AS n FROM ai_spend WHERE user_id=$1 AND at > $2 GROUP BY 1 ORDER BY usd DESC`, [id, since]),
+    sq(`SELECT COALESCE(SUM(cost_usd),0) AS v FROM ai_spend WHERE user_id=$1`, [id]),
+  ]);
+  res.json({
+    days,
+    daily: fill(istDays(days), daily),
+    byFeature: byFeature.map((r) => ({ feature: r.feature, usd: Number(r.usd) || 0, n: r.n })),
+    total30: daily.reduce((a, r) => a + (Number(r.v) || 0), 0),
+    allTime: num(total),
   });
 });
 
@@ -1338,6 +1513,163 @@ router.get("/api/activity", async (req, res) => {
     params
   );
   res.json({ activity: rows });
+});
+
+/* ------------------------------------------------------------------ */
+/* Live — every move, every user, as it happens (2026-10-08)            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ONE STREAM OF EVERYTHING (owner, 2026-10-08: "monitor each and every
+ * move of test users"). The words (conversation_turns), every tool the
+ * assistant ran or refused with what it was given and what came back
+ * (executed_actions), what really happened afterwards (task_outcomes) and
+ * what users told the developer (developer_feedback) — merged newest
+ * first. Text is shown only where Help improve allows, like every other
+ * view; the fact that something happened is always shown.
+ *
+ *   ?since=<ms>   only newer items (the page polls with this)
+ *   ?before=<ms>  older items (paging back)
+ *   ?user_id=     one user
+ *   ?type=        say | action | outcome | feedback (comma list)
+ *   ?failed=1     only what went wrong
+ *   ?q=           text search (inside readable rows only)
+ */
+router.get("/api/live", async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit, 10) || 120, 400);
+  const since = Number(req.query.since) || 0;
+  const before = Number(req.query.before) || 0;
+  const userId = parseInt(req.query.user_id, 10);
+  const failed = req.query.failed === "1";
+  const q = String(req.query.q || "").trim().slice(0, 100);
+  const types = new Set(String(req.query.type || "say,action,outcome,feedback").split(",").map((s) => s.trim()));
+
+  const bound = (alias, params) => {
+    const w = [];
+    if (since) { params.push(since); w.push(`${alias}.created_at > $${params.length}`); }
+    if (before) { params.push(before); w.push(`${alias}.created_at < $${params.length}`); }
+    if (!since && !before) w.push(`${alias}.created_at > ${Date.now() - 14 * 86400000}`);
+    if (Number.isFinite(userId)) { params.push(userId); w.push(`${alias}.user_id = $${params.length}`); }
+    return w;
+  };
+  const search = (alias, cols, params) => {
+    if (!q) return [];
+    params.push(`%${q}%`);
+    const rv = RV(`${alias}.user_id`, `${alias}.created_at`);
+    return [`(${rv} AND (${cols.map((c) => `${alias}.${c} ILIKE $${params.length}`).join(" OR ")}))`];
+  };
+  const jobs = [];
+
+  if (types.has("say") && !failed) {
+    const p = [];
+    const w = [...bound("c", p), ...search("c", ["text"], p)];
+    const rv = RV("c.user_id", "c.created_at");
+    jobs.push(sq(
+      `SELECT 'say' AS type, c.id, c.user_id, u.name AS user_name, c.created_at, c.role,
+              CASE WHEN ${rv} THEN c.text ELSE NULL END AS text, ${rv} AS readable,
+              c.source, c.app_build, c.latency_ms, c.tools, c.session_id, c.turn_id
+         FROM conversation_turns c LEFT JOIN users u ON u.id = c.user_id
+        WHERE ${w.join(" AND ")} ORDER BY c.created_at DESC LIMIT ${limit}`, p));
+  }
+  if (types.has("action")) {
+    const p = [];
+    const w = [...bound("e", p), ...search("e", ["intent", "args", "result", "reply", "target"], p)];
+    if (failed) w.push(`(e.ok = 0 OR e.decision IN ('refused','suppressed'))`);
+    const rv = RV("e.user_id", "e.created_at");
+    jobs.push(sq(
+      `SELECT 'action' AS type, e.id, e.user_id, u.name AS user_name, e.created_at, e.tool, e.ok, e.world,
+              e.decision, e.ms, e.surface, e.target, e.session_id, e.turn_id, ${rv} AS readable,
+              CASE WHEN ${rv} THEN e.intent ELSE NULL END AS intent,
+              CASE WHEN ${rv} THEN e.args ELSE NULL END AS args,
+              CASE WHEN ${rv} THEN e.result ELSE NULL END AS result,
+              CASE WHEN ${rv} THEN e.reply ELSE NULL END AS reply,
+              CASE WHEN ${rv} THEN e.detail ELSE NULL END AS detail
+         FROM executed_actions e LEFT JOIN users u ON u.id = e.user_id
+        WHERE ${w.join(" AND ")} ORDER BY e.created_at DESC LIMIT ${limit}`, p));
+  }
+  if (types.has("outcome")) {
+    const p = [];
+    // An outcome is news when it changes, so it sorts by updated_at.
+    const w = bound("t", p).map((s) => s.replace("t.created_at", "t.updated_at"));
+    const s2 = search("t", ["target", "detail", "reason"], p);
+    if (failed) w.push(`t.status IN ('failed','no_answer','cancelled','unconfirmed')`);
+    const rv = RV("t.user_id", "t.created_at");
+    jobs.push(sq(
+      `SELECT 'outcome' AS type, t.id, t.user_id, u.name AS user_name, t.updated_at AS created_at,
+              t.kind, t.status, t.path, ${rv} AS readable,
+              CASE WHEN ${rv} THEN t.target ELSE NULL END AS target,
+              CASE WHEN ${rv} THEN t.detail ELSE NULL END AS detail,
+              CASE WHEN ${rv} THEN t.reason ELSE NULL END AS reason
+         FROM task_outcomes t LEFT JOIN users u ON u.id = t.user_id
+        WHERE ${[...w, ...s2].join(" AND ")} ORDER BY t.updated_at DESC LIMIT ${limit}`, p));
+  }
+  if (types.has("feedback") && !failed) {
+    const p = [];
+    const w = bound("f", p);
+    jobs.push(sq(
+      `SELECT 'feedback' AS type, f.id, f.user_id, u.name AS user_name, f.created_at,
+              f.kind, f.summary, f.details, f.user_words, f.status, f.app_build, true AS readable
+         FROM developer_feedback f LEFT JOIN users u ON u.id = f.user_id
+        WHERE ${w.join(" AND ")} ORDER BY f.created_at DESC LIMIT ${limit}`, p));
+  }
+
+  const all = (await Promise.all(jobs)).flat()
+    .map((r) => ({ ...r, created_at: Number(r.created_at) }))
+    .sort((a, b) => b.created_at - a.created_at)
+    .slice(0, limit);
+  // Who was active in the window, for the user filter.
+  const users = await sq(
+    `SELECT u.id, u.name, max(c.created_at) AS last
+       FROM conversation_turns c JOIN users u ON u.id = c.user_id
+      WHERE c.created_at > $1 GROUP BY u.id, u.name ORDER BY last DESC LIMIT 100`,
+    [Date.now() - 30 * 86400000]);
+  res.json({ items: all, users, now: Date.now() });
+});
+
+/**
+ * A document that a browser cannot show on its own (Word files), as a
+ * page: .docx converted by mammoth, anything else as its extracted text.
+ * Served with a CSP that allows no script and no network — the content is
+ * a user's upload on the admin panel's own origin.
+ */
+router.get("/api/documents/:docId/view", async (req, res) => {
+  const fs = require("fs");
+  const docId = parseInt(req.params.docId, 10);
+  if (!Number.isFinite(docId)) return res.status(400).json({ error: "bad document id" });
+  const rows = await sq(
+    `SELECT id, mime, path, title, filename, full_text, summary, ${RV("user_id", "created_at")} AS reviewable
+       FROM documents WHERE id = $1`, [docId]);
+  const row = rows[0];
+  if (!row) return res.status(404).json({ error: "no such document" });
+  if (!row.reviewable) return res.status(403).json({ error: "hidden: the user turned off Help improve" });
+  const esc = (s) => String(s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  let body = "";
+  const mime = String(row.mime || "").toLowerCase();
+  if (/wordprocessingml|msword/.test(mime) && row.path && fs.existsSync(row.path)) {
+    try {
+      const out = await require("mammoth").convertToHtml({ path: row.path });
+      body = out.value;
+    } catch (e) {
+      body = "";
+    }
+  }
+  if (!body) {
+    body = row.full_text
+      ? `<pre>${esc(row.full_text)}</pre>`
+      : `<p><em>No text could be read from this file.</em></p>`;
+  }
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Cache-Control", "private, max-age=300");
+  res.send(
+    `<!doctype html><html><head><meta charset="utf-8"><title>${esc(row.title || row.filename)}</title>` +
+    `<style>body{font:15px/1.55 system-ui,sans-serif;max-width:820px;margin:32px auto;padding:0 20px;color:#111}` +
+    `pre{white-space:pre-wrap;font:14px/1.5 ui-monospace,monospace}table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:4px 8px}` +
+    `.meta{color:#666;font-size:13px;border-bottom:1px solid #ddd;padding-bottom:10px;margin-bottom:18px}</style></head><body>` +
+    `<div class="meta"><strong>${esc(row.title || row.filename)}</strong> · ${esc(mime)}` +
+    `${row.summary ? `<br>${esc(row.summary)}` : ""}</div>${body}</body></html>`
+  );
 });
 
 /* ------------------------------------------------------------------ */

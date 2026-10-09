@@ -31,7 +31,7 @@ function h(tag, attrs = {}, ...children) {
 async function api(path, opts = {}) {
   const res = await fetch(API + path, {
     credentials: "same-origin",
-    headers: opts.body ? { "Content-Type": "application/json" } : {},
+    headers: { "X-Admin-Panel": "1", ...(opts.body ? { "Content-Type": "application/json" } : {}) },
     ...opts,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
@@ -55,6 +55,7 @@ function upload(path, form, onProgress) {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", API + path);
     xhr.withCredentials = true;
+    xhr.setRequestHeader("X-Admin-Panel", "1");
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total);
     };
@@ -155,8 +156,8 @@ function barChart(series) {
   // grid: 0 / half / max
   for (const frac of [0, 0.5, 1]) {
     const y = padT + plotH - frac * plotH;
-    svg.append(svgEl("line", { x1: padL, y1: y, x2: W - 4, y2: y, stroke: "#f0f0f2", "stroke-width": 1 }));
-    const lbl = svgEl("text", { x: padL - 6, y: y + 4, "text-anchor": "end", "font-size": 10, fill: "#9ca3af" });
+    svg.append(svgEl("line", { class: "grid-line", x1: padL, y1: y, x2: W - 4, y2: y }));
+    const lbl = svgEl("text", { class: "axis", x: padL - 6, y: y + 4, "text-anchor": "end" });
     lbl.textContent = String(Math.round(frac * max));
     svg.append(lbl);
   }
@@ -166,7 +167,7 @@ function barChart(series) {
     const y = padT + plotH - bh;
     const r = svgEl("rect", {
       x, y, width: bw, height: bh, rx: 2,
-      fill: s.count > 0 ? "#4f46e5" : "#e5e7eb",
+      class: s.count > 0 ? "bar" : "bar zero",
     });
     r.addEventListener("mousemove", (ev) => showTip(ev, dayLabel(s.d), s.count));
     r.addEventListener("mouseleave", hideTip);
@@ -175,7 +176,7 @@ function barChart(series) {
   // sparse x labels: first, middle, last
   for (const i of [0, Math.floor(n / 2), n - 1]) {
     const x = padL + i * (plotW / n) + bw / 2;
-    const t = svgEl("text", { x, y: H - 5, "text-anchor": "middle", "font-size": 10, fill: "#9ca3af" });
+    const t = svgEl("text", { class: "axis", x, y: H - 5, "text-anchor": "middle" });
     t.textContent = dayLabel(series[i].d);
     svg.append(t);
   }
@@ -203,7 +204,7 @@ function hbarList(items) {
 function showLogin() {
   const err = h("div", { class: "login-error" });
   const input = h("input", { class: "input", type: "password", placeholder: "Enter the admin key", autocomplete: "current-password" });
-  const btn = h("button", { class: "btn primary", style: "width:100%; margin-top:6px;" }, "Sign in");
+  const btn = h("button", { class: "btn primary", style: "width:100%; margin-top:6px; justify-content:center;" }, "Sign in");
   const submit = async () => {
     err.textContent = "";
     btn.disabled = true;
@@ -236,47 +237,161 @@ function showLogin() {
 /* Shell + router                                                      */
 /* ------------------------------------------------------------------ */
 
+/* Icons: 24-unit strokes, currentColor. */
+const ICONS = {
+  grid: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
+  pulse: "M3 12h4l3-8 4 16 3-8h4",
+  chart: "M4 20V10M10 20V4M16 20v-7M22 20H2",
+  users: "M16 19v-1a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v1M9 10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM22 19v-1a4 4 0 0 0-3-3.9M16 3.1a3.5 3.5 0 0 1 0 6.8",
+  phone: "M7 2h10a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zM11 18h2",
+  inbox: "M22 12h-6l-2 3h-4l-2-3H2M5.5 5h13L22 12v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6z",
+  chat: "M21 12a8 8 0 0 1-11.8 7L3 21l2-6.2A8 8 0 1 1 21 12z",
+  mic: "M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3zM19 11a7 7 0 0 1-14 0M12 18v4",
+  file: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6",
+  video: "M23 7l-7 5 7 5zM1 5h15v14H1z",
+  list: "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01",
+  check: "M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11",
+  bell: "M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0",
+  flag: "M4 22V4M4 15s1-1 4-1 5 2 8 2 4-1 4-1V4s-1 1-4 1-5-2-8-2-4 1-4 1",
+  cpu: "M6 6h12v12H6zM9 9h6v6H9zM9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3",
+  search: "M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.3-4.3",
+  sun: "M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4",
+  moon: "M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z",
+  logout: "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9",
+  refresh: "M23 4v6h-6M1 20v-6h6M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15",
+  info: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 16v-4M12 8h.01",
+  user: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
+};
+function icon(name) {
+  const s = svgEl("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": 1.8, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" });
+  s.append(svgEl("path", { d: ICONS[name] || ICONS.grid }));
+  return s;
+}
+
+/* Theme: system, light or dark; remembered per browser. */
+const store = {
+  get(k, d) { try { return localStorage.getItem(k) ?? d; } catch (_) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (_) {} },
+};
+function applyTheme() {
+  const t = store.get("adm-theme", "system");
+  if (t === "system") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", t);
+}
+function isDark() {
+  const t = document.documentElement.getAttribute("data-theme");
+  return t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+}
+applyTheme();
+
 const NAV = [
-  ["#/", "Overview"],
-  ["#/users", "Users"],
-  ["#/analytics", "Analytics"],
-  ["#/conversations", "Conversations"],
-  ["#/recordings", "Recordings"],
-  ["#/phones", "Phones"],
-  ["#/video-notes", "Video notes"],
-  ["#/documents", "Documents"],
-  ["#/activity", "Activity"],
-  ["#/feedback", "Feedback"],
-  ["#/outcomes", "Task outcomes"],
-  ["#/broadcast", "Notifications"],
-  ["#/flags", "Feature flags"],
-  ["#/debug", "System & debug"],
+  ["Overview", [["#/", "Dashboard", "grid"], ["#/live", "Live", "pulse"], ["#/analytics", "Analytics", "chart"]]],
+  ["People", [["#/users", "Users", "users"], ["#/phones", "Phones", "phone"], ["#/feedback", "Feedback", "inbox"]]],
+  ["Content", [["#/conversations", "Conversations", "chat"], ["#/recordings", "Recordings", "mic"],
+    ["#/documents", "Documents", "file"], ["#/video-notes", "Video notes", "video"]]],
+  ["Operations", [["#/activity", "Activity", "list"], ["#/outcomes", "Task outcomes", "check"],
+    ["#/broadcast", "Notifications", "bell"], ["#/flags", "Feature flags", "flag"], ["#/debug", "System & debug", "cpu"]]],
 ];
+const NAV_FLAT = NAV.flatMap(([, items]) => items);
 
 function shell(activeHash, content) {
-  const nav = NAV.map(([hash, label]) =>
-    h("button", {
-      class: "nav-item" + (hash === activeHash ? " active" : ""),
-      onclick: () => { location.hash = hash; },
-    }, label)
-  );
+  const nav = NAV.flatMap(([group, items]) => [
+    h("div", { class: "nav-group" }, group),
+    ...items.map(([hash, label, ic]) =>
+      h("button", {
+        class: "nav-item" + (hash === activeHash ? " active" : ""),
+        onclick: () => { location.hash = hash; },
+      }, icon(ic), label)),
+  ]);
+  const themeBtn = h("button", {
+    class: "icon-btn", title: "Switch light / dark",
+    onclick: () => {
+      store.set("adm-theme", isDark() ? "light" : "dark");
+      applyTheme();
+      themeBtn.replaceChildren(icon(isDark() ? "sun" : "moon"));
+    },
+  }, icon(isDark() ? "sun" : "moon"));
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform || "");
   $app.replaceChildren(
     h("div", { class: "shell" },
       h("aside", { class: "sidebar" },
         h("div", { class: "brand" }, h("div", { class: "brand-mark" }, "M"), h("span", {}, "MyAssistant")),
+        h("button", { class: "search-trigger", onclick: openPalette },
+          icon("search"), "Search…", h("kbd", {}, mac ? "⌘K" : "Ctrl K")),
         ...nav,
         h("div", { class: "spacer" }),
-        h("button", {
-          class: "nav-item", onclick: async () => {
-            try { await api("/logout", { method: "POST" }); } catch (_) {}
-            showLogin();
-          },
-        }, "Sign out")
+        h("div", { class: "sidebar-foot" },
+          h("button", {
+            class: "nav-item", onclick: async () => {
+              try { await api("/logout", { method: "POST" }); } catch (_) {}
+              showLogin();
+            },
+          }, icon("logout"), "Sign out"),
+          themeBtn)
       ),
       h("main", { class: "main" }, content)
     )
   );
 }
+
+/* ⌘K: jump to any page or user. */
+function openPalette() {
+  if (document.querySelector(".palette-back")) return;
+  const input = h("input", { placeholder: "Jump to a page or find a user…", autocomplete: "off" });
+  const list = h("div", { class: "palette-list" });
+  let items = [];
+  let sel = 0;
+  let users = [];
+  const close = () => back.remove();
+  const go = (it) => { close(); location.hash = it.hash; };
+  function draw() {
+    const q = input.value.trim().toLowerCase();
+    const pages = NAV_FLAT.filter(([, label]) => !q || label.toLowerCase().includes(q))
+      .map(([hash, label, ic]) => ({ hash, label, ic, sub: "Page" }));
+    const people = users.map((u) => ({
+      hash: "#/user/" + u.id, label: u.name || u.email || "#" + u.id, ic: "user",
+      sub: "#" + u.id + (u.phone_number ? " · " + u.phone_number : ""),
+    }));
+    items = [...pages, ...people];
+    sel = Math.min(sel, Math.max(0, items.length - 1));
+    const row = (it, i) => h("div", {
+      class: "palette-item" + (i === sel ? " on" : ""),
+      onmouseenter: () => { sel = i; draw(); },
+      onclick: () => go(it),
+    }, icon(it.ic), it.label, h("span", { class: "sub" }, it.sub));
+    list.replaceChildren(
+      pages.length ? h("div", { class: "palette-sec" }, "Pages") : null,
+      ...pages.map((it, i) => row(it, i)),
+      people.length ? h("div", { class: "palette-sec" }, "Users") : null,
+      ...people.map((it, i) => row(it, pages.length + i)),
+      items.length ? null : h("div", { class: "chart-empty" }, "Nothing matches."));
+  }
+  const findUsers = debounce(async () => {
+    const q = input.value.trim();
+    if (q.length < 2) { users = []; return draw(); }
+    try { users = (await api("/users?limit=8&q=" + encodeURIComponent(q))).users || []; } catch (_) { users = []; }
+    draw();
+  }, 180);
+  input.addEventListener("input", () => { sel = 0; draw(); findUsers(); });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") { sel = Math.min(items.length - 1, sel + 1); draw(); e.preventDefault(); }
+    else if (e.key === "ArrowUp") { sel = Math.max(0, sel - 1); draw(); e.preventDefault(); }
+    else if (e.key === "Enter" && items[sel]) go(items[sel]);
+    else if (e.key === "Escape") close();
+  });
+  const back = h("div", { class: "palette-back", onclick: (e) => { if (e.target === back) close(); } },
+    h("div", { class: "palette" }, input, list));
+  document.body.append(back);
+  draw();
+  input.focus();
+}
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+    if (document.querySelector(".login-wrap")) return;
+    e.preventDefault();
+    openPalette();
+  }
+});
 
 function pageHead(title, sub, ...actions) {
   return h("div", { class: "page-head" },
@@ -293,6 +408,7 @@ async function render() {
   const userMatch = hash.match(/^#\/user\/(\d+)/);
   try {
     if (userMatch) return await viewUserDetail(parseInt(userMatch[1], 10));
+    if (hash.startsWith("#/live")) return await viewLive();
     if (hash.startsWith("#/users")) return await viewUsers();
     if (hash.startsWith("#/analytics")) return await viewAnalytics();
     if (hash.startsWith("#/conversations")) return await viewConversations();
@@ -323,57 +439,433 @@ function kpi(label, value, delta) {
     delta ? h("div", { class: "delta" }, delta) : null);
 }
 
-async function viewOverview() {
-  shell("#/", loading());
-  const d = await api("/overview");
-  const k = d.kpis, a = d.adoption, he = d.health;
+/* ------------------------------------------------------------------ */
+/* Dashboard (2026-10-09): usage, people, spend                        */
+/* ------------------------------------------------------------------ */
 
-  const feed = d.activity.length
-    ? d.activity.map((x) => h("div", { class: "feed-item" },
-        h("div", { class: "feed-dot" }),
-        h("div", {},
-          h("div", {}, h("span", { class: "who" }, x.name || "someone"),
-            h("span", { class: "what" }, " · " + x.action)),
-          h("div", { class: "when" }, (x.detail ? x.detail + " — " : "") + timeAgo(x.created_at)))))
-    : [h("div", { class: "chart-empty" }, "No activity recorded yet.")];
+const FEATURE_LABEL = {
+  chat: "Assistant replies", search: "Web search", transcribe: "Speech to text",
+  speech: "Spoken replies", image: "Images", embed: "Memory", voice_session: "Voice sessions",
+  phone_call: "Phone calls (Bolna)", other: "Other",
+};
+const featureLabel = (f) => FEATURE_LABEL[f] || f;
+
+/** Money in the chosen currency: $ or ₹ (rate from the server). */
+let usdInr = 88;
+const currency = () => store.get("adm-currency", "usd");
+function money(usd, { precise = false } = {}) {
+  const v = Number(usd) || 0;
+  if (currency() === "inr") {
+    const r = v * usdInr;
+    return "₹" + (r < 10 && precise ? r.toFixed(2) : r < 100 ? r.toFixed(r < 10 ? 2 : 1) : Math.round(r).toLocaleString("en-IN"));
+  }
+  if (v === 0) return "$0";
+  if (v < 0.01) return "$" + v.toFixed(4);
+  if (v < 100) return "$" + v.toFixed(2);
+  return "$" + Math.round(v).toLocaleString("en-US");
+}
+const compact = (n) => {
+  const v = Number(n) || 0;
+  if (v >= 1e6) return (v / 1e6).toFixed(v >= 1e7 ? 0 : 1) + "M";
+  if (v >= 1e4) return (v / 1e3).toFixed(0) + "k";
+  if (v >= 1e3) return (v / 1e3).toFixed(1) + "k";
+  return String(Math.round(v));
+};
+
+/** "+12%" against the period before, coloured; spend going up is not "good". */
+function trend(cur, prev, { neutral = false } = {}) {
+  if (!prev && !cur) return h("span", { class: "trend flat" }, "—");
+  if (!prev) return h("span", { class: "trend " + (neutral ? "flat" : "up") }, "new");
+  const pct = ((cur - prev) / prev) * 100;
+  const cls = Math.abs(pct) < 0.5 ? "flat" : neutral ? "flat" : pct > 0 ? "up" : "down";
+  return h("span", { class: "trend " + cls, title: "vs the previous period" },
+    (pct > 0 ? "↑ " : pct < 0 ? "↓ " : "") + Math.abs(pct).toFixed(Math.abs(pct) < 10 ? 1 : 0) + "%");
+}
+
+function showTipRows(ev, head, rows) {
+  $tip.replaceChildren(
+    h("div", { class: "t-head" }, head),
+    ...rows.map(([cls, label, value]) =>
+      h("div", { class: "t-row" }, cls ? h("span", { class: "sw " + cls }) : null, label, h("b", {}, value))));
+  $tip.hidden = false;
+  const r = $tip.getBoundingClientRect();
+  let x = ev.clientX + 14;
+  if (x + r.width > window.innerWidth - 8) x = ev.clientX - r.width - 14;
+  $tip.style.left = x + "px";
+  $tip.style.top = Math.max(8, ev.clientY - r.height - 10) + "px";
+}
+
+/** Tiny trend line for a KPI card. */
+function sparkline(values) {
+  const W = 120, H = 30;
+  const svg = svgEl("svg", { class: "spark", viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none" });
+  if (!values.length || values.every((v) => !v)) return svg;
+  const max = Math.max(...values, 1);
+  const pts = values.map((v, i) => [values.length === 1 ? W / 2 : (i / (values.length - 1)) * W, H - 2 - (v / max) * (H - 4)]);
+  const d = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join("");
+  svg.append(svgEl("path", { class: "area", d: d + `L${W} ${H}L0 ${H}Z` }));
+  svg.append(svgEl("path", { class: "line", d, "vector-effect": "non-scaling-stroke" }));
+  return svg;
+}
+
+/**
+ * Lines over days. series: [{d, k1, k2…}]; keys: [{key, label, cls}].
+ * Hover anywhere shows every value for that day.
+ */
+function lineChart(series, keys, { fmt = (v) => String(v), height = 220, area = true, width = 720 } = {}) {
+  if (!series.length) return h("div", { class: "chart-empty" }, "No data yet.");
+  const W = width, H = height, padL = 40, padR = 8, padT = 10, padB = 22;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const max = niceCeil(Math.max(1e-9, ...series.flatMap((s) => keys.map((k) => Number(s[k.key]) || 0))));
+  const n = series.length;
+  const X = (i) => padL + (n === 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+  const Y = (v) => padT + plotH - (v / max) * plotH;
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}` });
+  for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+    const y = padT + plotH - f * plotH;
+    svg.append(svgEl("line", { class: "grid-line", x1: padL, y1: y, x2: W - padR, y2: y }));
+    const t = svgEl("text", { class: "axis", x: padL - 8, y: y + 3, "text-anchor": "end" });
+    t.textContent = fmt(f * max, true);
+    svg.append(t);
+  }
+  const ticks = Math.min(n, 6);
+  for (let j = 0; j < ticks; j++) {
+    const i = Math.round((j / Math.max(1, ticks - 1)) * (n - 1));
+    const t = svgEl("text", { class: "axis", x: X(i), y: H - 5, "text-anchor": j === 0 ? "start" : j === ticks - 1 ? "end" : "middle" });
+    t.textContent = dayLabel(series[i].d);
+    svg.append(t);
+  }
+  for (const k of keys) {
+    const g = svgEl("g", { class: k.cls });
+    const d = series.map((s, i) => (i ? "L" : "M") + X(i).toFixed(1) + " " + Y(Number(s[k.key]) || 0).toFixed(1)).join("");
+    if (area) g.append(svgEl("path", { class: "area", d: d + `L${X(n - 1)} ${padT + plotH}L${X(0)} ${padT + plotH}Z` }));
+    g.append(svgEl("path", { class: "line", d }));
+    svg.append(g);
+  }
+  const cross = svgEl("line", { class: "cross", x1: 0, x2: 0, y1: padT, y2: padT + plotH, visibility: "hidden" });
+  svg.append(cross);
+  const dots = keys.map((k) => { const c = svgEl("circle", { class: "dot", r: 3.5, visibility: "hidden" }); const g = svgEl("g", { class: k.cls }); g.append(c); svg.append(g); return c; });
+  const hit = svgEl("rect", { class: "hit", x: padL, y: padT, width: plotW, height: plotH });
+  hit.addEventListener("mousemove", (ev) => {
+    const box = svg.getBoundingClientRect();
+    const sx = ((ev.clientX - box.left) / box.width) * W;
+    const i = Math.max(0, Math.min(n - 1, Math.round(((sx - padL) / plotW) * (n - 1))));
+    cross.setAttribute("x1", X(i)); cross.setAttribute("x2", X(i)); cross.setAttribute("visibility", "visible");
+    keys.forEach((k, j) => {
+      dots[j].setAttribute("cx", X(i)); dots[j].setAttribute("cy", Y(Number(series[i][k.key]) || 0));
+      dots[j].setAttribute("visibility", "visible");
+    });
+    showTipRows(ev, dayLabel(series[i].d), keys.map((k) => [k.cls, k.label, fmt(Number(series[i][k.key]) || 0)]));
+  });
+  hit.addEventListener("mouseleave", () => {
+    hideTip(); cross.setAttribute("visibility", "hidden");
+    dots.forEach((d) => d.setAttribute("visibility", "hidden"));
+  });
+  svg.append(hit);
+  return h("div", { class: "chart-wrap" }, svg);
+}
+
+/** Stacked bars over days. series: [{d, k1, k2…}]; keys: [{key, label, cls}]. */
+function stackedBars(series, keys, { fmt = (v) => String(v), height = 230, width = 1160 } = {}) {
+  if (!series.length) return h("div", { class: "chart-empty" }, "No data yet.");
+  const W = width, H = height, padL = 44, padR = 4, padT = 10, padB = 22;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const tot = (s) => keys.reduce((a, k) => a + (Number(s[k.key]) || 0), 0);
+  const max = niceCeil(Math.max(1e-9, ...series.map(tot)));
+  const n = series.length;
+  const slot = plotW / n;
+  const bw = Math.max(2, slot * 0.68);
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}` });
+  for (const f of [0, 0.5, 1]) {
+    const y = padT + plotH - f * plotH;
+    svg.append(svgEl("line", { class: "grid-line", x1: padL, y1: y, x2: W - padR, y2: y }));
+    const t = svgEl("text", { class: "axis", x: padL - 8, y: y + 3, "text-anchor": "end" });
+    t.textContent = fmt(f * max, true);
+    svg.append(t);
+  }
+  series.forEach((s, i) => {
+    const x = padL + i * slot + (slot - bw) / 2;
+    let y = padT + plotH;
+    const g = svgEl("g", {});
+    if (!tot(s)) g.append(svgEl("rect", { class: "bar zero", x, y: y - 1, width: bw, height: 1 }));
+    for (const k of keys) {
+      const v = Number(s[k.key]) || 0;
+      if (!v) continue;
+      const bh = Math.max(1.5, (v / max) * plotH);
+      y -= bh;
+      const wrap = svgEl("g", { class: k.cls });
+      wrap.append(svgEl("rect", { class: "seg-fill", x, y, width: bw, height: bh, rx: 1.5 }));
+      g.append(wrap);
+    }
+    const hit = svgEl("rect", { class: "hit", x: padL + i * slot, y: padT, width: slot, height: plotH });
+    hit.addEventListener("mousemove", (ev) => showTipRows(ev, dayLabel(s.d),
+      [...keys.filter((k) => Number(s[k.key])).map((k) => [k.cls, k.label, fmt(Number(s[k.key]))]), [null, "Total", fmt(tot(s))]]));
+    hit.addEventListener("mouseleave", hideTip);
+    g.append(hit);
+    svg.append(g);
+  });
+  const ticks = Math.min(n, 6);
+  for (let j = 0; j < ticks; j++) {
+    const i = Math.round((j / Math.max(1, ticks - 1)) * (n - 1));
+    const t = svgEl("text", { class: "axis", x: padL + i * slot + slot / 2, y: H - 5, "text-anchor": "middle" });
+    t.textContent = dayLabel(series[i].d);
+    svg.append(t);
+  }
+  return h("div", { class: "chart-wrap" }, svg);
+}
+
+const legend = (keys) => h("div", { class: "legend" },
+  keys.map((k) => h("span", {}, h("span", { class: "sw " + k.cls }), k.label)));
+
+function heatmap(rows) {
+  const grid = Array.from({ length: 7 }, () => Array(24).fill(0));
+  for (const r of rows || []) grid[r.dow][r.hr] = r.n;
+  const max = Math.max(1, ...grid.flat());
+  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const order = [1, 2, 3, 4, 5, 6, 0];
+  const cells = [];
+  for (const dw of order) {
+    cells.push(h("div", { class: "hl" }, days[dw]));
+    for (let hr = 0; hr < 24; hr++) {
+      const v = grid[dw][hr];
+      const a = v ? 0.15 + 0.85 * (v / max) : 0;
+      const c = h("div", { class: "hc", style: v ? `background: color-mix(in srgb, var(--accent) ${Math.round(a * 100)}%, transparent)` : "" });
+      c.addEventListener("mousemove", (ev) => showTipRows(ev, `${days[dw]} ${String(hr).padStart(2, "0")}:00–${String((hr + 1) % 24).padStart(2, "0")}:00`, [[null, "Messages", String(v)]]));
+      c.addEventListener("mouseleave", hideTip);
+      cells.push(c);
+    }
+  }
+  cells.push(h("div", {}));
+  for (let hr = 0; hr < 24; hr++) cells.push(h("div", { class: "hx" }, hr % 6 === 0 ? String(hr) : ""));
+  return h("div", { class: "heat" }, cells);
+}
+
+function funnel(f) {
+  const steps = [
+    ["Signed up", f.signed_up], ["Verified phone", f.verified],
+    ["Talked to her", f.talked], ["Active last 7 days", f.active7],
+  ];
+  const top = Math.max(1, Number(f.signed_up) || 0);
+  return h("div", {}, steps.map(([label, v]) => {
+    const n = Number(v) || 0;
+    return h("div", { class: "funnel-row" },
+      h("span", { class: "lbl" }, label),
+      h("div", { class: "funnel-track" }, h("div", { class: "funnel-fill", style: `width:${(n / top) * 100}%` })),
+      h("span", { class: "val" }, String(n), h("small", {}, Math.round((n / top) * 100) + "%")));
+  }));
+}
+
+const SERIES_CLS = ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"];
+
+function kpiCard(label, value, { cur, prev, neutral, spark, sub } = {}) {
+  return h("div", { class: "kpi" },
+    h("div", { class: "label" }, label),
+    h("div", { class: "row" },
+      h("div", { class: "value num" }, value),
+      prev !== undefined ? trend(cur, prev, { neutral }) : null),
+    sub ? h("div", { class: "delta" }, sub) : null,
+    spark ? sparkline(spark) : null);
+}
+
+/** The people table: sortable, filterable, spend as a bar. */
+function topUsersTable(rows) {
+  let sortKey = "activity";
+  let dir = -1;
+  let q = "";
+  let all = false;
+  const maxUsd = Math.max(1e-9, ...rows.map((r) => r.usd));
+  const cols = [
+    ["#", null, ""], ["User", "name", ""], ["Days active", "days", "r"], ["Conversations", "turns", "r"],
+    ["Voice", "voice", "r"], ["Actions", "actions", "r"], ["Calls", "calls", "r"], ["Spend", "usd", "r"], ["Last active", "last_active", "r"],
+  ];
+  const wrap = h("div", {});
+  const val = (r, k) => (k === "activity" ? r.turns + r.actions : k === "name" ? String(r.name || r.email || "").toLowerCase() : Number(r[k]) || 0);
+  function draw() {
+    const list = rows
+      .filter((r) => !q || String(r.name || "").toLowerCase().includes(q) || String(r.email || "").toLowerCase().includes(q) || String(r.user_id) === q)
+      .sort((a, b) => (val(a, sortKey) > val(b, sortKey) ? dir : val(a, sortKey) < val(b, sortKey) ? -dir : 0));
+    const hidden = all || q ? 0 : Math.max(0, list.length - 12);
+    if (hidden) list.length = 12;
+    wrap.replaceChildren(h("table", {},
+      h("thead", {}, h("tr", {}, cols.map(([label, key, cls]) => h("th", {
+        class: [cls, key ? "sortable" : "", key === sortKey ? "sorted" : ""].join(" "),
+        onclick: key ? () => { if (sortKey === key) dir = -dir; else { sortKey = key; dir = key === "name" ? 1 : -1; } draw(); } : null,
+      }, label, key === sortKey ? (dir < 0 ? " ↓" : " ↑") : "")))),
+      h("tbody", {}, list.length ? list.map((r, i) => h("tr", { class: "rowlink", onclick: () => { location.hash = "#/user/" + r.user_id; } },
+        h("td", { class: "rank" }, String(i + 1)),
+        h("td", {}, h("div", { style: "display:flex; align-items:center; gap:10px; min-width:180px;" },
+          h("span", { class: "avatar" }, initialsOf(r)),
+          h("div", { style: "min-width:0;" },
+            h("div", { style: "font-weight:500;" }, r.name || "No name"),
+            h("div", { class: "sub" }, "#" + r.user_id + (r.app_build ? " · build " + r.app_build : "") + (r.status === "paused" ? " · paused" : ""))))),
+        h("td", { class: "r num" }, String(r.days)),
+        h("td", { class: "r num" }, compact(r.turns)),
+        h("td", { class: "r num" }, r.turns ? Math.round((r.voice / r.turns) * 100) + "%" : "—"),
+        h("td", { class: "r num" }, compact(r.actions)),
+        h("td", { class: "r num" }, r.calls ? String(r.calls) : h("span", { class: "faint" }, "—")),
+        h("td", { class: "r" }, h("div", { class: "cell-bar" },
+          h("span", { class: "num" }, money(r.usd)),
+          h("div", { class: "meter" }, h("div", { style: `width:${(r.usd / maxUsd) * 100}%` })))),
+        h("td", { class: "r sub" }, r.last_active ? timeAgo(r.last_active) : "—")))
+        : h("tr", {}, h("td", { colspan: cols.length, class: "chart-empty" }, "Nobody used the app in this period.")))),
+      hidden ? h("button", { class: "show-more", onclick: () => { all = true; draw(); } }, `Show ${hidden} more`) : null);
+  }
+  const search = h("input", { class: "input", style: "max-width:220px;", placeholder: "Filter people…", oninput: (e) => { q = e.target.value.trim().toLowerCase(); draw(); } });
+  draw();
+  return { search, wrap };
+}
+
+let dashDays = Number(store.get("adm-days", "30")) || 30;
+
+async function viewOverview() {
+  shell("#/", h("div", {}, pageHead("Dashboard", "Loading…"),
+    h("div", { class: "grid kpis-hero" }, [1, 2, 3, 4].map(() => h("div", { class: "kpi skel", style: "height:104px;" }))),
+    h("div", { class: "card skel section-gap", style: "height:300px;" })));
+  const [d, o] = await Promise.all([api("/dashboard?days=" + dashDays), api("/overview").catch(() => null)]);
+  usdInr = d.usdInr || usdInr;
+  const k = d.kpis;
+  const updated = new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+
+  const rangeSeg = h("div", { class: "seg" }, [7, 14, 30, 90].map((n) =>
+    h("button", { class: n === dashDays ? "on" : "", onclick: () => { dashDays = n; store.set("adm-days", String(n)); viewOverview().catch((e) => toast(e.message, true)); } }, n + "d")));
+  const curSeg = h("div", { class: "seg", title: `₹ at ${usdInr} per $` }, [["usd", "$"], ["inr", "₹"]].map(([c, l]) =>
+    h("button", { class: c === currency() ? "on" : "", onclick: () => { store.set("adm-currency", c); viewOverview().catch((e) => toast(e.message, true)); } }, l)));
+  const refresh = h("button", { class: "btn sm", title: "Refresh", onclick: () => viewOverview().catch((e) => toast(e.message, true)) }, icon("refresh"), updated);
+
+  const fmtMoneyAxis = (v) => money(v);
+  const features = d.series.features.length ? d.series.features : [];
+  const fkeys = features.map((f, i) => ({ key: f, label: featureLabel(f), cls: SERIES_CLS[i % SERIES_CLS.length] }));
+
+  // Usage chart with a switch between people and conversations.
+  const usageBody = h("div", {});
+  let usageMode = "active";
+  const drawUsage = () => {
+    usageBody.replaceChildren(usageMode === "active"
+      ? lineChart(d.series.active.map((x) => ({ d: x.d, v: x.count })), [{ key: "v", label: "Active users", cls: "s1" }])
+      : h("div", {},
+          lineChart(d.series.turns, [{ key: "voice", label: "Voice", cls: "s1" }, { key: "other", label: "Typed & other", cls: "s2" }]),
+          h("div", { style: "margin-top:8px;" }, legend([{ cls: "s1", label: "Voice" }, { cls: "s2", label: "Typed & other" }]))));
+    usageSeg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.m === usageMode));
+  };
+  const usageSeg = h("div", { class: "seg" }, [["active", "Active users"], ["turns", "Conversations"]].map(([m, l]) =>
+    h("button", { "data-m": m, onclick: () => { usageMode = m; drawUsage(); } }, l)));
+  drawUsage();
+
+  const totalFeat = d.spendByFeature.reduce((a, f) => a + f.usd, 0) || 1e-9;
+  const people = topUsersTable(d.topUsers);
+  const notices = [];
+  if (!d.meterSince || Date.now() - d.meterSince < 3 * 86400_000) {
+    notices.push(h("div", { class: "notice" }, icon("info"),
+      h("div", {}, h("b", {}, "Spend tracking is new. "),
+        d.meterSince ? "It started " + timeAgo(d.meterSince) + ", so earlier days show nothing yet." : "It starts with this release; numbers fill in as people use the app.")));
+  }
+  if (!d.billed) {
+    notices.push(h("div", { class: "notice" }, icon("info"),
+      h("div", {}, "Spend is estimated from the server's own calls at list prices. The phone's live voice talks to OpenAI directly, so it is counted as sessions, not dollars. Set ",
+        h("code", {}, "OPENAI_ADMIN_KEY"), " to show OpenAI's actual bill here as well.")));
+  }
+
+  const spendByDay = d.series.spend;
+  const billedByDay = d.billed ? Object.fromEntries(d.billed.days.map((x) => [x.d, x.usd])) : null;
 
   shell("#/", h("div", {},
-    pageHead("Overview", "Live picture of the platform."),
-    h("div", { class: "grid kpis" },
-      kpi("Users", k.users, "+" + k.newWeek + " this week"),
-      kpi("Active today", k.dau),
-      kpi("Active · 7 days", k.wau),
-      kpi("Actions · 24 h", k.actions24),
-      kpi("Verified phones", k.verified),
-      kpi("Devices w/ push", k.devices),
-      kpi("Paused accounts", k.paused),
-    ),
-    h("div", { class: "grid two-col section-gap" },
-      h("div", { class: "card" }, h("h3", {}, "Signups — last 14 days"), barChart(d.signups14)),
-      h("div", { class: "card" }, h("h3", {}, "Actions — last 14 days"), barChart(d.actions14)),
-    ),
-    h("div", { class: "grid three-col section-gap" },
+    pageHead("Dashboard", `Last ${d.days} days · India time`, rangeSeg, curSeg, refresh),
+    ...notices,
+    h("div", { class: "grid kpis-hero" },
+      kpiCard("Active users", compact(k.active), { cur: k.active, prev: k.activePrev, spark: d.series.active.map((x) => x.count), sub: `of ${k.users} total` }),
+      kpiCard("Conversations", compact(k.turns), { cur: k.turns, prev: k.turnsPrev, spark: d.series.turns.map((x) => x.voice + x.other), sub: k.active ? (k.turns / k.active).toFixed(1) + " per active user" : "" }),
+      kpiCard("Spend", money(k.spend), { cur: k.spend, prev: k.spendPrev, neutral: true, spark: spendByDay.map((x) => x.total), sub: money(k.spendToday, { precise: true }) + " today" }),
+      kpiCard(d.billed ? "OpenAI bill" : "Cost per active user", d.billed ? money(d.billed.total) : money(k.costPerActive, { precise: true }),
+        d.billed ? { sub: "actual, incl. phone voice", spark: d.billed.days.map((x) => x.usd) } : { sub: "server-side estimate" })),
+    h("div", { class: "strip section-gap" },
+      ...[["Today", k.dau], ["This week", k.wau], ["This month", k.mau],
+        ["Stickiness", Math.round(k.stickiness * 100) + "%"], ["New signups", k.signups],
+        ["Voice sessions", compact(k.voiceSessions)], ["Phone calls", k.calls + (k.callMinutes ? ` · ${k.callMinutes}m` : "")]]
+        .map(([kk, v]) => h("div", {}, h("div", { class: "k" }, kk), h("div", { class: "v" }, String(v))))),
+    h("div", { class: "grid dash-main section-gap" },
+      h("div", { class: "card" }, h("div", { class: "card-head" }, h("h3", {}, "Usage"), usageSeg), usageBody),
       h("div", { class: "card" },
-        h("h3", {}, "Live activity ", h("span", { class: "hint" }, "audit trail, newest first")),
-        ...feed),
+        h("div", { class: "card-head" }, h("h3", {}, "Where the money goes"), h("span", { class: "hint" }, money(k.spend))),
+        d.spendByFeature.length
+          ? h("div", {}, d.spendByFeature.map((f, i) => h("div", { class: "hbar-row" },
+              h("span", { class: "lbl", title: `${f.n} calls` }, h("span", { class: "sw " + (fkeys.find((x) => x.key === f.feature)?.cls || SERIES_CLS[i % SERIES_CLS.length]) }), featureLabel(f.feature)),
+              h("div", { class: "hbar-track" }, h("div", { class: "hbar-fill", style: `width:${(f.usd / totalFeat) * 100}%` })),
+              h("span", { class: "val" }, money(f.usd)))))
+          : h("div", { class: "chart-empty" }, "No paid calls recorded yet."))),
+    h("div", { class: "card section-gap" },
+      h("div", { class: "card-head" }, h("h3", {}, "Spend per day ", h("span", { class: "hint" }, "by feature")), fkeys.length ? legend(fkeys) : null),
+      fkeys.length
+        ? stackedBars(spendByDay, fkeys, { fmt: fmtMoneyAxis })
+        : h("div", { class: "chart-empty" }, "Nothing spent in this period."),
+      billedByDay ? h("div", { class: "section-gap" },
+        h("h3", {}, "OpenAI's own bill per day ", h("span", { class: "hint" }, "includes the phone's live voice")),
+        lineChart(spendByDay.map((x) => ({ d: x.d, billed: billedByDay[x.d] || 0, metered: x.total })),
+          [{ key: "billed", label: "Billed by OpenAI", cls: "s4" }, { key: "metered", label: "Metered here", cls: "s1" }],
+          { fmt: fmtMoneyAxis, height: 200, width: 1160 })) : null),
+    h("div", { class: "card table-card section-gap" },
+      h("div", { class: "card-head", style: "padding:10px 12px 2px;" },
+        h("h3", {}, "People ", h("span", { class: "hint" }, "who uses it most, and what they cost")), people.search),
+      people.wrap),
+    h("div", { class: "grid two-col section-gap" },
+      h("div", { class: "card" }, h("h3", {}, "When people talk to her ", h("span", { class: "hint" }, "messages by hour, India time")), heatmap(d.heat)),
+      h("div", { class: "card" }, h("h3", {}, "From signup to habit"), funnel(d.funnel),
+        h("h3", { class: "section-gap" }, "App versions in use"),
+        hbarList((d.versions || []).map((v) => ({ label: v.build ? "build " + v.build : "unknown", count: v.users }))))),
+    h("div", { class: "grid two-col section-gap" },
+      h("div", { class: "card table-card" },
+        h("h3", { style: "padding:10px 12px 0;" }, "Spend by model"),
+        h("table", {},
+          h("thead", {}, h("tr", {}, h("th", {}, "Model"), h("th", { class: "r" }, "Calls"), h("th", { class: "r" }, "Tokens in"), h("th", { class: "r" }, "Cached"), h("th", { class: "r" }, "Tokens out"), h("th", { class: "r" }, "Cost"))),
+          h("tbody", {}, d.spendByModel.length ? d.spendByModel.map((m) => h("tr", {},
+            h("td", {}, h("span", { class: "mono", style: "font-size:12px;" }, m.model || m.provider)),
+            h("td", { class: "r num" }, compact(m.n)),
+            h("td", { class: "r num" }, compact(m.tin)),
+            h("td", { class: "r num" }, m.tin ? Math.round((m.tcached / m.tin) * 100) + "%" : "—"),
+            h("td", { class: "r num" }, compact(m.tout)),
+            h("td", { class: "r num" }, money(m.usd))))
+            : h("tr", {}, h("td", { colspan: 6, class: "chart-empty" }, "No paid calls recorded yet."))))),
+      h("div", { class: "card" },
+        h("h3", {}, "How people reach her ", h("span", { class: "hint" }, "replies by surface")),
+        hbarList((d.sources || []).map((s) => ({ label: s.source, count: s.n }))))),
+    o ? h("div", { class: "grid three-col section-gap" },
+      h("div", { class: "card" },
+        h("h3", {}, "Latest activity ", h("span", { class: "hint" }, "audit trail")),
+        ...(o.activity.length ? o.activity.slice(0, 10).map((x) => h("div", { class: "feed-item" },
+          h("div", { class: "feed-dot" }),
+          h("div", {},
+            h("div", {}, h("span", { class: "who" }, x.name || "someone"), h("span", { class: "what" }, " · " + x.action)),
+            h("div", { class: "when" }, (x.detail ? x.detail + " — " : "") + timeAgo(x.created_at)))))
+          : [h("div", { class: "chart-empty" }, "No activity recorded yet.")])),
       h("div", {},
         h("div", { class: "card" },
           h("h3", {}, "Feature adoption"),
-          h("div", { class: "stat-mini" }, h("span", { class: "k" }, "Documents saved"), h("span", { class: "v" }, a.docs)),
-          h("div", { class: "stat-mini" }, h("span", { class: "k" }, "Open reminders"), h("span", { class: "v" }, a.reminders)),
-          h("div", { class: "stat-mini" }, h("span", { class: "k" }, "Open promises"), h("span", { class: "v" }, a.commitsOpen)),
-          h("div", { class: "stat-mini" }, h("span", { class: "k" }, "Client case files"), h("span", { class: "v" }, a.clients)),
-          h("div", { class: "stat-mini" }, h("span", { class: "k" }, "Messages relayed"), h("span", { class: "v" }, a.agentMsgs)),
-          h("div", { class: "stat-mini" }, h("span", { class: "k" }, "Memories stored"), h("span", { class: "v" }, a.memories)),
-          h("div", { class: "stat-mini" }, h("span", { class: "k" }, "Finance items"), h("span", { class: "v" }, a.financeItems))),
+          ...[["Documents saved", o.adoption.docs], ["Open reminders", o.adoption.reminders], ["Open promises", o.adoption.commitsOpen],
+            ["Client case files", o.adoption.clients], ["Messages relayed", o.adoption.agentMsgs], ["Memories stored", o.adoption.memories],
+            ["Finance items", o.adoption.financeItems], ["Verified phones", o.kpis.verified], ["Devices with push", o.kpis.devices]]
+            .map(([kk, v]) => h("div", { class: "stat-mini" }, h("span", { class: "k" }, kk), h("span", { class: "v" }, String(v))))),
         h("div", { class: "card section-gap" },
           h("h3", {}, "Server"),
-          h("div", { class: "stat-mini" }, h("span", { class: "k" }, "Database"), h("span", { class: "v" }, he.dbMs + " ms")),
-          h("div", { class: "stat-mini" }, h("span", { class: "k" }, "Uptime"), h("span", { class: "v" }, fmtUptime(he.uptimeS))),
-          h("div", { class: "stat-mini" }, h("span", { class: "k" }, "Memory"), h("span", { class: "v" }, he.rssMb + " MB")),
-          h("div", { class: "stat-mini" }, h("span", { class: "k" }, "Node"), h("span", { class: "v" }, he.node))))
-    )
+          ...[["Database", o.health.dbMs + " ms"], ["Uptime", fmtUptime(o.health.uptimeS)], ["Memory", o.health.rssMb + " MB"], ["Node", o.health.node]]
+            .map(([kk, v]) => h("div", { class: "stat-mini" }, h("span", { class: "k" }, kk), h("span", { class: "v" }, v)))))) : null
   ));
+}
+
+/** One user's spend, on their detail page. */
+function spendCard(id) {
+  const body = h("div", { class: "chart-empty" }, "Loading…");
+  const head = h("span", { class: "hint" }, "");
+  const card = h("div", { class: "card" }, h("div", { class: "card-head" }, h("h3", {}, "Spend · last 30 days"), head), body);
+  api("/users/" + id + "/spend").then((s) => {
+    head.textContent = money(s.total30) + " · " + money(s.allTime) + " all time";
+    const total = s.byFeature.reduce((a, f) => a + f.usd, 0) || 1e-9;
+    body.replaceWith(h("div", {},
+      lineChart(s.daily.map((x) => ({ d: x.d, v: x.count })), [{ key: "v", label: "Spend", cls: "s1" }], { fmt: (v) => money(v), height: 150 }),
+      s.byFeature.length ? h("div", { class: "section-gap" }, s.byFeature.map((f) => h("div", { class: "hbar-row" },
+        h("span", { class: "lbl", title: f.n + " calls" }, featureLabel(f.feature)),
+        h("div", { class: "hbar-track" }, h("div", { class: "hbar-fill", style: `width:${(f.usd / total) * 100}%` })),
+        h("span", { class: "val" }, money(f.usd))))) : h("div", { class: "chart-empty" }, "No paid calls for this user yet.")));
+  }).catch((e) => { body.textContent = e.message; });
+  return card;
 }
 
 /* ------------------------------------------------------------------ */
@@ -647,6 +1139,7 @@ async function viewUserDetail(id) {
           h("h3", {}, "Phone ", h("span", { class: "hint" }, "setting a number here also marks it verified")),
           u.phone_number ? h("div", { style: "margin-bottom:10px;" }, "Current: ", h("strong", {}, u.phone_number)) : null,
           h("div", { class: "inline-form" }, phoneInput, phoneBtn)),
+        h("div", { class: "section-gap" }, spendCard(id)),
         h("div", { class: "section-gap" }, selfCheckCard(id)),
         h("div", { class: "section-gap" }, conversationCard(d.conversations, id)),
         h("div", { class: "section-gap" }, ledgerCard(id)),
@@ -832,6 +1325,8 @@ const docKind = (mime) => {
   return "FILE";
 };
 
+const PREVIEWS_INLINE = new Set(["image/jpeg", "image/png", "image/webp", "image/gif",
+  "application/pdf", "text/plain", "video/mp4"]);
 const docFileUrl = (d, download) =>
   `/admin-panel/api/documents/${d.id}/file` + (download ? "?download=1" : "");
 
@@ -848,7 +1343,10 @@ function docTile(d, { showUser = false } = {}) {
     title: d.summary || d.note || d.title,
     onclick: () => {
       if (!d.onDisk) return toast("That file is no longer on disk.", true);
-      window.open(docFileUrl(d), "_blank");
+      // Word files and the like cannot show in a browser tab: they open
+      // as a page of their own (converted, or their extracted text).
+      window.open(PREVIEWS_INLINE.has(String(d.mime || "").toLowerCase())
+        ? docFileUrl(d) : `/admin-panel/api/documents/${d.id}/view`, "_blank");
     },
   },
     thumb,
@@ -1167,6 +1665,162 @@ async function viewActivity() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Live — every move of every user, as it happens (2026-10-08)          */
+/* ------------------------------------------------------------------ */
+
+const LIVE_FILTERS = [
+  ["all", "Everything", "say,action,outcome,feedback"],
+  ["say", "What was said", "say"],
+  ["action", "Actions", "action"],
+  ["outcome", "Results", "outcome"],
+  ["failed", "Failures", "action,outcome"],
+  ["feedback", "Feedback", "feedback"],
+];
+
+/** A tool's args/result as readable lines, or the raw text. */
+function prettyJson(s) {
+  if (s == null || s === "") return "";
+  try { return JSON.stringify(typeof s === "string" ? JSON.parse(s) : s, null, 2); } catch (_) { return String(s); }
+}
+
+function liveRow(x) {
+  const when = new Date(x.created_at);
+  const time = when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const day = when.toLocaleDateString([], { day: "numeric", month: "short" });
+  const who = x.user_id
+    ? h("a", { href: "#/user/" + x.user_id, onclick: (e) => e.stopPropagation() }, x.user_name || "#" + x.user_id)
+    : h("span", { class: "faint" }, "—");
+  const hidden = h("span", { class: "faint" }, "(hidden: Help improve is off)");
+  let icon = "•", badge = null, main = null;
+  const details = [];
+
+  if (x.type === "say") {
+    const user = x.role === "user";
+    icon = user ? "🗣" : "🤖";
+    badge = h("span", { class: "badge " + (user ? "accent" : "neutral") }, user ? "User said" : "Assistant");
+    main = x.readable ? h("span", {}, x.text || "") : hidden;
+    details.push(["Source", `${x.source || ""} · build ${x.app_build || "?"}${x.latency_ms ? ` · ${x.latency_ms} ms` : ""}`]);
+    if (x.tools) details.push(["Tools", String(x.tools)]);
+  } else if (x.type === "action") {
+    const bad = Number(x.ok) === 0 || x.decision === "refused" || x.decision === "suppressed";
+    icon = bad ? "⚠️" : Number(x.world) ? "⚡" : "🔎";
+    badge = h("span", { class: "badge " + (bad ? "danger" : Number(x.world) ? "good" : "neutral") },
+      `${x.tool}${x.decision && x.decision !== "ran" ? ` · ${x.decision}` : bad ? " · failed" : ""}`);
+    main = x.readable
+      ? h("span", {}, x.target ? `→ ${x.target}` : "", x.reply ? h("span", { class: "sub" }, `  “${String(x.reply).slice(0, 160)}”`) : "")
+      : hidden;
+    if (x.readable) {
+      if (x.intent) details.push(["User asked", x.intent]);
+      if (x.args) details.push(["Given", prettyJson(x.args)]);
+      if (x.result) details.push(["Came back", prettyJson(x.result)]);
+      if (x.detail) details.push(["Detail", x.detail]);
+      if (x.reply) details.push(["Assistant said", x.reply]);
+    }
+    details.push(["Run", `${x.surface || ""}${x.ms != null ? ` · ${x.ms} ms` : ""} · ${Number(x.world) ? "acts on the world" : "read-only"}`]);
+  } else if (x.type === "outcome") {
+    const bad = ["failed", "no_answer", "cancelled", "unconfirmed"].includes(x.status);
+    icon = bad ? "❌" : "✅";
+    badge = h("span", { class: "badge " + (bad ? "danger" : x.status === "completed" || x.status === "connected" ? "good" : "warn") },
+      `${x.kind} · ${x.status}`);
+    main = x.readable ? h("span", {}, `${x.target || ""}${x.detail ? ` — ${x.detail}` : ""}`) : hidden;
+    if (x.readable && x.reason) details.push(["Why", x.reason]);
+    details.push(["Path", x.path || ""]);
+  } else if (x.type === "feedback") {
+    icon = "💬";
+    badge = h("span", { class: "badge warn" }, `feedback · ${x.kind || ""}`);
+    main = h("span", {}, x.summary || "");
+    if (x.user_words) details.push(["In their words", x.user_words]);
+    if (x.details) details.push(["Details", x.details]);
+  }
+
+  const more = h("div", { class: "live-more", style: "display:none;" },
+    ...details.map(([k, v]) => h("div", { class: "live-kv" },
+      h("div", { class: "faint" }, k),
+      h("pre", {}, String(v)))));
+  return h("div", {
+    class: "live-row live-" + x.type,
+    onclick: () => { more.style.display = more.style.display === "none" ? "block" : "none"; },
+  },
+    h("div", { class: "live-line" },
+      h("span", { class: "live-time", title: when.toLocaleString() }, `${day} ${time}`),
+      h("span", { class: "live-icon" }, icon),
+      h("span", { class: "live-user" }, who),
+      badge,
+      h("span", { class: "live-main" }, main)),
+    more);
+}
+
+async function viewLive() {
+  shell("#/live", loading());
+  let filter = "all", userId = "", q = "", newest = 0, oldest = 0, paused = false, timer = null;
+  const list = h("div", { class: "live-list" });
+  const status = h("span", { class: "sub" }, "");
+  const userSel = h("select", { class: "input", style: "max-width:220px;",
+    onchange: (e) => { userId = e.target.value; reload(); } }, h("option", { value: "" }, "All users"));
+  const chips = h("div", { style: "display:flex; gap:6px; flex-wrap:wrap;" });
+  const pauseBtn = h("button", { class: "btn", onclick: () => {
+    paused = !paused; pauseBtn.textContent = paused ? "Resume live" : "Pause";
+  } }, "Pause");
+  const more = h("button", { class: "btn", style: "margin:12px auto; display:block;", onclick: () => older() }, "Older");
+
+  function url(extra) {
+    const f = LIVE_FILTERS.find((x) => x[0] === filter);
+    return `/live?type=${f[2]}${filter === "failed" ? "&failed=1" : ""}` +
+      `${userId ? `&user_id=${userId}` : ""}${q ? `&q=${encodeURIComponent(q)}` : ""}${extra}`;
+  }
+  function drawChips() {
+    chips.replaceChildren(...LIVE_FILTERS.map(([k, label]) =>
+      h("button", { class: "btn" + (k === filter ? " primary" : ""), onclick: () => { filter = k; drawChips(); reload(); } }, label)));
+  }
+  async function reload() {
+    newest = 0; oldest = 0;
+    list.replaceChildren(loading());
+    const d = await api(url(""));
+    if (userSel.options.length <= 1) {
+      for (const u of d.users || []) userSel.append(h("option", { value: u.id }, `${u.name || "User"} #${u.id} · ${timeAgo(u.last)}`));
+    }
+    list.replaceChildren(...(d.items.length ? d.items.map(liveRow) : [h("div", { class: "chart-empty" }, "Nothing in the last 14 days.")]));
+    if (d.items.length) { newest = d.items[0].created_at; oldest = d.items[d.items.length - 1].created_at; }
+    status.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  }
+  async function poll() {
+    if (paused || !newest || document.hidden) return;
+    try {
+      const d = await api(url(`&since=${newest}`));
+      if (d.items.length) {
+        newest = d.items[0].created_at;
+        const rows = d.items.map(liveRow);
+        rows.forEach((r) => r.classList.add("live-new"));
+        list.prepend(...rows);
+      }
+      status.textContent = `Live · updated ${new Date().toLocaleTimeString()}`;
+    } catch (_) { status.textContent = "Live · reconnecting…"; }
+  }
+  async function older() {
+    if (!oldest) return;
+    const d = await api(url(`&before=${oldest}`));
+    if (d.items.length) {
+      oldest = d.items[d.items.length - 1].created_at;
+      list.append(...d.items.map(liveRow));
+    } else more.disabled = true;
+  }
+
+  const search = h("input", { class: "input", style: "max-width:240px;", placeholder: "Search words, tools, results…",
+    oninput: debounce((e) => { q = e.target.value.trim(); reload().catch((x) => toast(x.message, true)); }, 350) });
+  drawChips();
+  shell("#/live", h("div", {},
+    pageHead("Live", "Everything every user said and did, and what really happened — newest first, updating every 5 seconds. Click a row for the full detail.", pauseBtn),
+    h("div", { class: "card", style: "padding:12px; display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:12px;" },
+      chips, userSel, search, status),
+    h("div", { class: "card" }, list, more)));
+  await reload();
+  timer = setInterval(() => {
+    if (location.hash !== "#/live") return clearInterval(timer);
+    poll();
+  }, 5000);
+}
+
+/* ------------------------------------------------------------------ */
 /* Feedback — what the assistant told the developer                    */
 /* ------------------------------------------------------------------ */
 
@@ -1327,7 +1981,8 @@ async function viewOutcomes() {
   shell("#/outcomes", h("div", {},
     h("div", { class: "page-head" },
       h("div", {}, h("div", { class: "page-title" }, "Task outcomes"),
-        h("div", { class: "page-sub" }, "What users asked the assistant to do, and what actually happened — as reported by the phone and the telephony provider.")),
+        h("div", { class: "page-sub" }, "Calls and saved documents, and what actually happened — as reported by the phone and the telephony provider. ",
+          h("a", { href: "#/live" }, "Every other action (messages, reminders, orders, searches, refusals) is in Live →"))),
       h("div", { style: "display:flex; gap:8px; flex-wrap:wrap;" }, search, statusSel, kindSel)),
     summaryRow,
     h("div", { class: "card table-card" },

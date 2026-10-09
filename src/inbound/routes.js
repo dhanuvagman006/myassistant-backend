@@ -199,7 +199,7 @@ router.post("/calls/seen", async (req, res) => {
 const adminRouter = express.Router();
 
 adminRouter.post("/assign-number", async (req, res) => {
-  if (!process.env.ADMIN_KEY || !safeEqual(req.get("X-Admin-Key") || "", process.env.ADMIN_KEY)) {
+  if (String(process.env.ADMIN_KEY || "").length < 16 || !safeEqual(req.get("X-Admin-Key") || "", process.env.ADMIN_KEY)) {
     return res.status(404).json({ error: "not found" });
   }
   const phone = receptionist.normalize(req.body?.phone);

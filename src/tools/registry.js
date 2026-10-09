@@ -754,7 +754,15 @@ async function execute(name, rawArgs, ctx = {}) {
     // screen that is read back to him, so a weak (never a garbled) turn
     // may drive it.
     const draftOk = quality === "weak" && isDraftEdit(tool, rawArgs);
-    if (!draftOk && (quality === "garbled" || !ctx.approved)) {
+    // A YES TO A READ-BACK IS ONE WORD (2026-10-08, prod): "Correct" after
+    // "Shall I call Anant and say …?" was refused as a bare word, and the
+    // call never went. A confirmed:true call whose short answer plainly
+    // means yes is the answer to that question — readBack.mayGo still
+    // checks it was asked and that the words are the same.
+    const yesToReadBack = quality === "weak" &&
+      (rawArgs && (rawArgs.confirmed === true || rawArgs.confirmed === "true")) &&
+      require("../agents/readBack").saysYes(ctx.inputQuality.heard || ctx.userText || "");
+    if (!draftOk && !yesToReadBack && (quality === "garbled" || !ctx.approved)) {
       // OBSERVABLE REFUSAL. Declining to act used to leave no trace at
       // all — no row, no audit line, not even a log entry — so "it
       // ignored me", "it asked me to repeat myself" and "it said it was

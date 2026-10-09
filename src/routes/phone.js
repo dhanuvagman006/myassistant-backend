@@ -155,6 +155,7 @@ router.post("/verify", async (req, res) => {
  * ██ warning below exists so this cannot be forgotten.
  */
 const devVerifyAllowed = () => process.env.ALLOW_DEV_PHONE_VERIFY === "true";
+const devTries = new Map(); // uid -> [ms] of typed claims in the last day
 
 if (devVerifyAllowed()) {
   console.warn(
@@ -177,6 +178,13 @@ router.post("/dev-verify", async (req, res) => {
 
   const phone = normalizePhone(req.body?.phone);
   if (!phone) return res.status(400).json({ error: "Enter a valid phone number." });
+  // Typed claims carry no proof: a few a day per account, so nobody can
+  // walk through numbers looking for unclaimed ones (security review).
+  const tries = (devTries.get(uid) || []).filter((t) => Date.now() - t < 86400_000);
+  if (tries.length >= 5) {
+    return res.status(429).json({ error: "Too many tries today. Please try again tomorrow." });
+  }
+  devTries.set(uid, [...tries, Date.now()]);
 
   if (!(await assignNumber(uid, phone, res))) return;
 

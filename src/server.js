@@ -88,8 +88,9 @@ app.use((req, res, next) => {
   // The same shape promBundle serves (/metrics and /metrics/), matched
   // case-insensitively as Express routes are: an exact "/metrics" test let
   // GET /metrics/ straight past the token.
-  if (t && /^\/metrics\/?$/i.test(req.path) &&
-      !safeEqual(req.get("Authorization") || "", `Bearer ${t}`)) {
+  // No token in production = closed, not open (security review 2026-10-09).
+  if (/^\/metrics\/?$/i.test(req.path) &&
+      (t ? !safeEqual(req.get("Authorization") || "", `Bearer ${t}`) : process.env.NODE_ENV === "production")) {
     return res.status(404).json({ error: "not found" }); // don't advertise
   }
   next();
@@ -136,6 +137,9 @@ const globalJson = express.json({
 app.use((req, res, next) =>
   OWN_BODY_LIMIT.has(req.path) ? next() : globalJson(req, res, next)
 );
+// Who each paid call is for (ops/spend.js). After the body parser, whose
+// stream callbacks would otherwise lose the request's async context.
+app.use(require("./ops/spend").bind());
 
 // Basic abuse protection, per IP. A voice turn costs several requests
 // (audio upload + one /tts per spoken sentence + session traffic), so a
@@ -168,6 +172,19 @@ const perUserLimit = rateLimit({
   standardHeaders: true,
   keyGenerator: (req) => String(req.user?.sub || req.ip),
 });
+
+// PAID UPLOADS (2026-10-09, security review): a call recording, a meeting
+// chunk or a document each goes to OpenAI. These routes had only the
+// per-IP limit, so one scripted account could run up the bill. Their own
+// per-user buckets — per minute and per hour — and only for writes, so
+// opening the Documents or Calls screen never counts.
+const paidWriteLimit = (windowMs, max) => rateLimit({
+  windowMs, max, standardHeaders: true,
+  keyGenerator: (req) => String(req.user?.sub || req.ip),
+  skip: (req) => req.method === "GET" || req.method === "HEAD",
+  message: { error: "Too many uploads — wait a moment and try again." },
+});
+const paidUploadLimit = [paidWriteLimit(60_000, 20), paidWriteLimit(3600_000, 200)];
 
 // PHOTO CARDS get their OWN per-user bucket (2026-09-26). perUserLimit is
 // one 30/min bucket shared by /chat, /agent-call, /avatar-profile and
@@ -221,7 +238,7 @@ app.use("/agent-call", appAuth, perUserLimit, agentCall.router);
 // path. Number assignment is an ADMIN action, guarded by ADMIN_KEY.
 const inbound = require("./inbound/routes");
 app.use("/inbound/plivo", inbound.webhooks);
-app.use("/inbound/admin", inbound.adminRouter);
+app.use("/inbound/admin", rateLimit({ windowMs: 600_000, max: 10, standardHeaders: true }), inbound.adminRouter);
 app.use("/inbound", appAuth, inbound.router);
 
 // Chat requires the app key so strangers can't burn your AI credits.
@@ -257,7 +274,7 @@ app.use("/diagnostics", appAuth, perUserLimit, require("./routes/diagnostics").r
 app.use("/nearby", appAuth, perUserLimit, require("./routes/nearby"));
 app.use("/phone", appAuth, require("./routes/phone"));
 // In-app dialer: call analysis uploads, history and the consent toggle.
-app.use("/calls", appAuth, require("./routes/calls").router);
+app.use("/calls", appAuth, ...paidUploadLimit, require("./routes/calls").router);
 app.use("/contacts", appAuth, require("./routes/contacts"));
 
 // Phase 1 / ADR-004 — the user-visible audit trail of assistant actions.
@@ -295,7 +312,7 @@ app.use("/payments", appAuth, paymentRoutes.router);
 // MEETINGS — record or upload, get back decisions, action items and a
 // drafted follow-up. The user's own action items enter the commitment
 // tracker so they are nudged before they slip.
-app.use("/meetings", appAuth, require("./meetings/routes"));
+app.use("/meetings", appAuth, ...paidUploadLimit, require("./meetings/routes"));
 
 // Reminders (voice-created via /chat intents + Today screen CRUD).
 app.use("/reminders", appAuth, require("./reminders/routes"));
@@ -319,7 +336,10 @@ app.use("/email", appAuth, require("./routes/email"));
 app.use("/mailin", appAuth, require("./mailin/routes").router);
 
 // ADMIN — read-only ops stats behind a static key (set ADMIN_KEY).
-app.use("/admin", require("./routes/admin"));
+// The X-Admin-Key routes: 10 tries per 10 minutes per IP (security
+// review 2026-10-09) — the panel's login was throttled, these were not.
+const adminKeyLimit = rateLimit({ windowMs: 600_000, max: 10, standardHeaders: true });
+app.use("/admin", adminKeyLimit, require("./routes/admin"));
 
 // Live data for the Today screen (weather card, headlines, astrology).
 const wxTool = require("./services/tools/weather");
@@ -423,7 +443,7 @@ app.use(["/stt", "/tts", "/vision"], gone);
 
 // Group B+ — SAVED documents: hospital reports, receipts… Hari remembers
 // them and pulls them back up from a voice request (see routes/docs.js).
-app.use("/docs", appAuth, require("./routes/docs"));
+app.use("/docs", appAuth, ...paidUploadLimit, require("./routes/docs"));
 
 // SEND MESSAGES AS YOU (2026-09-26) — consent, the 30-second identity
 // video recorded in the app, and the switch; the video notes made from
@@ -535,6 +555,7 @@ app.all(["/live", "/live/ws"], gone);
 // metrics — two handlers on one path would silently shadow each other.
 app.get("/metrics/agent", (req, res) => {
   const want = process.env.METRICS_TOKEN;
+  if (!want && process.env.NODE_ENV === "production") return res.status(404).json({ error: "not found" });
   if (want && !safeEqual(String(req.headers["x-metrics-token"] || ""), want)) {
     return res.status(401).json({ error: "unauthorized" });
   }
