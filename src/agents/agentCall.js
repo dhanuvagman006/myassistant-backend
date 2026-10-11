@@ -313,9 +313,13 @@ async function bolnaPlaceCall({ to, rec }) {
       // The agent is multilingual: open in the message's language and
       // let the platform switch voice and hearing if they change.
       ...(langCode && langCode !== "en" ? { agent_data: { language: langCode } } : {}),
-      // Calling hours (callAgentConfig.CALL_HOURS) are for strangers; a
-      // 5 a.m. wake-up the user asked for, or an urgent message, goes out.
-      ...(rec.selfCall || /urgent/i.test(rec.tone || "") ? { bypass_call_guardrails: true } : {}),
+      // Calling hours (callAgentConfig.CALL_HOURS, 8 a.m.-9 p.m.) are for
+      // calls nobody is watching: a scheduled one. A call the user asked
+      // for right now goes NOW — on 2026-10-11 at 10:21 p.m. Bolna quietly
+      // RESCHEDULED every one of the owner's calls to 8 a.m. and the app
+      // said "nothing was dialled" five times. A wake-up the user set, or
+      // an urgent message, goes out too.
+      ...(rec.selfCall || rec.live || /urgent/i.test(rec.tone || "") ? { bypass_call_guardrails: true } : {}),
     }),
   });
   if (!r.ok) {
@@ -328,6 +332,20 @@ async function bolnaPlaceCall({ to, rec }) {
   rec.bolnaExec = execId;
   bolnaExecs.set(execId, rec);
   return execId;
+}
+
+/** Cancel a queued or postponed Bolna call (best effort). */
+async function stopBolna(execId) {
+  const c = cfg();
+  if (!c.bolnaKey || !execId) return false;
+  const r = await fetch(`https://api.bolna.ai/call/${encodeURIComponent(execId)}/stop`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${c.bolnaKey}` },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!r.ok) console.warn(`agent-call: could not cancel postponed call ${execId}: ${r.status}`);
+  else console.log(`agent-call: cancelled postponed call ${execId}`);
+  return r.ok;
 }
 
 /** Webhook: the raw execution, POSTed several times as status advances —
@@ -367,6 +385,21 @@ function bolnaWebhook(body) {
       handleNoAnswer(rec);
       return true;
     }
+  }
+  // POSTPONED BY THE PROVIDER (2026-10-11): outside its calling hours
+  // Bolna answers "rescheduled" and rings the next morning — a "running
+  // late today" message delivered tomorrow, and the user told nothing.
+  // A call is placed now or not at all: cancel it and say why.
+  if ((status === "rescheduled" || status === "scheduled") && ["dialing", "in_progress"].includes(rec.state)) {
+    stopBolna(execId).catch(() => {});
+    rec.retryPending = false;
+    rec.state = "failed";
+    rec.result =
+      `The calling service would only ring ${rec.selfCall ? "your phone" : rec.contactName} tomorrow ` +
+      "morning (outside its calling hours), so I cancelled it — nothing was said to anyone. " +
+      "I can dial them from your phone now instead.";
+    settle(rec);
+    return true;
   }
   // What the call cost (ops/spend.js), once per execution.
   if (TERMINAL.has(status)) require("../ops/spend").bolna(rec.userId, body);
@@ -899,7 +932,7 @@ async function preview({ userName, contactName, task, lang }) {
  * the calling service refused — `message` is a plain sentence, never the
  * service's reply (see noteProviderFailure).
  */
-async function start({ userId, userName, toNumber, contactName, task, lang, selfCall, retryTimes, retryGapMinutes, tone, gender }) {
+async function start({ userId, userName, toNumber, contactName, task, lang, selfCall, retryTimes, retryGapMinutes, tone, gender, live }) {
   if (!enabled()) throw { code: "unavailable" };
   const to = normalizeNumber(toNumber);
   if (!to) throw { code: "bad_number" };
@@ -940,6 +973,9 @@ async function start({ userId, userName, toNumber, contactName, task, lang, self
     // start; relayed calls start polled and switch to push on first retry.
     pushOutcome: Boolean(selfCall),
     selfCall: Boolean(selfCall),
+    // Asked for by the user in the app just now (routes/agentCall.js),
+    // not a scheduled or background call.
+    live: Boolean(live),
     // WHAT TO DO IF NOBODY PICKS UP — the USER'S decision, not ours.
     //
     // This used to be a fixed 3 attempts / 3 minutes for every call.
@@ -1085,6 +1121,7 @@ module.exports = {
   enabled,
   provider,
   bolnaWebhook,
+  stopBolna,
   preview,
   start,
   status,

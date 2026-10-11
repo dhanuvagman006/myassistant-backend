@@ -21,6 +21,12 @@
  */
 
 const TTL_MS = 5 * 60_000;
+/** Once approved for a person, retries and rewordings go without asking. */
+const APPROVED_MS = 15 * 60_000;
+/** `${userId}|${kind}` -> { who, at } — the last approved recipient. */
+const approved = new Map();
+/** "call her now", "tell him directly", "don't ask me" — the go-ahead in the request. */
+const GO_NOW = /\b(now|right away|directly|immediately|straight away|asap|without asking|don'?t ask|no need to (ask|confirm)|abhi|turant|ippo|ivaga|eega|ega)\b|ಈಗಲೇ|ಈಗ|ತಕ್ಷಣ|अभी|तुरंत|ഇപ്പോൾ|இப்போ/i;
 
 /** `${userId}|${kind}` -> { key, heard, at } */
 const pending = new Map();
@@ -101,20 +107,37 @@ function mayGo({ userId, kind, parts, confirmed, userText = null, unattended = f
     (heard.length <= 4 && !saysYes(heard) && !heard.split(" ").some((w) => NO.has(w)));
   const p = pending.get(slot);
   const fresh = p && Date.now() - p.at < TTL_MS;
+  const ok = () => {
+    pending.delete(slot);
+    approved.set(slot, { who, at: Date.now() });
+    if (approved.size > 5000) approved.delete(approved.keys().next().value);
+    return true;
+  };
+
+  // ASK ONCE, NEVER AGAIN (2026-10-11). The owner, after five read-backs
+  // in a row for one late-running message: "it asks repeatedly with user
+  // confirmation again and again, this pisses me off".
+  //  1. Said with "now" / "directly" / "don't ask" in the request itself
+  //     (which names the person): that IS the go-ahead.
+  //  2. Approved for this person in the last APPROVED_MS: a retry, a
+  //     re-dial or a reworded message goes without asking again.
+  //  3. A yes after the read-back is a yes even if the model rephrased the
+  //     words or respelt the name: it is the same person.
+  if (GO_NOW.test(String(userText || "")) && who && heard.includes(first(who))) return ok();
+  const a = approved.get(slot);
+  if (a && Date.now() - a.at < APPROVED_MS && first(a.who) === first(who)) return ok();
+  if (confirmed === true && fresh && first(p.who) === first(who) && p.key !== key && !unreadable &&
+      norm(userText) !== p.heard && saysYes(userText)) {
+    return ok();
+  }
   if (confirmed === true && fresh && p.key === key && first(p.who) === first(who)) {
-    if (unreadable && Date.now() - p.at > 1500) {
-      pending.delete(slot);
-      return true;
-    }
+    if (unreadable && Date.now() - p.at > 1500) return ok();
     // Something new must have been said since the words were read back —
     // the request itself, still the latest thing heard, is not a yes.
     const heardNew = userText == null
       ? Date.now() - p.at > 1500
       : norm(userText) !== p.heard;
-    if (heardNew && (userText == null || saysYes(userText))) {
-      pending.delete(slot);
-      return true;
-    }
+    if (heardNew && (userText == null || saysYes(userText))) return ok();
   }
   pending.set(slot, { key, who, heard, at: Date.now() });
   // One slot per user and kind; old ones age out instead of piling up.
@@ -122,4 +145,4 @@ function mayGo({ userId, kind, parts, confirmed, userText = null, unattended = f
   return false;
 }
 
-module.exports = { mayGo, saysYes, norm, _forget: () => pending.clear() };
+module.exports = { mayGo, saysYes, norm, _forget: () => { pending.clear(); approved.clear(); } };

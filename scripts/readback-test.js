@@ -59,17 +59,28 @@ const lang = require("../src/agents/callLanguage");
     ask();
     assert.strictEqual(ask({ confirmed: true }), false);
   });
-  await atest("the same words, then a yes: it goes, once", () => {
+  // ASK ONCE, NEVER AGAIN (2026-10-11, the owner): once they said yes for
+  // a person, a retry or a reworded message to them does not ask again.
+  await atest("the same words, then a yes: it goes; a retry to them does not ask again", () => {
     rb._forget();
     ask();
     assert.strictEqual(ask({ confirmed: true, userText: "yes" }), true);
-    assert.strictEqual(ask({ confirmed: true, userText: "yes" }), false,
-      "a second send needs its own read-back");
+    assert.strictEqual(ask({ userText: "try again" }), true, "a retry is not asked twice");
   });
-  await atest("changed words are a new read-back", () => {
+  await atest("a yes after the model reworded the message still goes (same person)", () => {
     rb._forget();
     ask();
-    assert.strictEqual(ask({ confirmed: true, userText: "yes", parts: ["Ravi", "I will be late by an hour"] }), false);
+    assert.strictEqual(ask({ confirmed: true, userText: "yes", parts: ["Ravi", "I will be late by an hour"] }), true);
+  });
+  await atest("'now' / 'directly' in the request itself: no read-back", () => {
+    rb._forget();
+    assert.strictEqual(ask({ userText: "call ravi now and tell him I will be late" }), true);
+  });
+  await atest("another person is still asked once", () => {
+    rb._forget();
+    ask();
+    ask({ confirmed: true, userText: "yes" });
+    assert.strictEqual(ask({ userText: "call amma and say hi", parts: ["Amma", "hi"] }), false);
   });
   await atest("a no keeps it from going", () => {
     rb._forget();

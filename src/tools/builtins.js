@@ -2828,6 +2828,11 @@ function registerBuiltins() {
       "Ravi and say: I will be late by ten minutes?', and when they agree " +
       "call again with the SAME name and message plus confirmed:true. If " +
       "they change anything, read the new words back instead. " +
+      "ASK ONCE, NEVER TWICE: if the user said now / directly / don't ask in " +
+      "the request, call straight away with confirmed:true. Once they said " +
+      "yes for a person, a retry or a re-dial to the same person NEVER asks " +
+      "again. Spelling: use the contact name as SAVED (the tool corrects " +
+      "names misheard by speech recognition and tells you the saved one). " +
       "LANGUAGE: when they want the message said in a language " +
       "('leave a message in Malayalam'), write `message` IN that language " +
       "and its own script, and set `language`. " +
@@ -3047,6 +3052,18 @@ function registerBuiltins() {
         }
       }
 
+      // THE NAME AS SAVED (2026-10-11, agents/contactFix.js): "Ashratha
+      // Rao" as heard is "Ashalatha Rao" in their contacts. Emergency
+      // services are never "corrected" into a contact.
+      let heardAs = null;
+      if (!/\b(ambulance|police|fire|emergency|helpline|10[0-9]|112)\b/i.test(String(args.name || ""))) {
+        const fix = await require("../agents/contactFix").best(ctx?.userId, args.name).catch(() => null);
+        if (fix) {
+          heardAs = String(args.name);
+          args = { ...args, name: fix.name };
+        }
+      }
+
       // READ IT BACK FIRST (2026-09-26; agents/readBack.js). Only a call
       // that DELIVERS WORDS for the user: a plain "call Ravi" still just
       // dials (his rule), and on a direct dial the user speaks for
@@ -3071,6 +3088,7 @@ function registerBuiltins() {
             data: {
               read_back: String(args.message),
               to: args.name,
+              ...(heardAs ? { heard_as: heardAs, note_name: `"${heardAs}" is saved as "${args.name}" — say the saved name.` } : {}),
               language: language ? language.name : null,
             },
             note:
@@ -3111,7 +3129,7 @@ function registerBuiltins() {
           "your own.",
         ...(serviceDown
           ? { data: { call_service: "failed", fallback: "direct_dial" } }
-          : {}),
+          : heardAs ? { data: { calling: args.name, heard_as: heardAs } } : {}),
         deviceAction: {
           type: "resolve_and_call",
           name: args.name,
@@ -7071,6 +7089,12 @@ function registerBuiltins() {
     },
     async execute(args, ctx) {
       if (!ctx.userId) return { ok: false, error: "not signed in" };
+
+      // The saved name, not the misheard one (agents/contactFix.js).
+      {
+        const fix = await require("../agents/contactFix").best(ctx.userId, args.contact_name).catch(() => null);
+        if (fix) args = { ...args, contact_name: fix.name };
+      }
 
       // READ IT BACK FIRST (2026-09-26; agents/readBack.js). The client:
       // "the calls or messages if my assistant conveys wrong then people

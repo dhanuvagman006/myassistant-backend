@@ -92,6 +92,8 @@ router.post("/", async (req, res) => {
       tone: req.body?.tone,
       // "in a male voice": woman (default) or man — agentCall.pickGender.
       gender: req.body?.voice,
+      // The user just asked for it: no calling-hours delay (agentCall.start).
+      live: true,
     });
     res.status(202).json({ id });
   } catch (e) {
