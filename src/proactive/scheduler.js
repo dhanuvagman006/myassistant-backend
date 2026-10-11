@@ -545,6 +545,11 @@ async function sweep() {
 }
 
 function start() {
+  // Calls left open by a restart are closed now, not after the first
+  // interval (2026-10-11: rows stuck at "dialing" all evening).
+  setTimeout(() => {
+    require("../agents/agentCall").closeStale().catch(() => {});
+  }, 30_000).unref?.();
   if (timer) return;
   // A failing sweep must never take the process down — it is background
   // work, and the assistant keeps answering either way. Nor may two run

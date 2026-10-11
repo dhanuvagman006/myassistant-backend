@@ -7145,10 +7145,16 @@ function registerBuiltins() {
         };
       }
       if (!who.contactPhone) {
+        // Not a dead end (2026-10-11): the closest saved names, by sound.
+        const near = await require("../agents/contactFix").candidates(ctx.userId, args.contact_name).catch(() => []);
         return {
           ok: false,
-          data: "Contact not found in address book.",
-          speak: `I couldn't find a phone number for ${args.contact_name} in your synced contacts.`
+          data: near.length
+            ? { not_found: args.contact_name, did_you_mean: near, hint: "Ask in ONE short question which of these they meant, then call send_agent_message with that exact name and confirmed:true — do not read the message back again." }
+            : "Contact not found in address book.",
+          speak: near.length
+            ? `I couldn't find ${args.contact_name}. Did you mean ${near.slice(0, 3).join(" or ")}?`
+            : `I couldn't find ${args.contact_name} in your contacts. Could you say the name as it's saved, or give me the number?`,
         };
       }
       const { contactPhone, toPhone, appUser } = who;
@@ -7225,15 +7231,18 @@ function registerBuiltins() {
       const muted = await require("../routes/chat")
         .mutedBy(appUser.id, ctx.userId)
         .catch(() => false);
+      // The message is saved: a push that throws must not fail the tool,
+      // or the user retries and they get it twice (2026-10-11).
+      let pushed = false;
       if (appUser.fcm_token && !muted) {
-        await push.sendNotification(
+        pushed = await push.sendNotification(
           appUser.fcm_token,
           ctx.userName ? `${ctx.userName} sent you a message` : "You have a new message",
           "Open the app and your assistant will read it to you.",
           // Lets the recipient's app react: fetch the inbox and have their
           // assistant SPEAK the message the moment the app is open/opened.
           { kind: "agent_message" }
-        );
+        ).catch(() => false);
       } else {
         // Not an error: they simply have no device registered yet, so the
         // message waits in their inbox until they next open the app.
@@ -7266,7 +7275,9 @@ function registerBuiltins() {
       //
       // The SMS rung has always produced an outcome row, because the phone
       // posts one. The successful rung produced none.
-      const delivered = Boolean(appUser.fcm_token);
+      // Delivered with a notification only if the push really went (a
+      // muted chat or a failed push is still in their inbox, quietly).
+      const delivered = Boolean(pushed);
       require("../outcomes/store")
         .create(ctx.userId, {
           kind: "message",
@@ -7277,7 +7288,7 @@ function registerBuiltins() {
           // outcomes/store.describe.
           detail: delivered
             ? "through their assistant, with a notification"
-            : "into their inbox, but they have no device registered yet, so they will hear it when they next open the app",
+            : "into their inbox; their assistant will read it to them when they next open the app",
         })
         .catch((e) => console.warn("message outcome write failed:", e.message));
 
@@ -7287,8 +7298,7 @@ function registerBuiltins() {
         speak: delivered
           ? `I have sent the message directly to ${args.contact_name}'s assistant.`
           : `It is in ${args.contact_name}'s inbox — their assistant will read ` +
-            `it out when they next open the app. They have no device registered ` +
-            `for a notification yet.`,
+            `it out when they next open the app.`,
       };
     }
   });

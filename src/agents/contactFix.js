@@ -107,4 +107,21 @@ async function best(userId, spoken, { rows = null } = {}) {
   return { name: top.name, phone: top.phone, score: Number(top.score.toFixed(3)), corrected: true };
 }
 
-module.exports = { best, score, sound, jw };
+/** The saved names closest in sound to [spoken], best first (for "did you mean"). */
+async function candidates(userId, spoken, { rows = null, n = 3, min = 0.8 } = {}) {
+  const said = String(spoken || "").trim();
+  if (!userId || !said || !LATIN.test(said)) return [];
+  const list = rows || await query(
+    `SELECT name, phone FROM contacts WHERE user_id = $1 AND name <> '' LIMIT 3000`, [userId]
+  ).catch(() => []);
+  const seen = new Set();
+  return list
+    .map((r) => ({ name: String(r.name).trim(), s: score(said, r.name) }))
+    .filter((r) => r.s >= min)
+    .sort((a, b) => b.s - a.s)
+    .filter((r) => !seen.has(r.name.toLowerCase()) && seen.add(r.name.toLowerCase()))
+    .slice(0, n)
+    .map((r) => r.name);
+}
+
+module.exports = { best, candidates, score, sound, jw };

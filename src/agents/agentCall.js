@@ -385,6 +385,13 @@ function bolnaWebhook(body) {
       handleNoAnswer(rec);
       return true;
     }
+    // They spoke, then the line dropped, and often no "completed" follows
+    // (rows stuck at "dialing", 2026-10-11): settle it as the call it was.
+    if (spoke) {
+      rec.answer = String(body?.transcript || "").slice(0, 4000) || rec.answer;
+      finishCompleted(rec, String(body?.summary || "").trim());
+      return true;
+    }
   }
   // POSTPONED BY THE PROVIDER (2026-10-11): outside its calling hours
   // Bolna answers "rescheduled" and rings the next morning — a "running
@@ -448,6 +455,15 @@ function bolnaWebhook(body) {
     // EVERY call, not just a wake-up — see acknowledged().
     const done = reached && acknowledged(transcript);
 
+    if (!done && reached && !(Number(rec.maxAttempts) > rec.attempt)) {
+      // ANSWERED IS NOT "DIDN'T PICK UP" (2026-10-11): they picked up and
+      // spoke ("hello hello", a word we don't know) but never clearly said
+      // yes. Telling the owner they didn't answer is false.
+      rec.answer = transcript.slice(0, 4000) || rec.answer;
+      finishCompleted(rec, String(body?.summary || "").trim() ||
+        `${rec.contactName} answered and I gave the message, but they didn't clearly confirm it.`);
+      return true;
+    }
     if (!done) {
       handleNoAnswer(rec);
       return true;
@@ -461,9 +477,23 @@ function bolnaWebhook(body) {
   rec.result =
     status === "balance-low"
       ? "The call couldn't be placed — the calling balance is used up and needs a top-up."
-      : `I couldn't complete the call to ${rec.selfCall ? "your phone" : rec.contactName}.`;
+      : `I couldn't complete the call to ${rec.selfCall ? "your phone" : rec.contactName}` +
+        (whyFailed(body) ? ` — ${whyFailed(body)}` : "") + "." +
+        (rec.selfCall ? "" : " I can send the message as a text instead, or dial them from your phone.");
   settle(rec);
   return true;
+}
+
+/** The provider's reason for a failed call, in plain words — never its raw reply. */
+function whyFailed(body) {
+  const e = String(body?.error_message || body?.hangup_reason || body?.telephony_data?.hangup_reason || "").toLowerCase();
+  if (!e) return "";
+  if (/invalid|not.*valid|does not exist|unallocated|wrong number/.test(e)) return "the number doesn't seem to be valid";
+  if (/switched off|unreachable|not reachable|out of coverage/.test(e)) return "their phone is switched off or out of reach";
+  if (/reject|declin/.test(e)) return "they declined the call";
+  if (/dnd|do not disturb/.test(e)) return "their number blocks such calls (DND)";
+  if (/balance|credit|insufficient/.test(e)) return "the calling balance needs a top-up";
+  return "the phone network didn't connect it";
 }
 
 /**
@@ -486,7 +516,7 @@ function bolnaWebhook(body) {
  * the product failing at the only job it had.
  */
 const AFFIRMATIVE =
-  /\b(yes|yeah|yep|ya|ok|okay|okey|sure|awake|i'?m up|got it|alright|right|hmm+|understood|thanks|thank you)\b|हाँ|हां|जी|ठीक|उठ|समझ|ಹೌದು|ಸರಿ|ಎದ್ದೆ|ಎದ್ದಿದ್ದೇನೆ|ಗೊತ್ತಾಯ್ತು|ஆம்|சரி|எழுந்த|అవును|సరే|లేచ|ശരി|ഉണർന്ന/i;
+  /\b(yes|yeah|yep|ya|ok|okay|okey|sure|awake|i'?m up|got it|alright|right|hmm+|understood|thanks|thank you|haan|han|haa|ha ji|accha|acha|achha|theek|thik|sahi|ji|sari|seri|shari|aytu|ayitu|houdu|sare|avunu|aama|aamaam|okay ji|done|fine)\b|हाँ|हां|जी|ठीक|उठ|समझ|ಹೌದು|ಸರಿ|ಎದ್ದೆ|ಎದ್ದಿದ್ದೇನೆ|ಗೊತ್ತಾಯ್ತು|ஆம்|சரி|எழுந்த|అవును|సరే|లేచ|ശരി|ഉണർന്ന/i;
 
 function acknowledged(transcript) {
   const said = String(transcript || "")
@@ -567,8 +597,9 @@ function handleNoAnswer(rec) {
     rec.retryPending = false;
     rec.state = "no_answer";
     rec.result = rec.selfCall
-      ? `I called your phone ${rec.attempt} times but you didn't pick up: ${rec.task}`
-      : `${rec.contactName} didn't pick up — I tried ${rec.attempt} times, so the message wasn't delivered.`;
+      ? `I called your phone ${rec.attempt === 1 ? "once" : `${rec.attempt} times`} but you didn't pick up: ${rec.task}`
+      : `${rec.contactName} didn't pick up${rec.attempt > 1 ? ` — I tried ${rec.attempt} times` : ""}, so the message wasn't delivered. ` +
+        "I can send it as a text instead, or try again later.";
     settle(rec);
     return;
   }
@@ -603,6 +634,7 @@ function handleNoAnswer(rec) {
       tone: rec.tone || "",
       gender: rec.gender || "woman",
       selfCall: rec.selfCall,
+      live: Boolean(rec.live),
       attempt: rec.attempt + 1,
       maxAttempts: rec.maxAttempts,
       retryMs: rec.retryMs,
@@ -659,6 +691,7 @@ async function retryFromJob(payload = {}) {
       retryPending: true,
       pushOutcome: true,
       selfCall: Boolean(payload.selfCall),
+      live: Boolean(payload.live),
       maxAttempts: Number(payload.maxAttempts) || 1,
       retryMs: Number(payload.retryMs) || cfg().retryMs,
     };
@@ -1016,7 +1049,8 @@ async function start({ userId, userName, toNumber, contactName, task, lang, self
   } catch (e) {
     const reason = noteProviderFailure(e);
     rec.state = "failed";
-    rec.result = `I couldn't start the call to ${contactName} just now.`;
+    rec.result = `I couldn't start the call to ${contactName} just now — the calling service ` +
+      "didn't accept it. I can dial them from your phone, or send the message as a text.";
     // The row must exist before it is settled: callers no longer file a
     // failed row of their own, so a refusal quicker than the INSERT would
     // otherwise leave this call "dialing".

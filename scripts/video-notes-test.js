@@ -439,7 +439,7 @@ const tmpUploads = () => filesIn(os.tmpdir()).filter((f) => /^(avatar|note)-\d+-
   });
   const cookie = login.headers.get("set-cookie").split(";")[0];
   const admin = (p, opts = {}) => fetch(`${base}/admin-panel/api${p}`,
-    { ...opts, headers: { ...(opts.headers || {}), cookie } });
+    { ...opts, headers: { ...(opts.headers || {}), cookie, "X-Admin-Panel": "1" } });
   async function uploadResult(id, buf, type = "video/mp4", name = "result.mp4") {
     const form = new FormData();
     form.append("file", new Blob([buf], { type }), name);

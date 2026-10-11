@@ -574,6 +574,14 @@ function appNoteVouches(text) {
   if (/\b(on the card|card is on the screen)\b/i.test(t)) out.push("change_poster");
   if (/\bcleaned-up photo is on the screen\b/i.test(t)) out.push("improve_old_photo");
   if (/\bopen with the card\b/i.test(t)) out.push("share_poster");
+  // CALL STATUS FROM THE PHONE (2026-10-11): "[SYSTEM] The assistant is now
+  // calling X", "The call to X has ended / started / is still going on" are
+  // turns in which no tool runs, so "I'm calling Jayantha now" was
+  // rewritten into "I couldn't start that call — nothing was dialled" —
+  // five times in one evening, for calls that were really placed.
+  if (/\b(is now calling|the call to .{1,80} (has ended|started on the phone|is still going on))\b/i.test(t)) {
+    out.push("place_phone_call");
+  }
   return out;
 }
 

@@ -107,6 +107,9 @@ function mayGo({ userId, kind, parts, confirmed, userText = null, unattended = f
     (heard.length <= 4 && !saysYes(heard) && !heard.split(" ").some((w) => NO.has(w)));
   const p = pending.get(slot);
   const fresh = p && Date.now() - p.at < TTL_MS;
+  // "Ashratha" read back, "Ashalatha" picked: the same person by sound.
+  const samePerson = (x, y) => first(x) === first(y) ||
+    require("./contactFix").score(String(x || ""), String(y || "")) >= 0.85;
   const ok = () => {
     pending.delete(slot);
     approved.set(slot, { who, at: Date.now() });
@@ -124,13 +127,13 @@ function mayGo({ userId, kind, parts, confirmed, userText = null, unattended = f
   //  3. A yes after the read-back is a yes even if the model rephrased the
   //     words or respelt the name: it is the same person.
   if (GO_NOW.test(String(userText || "")) && who && heard.includes(first(who))) return ok();
-  const a = approved.get(slot);
-  if (a && Date.now() - a.at < APPROVED_MS && first(a.who) === first(who)) return ok();
-  if (confirmed === true && fresh && first(p.who) === first(who) && p.key !== key && !unreadable &&
+  const a = approved.get(slot) || approved.get(`${userId || "anon"}|${kind === "call" ? "message" : "call"}`);
+  if (a && Date.now() - a.at < APPROVED_MS && samePerson(a.who, who)) return ok();
+  if (confirmed === true && fresh && samePerson(p.who, who) && p.key !== key && !unreadable &&
       norm(userText) !== p.heard && saysYes(userText)) {
     return ok();
   }
-  if (confirmed === true && fresh && p.key === key && first(p.who) === first(who)) {
+  if (confirmed === true && fresh && p.key === key && samePerson(p.who, who)) {
     if (unreadable && Date.now() - p.at > 1500) return ok();
     // Something new must have been said since the words were read back —
     // the request itself, still the latest thing heard, is not a yes.

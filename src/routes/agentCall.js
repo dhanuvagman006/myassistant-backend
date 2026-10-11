@@ -140,13 +140,30 @@ function callServiceFailedLine(name) {
   );
 }
 
-router.get("/:id", (req, res) => {
+router.get("/:id", async (req, res) => {
   const rec = agent.get(String(req.params.id));
   // Transcripts and outcomes are the caller's own business only.
-  if (!rec || (rec.userId && String(rec.userId) !== String(req.user?.sub))) {
+  if (rec && rec.userId && String(rec.userId) !== String(req.user?.sub)) {
     return res.status(404).json({ error: "unknown call" });
   }
-  res.json(agent.status(String(req.params.id)));
+  if (rec) return res.json(agent.status(String(req.params.id)));
+  // NOT IN MEMORY (a restart mid-call, 2026-10-11): the call's row still
+  // knows how it went. The app polled a 404 for 15 minutes and then said
+  // "still going on" for a call that had long ended.
+  const row = await require("../db").one(
+    `SELECT status, detail, transcript FROM task_outcomes
+      WHERE external_id = $1 AND user_id = $2 AND kind = 'agent_call'`,
+    [String(req.params.id), Number(req.user?.sub) || 0]
+  ).catch(() => null);
+  if (!row) return res.status(404).json({ error: "unknown call" });
+  const state = ["completed", "no_answer", "failed"].includes(row.status) ? row.status : "failed";
+  res.json({
+    state,
+    result: state === "failed" && !["completed", "no_answer", "failed"].includes(row.status)
+      ? "I lost track of that call when my server restarted — check the Calls screen; I won't claim it went through."
+      : row.detail || null,
+    answer: row.transcript || null, recording: null, notes: [], voice: "woman",
+  });
 });
 
 /** Webhook router gated by sha256(api key)[:32] in the path; always 200s
