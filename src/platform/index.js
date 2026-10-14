@@ -13,6 +13,8 @@
  *   app.use("/v1", platform.v1);                          // key-authenticated API
  *   app.use("/platform", appAuth, platform.manage);       // the main app manages apps
  *   app.get("/developers", platform.docs);                // the developer docs
+ *   app.use("/console", platform.consoleRouter);           // the web console API
+ *   app.get("/console", platform.consolePage);             // the web console
  *   platform.registerPlatformTools(registry);              // in registerBuiltins()
  *   ...platform.USER_TABLES                                // privacy export / erase
  *
@@ -29,6 +31,14 @@ const express = require("express");
 const { platformAuth, limiter } = require("./auth");
 const store = require("./store");
 const tools = require("./tools");
+const consoleWeb = require("./console");
+const manage = require("./manage");
+
+// The web developer console (console.js): its own sign-in, its own narrow
+// token, the same management API as the app.
+const consoleRouter = express.Router();
+consoleRouter.use("/auth", consoleWeb.auth);
+consoleRouter.use("/api", consoleWeb.consoleAuth, manage);
 
 const v1 = express.Router();
 v1.use(platformAuth, limiter, require("./routes"));
@@ -43,16 +53,18 @@ function docs(req, res) {
   res.setHeader("Content-Security-Policy",
     "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; " +
     "base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
-  res.send(page.split("{{API}}").join(`${base}/v1`));
+  res.send(page.split("{{API}}").join(`${base}/v1`).split("{{CONSOLE}}").join(`${base}/console`));
 }
 
 module.exports = {
   v1,
-  manage: require("./manage"),
+  manage,
+  consoleRouter,
+  consolePage: consoleWeb.consolePage,
   docs,
   registerPlatformTools: tools.registerPlatformTools,
   wantsApps: tools.wantsApps,
   hasApps: tools.hasApps,
   migrate: store.migrate,
-  USER_TABLES: store.USER_TABLES,
+  USER_TABLES: [...store.USER_TABLES, ...consoleWeb.USER_TABLES],
 };

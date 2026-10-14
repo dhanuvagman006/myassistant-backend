@@ -21,8 +21,16 @@ const audit = require("../audit/log");
 // The assistant's "is this about one of my apps?" words are cached a minute.
 const forget = (uid) => require("./tools").forget(uid);
 
+async function tellPhone(uid, title, body) {
+  try {
+    const u = await require("../db").one(`SELECT fcm_token FROM users WHERE id=$1`, [uid]);
+    if (u && u.fcm_token) await require("../services/push").send(u.fcm_token, title, body, { kind: "platform_apps" });
+  } catch (_) {}
+}
+
 function uidOf(req, res) {
-  if (req.auth && req.auth.scope && req.auth.scope !== "session") {
+  // A signed-in session (the app) or the developer console's own token.
+  if (req.auth && req.auth.scope && req.auth.scope !== "session" && req.auth.scope !== "console") {
     res.status(403).json({ error: "sign in to My Assistant to manage connected apps" });
     return null;
   }
@@ -73,6 +81,9 @@ router.post("/apps", async (req, res) => {
   forget(uid);
   const key = await store.createKey(uid, out.app.id, "First key");
   audit.record(uid, "platform.app.connected", `Connected "${out.app.name}" to your assistant`);
+  // Connected from the browser: the phone hears of it at once (it is also a
+  // security signal — an app the user did not add is visible immediately).
+  if (req.auth && req.auth.scope === "console") tellPhone(uid, `${out.app.name} is connected`, "It can now use your assistant. See it in Hub → Your own apps; manage it in the Developer Console.");
   res.status(201).json({ app: await summary(out.app), key: key.key, keyInfo: key.info, docsUrl: docsUrl(req), apiBase: apiBase(req) });
 });
 
@@ -133,6 +144,14 @@ router.delete("/apps/:id/keys/:keyId", async (req, res) => {
   if (!(await store.revokeKey(uid, req.params.id, req.params.keyId))) return res.status(404).json({ error: "not found" });
   audit.record(uid, "platform.key.revoked", "Revoked an API key of a connected app");
   res.json({ ok: true });
+});
+
+router.get("/apps/:id/usage", async (req, res) => {
+  const uid = uidOf(req, res);
+  if (uid === null) return;
+  const app = await store.getApp(uid, req.params.id);
+  if (!app) return res.status(404).json({ error: "not found" });
+  res.json({ days: await store.usageDays(app.id, req.query.days) });
 });
 
 router.get("/apps/:id/activity", async (req, res) => {

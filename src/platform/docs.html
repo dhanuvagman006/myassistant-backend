@@ -98,6 +98,7 @@ footer{color:var(--muted);font-size:13px;margin-top:60px;border-top:1px solid va
   <a class="brand" href="#intro"><span class="logo">✦</span>My Assistant API</a>
   <span class="pill">v1</span>
   <span class="spacer"></span>
+  <a class="theme" href="{{CONSOLE}}" style="text-decoration:none">Console →</a>
   <button class="theme" id="theme" aria-label="Switch theme">◐<span class="tl"> Theme</span></button>
 </div></header>
 
@@ -106,6 +107,7 @@ footer{color:var(--muted);font-size:13px;margin-top:60px;border-top:1px solid va
   <h4>Start</h4>
   <a href="#intro">Overview</a>
   <a href="#quickstart">Quickstart</a>
+  <a href="{{CONSOLE}}">Developer Console ↗</a>
   <a href="#auth">Keys &amp; scopes</a>
   <h4>Assistant</h4>
   <a href="#messages">Talk to your assistant</a>
@@ -140,8 +142,8 @@ footer{color:var(--muted);font-size:13px;margin-top:60px;border-top:1px solid va
 <section id="quickstart">
   <h2>Quickstart</h2>
   <div class="flow">
-    <div class="step"><i>1</i>In My Assistant open <b>Hub → Your own apps</b> and tap <b>Connect an app</b>.</div>
-    <div class="step"><i>2</i>Name it, choose what it may do, and copy the API key (shown once).</div>
+    <div class="step"><i>1</i>Open the <a href="{{CONSOLE}}" target="_blank" rel="noopener"><b>Developer Console</b></a> and sign in with your My Assistant account.</div>
+    <div class="step"><i>2</i>Create an app, choose what it may do, and copy the API key (shown once). It appears in My Assistant on your phone at once.</div>
     <div class="step"><i>3</i>Call the API from your app with that key.</div>
     <div class="step"><i>4</i>Ask My Assistant what happened there — it knows.</div>
   </div>
@@ -177,7 +179,7 @@ print(r.json()["reply"])</pre>
 <section id="auth">
   <h2>Keys &amp; scopes</h2>
   <p>A key belongs to one connected app and acts as <b>you</b>, within the scopes you allowed that app. Send it as a bearer token (or as <code>X-Api-Key</code>). Keys look like <code>mya_</code> followed by 40 characters.</p>
-  <p>Change an app's scopes any time in Your own apps; it takes effect on the next request. Pausing the app, revoking a key or removing the app stops it at once.</p>
+  <p>Change an app's scopes any time in the <a href="{{CONSOLE}}">Developer Console</a>; it takes effect on the next request. Pausing the app, revoking a key or removing the app stops it at once.</p>
   <table>
     <tr><th>Scope</th><th>Allows</th><th>Default</th></tr>
     <tr><td><code>assistant</code></td><td>Talk to your assistant (<code>/assistant/messages</code>).</td><td>on</td></tr>
@@ -189,7 +191,7 @@ print(r.json()["reply"])</pre>
     <tr><td><code>notify</code></td><td>Send a notification to your phone.</td><td>on</td></tr>
     <tr><td><code>profile</code></td><td>Read your name and your assistant's name.</td><td>on</td></tr>
   </table>
-  <div class="note warn"><b>Keep keys secret.</b> A key can talk to your assistant as you. Put it on your server or in a private app, never in a public web page or a public repository. If one leaks, revoke it in Your own apps.</div>
+  <div class="note warn"><b>Keep keys secret.</b> A key can talk to your assistant as you. Put it on your server or in a private app, never in a public web page or a public repository. If one leaks, revoke it in the Developer Console.</div>
 </section>
 
 <section id="messages">
@@ -372,7 +374,7 @@ events.onmessage = async (m) => {
 <section id="events">
   <h2>Activity</h2>
   <div class="endpoint"><span class="m post">POST</span>/v1/events<span class="scope">scope: data</span></div>
-  <p>A one-line account of something that happened. It appears under the app in My Assistant's Your own apps, and it's what the assistant answers from when you ask <i>"how did my chess match go?"</i>.</p>
+  <p>A one-line account of something that happened. It appears under the app in My Assistant (Hub → Your own apps) and in the Developer Console, and it's what the assistant answers from when you ask <i>"how did my chess match go?"</i>.</p>
 <div class="code"><pre>{ "type": "match_finished",
   "summary": "Lost to the assistant in 41 moves — blundered the queen on move 28",
   "data": { "result": "loss", "moves": 41 } }</pre></div>
@@ -402,7 +404,7 @@ events.onmessage = async (m) => {
     <tr><th>Status</th><th>Codes</th><th>Meaning</th></tr>
     <tr><td>400</td><td><code>message_required</code>, <code>bad_tools</code>, <code>bad_record</code>, <code>missing_results</code>…</td><td>The request needs fixing; the message says how.</td></tr>
     <tr><td>401</td><td><code>missing_key</code>, <code>invalid_key</code></td><td>No key, or a revoked one.</td></tr>
-    <tr><td>403</td><td><code>missing_scope</code>, <code>app_paused</code></td><td>Allow the scope, or resume the app, in Your own apps.</td></tr>
+    <tr><td>403</td><td><code>missing_scope</code>, <code>app_paused</code></td><td>Allow the scope, or resume the app, in the Developer Console.</td></tr>
     <tr><td>404</td><td><code>unknown_conversation</code>, <code>not_found</code>, <code>unknown_tool</code></td><td>Nothing by that id for this app.</td></tr>
     <tr><td>409</td><td><code>nothing_pending</code></td><td>Tool results sent to a conversation that isn't waiting for any.</td></tr>
     <tr><td>429</td><td><code>rate_limited</code>, <code>daily_limit</code></td><td>Slow down, or wait until tomorrow (UTC).</td></tr>
@@ -421,7 +423,7 @@ events.onmessage = async (m) => {
     <tr><td>Apps / keys</td><td>20 apps per account, 5 live keys per app</td></tr>
     <tr><td>Records</td><td>10,000 per app, 64 KB each</td></tr>
   </table>
-  <p>Usage is on <b>your</b> account — the same as talking to the assistant in My Assistant. Each app's requests, messages and voice minutes are shown in Your own apps.</p>
+  <p>Usage is on <b>your</b> account — the same as talking to the assistant in My Assistant. Each app's requests, messages and voice minutes are shown in the Developer Console, with a 30-day chart.</p>
 </section>
 
 <section id="example">

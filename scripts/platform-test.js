@@ -524,11 +524,96 @@ const CHESS_TOOLS = [{
       assert.strictEqual(await platform.wantsApps(A.id, "how did my chess match go?"), true, "the second app still matches");
     });
 
+    /* ------------------------------------------------ (h) the web console */
+
+    await atest("the console page is served with its base filled in", async () => {
+      const r = await api("GET", "/console");
+      ok(r);
+      assert.match(r.headers.get("content-type"), /text\/html/);
+      assert.ok(r.text.includes('"https://api.example.test"') || r.text.includes("https://api.example.test/console/api"));
+      assert.ok(!r.text.includes("{{BASE}}"));
+      const d = await api("GET", "/developers");
+      assert.ok(!d.text.includes("{{CONSOLE}}") && d.text.includes("https://api.example.test/console"));
+    });
+
+    await atest("console sign-in: a code pushed to the phone, 5 tries, one use", async () => {
+      await db.run(`UPDATE users SET fcm_token='tok-b' WHERE id=$1`, [B.id]);
+      const email = `platform-b-${stamp}@example.test`;
+      const nobody = await api("POST", "/console/auth/code", { body: { identifier: "nobody-" + stamp + "@example.test" } });
+      ok(nobody);
+      pushed.length = 0;
+      const r = await api("POST", "/console/auth/code", { body: { identifier: email } });
+      ok(r);
+      assert.strictEqual(r.json.message, nobody.json.message, "the same answer whether or not the account exists");
+      assert.strictEqual(pushed.length, 1);
+      assert.strictEqual(pushed[0].token, "tok-b");
+      const code = (pushed[0].body.match(/\b(\d{6})\b/) || [])[1];
+      assert.ok(code, pushed[0].body);
+      const wrong = code === "000000" ? "111111" : "000000";
+      ok(await api("POST", "/console/auth/verify", { body: { identifier: email, code: wrong } }), 401);
+      const v = await api("POST", "/console/auth/verify", { body: { identifier: email.toUpperCase(), code } });
+      ok(v);
+      const p = jwt.verify(v.json.token, SECRET);
+      assert.strictEqual(p.scope, "console");
+      assert.strictEqual(p.uid, B.id);
+      assert.ok(p.exp - p.iat <= 12 * 3600);
+      ok(await api("POST", "/console/auth/verify", { body: { identifier: email, code } }), 401);
+      B.console = v.json.token;
+
+      // Five wrong tries end a code even if the sixth is right.
+      pushed.length = 0;
+      await db.run(`DELETE FROM platform_console_codes WHERE user_id=$1`, [B.id]);
+      ok(await api("POST", "/console/auth/code", { body: { identifier: email } }));
+      const c2 = pushed[0].body.match(/\b(\d{6})\b/)[1];
+      const w2 = c2 === "000000" ? "111111" : "000000";
+      for (let i = 0; i < 5; i++) ok(await api("POST", "/console/auth/verify", { body: { identifier: email, code: w2 } }), 401);
+      ok(await api("POST", "/console/auth/verify", { body: { identifier: email, code: c2 } }), 401);
+    });
+
+    await atest("console sign-in with a password", async () => {
+      const bcrypt = require(path.join(BACKEND, "node_modules/bcryptjs"));
+      await db.run(`UPDATE users SET password_hash=$2 WHERE id=$1`, [B.id, await bcrypt.hash("correct horse 1", 8)]);
+      const email = `platform-b-${stamp}@example.test`;
+      ok(await api("POST", "/console/auth/password", { body: { email, password: "wrong" } }), 401);
+      const r = await api("POST", "/console/auth/password", { body: { email, password: "correct horse 1" } });
+      ok(r);
+      assert.strictEqual(jwt.decode(r.json.token).scope, "console");
+    });
+
+    await atest("the console token opens only the console; a session does not open the console", async () => {
+      ok(await api("GET", "/console/auth/me", { token: B.console }));
+      ok(await api("GET", "/console/api/apps", { token: B.console }));
+      ok(await api("GET", "/chat/urgent-settings", { token: B.console }), 401);
+      ok(await api("GET", "/platform/apps", { token: B.console }), 401);
+      ok(await api("GET", "/ai/config", { token: B.console }), 401);
+      ok(await api("GET", "/console/api/apps", { token: B.session }), 401);
+      ok(await api("GET", "/console/api/apps"), 401);
+    });
+
+    await atest("an app created in the console appears in the phone app at once, and the phone is told", async () => {
+      pushed.length = 0;
+      const r = await api("POST", "/console/api/apps", { token: B.console, body: { name: "Quiz Night", keywords: "quiz" } });
+      ok(r, 201);
+      assert.match(r.json.key, /^mya_/);
+      const phone = await api("GET", "/platform/apps", { token: B.session });
+      assert.ok(phone.json.apps.some((a) => a.name === "Quiz Night"));
+      const told = await waitFor(async () => pushed.find((x) => /Quiz Night is connected/.test(x.title)), 3000);
+      assert.ok(told, JSON.stringify(pushed));
+      assert.strictEqual(await platform.wantsApps(B.id, "what was my quiz score?"), true);
+      const u = await api("GET", `/console/api/apps/${r.json.app.id}/usage?days=30`, { token: B.console });
+      ok(u);
+      assert.strictEqual(u.json.days.length, 30);
+      assert.strictEqual(u.json.days[29].day, new Date().toISOString().slice(0, 10));
+      const other = await api("GET", `/console/api/apps/${r.json.app.id}`, { token: B.console });
+      ok(other);
+      ok(await api("GET", `/platform/apps/${r.json.app.id}`, { token: A.session }), 404); // another account
+    });
+
     await atest("account erase covers every platform table", async () => {
       const privacy = fs.readFileSync(path.join(BACKEND, "src/routes/privacy.js"), "utf8");
       assert.ok(privacy.includes('require("../platform/store").USER_TABLES'));
       assert.deepStrictEqual(pstore.USER_TABLES.map((t) => t[0]).sort(),
-        ["platform_apps", "platform_conversations", "platform_events", "platform_keys", "platform_records", "platform_usage"]);
+        ["platform_apps", "platform_console_codes", "platform_conversations", "platform_events", "platform_keys", "platform_records", "platform_usage"]);
     });
   } finally {
     for (const id of made) {

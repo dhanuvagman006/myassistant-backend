@@ -89,7 +89,7 @@ function registerPlatformTools(registry) {
       if (!(uid > 0)) return { ok: false, error: "not signed in" };
       const apps = await store.listApps(uid);
       if (!apps.length) {
-        return { ok: true, speak: "No apps are connected yet. Apps you build can be connected in My Assistant under Hub, Your own apps.", data: { apps: [] } };
+        return { ok: true, speak: "No apps are connected yet. Apps you build are connected in the Developer Console on the web.", data: { apps: [] } };
       }
       const want = String(args.app || "").toLowerCase().trim();
       // Every app the name fits (two apps may share a name): exact first,

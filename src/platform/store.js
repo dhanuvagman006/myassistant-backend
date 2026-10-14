@@ -558,6 +558,22 @@ async function usageMonth(appId) {
   return { requests: r.requests, turns: r.turns, voiceSessions: r.voice_sessions, voiceSeconds: r.voice_seconds };
 }
 
+/** The last `days` days, oldest first, zeros filled in (the console chart). */
+async function usageDays(appId, days = 30) {
+  await migrate();
+  const n = Math.max(1, Math.min(90, Number(days) || 30));
+  const from = new Date(Date.now() - (n - 1) * 86_400_000).toISOString().slice(0, 10);
+  const rows = await query(`SELECT * FROM platform_usage WHERE app_id=$1 AND day >= $2`, [Number(appId), from]);
+  const by = new Map(rows.map((r) => [r.day, r]));
+  const out = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const day = new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10);
+    const r = by.get(day);
+    out.push({ day, requests: r ? r.requests : 0, messages: r ? r.turns : 0, voiceSeconds: r ? r.voice_seconds : 0 });
+  }
+  return out;
+}
+
 const USER_TABLES = [
   ["platform_keys", "user_id"],
   ["platform_records", "user_id"],
@@ -565,6 +581,7 @@ const USER_TABLES = [
   ["platform_conversations", "user_id"],
   ["platform_usage", "user_id"],
   ["platform_apps", "user_id"],
+  ["platform_console_codes", "user_id"],
 ];
 
 module.exports = {
@@ -574,6 +591,6 @@ module.exports = {
   putRecord, getRecord, listRecords, deleteRecord, collections,
   addEvent, listEvents, search,
   getConversation, newConversationId, saveConversation, deleteConversation,
-  bump, usageToday, usageMonth,
+  bump, usageToday, usageMonth, usageDays,
   USER_TABLES,
 };

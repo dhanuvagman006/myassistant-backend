@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Developer Console</title>
+<meta name="description" content="Create and manage the apps that use your assistant: keys, permissions, usage and data.">
+<style>
+:root{
+  --bg:#f6f6f9;--panel:#fff;--panel2:#fafafc;--ink:#15151c;--muted:#5e5e70;--dim:#8b8b9c;--line:#e3e3eb;
+  --accent:#5b4cf0;--accent2:#7a5cff;--accent-ink:#fff;--soft:#eeebff;
+  --ok:#1b8a4b;--okbg:#e5f6ec;--warn:#9a5a00;--warnbg:#fff3df;--bad:#b3261e;--badbg:#fde9e7;
+  --code:#13131a;--code-ink:#e8e8f0;--shadow:0 1px 2px rgba(20,20,40,.05),0 8px 24px rgba(20,20,40,.06);
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0d0d12;--panel:#15151d;--panel2:#1a1a24;--ink:#ececf3;--muted:#a3a3b6;--dim:#76768a;--line:#2a2a37;
+  --accent:#8f84ff;--accent2:#a98bff;--accent-ink:#0d0d12;--soft:#211e3c;
+  --ok:#5fd394;--okbg:#10291c;--warn:#f0b35a;--warnbg:#2b2112;--bad:#ff8a80;--badbg:#2e1513;--code:#0a0a0f;--shadow:none;
+}}
+:root[data-theme="dark"]{
+  --bg:#0d0d12;--panel:#15151d;--panel2:#1a1a24;--ink:#ececf3;--muted:#a3a3b6;--dim:#76768a;--line:#2a2a37;
+  --accent:#8f84ff;--accent2:#a98bff;--accent-ink:#0d0d12;--soft:#211e3c;
+  --ok:#5fd394;--okbg:#10291c;--warn:#f0b35a;--warnbg:#2b2112;--bad:#ff8a80;--badbg:#2e1513;--code:#0a0a0f;--shadow:none;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+code,pre,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+button{font:inherit;cursor:pointer}
+.top{position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.top-in{max-width:1180px;margin:0 auto;padding:11px 16px;display:flex;align-items:center;gap:12px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:750;color:var(--ink);letter-spacing:-.01em}
+.logo{width:28px;height:28px;border-radius:9px;background:linear-gradient(135deg,var(--accent),#c04cf0);display:grid;place-items:center;color:#fff;font-size:15px}
+.sp{flex:1}
+.who{font-size:13px;color:var(--muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.btn{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:10px;padding:8px 14px;font-weight:600;font-size:14px}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:linear-gradient(135deg,var(--accent),var(--accent2));border-color:transparent;color:#fff}
+.btn.danger{color:var(--bad)}.btn.danger:hover{border-color:var(--bad)}
+.btn.sm{padding:5px 10px;font-size:13px;border-radius:8px}
+.btn:disabled{opacity:.55;cursor:default}
+.ghost{background:none;border:0;color:var(--muted);padding:6px 8px;border-radius:8px}.ghost:hover{color:var(--ink);background:var(--panel2)}
+main{max-width:1180px;margin:0 auto;padding:24px 16px 80px}
+h1{font-size:28px;letter-spacing:-.025em;margin:0 0 4px}
+h2{font-size:19px;letter-spacing:-.01em;margin:0 0 12px}
+.sub{color:var(--muted);margin:0 0 22px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:var(--shadow)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px}
+.app{cursor:pointer;transition:border-color .15s,transform .15s}.app:hover{border-color:var(--accent);transform:translateY(-1px)}
+.row{display:flex;align-items:center;gap:12px}
+.tile{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;color:#fff;font-weight:800;font-size:19px;flex:none}
+.name{font-weight:700;font-size:16px}
+.muted{color:var(--muted)}.dim{color:var(--dim);font-size:13px}
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;border-radius:999px;padding:2px 9px}
+.pill.ok{background:var(--okbg);color:var(--ok)}.pill.warn{background:var(--warnbg);color:var(--warn)}
+.pill.ok::before,.pill.warn::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.last{margin:12px 0 0;font-size:14px;color:var(--muted);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.9em}
+.stats{display:flex;gap:18px;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+.stat b{display:block;font-size:18px}.stat span{font-size:12px;color:var(--dim)}
+.empty{text-align:center;padding:56px 20px}
+.empty .big{font-size:42px}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:18px 0 20px;overflow-x:auto}
+.tabs button{background:none;border:0;border-bottom:2px solid transparent;padding:10px 14px;color:var(--muted);font-weight:600;white-space:nowrap}
+.tabs button.on{color:var(--ink);border-color:var(--accent)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:14px}
+.kpi b{display:block;font-size:24px;letter-spacing:-.02em}.kpi span{color:var(--dim);font-size:13px}
+.chart{width:100%;height:170px;display:block}
+.list{display:flex;flex-direction:column}
+.li{display:flex;align-items:center;gap:12px;padding:12px 2px;border-bottom:1px solid var(--line)}
+.li:last-child{border-bottom:0}
+.grow{flex:1;min-width:0}
+.ellip{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+label.f{display:block;font-weight:600;font-size:13px;margin:14px 0 6px}
+input.t,textarea.t{width:100%;border:1px solid var(--line);background:var(--panel2);color:var(--ink);border-radius:10px;padding:10px 12px;font:inherit}
+input.t:focus,textarea.t:focus{outline:2px solid var(--soft);border-color:var(--accent)}
+textarea.t{resize:vertical;min-height:84px}
+.hint{font-size:12.5px;color:var(--dim);margin-top:5px}
+.switch{position:relative;width:42px;height:24px;flex:none}
+.switch input{opacity:0;width:0;height:0}
+.switch span{position:absolute;inset:0;background:var(--line);border-radius:999px;transition:.2s}
+.switch span::after{content:"";position:absolute;left:3px;top:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.2s;box-shadow:0 1px 2px rgba(0,0,0,.25)}
+.switch input:checked+span{background:var(--accent)}.switch input:checked+span::after{transform:translateX(18px)}
+pre.code{background:var(--code);color:var(--code-ink);border-radius:12px;padding:14px 16px;overflow:auto;margin:10px 0;font-size:13px;line-height:1.55;max-height:420px}
+.keybox{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:15px;font-weight:600;background:var(--panel2);border:1px dashed var(--accent);border-radius:12px;padding:14px;word-break:break-all}
+.note{border-radius:10px;padding:10px 12px;font-size:13.5px;margin:12px 0}
+.note.warn{background:var(--warnbg);color:var(--warn)}.note.info{background:var(--soft)}
+.modal{position:fixed;inset:0;background:rgba(10,10,20,.45);display:grid;place-items:center;padding:16px;z-index:50}
+.modal .card{width:min(560px,100%);max-height:calc(100vh - 32px);overflow:auto}
+.toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;z-index:60;box-shadow:var(--shadow)}
+.auth{max-width:420px;margin:7vh auto 0}
+.seg{display:flex;background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:3px;margin:16px 0 4px}
+.seg button{flex:1;background:none;border:0;padding:8px;border-radius:8px;color:var(--muted);font-weight:600}
+.seg button.on{background:var(--panel);color:var(--ink);box-shadow:var(--shadow)}
+.code6{letter-spacing:.5em;font-size:22px;text-align:center;font-weight:700}
+.back{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-weight:600;margin-bottom:10px}
+table.recs{width:100%;border-collapse:collapse;font-size:14px}
+table.recs td,table.recs th{padding:9px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+table.recs th{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{border:1px solid var(--line);border-radius:999px;padding:5px 12px;background:var(--panel);color:var(--ink);font-weight:600;font-size:13px}
+.chip.on{border-color:var(--accent);background:var(--soft)}
+@media (max-width:640px){h1{font-size:23px}.who{display:none}.stats{gap:12px}}
+</style>
+</head>
+<body>
+<header class="top"><div class="top-in">
+  <a class="brand" href="#/"><span class="logo">✦</span>Developer Console</a>
+  <span class="sp"></span>
+  <a class="ghost" href="{{BASE}}/developers" target="_blank" rel="noopener">Docs</a>
+  <button class="ghost" id="theme" title="Theme">◐</button>
+  <span class="who" id="who"></span>
+  <button class="ghost" id="out" hidden>Sign out</button>
+</div></header>
+<main id="main"></main>
+
+<script>
+(function(){
+"use strict";
+var BASE="{{BASE}}", API=BASE+"/console/api", V1=BASE+"/v1";
+var root=document.documentElement, main=document.getElementById("main");
+var TK="mya_console_token", TU="mya_console_user";
+function store(k,v){try{ if(v===null){sessionStorage.removeItem(k);localStorage.removeItem(k);} else (localStorage.getItem("mya_keep")==="1"?localStorage:sessionStorage).setItem(k,v);}catch(e){}}
+function read(k){try{return sessionStorage.getItem(k)||localStorage.getItem(k);}catch(e){return null;}}
+try{var th=localStorage.getItem("mya_theme"); if(th) root.setAttribute("data-theme",th);}catch(e){}
+document.getElementById("theme").onclick=function(){
+  var dark=root.getAttribute("data-theme")==="dark"||(!root.getAttribute("data-theme")&&matchMedia("(prefers-color-scheme: dark)").matches);
+  root.setAttribute("data-theme",dark?"light":"dark"); try{localStorage.setItem("mya_theme",dark?"light":"dark");}catch(e){}
+};
+document.getElementById("out").onclick=function(){ store(TK,null); store(TU,null); render(); };
+
+/* ---------- helpers ---------- */
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c];});}
+function h(html){var d=document.createElement("div");d.innerHTML=html.trim();return d.firstChild;}
+function toast(t){var el=h('<div class="toast"></div>');el.textContent=t;document.body.appendChild(el);setTimeout(function(){el.remove();},2600);}
+function ago(ms){ if(!ms) return "never"; var m=Math.round((Date.now()-ms)/60000); if(m<1)return "just now"; if(m<60)return m+" min ago"; var hr=Math.round(m/60); if(hr<24)return hr+" h ago"; return Math.round(hr/24)+" d ago";}
+var COLORS=["#6b5cf5","#e0479e","#13a6c4","#e08a1f","#2f9e66","#c0483a"];
+function tile(app,size){var c=app.status==="paused"?"#8b8b9c":COLORS[app.id%COLORS.length];var l=(app.name||"?").trim().charAt(0).toUpperCase();
+  return '<div class="tile" style="background:linear-gradient(135deg,'+c+','+c+'cc)'+(size?';width:'+size+'px;height:'+size+'px;font-size:'+(size*0.45)+'px':'')+'">'+esc(l)+'</div>';}
+function copy(text,btn){ (navigator.clipboard?navigator.clipboard.writeText(text):Promise.reject()).then(function(){ if(btn){var o=btn.textContent;btn.textContent="Copied";setTimeout(function(){btn.textContent=o;},1400);} else toast("Copied"); }).catch(function(){toast("Select and copy it by hand");}); }
+function api(method,path,body,base){
+  var tok=read(TK);
+  return fetch((base||API)+path,{method:method,headers:Object.assign({"Content-Type":"application/json"},tok&&!base?{Authorization:"Bearer "+tok}:{}),body:body===undefined?undefined:JSON.stringify(body)})
+    .then(function(r){return r.json().catch(function(){return {};}).then(function(j){
+      if(r.status===401&&!base&&tok){ store(TK,null); toast("Your sign-in expired — sign in again"); render(); throw new Error("signed out"); }
+      if(!r.ok){ var m=(j&&j.error&&(j.error.message||j.error))||("Request failed ("+r.status+")"); throw new Error(typeof m==="string"?m:"Request failed"); }
+      return j;});});
+}
+function modal(inner){var m=h('<div class="modal"><div class="card">'+inner+'</div></div>');m.addEventListener("click",function(e){if(e.target===m&&!m.dataset.sticky)m.remove();});document.body.appendChild(m);return m;}
+
+var scopesCache=null;
+function scopes(){ return scopesCache?Promise.resolve(scopesCache):api("GET","/scopes").then(function(j){scopesCache=j.scopes;return scopesCache;}); }
+
+/* ---------- routing ---------- */
+window.addEventListener("hashchange",render);
+function render(){
+  var tok=read(TK), u=null; try{u=JSON.parse(read(TU)||"null");}catch(e){}
+  document.getElementById("out").hidden=!tok;
+  document.getElementById("who").textContent=tok&&u?(u.name||u.email||""):"";
+  if(!tok) return signIn();
+  var m=location.hash.match(/^#\/apps\/(\d+)(?:\/(\w+))?/);
+  if(m) return appPage(Number(m[1]),m[2]||"overview");
+  return appsPage();
+}
+
+/* ---------- sign in ---------- */
+function signIn(){
+  main.innerHTML='<div class="auth"><div class="card">'+
+   '<h1>Sign in</h1><p class="sub">Use the account you use in My Assistant. Apps you create here appear in the app straight away.</p>'+
+   '<div class="seg"><button data-m="code" class="on">Code to my phone</button><button data-m="pw">Email &amp; password</button></div>'+
+   '<div id="am"></div></div><p class="dim" style="text-align:center;margin-top:14px">New to the API? <a href="'+BASE+'/developers" target="_blank" rel="noopener">Read the docs</a></p></div>';
+  var am=main.querySelector("#am");
+  var keep='<label class="row dim" style="margin-top:12px;gap:8px"><input type="checkbox" id="keep"> Keep me signed in on this computer</label>';
+  function done(j){ try{localStorage.setItem("mya_keep",main.querySelector("#keep").checked?"1":"0");}catch(e){} store(TK,j.token); store(TU,JSON.stringify(j.user||{})); location.hash="#/"; render(); }
+  function codeMode(){
+    am.innerHTML='<label class="f">Email or phone number</label><input class="t" id="idf" autocomplete="username" placeholder="you@example.com or 98450 12345">'+
+      '<div class="hint">We\'ll send a 6-digit code to My Assistant on your phone.</div>'+
+      '<div id="step2" hidden><label class="f">Code from your phone</label><input class="t code6 mono" id="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="••••••"><div class="hint" id="sentmsg"></div></div>'+
+      keep+'<div style="margin-top:16px;display:flex;gap:8px"><button class="btn primary" id="go">Send code</button><button class="btn" id="resend" hidden>Send again</button></div><div class="note warn" id="err" hidden></div>';
+    var idf=am.querySelector("#idf"),go=am.querySelector("#go"),err=am.querySelector("#err"),step2=am.querySelector("#step2"),sent=false;
+    function fail(e){err.hidden=false;err.textContent=e.message;go.disabled=false;}
+    function send(){ err.hidden=true; if(!idf.value.trim()) return fail(new Error("Enter your email or phone number.")); go.disabled=true;
+      api("POST","/auth/code",{identifier:idf.value.trim()},BASE+"/console").then(function(j){ sent=true; step2.hidden=false; am.querySelector("#sentmsg").textContent=j.message; go.textContent="Sign in"; go.disabled=false; am.querySelector("#resend").hidden=false; am.querySelector("#code").focus(); }).catch(fail); }
+    go.onclick=function(){ if(!sent) return send(); err.hidden=true; go.disabled=true;
+      api("POST","/auth/verify",{identifier:idf.value.trim(),code:am.querySelector("#code").value.trim()},BASE+"/console").then(done).catch(fail); };
+    am.querySelector("#resend").onclick=send;
+    am.addEventListener("keydown",function(e){if(e.key==="Enter")go.click();});
+    idf.focus();
+  }
+  function pwMode(){
+    am.innerHTML='<label class="f">Email</label><input class="t" id="em" type="email" autocomplete="username"><label class="f">Password</label><input class="t" id="pw" type="password" autocomplete="current-password">'+
+      keep+'<div style="margin-top:16px"><button class="btn primary" id="go">Sign in</button></div><div class="note warn" id="err" hidden></div>';
+    var go=am.querySelector("#go"),err=am.querySelector("#err");
+    go.onclick=function(){ err.hidden=true; go.disabled=true;
+      api("POST","/auth/password",{email:am.querySelector("#em").value.trim(),password:am.querySelector("#pw").value},BASE+"/console").then(done).catch(function(e){err.hidden=false;err.textContent=e.message;go.disabled=false;}); };
+    am.addEventListener("keydown",function(e){if(e.key==="Enter")go.click();});
+    am.querySelector("#em").focus();
+  }
+  main.querySelectorAll(".seg button").forEach(function(b){ b.onclick=function(){ main.querySelectorAll(".seg button").forEach(function(x){x.classList.toggle("on",x===b);}); (b.dataset.m==="pw"?pwMode:codeMode)(); }; });
+  codeMode();
+}
+
+/* ---------- all apps ---------- */
+function appsPage(){
+  main.innerHTML='<div class="row" style="margin-bottom:6px"><div class="grow"><h1>Your apps</h1><p class="sub" style="margin:0">Apps that use your assistant — same memory, same account, new powers.</p></div><button class="btn primary" id="new">＋ New app</button></div><div id="list" style="margin-top:22px"><p class="muted">Loading…</p></div>';
+  main.querySelector("#new").onclick=newApp;
+  api("GET","/apps").then(function(j){
+    var list=main.querySelector("#list");
+    if(!j.apps.length){ list.innerHTML='<div class="card empty"><div class="big">🧩</div><h2>No apps yet</h2><p class="muted">Create an app to get an API key. It shows up in My Assistant on your phone straight away.</p><button class="btn primary" id="new2">Create your first app</button></div>'; list.querySelector("#new2").onclick=newApp; return; }
+    list.innerHTML='<div class="grid"></div>'; var g=list.firstChild;
+    j.apps.forEach(function(a){
+      var el=h('<div class="card app"><div class="row">'+tile(a)+'<div class="grow"><div class="name ellip">'+esc(a.name)+'</div><div class="dim">'+(a.status==="paused"?'<span class="pill warn">Paused</span>':'<span class="pill ok">Active</span>')+'  · used '+esc(ago(a.lastUsedAt))+'</div></div></div>'+
+        '<p class="last">'+esc(a.lastEvent?a.lastEvent.summary+" · "+ago(a.lastEvent.createdAt):(a.description||"No activity yet"))+'</p>'+
+        '<div class="stats"><div class="stat"><b>'+a.usage.today.turns+'</b><span>messages today</span></div><div class="stat"><b>'+a.usage.month.turns+'</b><span>this month</span></div><div class="stat"><b>'+a.usage.month.requests+'</b><span>requests</span></div></div></div>');
+      el.onclick=function(){location.hash="#/apps/"+a.id;}; g.appendChild(el);
+    });
+  }).catch(function(e){ main.querySelector("#list").innerHTML='<div class="note warn">'+esc(e.message)+'</div>'; });
+}
+
+function newApp(){
+  scopes().then(function(sc){
+    var m=modal('<h2>New app</h2><p class="muted" style="margin-top:-6px">You\'ll get an API key for it. It appears in My Assistant on your phone too.</p>'+
+      '<label class="f">App name</label><input class="t" id="n" maxlength="60" placeholder="e.g. Chess Arena">'+
+      '<label class="f">What it does <span class="dim">(optional)</span></label><input class="t" id="d" maxlength="300" placeholder="A chess board where I play my assistant">'+
+      '<label class="f">Words you\'d use for it <span class="dim">(optional)</span></label><input class="t" id="k" placeholder="chess, game, match"><div class="hint">So asking My Assistant "how did my match go?" finds this app.</div>'+
+      '<label class="f">What it may do</label><div class="list" id="sc"></div>'+
+      '<div class="note warn" id="err" hidden></div><div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="c">Cancel</button><button class="btn primary" id="ok">Create app &amp; key</button></div>');
+    var box=m.querySelector("#sc");
+    sc.forEach(function(s){ box.appendChild(h('<label class="li" style="cursor:pointer"><div class="grow"><div style="font-weight:600">'+esc(s.title)+'</div><div class="dim">'+esc(s.detail)+'</div></div><span class="switch"><input type="checkbox" data-id="'+esc(s.id)+'"'+(s.default?" checked":"")+'><span></span></span></label>')); });
+    m.querySelector("#c").onclick=function(){m.remove();};
+    m.querySelector("#n").focus();
+    m.querySelector("#ok").onclick=function(){
+      var b=this, err=m.querySelector("#err"); err.hidden=true; b.disabled=true;
+      var picked=[].map.call(box.querySelectorAll("input:checked"),function(i){return i.dataset.id;});
+      api("POST","/apps",{name:m.querySelector("#n").value.trim(),description:m.querySelector("#d").value.trim(),keywords:m.querySelector("#k").value.trim(),scopes:picked})
+        .then(function(j){ m.remove(); showKey(j.key,j.app.name,true,j.apiBase); location.hash="#/apps/"+j.app.id; render(); })
+        .catch(function(e){ err.hidden=false; err.textContent=e.message; b.disabled=false; });
+    };
+  });
+}
+
+function showKey(key,name,first,apiBase){
+  var base=apiBase||V1;
+  var m=modal('<h2>'+(first?"✓ "+esc(name)+" is ready":"New key for "+esc(name))+'</h2>'+
+    '<label class="f">Your API key</label><div class="keybox" id="kb"></div>'+
+    '<div class="note warn">Shown only now — copy it somewhere safe. It acts as you; keep it on your server, never in a public web page or repo.</div>'+
+    '<label class="f">Try it</label><pre class="code" id="cu"></pre>'+
+    '<div class="row" style="justify-content:flex-end;gap:8px"><button class="btn" id="cc">Copy curl</button><button class="btn primary" id="ck">Copy key</button><button class="btn" id="dn">Done</button></div>');
+  m.dataset.sticky="1";
+  m.querySelector("#kb").textContent=key;
+  var curl='curl '+base+'/assistant/messages \\\n  -H "Authorization: Bearer '+key+'" \\\n  -H "Content-Type: application/json" \\\n  -d \'{"message": "Hi! What should I focus on today?"}\'';
+  m.querySelector("#cu").textContent=curl;
+  m.querySelector("#ck").onclick=function(){copy(key,this);};
+  m.querySelector("#cc").onclick=function(){copy(curl,this);};
+  m.querySelector("#dn").onclick=function(){m.remove();};
+}
+
+/* ---------- one app ---------- */
+var TABS=[["overview","Overview"],["keys","API keys"],["permissions","Permissions"],["activity","Activity"],["data","Data"],["playground","Playground"],["settings","Settings"]];
+function appPage(id,tab){
+  main.innerHTML='<a class="back" href="#/">← All apps</a><div id="hd"><p class="muted">Loading…</p></div><div class="tabs" id="tabs"></div><div id="tab"></div>';
+  api("GET","/apps/"+id).then(function(j){
+    var a=j.app;
+    var hd=main.querySelector("#hd");
+    hd.innerHTML='<div class="row">'+tile(a,52)+'<div class="grow"><h1 class="ellip">'+esc(a.name)+'</h1><div class="dim">'+esc(a.description||"")+'</div></div>'+
+      '<label class="row" style="gap:8px"><span class="dim" id="st">'+(a.status==="paused"?"Paused":"Active")+'</span><span class="switch"><input type="checkbox" id="act"'+(a.status==="paused"?"":" checked")+'><span></span></span></label></div>';
+    hd.querySelector("#act").onchange=function(){ var on=this.checked; api("PATCH","/apps/"+id,{status:on?"active":"paused"}).then(function(){ hd.querySelector("#st").textContent=on?"Active":"Paused"; toast(on?"Active again":"Paused — its keys stop working now"); }).catch(function(e){toast(e.message);}); };
+    var tabs=main.querySelector("#tabs");
+    TABS.forEach(function(t){ var b=h('<button'+(t[0]===tab?' class="on"':'')+'>'+t[1]+'</button>'); b.onclick=function(){location.hash="#/apps/"+id+"/"+t[0];}; tabs.appendChild(b); });
+    var box=main.querySelector("#tab");
+    ({overview:tabOverview,keys:tabKeys,permissions:tabPerms,activity:tabActivity,data:tabData,playground:tabPlay,settings:tabSettings}[tab]||tabOverview)(box,j);
+  }).catch(function(e){ main.querySelector("#hd").innerHTML='<div class="note warn">'+esc(e.message)+'</div>'; });
+}
+
+function tabOverview(box,j){
+  var a=j.app, t=a.usage.today, mo=a.usage.month;
+  function mins(s){return s<60?s+"s":Math.round(s/60)+" min";}
+  box.innerHTML='<div class="kpis">'+
+    '<div class="card kpi"><b>'+t.turns+'</b><span>messages today</span></div><div class="card kpi"><b>'+mins(t.voiceSeconds)+'</b><span>voice today</span></div>'+
+    '<div class="card kpi"><b>'+mo.turns+'</b><span>messages this month</span></div><div class="card kpi"><b>'+mo.requests+'</b><span>requests this month</span></div></div>'+
+    '<div class="card"><div class="row"><h2 class="grow" style="margin:0">Last 30 days</h2><span class="dim">■ messages  <span style="opacity:.45">■ requests</span></span></div><div id="ch"><p class="muted">Loading…</p></div></div>'+
+    '<div class="card" style="margin-top:14px"><h2>Quick start</h2><p class="muted" style="margin-top:-6px">Send a message as this app (use one of its keys):</p><pre class="code" id="qs"></pre><a href="'+BASE+'/developers" target="_blank" rel="noopener">Full documentation →</a></div>';
+  box.querySelector("#qs").textContent='curl '+(j.apiBase||V1)+'/assistant/messages \\\n  -H "Authorization: Bearer $MYA_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d \'{"message": "Hi!"}\'';
+  api("GET","/apps/"+a.id+"/usage?days=30").then(function(u){
+    var d=u.days, max=Math.max(1,Math.max.apply(null,d.map(function(x){return Math.max(x.requests,x.messages);})));
+    var W=900,H=170,pad=22,bw=(W-pad*2)/d.length;
+    var svg='<svg class="chart" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" role="img" aria-label="Usage over the last 30 days">';
+    d.forEach(function(x,i){ var X=pad+i*bw+2, w=Math.max(2,bw-4);
+      var rh=(H-30)*x.requests/max, mh=(H-30)*x.messages/max;
+      svg+='<rect x="'+X+'" y="'+(H-18-rh)+'" width="'+w+'" height="'+rh+'" rx="2" fill="currentColor" opacity=".18"><title>'+x.day+': '+x.requests+' requests</title></rect>';
+      svg+='<rect x="'+(X+w*0.2)+'" y="'+(H-18-mh)+'" width="'+(w*0.6)+'" height="'+mh+'" rx="2" fill="var(--accent)"><title>'+x.day+': '+x.messages+' messages</title></rect>';
+      if(i%5===0) svg+='<text x="'+X+'" y="'+(H-4)+'" font-size="11" fill="currentColor" opacity=".55">'+x.day.slice(5)+'</text>';
+    });
+    box.querySelector("#ch").innerHTML=svg+'</svg>'+(max===1&&!d.some(function(x){return x.requests;})?'<p class="dim">No calls yet — try the Playground tab.</p>':'');
+  }).catch(function(e){ box.querySelector("#ch").textContent=e.message; });
+}
+
+function tabKeys(box,j){
+  var a=j.app;
+  box.innerHTML='<div class="card"><div class="row"><h2 class="grow" style="margin:0">API keys</h2><button class="btn primary sm" id="nk">＋ New key</button></div><p class="dim">Up to 5 live keys. Use a separate key per server or device so you can revoke one without the others.</p><div class="list" id="ks"></div></div>';
+  var ks=box.querySelector("#ks");
+  var live=j.keys.filter(function(k){return !k.revokedAt;}), old=j.keys.filter(function(k){return k.revokedAt;});
+  if(!live.length) ks.innerHTML='<p class="muted">No live keys. Create one to call the API.</p>';
+  live.concat(old).forEach(function(k){
+    var el=h('<div class="li"><div class="grow"><div class="mono" style="font-weight:600'+(k.revokedAt?';opacity:.5;text-decoration:line-through':'')+'">'+esc(k.prefix)+'…</div><div class="dim">'+esc(k.label||"Key")+' · created '+esc(ago(k.createdAt))+' · '+(k.revokedAt?"revoked "+esc(ago(k.revokedAt)):"last used "+esc(ago(k.lastUsedAt)))+'</div></div>'+(k.revokedAt?'':'<button class="btn danger sm">Revoke</button>')+'</div>');
+    var rb=el.querySelector("button"); if(rb) rb.onclick=function(){ if(!confirm("Revoke "+k.prefix+"…? Anything using it stops working at once.")) return; api("DELETE","/apps/"+a.id+"/keys/"+k.id).then(function(){toast("Revoked");render();}).catch(function(e){toast(e.message);}); };
+    ks.appendChild(el);
+  });
+  box.querySelector("#nk").onclick=function(){
+    var label=prompt("A name for this key (e.g. laptop, production server):","");
+    if(label===null) return;
+    api("POST","/apps/"+a.id+"/keys",{label:label}).then(function(r){ showKey(r.key,a.name,false,j.apiBase); render(); }).catch(function(e){toast(e.message);});
+  };
+}
+
+function tabPerms(box,j){
+  var a=j.app;
+  scopes().then(function(sc){
+    box.innerHTML='<div class="card"><h2>What this app may do</h2><p class="dim" style="margin-top:-6px">Changes apply to every key of this app on its next request.</p><div class="list" id="sl"></div></div>'+
+      '<div class="note info">Some things are never possible through the API, whatever is allowed here: calls, payments, messages to other people, your location, your email, and other apps\' data.</div>';
+    var sl=box.querySelector("#sl"), cur=a.scopes.slice();
+    sc.forEach(function(s){
+      var el=h('<label class="li" style="cursor:pointer"><div class="grow"><div style="font-weight:600">'+esc(s.title)+' <span class="dim mono">'+esc(s.id)+'</span></div><div class="dim">'+esc(s.detail)+'</div></div><span class="switch"><input type="checkbox"'+(cur.indexOf(s.id)>=0?" checked":"")+'><span></span></span></label>');
+      var cb=el.querySelector("input");
+      cb.onchange=function(){ var on=cb.checked; cur=on?cur.concat([s.id]):cur.filter(function(x){return x!==s.id;}); cb.disabled=true;
+        api("PATCH","/apps/"+a.id,{scopes:cur}).then(function(){toast(on?"Allowed":"Turned off");}).catch(function(e){cb.checked=!on;toast(e.message);}).then(function(){cb.disabled=false;}); };
+      sl.appendChild(el);
+    });
+  });
+}
+
+function tabActivity(box,j){
+  var a=j.app, last=null;
+  box.innerHTML='<div class="card"><h2>Activity</h2><p class="dim" style="margin-top:-6px">What the app reported with <span class="mono">POST /v1/events</span>. This is what your assistant reads back when you ask about the app.</p><div class="list" id="ev"></div><button class="btn sm" id="more" hidden style="margin-top:10px">Load more</button></div>';
+  var ev=box.querySelector("#ev"), more=box.querySelector("#more");
+  function load(){ api("GET","/apps/"+a.id+"/activity?limit=30"+(last?"&before="+last:"")).then(function(r){
+    if(!r.events.length&&!last) ev.innerHTML='<p class="muted">Nothing yet.</p>';
+    r.events.forEach(function(e){ ev.appendChild(h('<div class="li"><div class="grow"><div>'+esc(e.summary)+'</div><div class="dim"><span class="mono">'+esc(e.type)+'</span> · '+esc(new Date(e.createdAt).toLocaleString())+'</div></div></div>')); last=e.id; });
+    more.hidden=r.events.length<30; }).catch(function(e){toast(e.message);}); }
+  more.onclick=load; load();
+}
+
+function tabData(box,j){
+  var a=j.app;
+  if(!j.collections.length){ box.innerHTML='<div class="card"><h2>Data</h2><p class="muted">This app hasn\'t saved anything yet. Records are saved with <span class="mono">PUT /v1/records/:collection/:id</span>.</p></div>'; return; }
+  box.innerHTML='<div class="card"><h2>Data</h2><div class="chips" id="cols"></div><div id="recs" style="margin-top:14px"></div></div>';
+  var cols=box.querySelector("#cols"), recs=box.querySelector("#recs");
+  function open(c,btn){ cols.querySelectorAll(".chip").forEach(function(x){x.classList.toggle("on",x===btn);}); recs.innerHTML='<p class="muted">Loading…</p>';
+    api("GET","/apps/"+a.id+"/records/"+encodeURIComponent(c)+"?limit=100").then(function(r){
+      recs.innerHTML='<table class="recs"><thead><tr><th>id</th><th>summary</th><th>updated</th><th></th></tr></thead><tbody></tbody></table>';
+      var tb=recs.querySelector("tbody");
+      r.records.forEach(function(x){ var tr=h('<table><tr><td class="mono">'+esc(x.id)+'</td><td>'+esc(x.summary||"—")+'</td><td class="dim">'+esc(ago(x.updatedAt))+'</td><td><button class="btn sm">View</button></td></tr></table>').querySelector("tr");
+        tr.querySelector("button").onclick=function(){ var m=modal('<h2 class="mono">'+esc(c)+' / '+esc(x.id)+'</h2><p>'+esc(x.summary||"")+'</p><pre class="code"></pre><div class="row" style="justify-content:flex-end"><button class="btn">Close</button></div>'); m.querySelector("pre").textContent=JSON.stringify(x.data,null,2); m.querySelector("button").onclick=function(){m.remove();}; };
+        tb.appendChild(tr); });
+    }).catch(function(e){recs.textContent=e.message;}); }
+  j.collections.forEach(function(c,i){ var b=h('<button class="chip">'+esc(c.name||c.collection)+' <span class="dim">'+c.count+'</span></button>'); var name=c.collection||c.name; b.onclick=function(){open(name,b);}; cols.appendChild(b); if(i===0) open(name,b); });
+}
+
+function tabPlay(box,j){
+  var a=j.app, base=j.apiBase||V1, conv=null;
+  box.innerHTML='<div class="card"><h2>Playground</h2><p class="dim" style="margin-top:-6px">Talk to your assistant exactly as this app would. Paste one of the app\'s keys — it stays in this page only.</p>'+
+    '<label class="f">API key</label><input class="t mono" id="key" type="password" placeholder="mya_…" autocomplete="off">'+
+    '<label class="f">App tools <span class="dim">(optional JSON array — powers your app gives the assistant)</span></label><textarea class="t mono" id="tools" placeholder=\'[{"name":"make_move","description":"Play your move","parameters":{"type":"object","properties":{"move":{"type":"string"}},"required":["move"]}}]\'></textarea>'+
+    '<label class="f">Message</label><div class="row"><input class="t" id="msg" placeholder="Hi! What should I focus on today?"><button class="btn primary" id="send">Send</button></div>'+
+    '<div class="row" style="margin-top:8px"><span class="dim grow" id="cv">New conversation</span><button class="ghost" id="reset">Start over</button></div>'+
+    '<div id="out"></div></div>';
+  var out=box.querySelector("#out"), send=box.querySelector("#send");
+  box.querySelector("#reset").onclick=function(){conv=null;box.querySelector("#cv").textContent="New conversation";out.innerHTML="";};
+  function call(body){
+    var key=box.querySelector("#key").value.trim(); if(!key){toast("Paste one of this app's keys first");return Promise.reject();}
+    send.disabled=true;
+    return fetch(base+"/assistant/messages",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+key},body:JSON.stringify(body)})
+      .then(function(r){return r.json();}).then(function(r){
+        send.disabled=false;
+        if(r.conversation_id){conv=r.conversation_id;box.querySelector("#cv").textContent=conv;}
+        var el=h('<div style="margin-top:14px"></div>');
+        if(r.error) el.innerHTML='<div class="note warn">'+esc(r.error.message||r.error)+'</div>';
+        else {
+          el.innerHTML=(r.reply?'<div class="card" style="background:var(--panel2)"><b>Assistant</b><p style="margin:6px 0 0;white-space:pre-wrap"></p></div>':'')+'<details style="margin-top:8px"><summary class="dim">Full response</summary><pre class="code"></pre></details>';
+          if(r.reply) el.querySelector("p").textContent=r.reply;
+          el.querySelector("pre").textContent=JSON.stringify(r,null,2);
+          if(r.status==="requires_action"){
+            var ta=h('<div class="card" style="margin-top:8px"><b>The assistant wants your app to do:</b><div class="list"></div><button class="btn primary sm" style="margin-top:8px">Send results</button></div>');
+            var l=ta.querySelector(".list");
+            r.tool_calls.forEach(function(c){ var row=h('<div class="li" style="display:block"><div class="mono">'+esc(c.name)+'('+esc(JSON.stringify(c.arguments))+')</div><input class="t" placeholder="result, e.g. ok — or JSON" data-id="'+esc(c.id)+'"></div>'); l.appendChild(row); });
+            ta.querySelector("button").onclick=function(){ var res=[].map.call(l.querySelectorAll("input"),function(i){var v=i.value.trim()||"done";try{v=JSON.parse(v);}catch(e){}return {call_id:i.dataset.id,output:v};}); call({conversation_id:conv,tool_results:res}); ta.remove(); };
+            el.appendChild(ta);
+          }
+        }
+        out.appendChild(el);
+      }).catch(function(){send.disabled=false;toast("Couldn't reach the API");});
+  }
+  send.onclick=function(){
+    var msg=box.querySelector("#msg").value.trim(); if(!msg) return;
+    var body={message:msg}; if(conv) body.conversation_id=conv;
+    var tt=box.querySelector("#tools").value.trim();
+    if(tt){ try{ body.tools=JSON.parse(tt); }catch(e){ toast("App tools must be valid JSON"); return; } }
+    var me=h('<div style="margin-top:14px;text-align:right"><span class="pill" style="background:var(--soft);padding:6px 12px;font-size:14px;font-weight:500"></span></div>'); me.firstChild.textContent=msg; out.appendChild(me);
+    box.querySelector("#msg").value=""; call(body);
+  };
+  box.querySelector("#msg").addEventListener("keydown",function(e){if(e.key==="Enter")send.click();});
+}
+
+function tabSettings(box,j){
+  var a=j.app;
+  box.innerHTML='<div class="card"><h2>Settings</h2>'+
+    '<label class="f">Name</label><input class="t" id="n" maxlength="60">'+
+    '<label class="f">What it does</label><input class="t" id="d" maxlength="300">'+
+    '<label class="f">Words you\'d use for it</label><input class="t" id="k"><div class="hint">Comma-separated. Lets My Assistant know a question is about this app.</div>'+
+    '<label class="f">How your assistant behaves in this app</label><textarea class="t" id="i" maxlength="2000" placeholder="e.g. Be a friendly opponent and explain your moves."></textarea>'+
+    '<div style="margin-top:14px"><button class="btn primary" id="save">Save</button></div></div>'+
+    '<div class="card" style="margin-top:14px;border-color:var(--badbg)"><h2 style="color:var(--bad)">Remove this app</h2><p class="muted">Its keys stop working, and everything it saved — records, activity and conversations — is deleted. What you said there stays in your assistant\'s memory.</p><button class="btn danger" id="del">Remove '+esc(a.name)+'</button></div>';
+  box.querySelector("#n").value=a.name; box.querySelector("#d").value=a.description||""; box.querySelector("#k").value=(a.keywords||[]).join(", "); box.querySelector("#i").value=a.instructions||"";
+  box.querySelector("#save").onclick=function(){ var b=this; b.disabled=true;
+    api("PATCH","/apps/"+a.id,{name:box.querySelector("#n").value.trim(),description:box.querySelector("#d").value.trim(),keywords:box.querySelector("#k").value,instructions:box.querySelector("#i").value})
+      .then(function(){toast("Saved");render();}).catch(function(e){toast(e.message);b.disabled=false;}); };
+  box.querySelector("#del").onclick=function(){
+    var typed=prompt('Type the app\'s name to remove it: '+a.name);
+    if(typed===null) return; if(typed.trim()!==a.name){toast("The name didn't match — nothing removed");return;}
+    api("DELETE","/apps/"+a.id).then(function(){toast(a.name+" removed");location.hash="#/";}).catch(function(e){toast(e.message);});
+  };
+}
+
+render();
+})();
+</script>
+</body>
+</html>

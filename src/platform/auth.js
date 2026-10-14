@@ -33,7 +33,7 @@ async function platformAuth(req, res, next) {
     if (!found) return error(res, 401, "invalid_key", "This API key is not valid or was revoked.");
     const { app } = found;
     if (app.status !== "active") {
-      return error(res, 403, "app_paused", `"${app.name}" is paused in My Assistant. Turn it back on in Hub → Your own apps.`);
+      return error(res, 403, "app_paused", `"${app.name}" is paused in My Assistant. Turn it back on in the Developer Console (/console).`);
     }
     const user = await db.findById(app.userId);
     if (!user || user.status === "paused") return error(res, 401, "account_unavailable", "The account behind this key is not available.");
@@ -54,7 +54,7 @@ function need(scope) {
     const scopes = (req.platform && req.platform.app.scopes) || [];
     if (!scopes.includes(scope)) {
       return error(res, 403, "missing_scope",
-        `This key's app is not allowed "${scope}". Allow it in My Assistant → Hub → Your own apps → ${req.platform ? req.platform.app.name : "the app"}.`);
+        `This key's app is not allowed "${scope}". Allow it in the Developer Console (/console) → ${req.platform ? req.platform.app.name : "the app"}.`);
     }
     next();
   };

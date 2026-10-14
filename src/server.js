@@ -491,6 +491,10 @@ const platform = require("./platform");
 app.use("/v1", platform.v1);
 app.use("/platform", appAuth, perUserLimit, platform.manage);
 app.get("/developers", platform.docs);
+// The web developer console (src/platform/console.js): sign in with a code
+// pushed to the phone, manage connected apps from a laptop.
+app.get("/console", platform.consolePage);
+app.use("/console", platform.consoleRouter);
 
 // PROFESSIONAL MODE — per-client/patient case files (doctor, lawyer…):
 // profile + dated notes + linked documents, recalled by voice
