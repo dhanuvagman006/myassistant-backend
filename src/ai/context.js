@@ -468,6 +468,15 @@ async function prepare(uid, body) {
   if (shortcutKeys.length) must.push("run_shortcut", "continue_shortcut");
   // The tool a pending question is about must still be callable.
   if (s.asked) must.push(s.asked.tool);
+  // CONNECTED APPS (2026-10-14): the apps the user built, on a turn that
+  // names one; a live session (tools fixed when it opens) whenever they
+  // have any (src/platform/tools.js).
+  {
+    const platform = require("../platform");
+    const wants = mode === "live" ? await platform.hasApps(uid).catch(() => false)
+      : await platform.wantsApps(uid, text).catch(() => false);
+    if (wants) must.push("connected_apps");
+  }
   let decls;
   if (mode === "live" && body.transport === "gpt-live") {
     // GPT-Live delegates to a Responses model, which takes the whole

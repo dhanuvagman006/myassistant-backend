@@ -58,6 +58,7 @@
     "test:imagegen": "node scripts/poster-studio-test.js",
     "test:brief": "node scripts/brief-meeting-test.js",
     "test:address": "node scripts/address-memory-test.js",
+    "test:platform": "node scripts/platform-test.js",
     "test:calendar": "node scripts/calendar-extras-test.js",
     "test:e2e-g1": "node scripts/e2e-g1-conversation-test.js",
     "test:e2e-g2": "node scripts/e2e-g2-documents-visual-test.js",

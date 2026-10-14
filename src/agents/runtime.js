@@ -428,6 +428,13 @@ async function runAgentTurn(userText, ctx = {}, onEvent = () => {}) {
   if (Array.isArray(only) && shortcutKeys.length) {
     for (const n of ["run_shortcut", "continue_shortcut"]) if (!only.includes(n)) only.push(n);
   }
+  // CONNECTED APPS (2026-10-14): "how did my chess match go?" reaches the
+  // apps the user built (src/platform/tools.js) — only on the turns that
+  // name one, never a tool on every turn.
+  if (ctx.userId && Array.isArray(only) && !only.includes("connected_apps") &&
+      await require("../platform").wantsApps(ctx.userId, userText).catch(() => false)) {
+    only.push("connected_apps");
+  }
   const declarations = registry.declarations({
     userId: ctx.userId,
     // A tool whose permission the phone has denied is not offered at all.

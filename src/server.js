@@ -482,6 +482,16 @@ const appfunctions = require("./appfunctions");
 app.use("/appfunctions/token", appAuth, appfunctions.limiter, appfunctions.tokenRouter);
 app.use("/appfunctions", appFnAuth, appfunctions.limiter, appfunctions.router);
 
+// CONNECTED APPS — THE MY ASSISTANT API (2026-10-14, src/platform). The
+// apps a user builds reach THEIR assistant with an app key (mya_…): /v1 is
+// the key-authenticated API (its own per-key limiter), /platform is where
+// the main app connects apps and makes or revokes keys (a signed-in
+// session only), /developers the documentation.
+const platform = require("./platform");
+app.use("/v1", platform.v1);
+app.use("/platform", appAuth, perUserLimit, platform.manage);
+app.get("/developers", platform.docs);
+
 // PROFESSIONAL MODE — per-client/patient case files (doctor, lawyer…):
 // profile + dated notes + linked documents, recalled by voice
 // ("pull up patient Ramesh's file"). See routes/clients.js.

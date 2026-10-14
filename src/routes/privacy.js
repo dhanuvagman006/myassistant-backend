@@ -174,6 +174,9 @@ const USER_TABLES = [
   ["kitchen_pantry", "user_id"],
   ["kitchen_recipes", "user_id"],
   ["kitchen_plans", "user_id"],
+  // Connected apps (2026-10-14, src/platform): their apps, hashed keys,
+  // the apps' records and activity, API threads and per-day usage.
+  ...require("../platform/store").USER_TABLES,
   // Bills by email (2026-09-27): their private address (old ones and the
   // sending addresses they marked "This was me"), and the emails received.
   // Raw files live in files/<uid>/mailin/, which goes with files/<uid>.

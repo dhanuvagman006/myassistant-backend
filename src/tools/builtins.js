@@ -369,6 +369,8 @@ function registerBuiltins() {
   // tools that need the new app screens ask for build 124.
   require("../shopping").registerShoppingTools(registry);
   require("../kitchen").registerKitchenTools(registry);
+  // Connected apps (2026-10-14): what happened in the apps the user built.
+  require("../platform").registerPlatformTools(registry);
 
   // ---------------- INFORMATION (low risk) ----------------
 

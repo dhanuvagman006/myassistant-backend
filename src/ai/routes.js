@@ -337,4 +337,7 @@ router.post("/firebase-token", async (req, res) => {
   }
 });
 
+// Connected apps' voice sessions speak the same way (src/platform/voice.js).
+router.VOICE_STYLE = VOICE_STYLE;
+
 module.exports = router;

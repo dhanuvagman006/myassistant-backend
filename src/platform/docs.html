@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My Assistant API</title>
+<meta name="description" content="Bring your own assistant into the apps you build: the same memory, the same voice, new powers.">
+<style>
+:root{
+  --bg:#f7f7f9;--panel:#ffffff;--ink:#16161d;--muted:#5d5d6e;--line:#e4e4ec;
+  --accent:#5b4cf0;--accent-ink:#ffffff;--accent-soft:#eeebff;
+  --code-bg:#13131a;--code-ink:#e8e8f0;--code-muted:#8d8da3;--code-key:#b9a8ff;--code-str:#9be2b5;
+  --ok:#1f8a4c;--warn:#a15c00;--get:#1f7a55;--post:#5b4cf0;--put:#a15c00;--del:#b3261e;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0e0e13;--panel:#16161e;--ink:#ececf3;--muted:#a0a0b4;--line:#2a2a36;
+    --accent:#8f84ff;--accent-ink:#0e0e13;--accent-soft:#221f3d;
+    --code-bg:#0a0a0f;--ok:#5fd394;--warn:#f0b35a;--get:#5fd394;--post:#a99fff;--put:#f0b35a;--del:#ff8a80;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0e0e13;--panel:#16161e;--ink:#ececf3;--muted:#a0a0b4;--line:#2a2a36;
+  --accent:#8f84ff;--accent-ink:#0e0e13;--accent-soft:#221f3d;
+  --code-bg:#0a0a0f;--ok:#5fd394;--warn:#f0b35a;--get:#5fd394;--post:#a99fff;--put:#f0b35a;--del:#ff8a80;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:15.5px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+code,pre,kbd{font-family:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;font-size:.88em}
+:not(pre)>code{background:var(--accent-soft);color:var(--ink);padding:.1em .4em;border-radius:6px;word-break:break-word}
+.top{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.top-in{max-width:1200px;margin:0 auto;padding:12px 16px;display:flex;align-items:center;gap:12px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:-.01em;color:var(--ink)}
+.logo{width:28px;height:28px;border-radius:9px;background:linear-gradient(135deg,var(--accent),#c04cf0);display:grid;place-items:center;color:#fff;font-size:15px}
+.pill{font-size:12px;font-weight:600;border:1px solid var(--line);border-radius:999px;padding:2px 9px;color:var(--muted)}
+.spacer{flex:1}
+.theme{background:none;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:6px 10px;cursor:pointer;font:inherit;font-size:13px}
+.menu{display:none;background:none;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:6px 10px;font:inherit;font-size:13px}
+.wrap{max-width:1200px;margin:0 auto;display:grid;grid-template-columns:240px minmax(0,1fr);gap:40px;padding:0 16px}
+nav.side{position:sticky;top:64px;align-self:start;max-height:calc(100vh - 64px);overflow:auto;padding:24px 0}
+nav.side h4{margin:18px 0 6px;font-size:11.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+nav.side a{display:block;padding:5px 10px;border-radius:8px;color:var(--ink);font-size:14px}
+nav.side a:hover{background:var(--accent-soft);text-decoration:none}
+nav.side a.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+main{padding:28px 0 120px;min-width:0}
+.hero{padding:26px 0 8px}
+.hero h1{font-size:clamp(30px,5vw,44px);line-height:1.1;letter-spacing:-.03em;margin:0 0 12px}
+.hero p{font-size:18px;color:var(--muted);max-width:720px;margin:0}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:26px 0 8px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+.card b{display:block;margin-bottom:4px}
+.card span{color:var(--muted);font-size:14px}
+section{padding-top:28px;scroll-margin-top:70px}
+h2{font-size:26px;letter-spacing:-.02em;margin:22px 0 10px}
+h3{font-size:18px;margin:26px 0 8px;letter-spacing:-.01em}
+p,li{max-width:780px}
+.muted{color:var(--muted)}
+.endpoint{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 14px;margin:14px 0 10px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px}
+.m{font-weight:700;font-size:12px;padding:3px 8px;border-radius:7px;color:#fff;letter-spacing:.04em}
+.m.get{background:var(--get)}.m.post{background:var(--post)}.m.put{background:var(--put)}.m.delete{background:var(--del)}
+.scope{margin-left:auto;font-family:ui-sans-serif,system-ui;font-size:12px;color:var(--muted)}
+.code{position:relative;margin:12px 0 18px}
+.tabs{display:flex;gap:2px;background:var(--code-bg);border-radius:12px 12px 0 0;padding:6px 6px 0;overflow-x:auto}
+.tabs button{background:none;border:0;color:var(--code-muted);font:600 12.5px ui-sans-serif,system-ui;padding:7px 12px;border-radius:8px 8px 0 0;cursor:pointer;white-space:nowrap}
+.tabs button.on{color:var(--code-ink);background:#1d1d27}
+pre{margin:0;background:var(--code-bg);color:var(--code-ink);border-radius:12px;padding:16px 18px;overflow:auto;line-height:1.55}
+.tabs+pre,.tabs~pre{border-radius:0 0 12px 12px;background:#1d1d27}
+pre .k{color:var(--code-key)}pre .s{color:var(--code-str)}pre .c{color:var(--code-muted)}
+.copy{position:absolute;top:8px;right:8px;background:#2a2a38;color:var(--code-ink);border:0;border-radius:7px;font:600 12px ui-sans-serif,system-ui;padding:5px 9px;cursor:pointer;opacity:.85}
+.copy:hover{opacity:1}
+table{border-collapse:collapse;width:100%;margin:10px 0 18px;font-size:14.5px;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:block;overflow-x:auto}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);background:color-mix(in srgb,var(--panel) 92%,var(--ink))}
+tr:last-child td{border-bottom:0}
+td code{white-space:nowrap}
+.note{border-left:3px solid var(--accent);background:var(--accent-soft);border-radius:0 10px 10px 0;padding:10px 14px;margin:14px 0;max-width:780px}
+.note.warn{border-color:var(--warn)}
+.flow{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:14px 0}
+.step{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px;font-size:14px}
+.step i{font-style:normal;display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--accent);color:var(--accent-ink);font-weight:700;font-size:12px;margin-right:6px}
+footer{color:var(--muted);font-size:13px;margin-top:60px;border-top:1px solid var(--line);padding-top:18px}
+@media (max-width:900px){
+  .wrap{grid-template-columns:1fr;gap:0}
+  nav.side{display:none;position:fixed;inset:57px 0 0 0;max-height:none;background:var(--bg);z-index:4;padding:12px 16px 40px}
+  nav.side.open{display:block}
+  .menu{display:inline-block}
+  .scope{margin-left:0;width:100%}
+  .pill,.tl{display:none}
+}
+</style>
+</head>
+<body>
+<header class="top"><div class="top-in">
+  <button class="menu" id="menu" aria-label="Sections">☰</button>
+  <a class="brand" href="#intro"><span class="logo">✦</span>My Assistant API</a>
+  <span class="pill">v1</span>
+  <span class="spacer"></span>
+  <button class="theme" id="theme" aria-label="Switch theme">◐<span class="tl"> Theme</span></button>
+</div></header>
+
+<div class="wrap">
+<nav class="side" id="side">
+  <h4>Start</h4>
+  <a href="#intro">Overview</a>
+  <a href="#quickstart">Quickstart</a>
+  <a href="#auth">Keys &amp; scopes</a>
+  <h4>Assistant</h4>
+  <a href="#messages">Talk to your assistant</a>
+  <a href="#app-tools">Give it app powers</a>
+  <a href="#voice">Voice to voice</a>
+  <a href="#tools">Assistant tools</a>
+  <h4>Data</h4>
+  <a href="#memory">Memory</a>
+  <a href="#records">Records</a>
+  <a href="#events">Activity</a>
+  <a href="#notify">Notifications</a>
+  <h4>Reference</h4>
+  <a href="#me">Who am I</a>
+  <a href="#errors">Errors</a>
+  <a href="#limits">Limits</a>
+  <a href="#example">Full example</a>
+  <a href="#security">Security</a>
+</nav>
+
+<main>
+<section id="intro" class="hero">
+  <h1>Your assistant, inside every app you build.</h1>
+  <p>The My Assistant API lets the apps you make use <b>your</b> assistant — the same one from My Assistant, with the same memory, voice and account. Your app can give it new powers it doesn't have in the main app, and everything it does there flows back, so My Assistant can tell you about it later.</p>
+  <div class="cards">
+    <div class="card"><b>One assistant</b><span>Same personality, memory and recent conversation in every app.</span></div>
+    <div class="card"><b>New powers</b><span>Declare app tools — move a piece, start a timer — and the assistant uses them.</span></div>
+    <div class="card"><b>Voice to voice</b><span>Open a realtime voice session from your app in one call.</span></div>
+    <div class="card"><b>Shared story</b><span>Activity and records your app saves are answerable from My Assistant.</span></div>
+  </div>
+</section>
+
+<section id="quickstart">
+  <h2>Quickstart</h2>
+  <div class="flow">
+    <div class="step"><i>1</i>In My Assistant open <b>Hub → Your own apps</b> and tap <b>Connect an app</b>.</div>
+    <div class="step"><i>2</i>Name it, choose what it may do, and copy the API key (shown once).</div>
+    <div class="step"><i>3</i>Call the API from your app with that key.</div>
+    <div class="step"><i>4</i>Ask My Assistant what happened there — it knows.</div>
+  </div>
+  <p>Every request goes to <code>{{API}}</code> with the key in the <code>Authorization</code> header. Say hello:</p>
+  <div class="code" data-tabs>
+    <div class="tabs"><button class="on">curl</button><button>JavaScript</button><button>Python</button></div>
+<pre data-lang="curl">curl {{API}}/assistant/messages \
+  -H "Authorization: Bearer $MYA_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hi! What should I focus on today?"}'</pre>
+<pre data-lang="JavaScript" hidden>const res = await fetch("{{API}}/assistant/messages", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${process.env.MYA_KEY}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ message: "Hi! What should I focus on today?" }),
+});
+const { reply, conversation_id } = await res.json();
+console.log(reply);</pre>
+<pre data-lang="Python" hidden>import os, requests
+
+r = requests.post(
+    "{{API}}/assistant/messages",
+    headers={"Authorization": f"Bearer {os.environ['MYA_KEY']}"},
+    json={"message": "Hi! What should I focus on today?"},
+)
+print(r.json()["reply"])</pre>
+  </div>
+  <p>The reply comes from the same assistant you talk to in My Assistant — it knows your name, your reminders and what you discussed this morning.</p>
+</section>
+
+<section id="auth">
+  <h2>Keys &amp; scopes</h2>
+  <p>A key belongs to one connected app and acts as <b>you</b>, within the scopes you allowed that app. Send it as a bearer token (or as <code>X-Api-Key</code>). Keys look like <code>mya_</code> followed by 40 characters.</p>
+  <p>Change an app's scopes any time in Your own apps; it takes effect on the next request. Pausing the app, revoking a key or removing the app stops it at once.</p>
+  <table>
+    <tr><th>Scope</th><th>Allows</th><th>Default</th></tr>
+    <tr><td><code>assistant</code></td><td>Talk to your assistant (<code>/assistant/messages</code>).</td><td>on</td></tr>
+    <tr><td><code>voice</code></td><td>Realtime voice sessions, and the assistant tools those sessions use.</td><td>on</td></tr>
+    <tr><td><code>data</code></td><td>The app's own records and activity feed.</td><td>on</td></tr>
+    <tr><td><code>memory:read</code></td><td>Read what your assistant remembers about you.</td><td>on</td></tr>
+    <tr><td><code>memory:write</code></td><td>Add to your memory — including facts learnt from what you say in the app.</td><td>off</td></tr>
+    <tr><td><code>tools</code></td><td>Run any of the assistant's app-safe tools directly.</td><td>off</td></tr>
+    <tr><td><code>notify</code></td><td>Send a notification to your phone.</td><td>on</td></tr>
+    <tr><td><code>profile</code></td><td>Read your name and your assistant's name.</td><td>on</td></tr>
+  </table>
+  <div class="note warn"><b>Keep keys secret.</b> A key can talk to your assistant as you. Put it on your server or in a private app, never in a public web page or a public repository. If one leaks, revoke it in Your own apps.</div>
+</section>
+
+<section id="messages">
+  <h2>Talk to your assistant</h2>
+  <div class="endpoint"><span class="m post">POST</span>/v1/assistant/messages<span class="scope">scope: assistant</span></div>
+  <p>Sends one message and returns the assistant's reply. Pass the returned <code>conversation_id</code> on the next message to continue the same thread (threads are kept 7 days).</p>
+  <table>
+    <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+    <tr><td><code>message</code></td><td>string</td><td>What the user said or typed. Up to 4,000 characters.</td></tr>
+    <tr><td><code>conversation_id</code></td><td>string</td><td>Continue an earlier thread.</td></tr>
+    <tr><td><code>tools</code></td><td>array</td><td>App tools for this conversation — see <a href="#app-tools">app powers</a>. Remembered for the thread; send again to change them.</td></tr>
+    <tr><td><code>context</code></td><td>string | object</td><td>What your app shows right now (a board, a score, the open screen). Treated as data, never as instructions. Up to 12,000 characters.</td></tr>
+    <tr><td><code>instructions</code></td><td>string</td><td>How the assistant should behave in this conversation ("You are the opponent; play at club level").</td></tr>
+    <tr><td><code>include_assistant_tools</code></td><td>boolean</td><td>Default <code>true</code>: it may also use its own tools (reminders, search, weather, lists…). Set <code>false</code> to keep it to your app's tools.</td></tr>
+  </table>
+  <p>Response:</p>
+<div class="code"><pre>{
+  <span class="k">"conversation_id"</span>: <span class="s">"conv_6f1c…"</span>,
+  <span class="k">"status"</span>: <span class="s">"completed"</span>,          <span class="c">// or "requires_action"</span>
+  <span class="k">"reply"</span>: <span class="s">"Morning! You have the dentist at 4…"</span>,
+  <span class="k">"tool_calls"</span>: [],                  <span class="c">// app tools to run, when requires_action</span>
+  <span class="k">"actions"</span>: [                        <span class="c">// assistant tools it ran this turn</span>
+    { <span class="k">"tool"</span>: <span class="s">"list_reminders"</span>, <span class="k">"ok"</span>: true, <span class="k">"result"</span>: <span class="s">"Dentist at 4 pm"</span> }
+  ]
+}</pre></div>
+  <p>Everything said here is filed in your conversation memory, marked as coming from your app — ask My Assistant <i>"what did we talk about in my chess app?"</i> and it can answer.</p>
+  <div class="endpoint"><span class="m delete">DELETE</span>/v1/assistant/conversations/:id<span class="scope">scope: assistant</span></div>
+  <p>Forgets a thread (the conversation memory it already wrote stays).</p>
+</section>
+
+<section id="app-tools">
+  <h2>Give it app powers</h2>
+  <p>Your app can do things My Assistant can't — make a chess move, start a workout, change a light's colour. Describe those actions as <b>tools</b> (a name, a description and JSON Schema parameters). The assistant decides when to use them; your app performs them and sends back the result.</p>
+  <div class="flow">
+    <div class="step"><i>1</i>Send <code>message</code> + <code>tools</code>.</div>
+    <div class="step"><i>2</i>Get <code>status: "requires_action"</code> with <code>tool_calls</code>.</div>
+    <div class="step"><i>3</i>Do them in your app, post <code>tool_results</code>.</div>
+    <div class="step"><i>4</i>Get the final <code>reply</code> (or more calls).</div>
+  </div>
+  <div class="code" data-tabs>
+    <div class="tabs"><button class="on">1 · Ask</button><button>2 · Calls</button><button>3 · Results</button></div>
+<pre data-lang="ask">POST {{API}}/assistant/messages
+{
+  "message": "Your move!",
+  "instructions": "You are playing chess against the user, as black.",
+  "context": { "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1" },
+  "tools": [{
+    "name": "make_move",
+    "description": "Play your move on the board, in UCI notation (e7e5).",
+    "parameters": {
+      "type": "object",
+      "properties": { "move": { "type": "string" } },
+      "required": ["move"]
+    }
+  }]
+}</pre>
+<pre data-lang="calls" hidden>{
+  "conversation_id": "conv_6f1c…",
+  "status": "requires_action",
+  "reply": "Classic. I'll answer in kind.",
+  "tool_calls": [
+    { "id": "call_9a2e…", "name": "make_move", "arguments": { "move": "e7e5" } }
+  ],
+  "actions": []
+}</pre>
+<pre data-lang="results" hidden>POST {{API}}/assistant/messages
+{
+  "conversation_id": "conv_6f1c…",
+  "tool_results": [
+    { "call_id": "call_9a2e…", "output": { "ok": true, "fen": "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2" } }
+  ]
+}
+<span class="c">// a failed action: { "call_id": "…", "error": "illegal move" }</span></pre>
+  </div>
+  <ul>
+    <li>Answer <b>every</b> call in <code>tool_calls</code> in one <code>tool_results</code> request. <code>output</code> may be a string or any JSON.</li>
+    <li>Up to 24 app tools. Names: a letter, then letters, digits, <code>_</code> or <code>-</code> (64 max), and not the name of one of the assistant's own tools.</li>
+    <li>The assistant never claims an app action is done before your result says so.</li>
+    <li>Sending a new <code>message</code> while calls are pending abandons them (they're recorded as not done).</li>
+  </ul>
+  <div class="note">Chess is only an example. App tools are any action your app can take: start a timer, add a card to a board, move a robot, open a door you own.</div>
+</section>
+
+<section id="voice">
+  <h2>Voice to voice</h2>
+  <div class="endpoint"><span class="m post">POST</span>/v1/voice/sessions<span class="scope">scope: voice</span></div>
+  <p>Opens a realtime voice session with your assistant — her voice, manner, memory and recent conversation — and returns a short-lived <code>client_secret</code>. Your app connects straight to the realtime endpoint with it; your API key never reaches the device. Accepts the same <code>tools</code>, <code>context</code>, <code>instructions</code> and <code>include_assistant_tools</code> as messages, plus an optional <code>voice</code>.</p>
+<div class="code"><pre>{
+  <span class="k">"client_secret"</span>: <span class="s">"ek_…"</span>,
+  <span class="k">"expires_at"</span>: 1760440000,
+  <span class="k">"model"</span>: <span class="s">"gpt-realtime"</span>,
+  <span class="k">"connect"</span>: { <span class="k">"webrtc"</span>: <span class="s">"https://api.openai.com/v1/realtime/calls"</span>, <span class="k">"websocket"</span>: <span class="s">"wss://…"</span> },
+  <span class="k">"assistant"</span>: { <span class="k">"name"</span>: <span class="s">"Hari"</span> },
+  <span class="k">"assistant_tools"</span>: [<span class="s">"web_search"</span>, <span class="s">"create_reminder"</span>, …],
+  <span class="k">"app_tools"</span>: [<span class="s">"make_move"</span>]
+}</pre></div>
+  <h3>Connect from a browser (WebRTC)</h3>
+<div class="code"><pre><span class="c">// 1. Your server: get a session (never ship the API key to the browser)</span>
+const s = await fetch("/my-server/voice-session").then(r => r.json());
+
+<span class="c">// 2. The browser: microphone in, her voice out</span>
+const pc = new RTCPeerConnection();
+const audio = new Audio(); audio.autoplay = true;
+pc.ontrack = (e) => (audio.srcObject = e.streams[0]);
+const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+pc.addTrack(mic.getTracks()[0]);
+const events = pc.createDataChannel("oai-events");
+
+const offer = await pc.createOffer();
+await pc.setLocalDescription(offer);
+const answer = await fetch(s.connect.webrtc, {
+  method: "POST",
+  body: offer.sdp,
+  headers: { Authorization: `Bearer ${s.client_secret}`, "Content-Type": "application/sdp" },
+});
+await pc.setRemoteDescription({ type: "answer", sdp: await answer.text() });
+
+<span class="c">// 3. Tool calls arrive on the data channel</span>
+events.onmessage = async (m) => {
+  const ev = JSON.parse(m.data);
+  if (ev.type !== "response.function_call_arguments.done") return;
+  const args = JSON.parse(ev.arguments || "{}");
+  const output = s.app_tools.includes(ev.name)
+    ? await runMyAppTool(ev.name, args)                    <span class="c">// your app's power</span>
+    : await fetch("/my-server/assistant-tool", {            <span class="c">// relays to POST /v1/tools/call</span>
+        method: "POST", body: JSON.stringify({ name: ev.name, arguments: args }),
+      }).then(r => r.json());
+  events.send(JSON.stringify({ type: "conversation.item.create",
+    item: { type: "function_call_output", call_id: ev.call_id, output: JSON.stringify(output) } }));
+  events.send(JSON.stringify({ type: "response.create" }));
+};</pre></div>
+  <div class="endpoint"><span class="m post">POST</span>/v1/voice/transcript<span class="scope">scope: voice</span></div>
+  <p>When the conversation ends (or every few turns), send what was said so My Assistant remembers it, and how long it lasted so it counts on your account:</p>
+<div class="code"><pre>{ "session_id": "my-session-1", "seconds": 184,
+  "turns": [ { "role": "user", "text": "Let's play a quick game." },
+             { "role": "assistant", "text": "Gladly! You're white." } ] }</pre></div>
+</section>
+
+<section id="tools">
+  <h2>Assistant tools</h2>
+  <div class="endpoint"><span class="m get">GET</span>/v1/tools<span class="scope">scope: tools or voice</span></div>
+  <p>Lists the assistant's tools this key may run, with their JSON Schemas. With <code>voice</code> only, that's the tools its voice sessions are given; with <code>tools</code>, every tool that works without your phone in hand. Tools that need your explicit yes (calls, payments, messages to other people) are not available through the API.</p>
+  <div class="endpoint"><span class="m post">POST</span>/v1/tools/call<span class="scope">scope: tools or voice</span></div>
+<div class="code"><pre>{ "name": "create_reminder",
+  "arguments": { "text": "Rematch with Ravi", "due_at": "2026-10-15T19:00:00+05:30" },
+  "user_text": "remind me tomorrow at 7 to have a rematch with Ravi" }
+
+→ { "ok": true, "result": "Reminder set for tomorrow at 7 pm." }</pre></div>
+  <p><code>user_text</code> is what the user just said; tools that write to memory check against it.</p>
+</section>
+
+<section id="memory">
+  <h2>Memory</h2>
+  <div class="endpoint"><span class="m get">GET</span>/v1/memory?q=chess&amp;limit=20<span class="scope">scope: memory:read</span></div>
+<div class="code"><pre>{ "memories": [ { "id": 812, "fact": "Plays chess on weekends with Ravi", "kind": "semantic", "createdAt": 1760400000000 } ] }</pre></div>
+  <div class="endpoint"><span class="m post">POST</span>/v1/memory<span class="scope">scope: memory:write</span></div>
+<div class="code"><pre>{ "fact": "Prefers playing chess as black" }</pre></div>
+  <p>Facts added by an app are listed in your account's activity log with the app's name.</p>
+</section>
+
+<section id="records">
+  <h2>Records</h2>
+  <p>Your app's own data, kept on your account: matches, scores, saved boards, settings. Organise it in <b>collections</b> of JSON documents (64 KB each). Give each record a short <code>summary</code> — it's the line My Assistant reads when you ask about it.</p>
+  <div class="endpoint"><span class="m put">PUT</span>/v1/records/:collection/:id<span class="scope">scope: data</span></div>
+<div class="code"><pre>PUT {{API}}/records/matches/2026-10-14-ravi
+{ "summary": "Beat Ravi in 34 moves with the Sicilian",
+  "data": { "opponent": "Ravi", "result": "win", "moves": 34, "opening": "Sicilian" } }
+
+→ 201 { "record": { "collection": "matches", "id": "2026-10-14-ravi", "summary": "…", "data": {…}, "createdAt": …, "updatedAt": … } }</pre></div>
+  <table>
+    <tr><th>Call</th><th>Does</th></tr>
+    <tr><td><span class="m post">POST</span> <code>/v1/records/:collection</code></td><td>Creates a record with a new id.</td></tr>
+    <tr><td><span class="m get">GET</span> <code>/v1/records/:collection?limit=50&amp;before=&lt;updatedAt&gt;</code></td><td>Newest first.</td></tr>
+    <tr><td><span class="m get">GET</span> <code>/v1/records/:collection/:id</code></td><td>One record.</td></tr>
+    <tr><td><span class="m delete">DELETE</span> <code>/v1/records/:collection/:id</code></td><td>Removes it.</td></tr>
+    <tr><td><span class="m get">GET</span> <code>/v1/records</code></td><td>Collections, with counts.</td></tr>
+  </table>
+</section>
+
+<section id="events">
+  <h2>Activity</h2>
+  <div class="endpoint"><span class="m post">POST</span>/v1/events<span class="scope">scope: data</span></div>
+  <p>A one-line account of something that happened. It appears under the app in My Assistant's Your own apps, and it's what the assistant answers from when you ask <i>"how did my chess match go?"</i>.</p>
+<div class="code"><pre>{ "type": "match_finished",
+  "summary": "Lost to the assistant in 41 moves — blundered the queen on move 28",
+  "data": { "result": "loss", "moves": 41 } }</pre></div>
+  <div class="endpoint"><span class="m get">GET</span>/v1/events?limit=30&amp;before=&lt;id&gt;<span class="scope">scope: data</span></div>
+</section>
+
+<section id="notify">
+  <h2>Notifications</h2>
+  <div class="endpoint"><span class="m post">POST</span>/v1/notify<span class="scope">scope: notify</span></div>
+<div class="code"><pre>{ "title": "Your move", "body": "The assistant played Nf6. Your turn!" }
+→ { "ok": true, "delivered": true }</pre></div>
+  <p>Up to 20 a day per app. Each one is also kept in the app's activity.</p>
+</section>
+
+<section id="me">
+  <h2>Who am I</h2>
+  <div class="endpoint"><span class="m get">GET</span>/v1/me</div>
+<div class="code"><pre>{ "app": { "id": 4, "slug": "chess-arena", "name": "Chess Arena", "scopes": ["assistant", "voice", "data", "…"] },
+  "user": { "name": "Asha" },          <span class="c">// with the profile scope</span>
+  "assistant": { "name": "Hari" } }</pre></div>
+</section>
+
+<section id="errors">
+  <h2>Errors</h2>
+  <p>Every error has the same shape: <code>{ "error": { "code": "…", "message": "…" } }</code>. The message is written to be shown to a person.</p>
+  <table>
+    <tr><th>Status</th><th>Codes</th><th>Meaning</th></tr>
+    <tr><td>400</td><td><code>message_required</code>, <code>bad_tools</code>, <code>bad_record</code>, <code>missing_results</code>…</td><td>The request needs fixing; the message says how.</td></tr>
+    <tr><td>401</td><td><code>missing_key</code>, <code>invalid_key</code></td><td>No key, or a revoked one.</td></tr>
+    <tr><td>403</td><td><code>missing_scope</code>, <code>app_paused</code></td><td>Allow the scope, or resume the app, in Your own apps.</td></tr>
+    <tr><td>404</td><td><code>unknown_conversation</code>, <code>not_found</code>, <code>unknown_tool</code></td><td>Nothing by that id for this app.</td></tr>
+    <tr><td>409</td><td><code>nothing_pending</code></td><td>Tool results sent to a conversation that isn't waiting for any.</td></tr>
+    <tr><td>429</td><td><code>rate_limited</code>, <code>daily_limit</code></td><td>Slow down, or wait until tomorrow (UTC).</td></tr>
+    <tr><td>5xx</td><td><code>busy</code>, <code>voice_unavailable</code>, <code>server_error</code></td><td>Try again shortly.</td></tr>
+  </table>
+</section>
+
+<section id="limits">
+  <h2>Limits &amp; usage</h2>
+  <table>
+    <tr><th>What</th><th>Limit</th></tr>
+    <tr><td>Requests</td><td>120 a minute per key</td></tr>
+    <tr><td>Assistant messages</td><td>500 a day per app</td></tr>
+    <tr><td>Voice sessions</td><td>60 a day per app</td></tr>
+    <tr><td>Notifications</td><td>20 a day per app</td></tr>
+    <tr><td>Apps / keys</td><td>20 apps per account, 5 live keys per app</td></tr>
+    <tr><td>Records</td><td>10,000 per app, 64 KB each</td></tr>
+  </table>
+  <p>Usage is on <b>your</b> account — the same as talking to the assistant in My Assistant. Each app's requests, messages and voice minutes are shown in Your own apps.</p>
+</section>
+
+<section id="example">
+  <h2>Full example: a game against your assistant</h2>
+  <p>A minimal Node server for any turn-based game. Swap <code>applyMove</code> for your own rules.</p>
+<div class="code"><pre>import express from "express";
+const API = "{{API}}";
+const KEY = process.env.MYA_KEY;
+const mya = (path, body) => fetch(API + path, {
+  method: body ? "POST" : "GET",
+  headers: { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" },
+  body: body && JSON.stringify(body),
+}).then((r) => r.json());
+
+const TOOLS = [{
+  name: "make_move",
+  description: "Play your move in the current game.",
+  parameters: { type: "object", properties: { move: { type: "string" } }, required: ["move"] },
+}];
+
+let game = newGame(), conversation = null;
+
+async function talk(message) {
+  let r = await mya("/assistant/messages", {
+    message, conversation_id: conversation, tools: TOOLS,
+    instructions: "You are the user's opponent. Be a good sport.",
+    context: { board: game.board, turn: game.turn },
+  });
+  while (r.status === "requires_action") {
+    const tool_results = r.tool_calls.map((c) => {
+      const res = applyMove(game, c.arguments.move);          // your game logic
+      return res.ok ? { call_id: c.id, output: { board: game.board } }
+                    : { call_id: c.id, error: res.reason };
+    });
+    r = await mya("/assistant/messages", { conversation_id: r.conversation_id, tool_results });
+  }
+  conversation = r.conversation_id;
+  if (game.over) {
+    await mya("/events", { type: "game_over", summary: game.summaryLine, data: game.result });
+    await mya("/records/games", { summary: game.summaryLine, data: game.record });
+  }
+  return r.reply;
+}
+
+const app = express().use(express.json());
+app.post("/play", async (req, res) => {
+  applyMove(game, req.body.move);
+  res.json({ reply: await talk(`I played ${req.body.move}`), board: game.board });
+});
+app.listen(3000);</pre></div>
+  <p>Later, in My Assistant: <i>"How did my last game go?"</i> → <i>"You lost in 41 moves — the queen blunder on move 28. Rematch?"</i></p>
+</section>
+
+<section id="security">
+  <h2>Security &amp; privacy</h2>
+  <ul>
+    <li>Only a hash of each key is stored; the key is shown once when it's made.</li>
+    <li>An app sees only what its scopes allow, and only its own records and activity.</li>
+    <li>Context and tool results from your app are treated as data, never as instructions to the assistant.</li>
+    <li>Calls, payments and messages to other people always need your yes in My Assistant — the API cannot do them.</li>
+    <li>Removing an app deletes its keys, records, activity and threads. Deleting your account deletes everything.</li>
+  </ul>
+  <footer>My Assistant API v1 · Questions or ideas? Tell your assistant "send feedback to the developer".</footer>
+</section>
+</main>
+</div>
+
+<script>
+(function(){
+  var root=document.documentElement, KEY="mya-docs-theme";
+  try{var t=localStorage.getItem(KEY); if(t) root.setAttribute("data-theme",t);}catch(e){}
+  document.getElementById("theme").onclick=function(){
+    var dark=root.getAttribute("data-theme")==="dark"||(!root.getAttribute("data-theme")&&matchMedia("(prefers-color-scheme: dark)").matches);
+    var next=dark?"light":"dark"; root.setAttribute("data-theme",next);
+    try{localStorage.setItem(KEY,next);}catch(e){}
+  };
+  var side=document.getElementById("side");
+  document.getElementById("menu").onclick=function(){side.classList.toggle("open");};
+  side.addEventListener("click",function(e){if(e.target.tagName==="A") side.classList.remove("open");});
+  document.querySelectorAll("[data-tabs]").forEach(function(box){
+    var btns=box.querySelectorAll(".tabs button"), pres=box.querySelectorAll("pre");
+    btns.forEach(function(b,i){b.onclick=function(){
+      btns.forEach(function(x){x.classList.remove("on");}); b.classList.add("on");
+      pres.forEach(function(p,j){p.hidden=j!==i;});
+    };});
+  });
+  document.querySelectorAll(".code").forEach(function(box){
+    var b=document.createElement("button"); b.className="copy"; b.textContent="Copy";
+    b.onclick=function(){
+      var pre=[].filter.call(box.querySelectorAll("pre"),function(p){return !p.hidden;})[0];
+      if(!pre) return;
+      (navigator.clipboard?navigator.clipboard.writeText(pre.innerText):Promise.reject()).then(function(){
+        b.textContent="Copied"; setTimeout(function(){b.textContent="Copy";},1400);
+      }).catch(function(){b.textContent="Select & copy";});
+    };
+    box.appendChild(b);
+  });
+  var links=[].slice.call(side.querySelectorAll("a")), secs=links.map(function(a){return document.querySelector(a.getAttribute("href"));});
+  function spy(){
+    var y=window.scrollY+120, cur=0;
+    secs.forEach(function(s,i){ if(s && s.offsetTop<=y) cur=i; });
+    links.forEach(function(a,i){a.classList.toggle("on",i===cur);});
+  }
+  addEventListener("scroll",spy,{passive:true}); spy();
+})();
+</script>
+</body>
+</html>
