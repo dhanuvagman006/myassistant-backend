@@ -208,6 +208,25 @@ const db = require("../src/db");
     assert.strictEqual(no.error, "not_in_this_turn");
   });
 
+  // 2026-10-13, prod: a spoken address in live voice was judged against
+  // "Check", typed a minute before, and refused twice.
+  await atest("GATE 0: live voice — the words sent with the call count, a stale turn does not refuse", async () => {
+    const addr = { name: "Neha Shetty", address: "Apartment 901, Therese Apartment, Waterfield Road, Bandra West" };
+    const oldTurn = { session: { turn: { text: "Check", at: Date.now() - 63 * 1000 } } };
+    const stale = await registry.execute("remember_address", addr, { ...ctx(A), ...oldTurn });
+    assert.strictEqual(stale.ok, true, JSON.stringify(stale));
+    const fresh = await registry.execute("remember_address", addr, {
+      ...ctx(A), session: { turn: { text: "Check", at: Date.now() } },
+      userText: "save Neha's address, apartment 901 Therese Apartment Bandra West",
+    });
+    assert.strictEqual(fresh.ok, true, JSON.stringify(fresh));
+    const unrelated = await registry.execute("remember_address", addr, {
+      ...ctx(A), session: { turn: { text: "what's the weather tomorrow", at: Date.now() } },
+    });
+    assert.strictEqual(unrelated.ok, false);
+    assert.strictEqual(unrelated.error, "not_in_this_turn");
+  });
+
   await atest("claim families: remember_address records, show_address opens", () => {
     const { FAMILIES } = require("../src/agents/claimCheck");
     const fam = (id) => FAMILIES.find((f) => f.id === id).tools;

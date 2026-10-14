@@ -672,6 +672,9 @@ function catalogue() {
   return list().map((t) => describe(t.name));
 }
 
+/** A session turn older than this is not "the words just spoken" (GATE 0). */
+const STALE_TURN_MS = 45 * 1000;
+
 /** Tools that put a call on a line — guarded by outcome, not by clock. */
 const CALL_TOOLS = new Set(["place_phone_call", "book_by_calling_business"]);
 
@@ -695,10 +698,29 @@ async function execute(name, rawArgs, ctx = {}) {
   // not subtle. "I'm vegetarian" → "is vegetarian" passes. A flight
   // question producing a claim about language does not.
   if (EFFECTIVE.memoryWrites.has(name) && !ctx.approved) {
-    const turnText = String(
-      (ctx.session && ctx.session.turn && ctx.session.turn.text) || ctx.intent || ""
-    );
-    if (turnText.trim()) {
+    // WHICH WORDS (2026-10-13, prod): in a live-voice conversation the
+    // session's turn is only renewed when the phone posts a new turn, so a
+    // spoken address was judged against "Check", typed a minute earlier,
+    // and refused twice — "it didn't save", and the person's address was
+    // lost. The words the phone sent with THIS call come first; a session
+    // turn more than STALE_TURN_MS old is not what they just said, so it
+    // cannot prove they did not say it either.
+    const turn = (ctx.session && ctx.session.turn) || null;
+    const fresh = String(ctx.userText || "").trim();
+    const freshUsable = fresh && !/^\s*\[SYSTEM\]/i.test(fresh) &&
+      fresh !== String((turn && turn.text) || "").trim();
+    const turnText = freshUsable
+      ? fresh
+      : String((turn && turn.text) || ctx.intent || "");
+    const stale = !freshUsable && turn && turn.at > 0 &&
+      Date.now() - turn.at > STALE_TURN_MS;
+    // Logged, not recorded as an action: an extra "ok" row for this tool
+    // would read as proof it ran (claimCheck) before it has.
+    if (stale) {
+      console.log(`registry: ${name} not word-checked — the turn is ` +
+        `${Math.round((Date.now() - turn.at) / 1000)} s old`);
+    }
+    if (turnText.trim() && !stale) {
       const words = (t) =>
         new Set(
           String(t).toLowerCase()
