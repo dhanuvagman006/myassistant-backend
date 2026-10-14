@@ -4,8 +4,8 @@
  * POST /v1/assistant/messages runs one turn of the SAME assistant the user
  * talks to in My Assistant: their profile, their remembered facts, the
  * recent conversation (from every surface), their tools — and, on top,
- * the powers the app hands it for this conversation ("app tools"). A chess
- * app declares make_move; the assistant decides when to call it; the app
+ * the powers the app hands it for this conversation ("app tools"). The app
+ * declares its own actions; the assistant decides when to call one; the app
  * performs it and sends the result back; the assistant carries on.
  *
  *   request   { message, conversation_id?, tools?, context?, instructions?,

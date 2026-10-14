@@ -1,7 +1,7 @@
 /**
  * THE MAIN ASSISTANT KNOWS WHAT HAPPENED IN THE USER'S OWN APPS.
  *
- * "How did my chess match go?" asked in My Assistant is answered from the
+ * "What happened in <my app>?" asked in My Assistant is answered from the
  * connected app's activity and records (src/platform/store.js search).
  * The tool is offered only on the turns that need it — wantsApps() below
  * matches the words of the user's own apps (their names and the keywords
@@ -74,13 +74,13 @@ function registerPlatformTools(registry) {
     effects: ["read"],
     description:
       "What happened in the user's OWN connected apps — apps they built themselves and connected to you with the My Assistant API " +
-      "(a game, a tracker, a voice gadget…). Use for 'how did my chess match go', 'what's my score in <app>', 'what did I do in " +
+      "(anything they built). Use for 'what happened in <app>', 'what's my latest in <app>', 'what did I do in " +
       "<app>', 'which apps have I connected'. Without app/query it lists the connected apps and each one's latest activity; " +
       "with them it searches that app's activity and saved records. Answer from what it returns, briefly.",
     inputSchema: {
       type: "object",
       properties: {
-        app: { type: "string", description: "The app's name, if they named one (e.g. 'Chess Arena')." },
+        app: { type: "string", description: "The app's name, if they named one as they said it." },
         query: { type: "string", description: "What they want to know about, in a few words (e.g. 'last match result')." },
       },
     },

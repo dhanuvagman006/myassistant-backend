@@ -220,9 +220,9 @@ function appsPage(){
 function newApp(){
   scopes().then(function(sc){
     var m=modal('<h2>New app</h2><p class="muted" style="margin-top:-6px">You\'ll get an API key for it. It appears in My Assistant on your phone too.</p>'+
-      '<label class="f">App name</label><input class="t" id="n" maxlength="60" placeholder="e.g. Chess Arena">'+
-      '<label class="f">What it does <span class="dim">(optional)</span></label><input class="t" id="d" maxlength="300" placeholder="A chess board where I play my assistant">'+
-      '<label class="f">Words you\'d use for it <span class="dim">(optional)</span></label><input class="t" id="k" placeholder="chess, game, match"><div class="hint">So asking My Assistant "how did my match go?" finds this app.</div>'+
+      '<label class="f">App name</label><input class="t" id="n" maxlength="60" placeholder="Your app's name">'+
+      '<label class="f">What it does <span class="dim">(optional)</span></label><input class="t" id="d" maxlength="300" placeholder="One line about what your app does">'+
+      '<label class="f">Words you\'d use for it <span class="dim">(optional)</span></label><input class="t" id="k" placeholder="Words people use for it, comma-separated"><div class="hint">So questions about your app in My Assistant find it.</div>'+
       '<label class="f">What it may do</label><div class="list" id="sc"></div>'+
       '<div class="note warn" id="err" hidden></div><div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="c">Cancel</button><button class="btn primary" id="ok">Create app &amp; key</button></div>');
     var box=m.querySelector("#sc");
@@ -360,7 +360,7 @@ function tabPlay(box,j){
   var a=j.app, base=j.apiBase||V1, conv=null;
   box.innerHTML='<div class="card"><h2>Playground</h2><p class="dim" style="margin-top:-6px">Talk to your assistant exactly as this app would. Paste one of the app\'s keys — it stays in this page only.</p>'+
     '<label class="f">API key</label><input class="t mono" id="key" type="password" placeholder="mya_…" autocomplete="off">'+
-    '<label class="f">App tools <span class="dim">(optional JSON array — powers your app gives the assistant)</span></label><textarea class="t mono" id="tools" placeholder=\'[{"name":"make_move","description":"Play your move","parameters":{"type":"object","properties":{"move":{"type":"string"}},"required":["move"]}}]\'></textarea>'+
+    '<label class="f">App tools <span class="dim">(optional JSON array — powers your app gives the assistant)</span></label><textarea class="t mono" id="tools" placeholder=\'[{"name":"create_item","description":"Create an item in this app","parameters":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}}]\'></textarea>'+
     '<label class="f">Message</label><div class="row"><input class="t" id="msg" placeholder="Hi! What should I focus on today?"><button class="btn primary" id="send">Send</button></div>'+
     '<div class="row" style="margin-top:8px"><span class="dim grow" id="cv">New conversation</span><button class="ghost" id="reset">Start over</button></div>'+
     '<div id="out"></div></div>';
@@ -407,7 +407,7 @@ function tabSettings(box,j){
     '<label class="f">Name</label><input class="t" id="n" maxlength="60">'+
     '<label class="f">What it does</label><input class="t" id="d" maxlength="300">'+
     '<label class="f">Words you\'d use for it</label><input class="t" id="k"><div class="hint">Comma-separated. Lets My Assistant know a question is about this app.</div>'+
-    '<label class="f">How your assistant behaves in this app</label><textarea class="t" id="i" maxlength="2000" placeholder="e.g. Be a friendly opponent and explain your moves."></textarea>'+
+    '<label class="f">How your assistant behaves in this app</label><textarea class="t" id="i" maxlength="2000" placeholder="e.g. Keep answers short and use the app's terms."></textarea>'+
     '<div style="margin-top:14px"><button class="btn primary" id="save">Save</button></div></div>'+
     '<div class="card" style="margin-top:14px;border-color:var(--badbg)"><h2 style="color:var(--bad)">Remove this app</h2><p class="muted">Its keys stop working, and everything it saved — records, activity and conversations — is deleted. What you said there stays in your assistant\'s memory.</p><button class="btn danger" id="del">Remove '+esc(a.name)+'</button></div>';
   box.querySelector("#n").value=a.name; box.querySelector("#d").value=a.description||""; box.querySelector("#k").value=(a.keywords||[]).join(", "); box.querySelector("#i").value=a.instructions||"";

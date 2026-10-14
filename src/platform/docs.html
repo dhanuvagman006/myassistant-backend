@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>My Assistant API</title>
-<meta name="description" content="Bring your own assistant into the apps you build: the same memory, the same voice, new powers.">
+<meta name="description" content="Connect any app you build to your own assistant: same memory and account, new abilities, voice, and shared history. Step-by-step integration guide and API reference.">
 <style>
 :root{
   --bg:#f7f7f9;--panel:#ffffff;--ink:#16161d;--muted:#5d5d6e;--line:#e4e4ec;
@@ -90,6 +90,14 @@ footer{color:var(--muted);font-size:13px;margin-top:60px;border-top:1px solid va
   .scope{margin-left:0;width:100%}
   .pill,.tl{display:none}
 }
+h4{font-size:15.5px;margin:20px 0 6px}
+ol li,ul li{margin:4px 0}
+.arch{display:flex;align-items:stretch;gap:8px;flex-wrap:wrap;margin:16px 0}
+.arch .box{flex:1 1 150px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.arch .box b{display:block}.arch .box span{color:var(--muted);font-size:13px;word-break:break-all}
+.arch .box.hl{border-color:var(--accent);background:var(--accent-soft)}
+.arch .arrow{display:grid;place-items:center;color:var(--muted);font-size:20px}
+@media (max-width:700px){.arch{flex-direction:column}.arch .arrow{transform:rotate(90deg)}}
 </style>
 </head>
 <body>
@@ -104,57 +112,112 @@ footer{color:var(--muted);font-size:13px;margin-top:60px;border-top:1px solid va
 
 <div class="wrap">
 <nav class="side" id="side">
-  <h4>Start</h4>
-  <a href="#intro">Overview</a>
-  <a href="#quickstart">Quickstart</a>
-  <a href="{{CONSOLE}}">Developer Console ↗</a>
-  <a href="#auth">Keys &amp; scopes</a>
-  <h4>Assistant</h4>
-  <a href="#messages">Talk to your assistant</a>
-  <a href="#app-tools">Give it app powers</a>
-  <a href="#voice">Voice to voice</a>
-  <a href="#tools">Assistant tools</a>
-  <h4>Data</h4>
-  <a href="#memory">Memory</a>
-  <a href="#records">Records</a>
-  <a href="#events">Activity</a>
-  <a href="#notify">Notifications</a>
-  <h4>Reference</h4>
-  <a href="#me">Who am I</a>
+  <h4>Start here</h4>
+  <a href="#intro">What this API does</a>
+  <a href="#concepts">Key concepts</a>
+  <a href="#architecture">How it fits together</a>
+  <h4>Integration guide</h4>
+  <a href="#step1">1 · Create your app &amp; key</a>
+  <a href="#step2">2 · Keep the key on your server</a>
+  <a href="#step3">3 · Send your first message</a>
+  <a href="#step4">4 · Hold a conversation</a>
+  <a href="#step5">5 · Let the assistant act in your app</a>
+  <a href="#step6">6 · Report what happens</a>
+  <a href="#step7">7 · Add voice (optional)</a>
+  <a href="#checklist">Go-live checklist</a>
+  <h4>API reference</h4>
+  <a href="#auth">Authentication &amp; scopes</a>
+  <a href="#ref-messages">Messages</a>
+  <a href="#ref-voice">Voice</a>
+  <a href="#ref-tools">Assistant tools</a>
+  <a href="#ref-memory">Memory</a>
+  <a href="#ref-records">Records</a>
+  <a href="#ref-events">Events</a>
+  <a href="#ref-notify">Notifications</a>
+  <a href="#ref-me">Me</a>
+  <h4>More</h4>
   <a href="#errors">Errors</a>
-  <a href="#limits">Limits</a>
-  <a href="#example">Full example</a>
+  <a href="#limits">Limits &amp; usage</a>
   <a href="#security">Security</a>
+  <a href="#faq">FAQ</a>
+  <a href="{{CONSOLE}}">Developer Console ↗</a>
 </nav>
 
 <main>
 <section id="intro" class="hero">
-  <h1>Your assistant, inside every app you build.</h1>
-  <p>The My Assistant API lets the apps you make use <b>your</b> assistant — the same one from My Assistant, with the same memory, voice and account. Your app can give it new powers it doesn't have in the main app, and everything it does there flows back, so My Assistant can tell you about it later.</p>
+  <h1>Bring your assistant into the apps you build.</h1>
+  <p>The My Assistant API connects any app you build — web, mobile, desktop, a bot, a device — to <b>your own</b> assistant from My Assistant. It is the same assistant: it knows you, remembers your conversations and shares one account and one bill. Your app can also give it <b>new abilities</b> that only exist in your app, and everything that happens there flows back, so you can ask My Assistant about it later.</p>
   <div class="cards">
-    <div class="card"><b>One assistant</b><span>Same personality, memory and recent conversation in every app.</span></div>
-    <div class="card"><b>New powers</b><span>Declare app tools — move a piece, start a timer — and the assistant uses them.</span></div>
-    <div class="card"><b>Voice to voice</b><span>Open a realtime voice session from your app in one call.</span></div>
-    <div class="card"><b>Shared story</b><span>Activity and records your app saves are answerable from My Assistant.</span></div>
+    <div class="card"><b>Talk</b><span>Send text, get the assistant's reply. Threads keep context.</span></div>
+    <div class="card"><b>Act</b><span>Describe your app's actions; the assistant calls them when the user asks.</span></div>
+    <div class="card"><b>Speak</b><span>Open a realtime voice-to-voice session in one call.</span></div>
+    <div class="card"><b>Remember</b><span>Save activity and data; My Assistant can answer questions about it.</span></div>
   </div>
 </section>
 
-<section id="quickstart">
-  <h2>Quickstart</h2>
-  <div class="flow">
-    <div class="step"><i>1</i>Open the <a href="{{CONSOLE}}" target="_blank" rel="noopener"><b>Developer Console</b></a> and sign in with your My Assistant account.</div>
-    <div class="step"><i>2</i>Create an app, choose what it may do, and copy the API key (shown once). It appears in My Assistant on your phone at once.</div>
-    <div class="step"><i>3</i>Call the API from your app with that key.</div>
-    <div class="step"><i>4</i>Ask My Assistant what happened there — it knows.</div>
+<section id="concepts">
+  <h2>Key concepts</h2>
+  <table>
+    <tr><th>Term</th><th>What it means</th></tr>
+    <tr><td><b>Account</b></td><td>The user's My Assistant account. Everything an app does happens as this account: same memory, same history, same usage.</td></tr>
+    <tr><td><b>App</b></td><td>One program you connect, created in the <a href="{{CONSOLE}}">Developer Console</a>. Each app has its own keys, permissions, data and activity feed.</td></tr>
+    <tr><td><b>API key</b></td><td>A secret (<code>mya_</code> + 40 characters) that identifies the app and acts as the user. Shown once when created.</td></tr>
+    <tr><td><b>Scopes</b></td><td>What the app is allowed to do (talk, voice, read memory…). Set in the Console, checked on every request.</td></tr>
+    <tr><td><b>Conversation</b></td><td>A thread of messages identified by <code>conversation_id</code>. Send it back to continue the thread.</td></tr>
+    <tr><td><b>App tools</b></td><td>Actions that exist in <i>your</i> app, described to the assistant as functions. The assistant decides when to use them; <b>your code runs them</b>.</td></tr>
+    <tr><td><b>Assistant tools</b></td><td>The assistant's own built-in abilities (reminders, web search, weather, lists…). They run on our side automatically.</td></tr>
+    <tr><td><b>Events</b></td><td>One-line reports of what happened in your app. Shown to the user and searchable by the assistant.</td></tr>
+    <tr><td><b>Records</b></td><td>Your app's own JSON data, stored on the user's account in named collections.</td></tr>
+  </table>
+</section>
+
+<section id="architecture">
+  <h2>How it fits together</h2>
+  <div class="arch">
+    <div class="box"><b>Your app's UI</b><span>web page, mobile app, device</span></div>
+    <div class="arrow">→</div>
+    <div class="box"><b>Your backend</b><span>holds the API key<br>runs your app tools</span></div>
+    <div class="arrow">⇄</div>
+    <div class="box hl"><b>My Assistant API</b><span>{{API}}</span></div>
+    <div class="arrow">⇄</div>
+    <div class="box"><b>The user's assistant</b><span>memory · history · tools</span></div>
   </div>
-  <p>Every request goes to <code>{{API}}</code> with the key in the <code>Authorization</code> header. Say hello:</p>
+  <p>Your UI talks to <b>your</b> backend; your backend calls the API with the key. When the assistant wants to use one of your app's actions, the API returns it to your backend, your backend performs it and sends the result back. For voice, your backend asks for a short-lived voice session and the UI connects to it directly — the key never leaves your server.</p>
+</section>
+
+<h2 style="margin-top:44px;font-size:30px">Integration guide</h2>
+<p class="muted">Follow the steps in order. Steps 1–4 give you a working chat; 5–7 make the assistant truly part of your app.</p>
+
+<section id="step1">
+  <h3>Step 1 · Create your app and get a key</h3>
+  <ol>
+    <li>Open the <a href="{{CONSOLE}}">Developer Console</a> and sign in with your My Assistant account (a code is sent to your phone).</li>
+    <li>Click <b>New app</b>. Give it a name and a one-line description, and list the words people use for it — this is how My Assistant knows a question is about your app.</li>
+    <li>Choose its permissions (scopes). The defaults are fine to start.</li>
+    <li>Copy the API key. It is shown only once; you can always create another.</li>
+  </ol>
+  <p>The app appears in My Assistant on the phone (Hub → Your own apps) straight away.</p>
+</section>
+
+<section id="step2">
+  <h3>Step 2 · Keep the key on your server</h3>
+  <p>The key acts as the user. Store it as an environment variable on your backend and never send it to a browser, a mobile app bundle or a public repository.</p>
+<div class="code"><pre># .env on your server
+MYA_KEY=mya_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+MYA_API={{API}}</pre></div>
+  <div class="note">Building only for yourself, on your own machine? Calling the API directly from a local script is fine. The rule is about anything other people can download or inspect.</div>
+</section>
+
+<section id="step3">
+  <h3>Step 3 · Send your first message</h3>
   <div class="code" data-tabs>
     <div class="tabs"><button class="on">curl</button><button>JavaScript</button><button>Python</button></div>
-<pre data-lang="curl">curl {{API}}/assistant/messages \
+<pre data-lang="curl">curl $MYA_API/assistant/messages \
   -H "Authorization: Bearer $MYA_KEY" \
   -H "Content-Type: application/json" \
   -d '{"message": "Hi! What should I focus on today?"}'</pre>
-<pre data-lang="JavaScript" hidden>const res = await fetch("{{API}}/assistant/messages", {
+<pre data-lang="JavaScript" hidden>// Node 18+ (fetch is built in)
+const res = await fetch(`${process.env.MYA_API}/assistant/messages`, {
   method: "POST",
   headers: {
     Authorization: `Bearer ${process.env.MYA_KEY}`,
@@ -162,253 +225,347 @@ footer{color:var(--muted);font-size:13px;margin-top:60px;border-top:1px solid va
   },
   body: JSON.stringify({ message: "Hi! What should I focus on today?" }),
 });
-const { reply, conversation_id } = await res.json();
-console.log(reply);</pre>
+const data = await res.json();
+if (!res.ok) throw new Error(data.error.message);
+console.log(data.reply);</pre>
 <pre data-lang="Python" hidden>import os, requests
 
 r = requests.post(
-    "{{API}}/assistant/messages",
+    f"{os.environ['MYA_API']}/assistant/messages",
     headers={"Authorization": f"Bearer {os.environ['MYA_KEY']}"},
     json={"message": "Hi! What should I focus on today?"},
+    timeout=60,
 )
+r.raise_for_status()
 print(r.json()["reply"])</pre>
   </div>
-  <p>The reply comes from the same assistant you talk to in My Assistant — it knows your name, your reminders and what you discussed this morning.</p>
-</section>
-
-<section id="auth">
-  <h2>Keys &amp; scopes</h2>
-  <p>A key belongs to one connected app and acts as <b>you</b>, within the scopes you allowed that app. Send it as a bearer token (or as <code>X-Api-Key</code>). Keys look like <code>mya_</code> followed by 40 characters.</p>
-  <p>Change an app's scopes any time in the <a href="{{CONSOLE}}">Developer Console</a>; it takes effect on the next request. Pausing the app, revoking a key or removing the app stops it at once.</p>
-  <table>
-    <tr><th>Scope</th><th>Allows</th><th>Default</th></tr>
-    <tr><td><code>assistant</code></td><td>Talk to your assistant (<code>/assistant/messages</code>).</td><td>on</td></tr>
-    <tr><td><code>voice</code></td><td>Realtime voice sessions, and the assistant tools those sessions use.</td><td>on</td></tr>
-    <tr><td><code>data</code></td><td>The app's own records and activity feed.</td><td>on</td></tr>
-    <tr><td><code>memory:read</code></td><td>Read what your assistant remembers about you.</td><td>on</td></tr>
-    <tr><td><code>memory:write</code></td><td>Add to your memory — including facts learnt from what you say in the app.</td><td>off</td></tr>
-    <tr><td><code>tools</code></td><td>Run any of the assistant's app-safe tools directly.</td><td>off</td></tr>
-    <tr><td><code>notify</code></td><td>Send a notification to your phone.</td><td>on</td></tr>
-    <tr><td><code>profile</code></td><td>Read your name and your assistant's name.</td><td>on</td></tr>
-  </table>
-  <div class="note warn"><b>Keep keys secret.</b> A key can talk to your assistant as you. Put it on your server or in a private app, never in a public web page or a public repository. If one leaks, revoke it in the Developer Console.</div>
-</section>
-
-<section id="messages">
-  <h2>Talk to your assistant</h2>
-  <div class="endpoint"><span class="m post">POST</span>/v1/assistant/messages<span class="scope">scope: assistant</span></div>
-  <p>Sends one message and returns the assistant's reply. Pass the returned <code>conversation_id</code> on the next message to continue the same thread (threads are kept 7 days).</p>
-  <table>
-    <tr><th>Field</th><th>Type</th><th>Description</th></tr>
-    <tr><td><code>message</code></td><td>string</td><td>What the user said or typed. Up to 4,000 characters.</td></tr>
-    <tr><td><code>conversation_id</code></td><td>string</td><td>Continue an earlier thread.</td></tr>
-    <tr><td><code>tools</code></td><td>array</td><td>App tools for this conversation — see <a href="#app-tools">app powers</a>. Remembered for the thread; send again to change them.</td></tr>
-    <tr><td><code>context</code></td><td>string | object</td><td>What your app shows right now (a board, a score, the open screen). Treated as data, never as instructions. Up to 12,000 characters.</td></tr>
-    <tr><td><code>instructions</code></td><td>string</td><td>How the assistant should behave in this conversation ("You are the opponent; play at club level").</td></tr>
-    <tr><td><code>include_assistant_tools</code></td><td>boolean</td><td>Default <code>true</code>: it may also use its own tools (reminders, search, weather, lists…). Set <code>false</code> to keep it to your app's tools.</td></tr>
-  </table>
   <p>Response:</p>
 <div class="code"><pre>{
-  <span class="k">"conversation_id"</span>: <span class="s">"conv_6f1c…"</span>,
-  <span class="k">"status"</span>: <span class="s">"completed"</span>,          <span class="c">// or "requires_action"</span>
-  <span class="k">"reply"</span>: <span class="s">"Morning! You have the dentist at 4…"</span>,
-  <span class="k">"tool_calls"</span>: [],                  <span class="c">// app tools to run, when requires_action</span>
-  <span class="k">"actions"</span>: [                        <span class="c">// assistant tools it ran this turn</span>
-    { <span class="k">"tool"</span>: <span class="s">"list_reminders"</span>, <span class="k">"ok"</span>: true, <span class="k">"result"</span>: <span class="s">"Dentist at 4 pm"</span> }
-  ]
+  "conversation_id": "conv_6f1c2a…",
+  "status": "completed",
+  "reply": "Good morning! You have a dentist appointment at 4 pm …",
+  "tool_calls": [],
+  "actions": [ { "tool": "list_reminders", "ok": true, "result": "Dentist at 4 pm" } ]
 }</pre></div>
-  <p>Everything said here is filed in your conversation memory, marked as coming from your app — ask My Assistant <i>"what did we talk about in my chess app?"</i> and it can answer.</p>
-  <div class="endpoint"><span class="m delete">DELETE</span>/v1/assistant/conversations/:id<span class="scope">scope: assistant</span></div>
-  <p>Forgets a thread (the conversation memory it already wrote stays).</p>
+  <p><code>actions</code> lists the assistant's own tools it used while answering. Replies can take a few seconds when it uses tools — use a timeout of about 60 seconds.</p>
 </section>
 
-<section id="app-tools">
-  <h2>Give it app powers</h2>
-  <p>Your app can do things My Assistant can't — make a chess move, start a workout, change a light's colour. Describe those actions as <b>tools</b> (a name, a description and JSON Schema parameters). The assistant decides when to use them; your app performs them and sends back the result.</p>
+<section id="step4">
+  <h3>Step 4 · Hold a conversation</h3>
+  <p>Save <code>conversation_id</code> from each response and send it with the next message. Without it, each message starts a new thread (the assistant still knows the user and recent history, but not the details of this thread).</p>
+<div class="code"><pre>{ "message": "Move it to 5 pm instead", "conversation_id": "conv_6f1c2a…" }</pre></div>
+  <p>Two optional fields shape a conversation:</p>
+  <ul>
+    <li><code>instructions</code> — how the assistant should behave in this conversation, e.g. <i>"Answer in two sentences. You are helping inside a budgeting app."</i></li>
+    <li><code>context</code> — what your app shows right now (the open screen, the selected item, current totals), as a string or JSON. It is treated as data, never as instructions.</li>
+  </ul>
+</section>
+
+<section id="step5">
+  <h3>Step 5 · Let the assistant act in your app (app tools)</h3>
+  <p>This is what makes the assistant more powerful in your app than anywhere else. Describe the actions your app can perform as <b>tools</b>: a name, a description the assistant reads, and the parameters as JSON Schema. When the user's request needs one, the API stops and hands the call to your backend.</p>
+  <p>The tools below are placeholders — <b>replace them with your app's real actions</b>.</p>
+<div class="code"><pre>const TOOLS = [
+  {
+    name: "create_item",
+    description: "Create a new item in the user's workspace in this app.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Short title" },
+        due:   { type: "string", description: "ISO date, if the user gave one" }
+      },
+      required: ["title"]
+    }
+  },
+  {
+    name: "search_items",
+    description: "Find the user's items in this app by text.",
+    parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }
+  }
+];</pre></div>
+  <h4>The loop</h4>
   <div class="flow">
-    <div class="step"><i>1</i>Send <code>message</code> + <code>tools</code>.</div>
-    <div class="step"><i>2</i>Get <code>status: "requires_action"</code> with <code>tool_calls</code>.</div>
-    <div class="step"><i>3</i>Do them in your app, post <code>tool_results</code>.</div>
-    <div class="step"><i>4</i>Get the final <code>reply</code> (or more calls).</div>
+    <div class="step"><i>1</i>Send <code>message</code> with <code>tools</code>.</div>
+    <div class="step"><i>2</i>If <code>status</code> is <code>"requires_action"</code>, run each call in <code>tool_calls</code>.</div>
+    <div class="step"><i>3</i>Send all results back as <code>tool_results</code> with the same <code>conversation_id</code>.</div>
+    <div class="step"><i>4</i>Repeat until <code>status</code> is <code>"completed"</code>, then show <code>reply</code>.</div>
   </div>
   <div class="code" data-tabs>
-    <div class="tabs"><button class="on">1 · Ask</button><button>2 · Calls</button><button>3 · Results</button></div>
-<pre data-lang="ask">POST {{API}}/assistant/messages
-{
-  "message": "Your move!",
-  "instructions": "You are playing chess against the user, as black.",
-  "context": { "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1" },
-  "tools": [{
-    "name": "make_move",
-    "description": "Play your move on the board, in UCI notation (e7e5).",
-    "parameters": {
-      "type": "object",
-      "properties": { "move": { "type": "string" } },
-      "required": ["move"]
-    }
-  }]
-}</pre>
-<pre data-lang="calls" hidden>{
-  "conversation_id": "conv_6f1c…",
-  "status": "requires_action",
-  "reply": "Classic. I'll answer in kind.",
-  "tool_calls": [
-    { "id": "call_9a2e…", "name": "make_move", "arguments": { "move": "e7e5" } }
-  ],
-  "actions": []
-}</pre>
-<pre data-lang="results" hidden>POST {{API}}/assistant/messages
-{
-  "conversation_id": "conv_6f1c…",
-  "tool_results": [
-    { "call_id": "call_9a2e…", "output": { "ok": true, "fen": "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2" } }
-  ]
+    <div class="tabs"><button class="on">JavaScript</button><button>Python</button></div>
+<pre data-lang="JavaScript">const API = process.env.MYA_API, KEY = process.env.MYA_KEY;
+
+async function mya(body) {
+  const r = await fetch(`${API}/assistant/messages`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error.message);
+  return j;
 }
-<span class="c">// a failed action: { "call_id": "…", "error": "illegal move" }</span></pre>
+
+// Your app's own code: one branch per tool you declared.
+async function runTool(name, args, user) {
+  switch (name) {
+    case "create_item":  return await db.items.create({ owner: user.id, ...args });
+    case "search_items": return await db.items.search(user.id, args.query);
+    default: throw new Error(`unknown tool ${name}`);
+  }
+}
+
+export async function ask(user, message, conversationId) {
+  let r = await mya({ message, conversation_id: conversationId, tools: TOOLS,
+                      context: { screen: user.currentScreen } });
+  while (r.status === "requires_action") {
+    const tool_results = [];
+    for (const call of r.tool_calls) {
+      try {
+        tool_results.push({ call_id: call.id, output: await runTool(call.name, call.arguments, user) });
+      } catch (e) {
+        tool_results.push({ call_id: call.id, error: String(e.message || e) });
+      }
+    }
+    r = await mya({ conversation_id: r.conversation_id, tool_results });
+  }
+  return { reply: r.reply, conversationId: r.conversation_id };
+}</pre>
+<pre data-lang="Python" hidden>import os, requests
+
+API, KEY = os.environ["MYA_API"], os.environ["MYA_KEY"]
+
+def mya(body):
+    r = requests.post(f"{API}/assistant/messages", json=body, timeout=60,
+                      headers={"Authorization": f"Bearer {KEY}"})
+    j = r.json()
+    if not r.ok:
+        raise RuntimeError(j["error"]["message"])
+    return j
+
+# Your app's own code: one branch per tool you declared.
+def run_tool(name, args, user):
+    if name == "create_item":
+        return db.create_item(owner=user.id, **args)
+    if name == "search_items":
+        return db.search_items(user.id, args["query"])
+    raise ValueError(f"unknown tool {name}")
+
+def ask(user, message, conversation_id=None):
+    r = mya({"message": message, "conversation_id": conversation_id, "tools": TOOLS,
+             "context": {"screen": user.current_screen}})
+    while r["status"] == "requires_action":
+        results = []
+        for call in r["tool_calls"]:
+            try:
+                results.append({"call_id": call["id"], "output": run_tool(call["name"], call["arguments"], user)})
+            except Exception as e:
+                results.append({"call_id": call["id"], "error": str(e)})
+        r = mya({"conversation_id": r["conversation_id"], "tool_results": results})
+    return r["reply"], r["conversation_id"]</pre>
   </div>
   <ul>
-    <li>Answer <b>every</b> call in <code>tool_calls</code> in one <code>tool_results</code> request. <code>output</code> may be a string or any JSON.</li>
-    <li>Up to 24 app tools. Names: a letter, then letters, digits, <code>_</code> or <code>-</code> (64 max), and not the name of one of the assistant's own tools.</li>
-    <li>The assistant never claims an app action is done before your result says so.</li>
-    <li>Sending a new <code>message</code> while calls are pending abandons them (they're recorded as not done).</li>
+    <li><b>Answer every call</b> in one <code>tool_results</code> request. <code>output</code> can be a string or any JSON; send <code>error</code> instead when the action failed — the assistant will tell the user honestly.</li>
+    <li>Tools are remembered for the conversation; send <code>tools</code> again only to change them.</li>
+    <li>The assistant may use its own tools in the same turn — those run automatically and appear in <code>actions</code>.</li>
+    <li>Up to 24 app tools. Names: start with a letter; letters, digits, <code>_</code>, <code>-</code>; max 64; not the same as an assistant tool name (the API tells you if it is).</li>
+    <li>Write descriptions for the assistant, in plain words: what the action does and when to use it. Good descriptions are the difference between a tool that gets used and one that doesn't.</li>
   </ul>
-  <div class="note">Chess is only an example. App tools are any action your app can take: start a timer, add a card to a board, move a robot, open a door you own.</div>
 </section>
 
-<section id="voice">
-  <h2>Voice to voice</h2>
-  <div class="endpoint"><span class="m post">POST</span>/v1/voice/sessions<span class="scope">scope: voice</span></div>
-  <p>Opens a realtime voice session with your assistant — her voice, manner, memory and recent conversation — and returns a short-lived <code>client_secret</code>. Your app connects straight to the realtime endpoint with it; your API key never reaches the device. Accepts the same <code>tools</code>, <code>context</code>, <code>instructions</code> and <code>include_assistant_tools</code> as messages, plus an optional <code>voice</code>.</p>
-<div class="code"><pre>{
-  <span class="k">"client_secret"</span>: <span class="s">"ek_…"</span>,
-  <span class="k">"expires_at"</span>: 1760440000,
-  <span class="k">"model"</span>: <span class="s">"gpt-realtime"</span>,
-  <span class="k">"connect"</span>: { <span class="k">"webrtc"</span>: <span class="s">"https://api.openai.com/v1/realtime/calls"</span>, <span class="k">"websocket"</span>: <span class="s">"wss://…"</span> },
-  <span class="k">"assistant"</span>: { <span class="k">"name"</span>: <span class="s">"Hari"</span> },
-  <span class="k">"assistant_tools"</span>: [<span class="s">"web_search"</span>, <span class="s">"create_reminder"</span>, …],
-  <span class="k">"app_tools"</span>: [<span class="s">"make_move"</span>]
-}</pre></div>
-  <h3>Connect from a browser (WebRTC)</h3>
-<div class="code"><pre><span class="c">// 1. Your server: get a session (never ship the API key to the browser)</span>
-const s = await fetch("/my-server/voice-session").then(r => r.json());
+<section id="step6">
+  <h3>Step 6 · Report what happens (so My Assistant knows)</h3>
+  <p>Two ways to make your app's activity part of the user's shared history:</p>
+  <ul>
+    <li><b>Events</b> — one human-readable line per meaningful moment. Shown under your app in My Assistant, and what the assistant searches when the user asks "what happened in &lt;your app&gt;?".</li>
+    <li><b>Records</b> — structured data you want to keep (results, settings, saved items). Give each a short <code>summary</code>: it's the line the assistant reads.</li>
+  </ul>
+<div class="code"><pre># An event: something happened
+POST {{API}}/events
+{ "type": "item_completed", "summary": "Finished the quarterly report draft", "data": { "itemId": "it_42" } }
 
-<span class="c">// 2. The browser: microphone in, her voice out</span>
+# A record: data to keep (PUT creates or replaces)
+PUT {{API}}/records/items/it_42
+{ "summary": "Quarterly report draft — done on 14 Oct", "data": { "status": "done", "words": 2140 } }</pre></div>
+  <p>Later, in My Assistant: <i>"What did I finish in &lt;your app&gt; this week?"</i> — the assistant answers from these.</p>
+</section>
+
+<section id="step7">
+  <h3>Step 7 · Add voice (optional)</h3>
+  <p>For a spoken, real-time conversation, your backend opens a voice session and passes a short-lived secret to the UI, which connects directly to the realtime voice service.</p>
+<div class="code"><pre>// Your backend
+const s = await fetch(`${API}/voice/sessions`, {
+  method: "POST",
+  headers: { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" },
+  body: JSON.stringify({ tools: TOOLS, instructions: "Keep answers short." }),
+}).then(r => r.json());
+// → send { client_secret: s.client_secret, connect: s.connect, app_tools: s.app_tools } to the UI</pre></div>
+<div class="code"><pre>// The browser (WebRTC)
 const pc = new RTCPeerConnection();
 const audio = new Audio(); audio.autoplay = true;
 pc.ontrack = (e) => (audio.srcObject = e.streams[0]);
 const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
 pc.addTrack(mic.getTracks()[0]);
 const events = pc.createDataChannel("oai-events");
-
 const offer = await pc.createOffer();
 await pc.setLocalDescription(offer);
-const answer = await fetch(s.connect.webrtc, {
-  method: "POST",
-  body: offer.sdp,
-  headers: { Authorization: `Bearer ${s.client_secret}`, "Content-Type": "application/sdp" },
+const answer = await fetch(session.connect.webrtc, {
+  method: "POST", body: offer.sdp,
+  headers: { Authorization: `Bearer ${session.client_secret}`, "Content-Type": "application/sdp" },
 });
 await pc.setRemoteDescription({ type: "answer", sdp: await answer.text() });
 
-<span class="c">// 3. Tool calls arrive on the data channel</span>
+// When the assistant calls a tool during the conversation:
 events.onmessage = async (m) => {
   const ev = JSON.parse(m.data);
   if (ev.type !== "response.function_call_arguments.done") return;
   const args = JSON.parse(ev.arguments || "{}");
-  const output = s.app_tools.includes(ev.name)
-    ? await runMyAppTool(ev.name, args)                    <span class="c">// your app's power</span>
-    : await fetch("/my-server/assistant-tool", {            <span class="c">// relays to POST /v1/tools/call</span>
-        method: "POST", body: JSON.stringify({ name: ev.name, arguments: args }),
-      }).then(r => r.json());
+  // Your app's tools run in your app; assistant tools go through your backend
+  // to POST /v1/tools/call.
+  const output = session.app_tools.includes(ev.name)
+    ? await runToolInApp(ev.name, args)
+    : await fetch("/api/assistant-tool", { method: "POST", body: JSON.stringify({ name: ev.name, arguments: args }) }).then(r => r.json());
   events.send(JSON.stringify({ type: "conversation.item.create",
     item: { type: "function_call_output", call_id: ev.call_id, output: JSON.stringify(output) } }));
   events.send(JSON.stringify({ type: "response.create" }));
 };</pre></div>
-  <div class="endpoint"><span class="m post">POST</span>/v1/voice/transcript<span class="scope">scope: voice</span></div>
-  <p>When the conversation ends (or every few turns), send what was said so My Assistant remembers it, and how long it lasted so it counts on your account:</p>
-<div class="code"><pre>{ "session_id": "my-session-1", "seconds": 184,
-  "turns": [ { "role": "user", "text": "Let's play a quick game." },
-             { "role": "assistant", "text": "Gladly! You're white." } ] }</pre></div>
+  <p>When the conversation ends, post the transcript to <a href="#ref-voice"><code>/v1/voice/transcript</code></a> so it becomes part of the user's history and the minutes are counted.</p>
 </section>
 
-<section id="tools">
-  <h2>Assistant tools</h2>
-  <div class="endpoint"><span class="m get">GET</span>/v1/tools<span class="scope">scope: tools or voice</span></div>
-  <p>Lists the assistant's tools this key may run, with their JSON Schemas. With <code>voice</code> only, that's the tools its voice sessions are given; with <code>tools</code>, every tool that works without your phone in hand. Tools that need your explicit yes (calls, payments, messages to other people) are not available through the API.</p>
-  <div class="endpoint"><span class="m post">POST</span>/v1/tools/call<span class="scope">scope: tools or voice</span></div>
-<div class="code"><pre>{ "name": "create_reminder",
-  "arguments": { "text": "Rematch with Ravi", "due_at": "2026-10-15T19:00:00+05:30" },
-  "user_text": "remind me tomorrow at 7 to have a rematch with Ravi" }
-
-→ { "ok": true, "result": "Reminder set for tomorrow at 7 pm." }</pre></div>
-  <p><code>user_text</code> is what the user just said; tools that write to memory check against it.</p>
+<section id="checklist">
+  <h3>Go-live checklist</h3>
+  <ul>
+    <li>The key is only on your server, read from an environment variable.</li>
+    <li>You store and reuse <code>conversation_id</code> per user thread.</li>
+    <li>Every tool call is answered — with <code>output</code> or <code>error</code>.</li>
+    <li>You handle <code>429</code> (slow down / daily limit) and <code>503</code> (try again) — see <a href="#errors">Errors</a>.</li>
+    <li>Your app reports meaningful moments as events, with summaries a person would understand.</li>
+    <li>Only the scopes you need are switched on in the Console.</li>
+  </ul>
 </section>
 
-<section id="memory">
-  <h2>Memory</h2>
-  <div class="endpoint"><span class="m get">GET</span>/v1/memory?q=chess&amp;limit=20<span class="scope">scope: memory:read</span></div>
-<div class="code"><pre>{ "memories": [ { "id": 812, "fact": "Plays chess on weekends with Ravi", "kind": "semantic", "createdAt": 1760400000000 } ] }</pre></div>
-  <div class="endpoint"><span class="m post">POST</span>/v1/memory<span class="scope">scope: memory:write</span></div>
-<div class="code"><pre>{ "fact": "Prefers playing chess as black" }</pre></div>
-  <p>Facts added by an app are listed in your account's activity log with the app's name.</p>
-</section>
+<h2 style="margin-top:52px;font-size:30px">API reference</h2>
+<p class="muted">Base URL <code>{{API}}</code>. Requests and responses are JSON.</p>
 
-<section id="records">
-  <h2>Records</h2>
-  <p>Your app's own data, kept on your account: matches, scores, saved boards, settings. Organise it in <b>collections</b> of JSON documents (64 KB each). Give each record a short <code>summary</code> — it's the line My Assistant reads when you ask about it.</p>
-  <div class="endpoint"><span class="m put">PUT</span>/v1/records/:collection/:id<span class="scope">scope: data</span></div>
-<div class="code"><pre>PUT {{API}}/records/matches/2026-10-14-ravi
-{ "summary": "Beat Ravi in 34 moves with the Sicilian",
-  "data": { "opponent": "Ravi", "result": "win", "moves": 34, "opening": "Sicilian" } }
-
-→ 201 { "record": { "collection": "matches", "id": "2026-10-14-ravi", "summary": "…", "data": {…}, "createdAt": …, "updatedAt": … } }</pre></div>
+<section id="auth">
+  <h3>Authentication &amp; scopes</h3>
+  <p>Send the key on every request: <code>Authorization: Bearer mya_…</code> (or <code>X-Api-Key: mya_…</code>). Scopes are switched on per app in the Console; a call without the needed scope returns <code>403 missing_scope</code>.</p>
   <table>
-    <tr><th>Call</th><th>Does</th></tr>
-    <tr><td><span class="m post">POST</span> <code>/v1/records/:collection</code></td><td>Creates a record with a new id.</td></tr>
-    <tr><td><span class="m get">GET</span> <code>/v1/records/:collection?limit=50&amp;before=&lt;updatedAt&gt;</code></td><td>Newest first.</td></tr>
-    <tr><td><span class="m get">GET</span> <code>/v1/records/:collection/:id</code></td><td>One record.</td></tr>
-    <tr><td><span class="m delete">DELETE</span> <code>/v1/records/:collection/:id</code></td><td>Removes it.</td></tr>
-    <tr><td><span class="m get">GET</span> <code>/v1/records</code></td><td>Collections, with counts.</td></tr>
+    <tr><th>Scope</th><th>Allows</th><th>Default</th></tr>
+    <tr><td><code>assistant</code></td><td>Messages (<code>/assistant/messages</code>).</td><td>on</td></tr>
+    <tr><td><code>voice</code></td><td>Voice sessions, transcripts, and the assistant tools a voice session uses.</td><td>on</td></tr>
+    <tr><td><code>data</code></td><td>The app's own records and events.</td><td>on</td></tr>
+    <tr><td><code>memory:read</code></td><td>Read what the assistant remembers about the user.</td><td>on</td></tr>
+    <tr><td><code>memory:write</code></td><td>Add to memory — including facts learnt from messages sent through your app.</td><td>off</td></tr>
+    <tr><td><code>tools</code></td><td>Run any app-safe assistant tool directly (<code>/tools/call</code>).</td><td>off</td></tr>
+    <tr><td><code>notify</code></td><td>Send a notification to the user's phone.</td><td>on</td></tr>
+    <tr><td><code>profile</code></td><td>Read the user's and the assistant's names.</td><td>on</td></tr>
   </table>
 </section>
 
-<section id="events">
-  <h2>Activity</h2>
+<section id="ref-messages">
+  <h3>Messages</h3>
+  <div class="endpoint"><span class="m post">POST</span>/v1/assistant/messages<span class="scope">scope: assistant</span></div>
+  <p>Either a new message:</p>
+  <table>
+    <tr><th>Field</th><th>Type</th><th></th><th>Description</th></tr>
+    <tr><td><code>message</code></td><td>string</td><td>required</td><td>What the user said or typed, up to 4,000 characters.</td></tr>
+    <tr><td><code>conversation_id</code></td><td>string</td><td>optional</td><td>Continue a thread (kept 7 days).</td></tr>
+    <tr><td><code>tools</code></td><td>array</td><td>optional</td><td>App tools: <code>{ name, description, parameters }</code>, up to 24.</td></tr>
+    <tr><td><code>context</code></td><td>string | object</td><td>optional</td><td>What the app shows now. Data, never instructions. Up to 12,000 characters.</td></tr>
+    <tr><td><code>instructions</code></td><td>string</td><td>optional</td><td>How to behave in this conversation.</td></tr>
+    <tr><td><code>include_assistant_tools</code></td><td>boolean</td><td>optional</td><td>Default <code>true</code>. <code>false</code> limits the assistant to your app tools.</td></tr>
+  </table>
+  <p>…or the results of app tool calls:</p>
+  <table>
+    <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+    <tr><td><code>conversation_id</code></td><td>string</td><td>The conversation that returned <code>requires_action</code>.</td></tr>
+    <tr><td><code>tool_results</code></td><td>array</td><td><code>{ call_id, output }</code> or <code>{ call_id, error }</code> — one per call.</td></tr>
+  </table>
+  <p>Response fields: <code>conversation_id</code>, <code>status</code> (<code>"completed"</code> | <code>"requires_action"</code>), <code>reply</code> (text, may be empty while actions are pending), <code>tool_calls</code> (<code>[{ id, name, arguments }]</code>), <code>actions</code> (assistant tools that ran).</p>
+  <div class="endpoint"><span class="m delete">DELETE</span>/v1/assistant/conversations/:id<span class="scope">scope: assistant</span></div>
+  <p>Forgets a thread. What was already said stays in the user's history.</p>
+</section>
+
+<section id="ref-voice">
+  <h3>Voice</h3>
+  <div class="endpoint"><span class="m post">POST</span>/v1/voice/sessions<span class="scope">scope: voice</span></div>
+  <p>Body: optional <code>tools</code>, <code>context</code>, <code>instructions</code>, <code>include_assistant_tools</code>, <code>voice</code>. Returns <code>client_secret</code> (short-lived), <code>expires_at</code>, <code>model</code>, <code>connect.webrtc</code>, <code>connect.websocket</code>, <code>assistant.name</code>, <code>assistant_tools</code> (names to route to <code>/v1/tools/call</code>) and <code>app_tools</code>.</p>
+  <div class="endpoint"><span class="m post">POST</span>/v1/voice/transcript<span class="scope">scope: voice</span></div>
+<div class="code"><pre>{ "session_id": "your-session-id", "seconds": 184,
+  "turns": [ { "role": "user", "text": "…" }, { "role": "assistant", "text": "…" } ] }</pre></div>
+</section>
+
+<section id="ref-tools">
+  <h3>Assistant tools</h3>
+  <div class="endpoint"><span class="m get">GET</span>/v1/tools<span class="scope">scope: tools or voice</span></div>
+  <p>The assistant tools this key may run, with JSON Schemas.</p>
+  <div class="endpoint"><span class="m post">POST</span>/v1/tools/call<span class="scope">scope: tools or voice</span></div>
+<div class="code"><pre>{ "name": "create_reminder",
+  "arguments": { "text": "Call the bank", "due_at": "2026-10-15T10:00:00+05:30" },
+  "user_text": "remind me tomorrow at 10 to call the bank" }
+→ { "ok": true, "result": "Reminder set for tomorrow at 10 am." }</pre></div>
+  <p><code>user_text</code> is what the user just said; tools that write to memory check against it. Tools that need the user's explicit yes — calls, payments, messages to other people — are never available through the API.</p>
+</section>
+
+<section id="ref-memory">
+  <h3>Memory</h3>
+  <div class="endpoint"><span class="m get">GET</span>/v1/memory?q=&lt;words&gt;&amp;limit=50<span class="scope">scope: memory:read</span></div>
+<div class="code"><pre>{ "memories": [ { "id": 812, "fact": "Prefers morning meetings", "kind": "semantic", "createdAt": 1760400000000 } ] }</pre></div>
+  <div class="endpoint"><span class="m post">POST</span>/v1/memory<span class="scope">scope: memory:write</span></div>
+<div class="code"><pre>{ "fact": "Prefers metric units" }</pre></div>
+</section>
+
+<section id="ref-records">
+  <h3>Records</h3>
+  <table>
+    <tr><th>Call</th><th>Scope</th><th>Does</th></tr>
+    <tr><td><span class="m put">PUT</span> <code>/v1/records/:collection/:id</code></td><td>data</td><td>Create or replace. Body <code>{ summary, data }</code>. 201 when new, 200 when replaced.</td></tr>
+    <tr><td><span class="m post">POST</span> <code>/v1/records/:collection</code></td><td>data</td><td>Create with a generated id.</td></tr>
+    <tr><td><span class="m get">GET</span> <code>/v1/records/:collection?limit=50&amp;before=&lt;updatedAt&gt;</code></td><td>data</td><td>Newest first.</td></tr>
+    <tr><td><span class="m get">GET</span> <code>/v1/records/:collection/:id</code></td><td>data</td><td>One record.</td></tr>
+    <tr><td><span class="m delete">DELETE</span> <code>/v1/records/:collection/:id</code></td><td>data</td><td>Remove it.</td></tr>
+    <tr><td><span class="m get">GET</span> <code>/v1/records</code></td><td>data</td><td>Collections with counts.</td></tr>
+  </table>
+  <p>Collection names: letters, digits, <code>_</code>, <code>-</code> (40 max). Ids: letters, digits, <code>_ . : -</code> (100 max). <code>data</code> is a JSON object or array up to 64 KB; <code>summary</code> up to 400 characters.</p>
+</section>
+
+<section id="ref-events">
+  <h3>Events</h3>
   <div class="endpoint"><span class="m post">POST</span>/v1/events<span class="scope">scope: data</span></div>
-  <p>A one-line account of something that happened. It appears under the app in My Assistant (Hub → Your own apps) and in the Developer Console, and it's what the assistant answers from when you ask <i>"how did my chess match go?"</i>.</p>
-<div class="code"><pre>{ "type": "match_finished",
-  "summary": "Lost to the assistant in 41 moves — blundered the queen on move 28",
-  "data": { "result": "loss", "moves": 41 } }</pre></div>
+  <p>Body <code>{ type?, summary, data? }</code> — <code>summary</code> (required, up to 400 characters) is the sentence people and the assistant read; <code>type</code> is your own label; <code>data</code> up to 16 KB.</p>
   <div class="endpoint"><span class="m get">GET</span>/v1/events?limit=30&amp;before=&lt;id&gt;<span class="scope">scope: data</span></div>
 </section>
 
-<section id="notify">
-  <h2>Notifications</h2>
+<section id="ref-notify">
+  <h3>Notifications</h3>
   <div class="endpoint"><span class="m post">POST</span>/v1/notify<span class="scope">scope: notify</span></div>
-<div class="code"><pre>{ "title": "Your move", "body": "The assistant played Nf6. Your turn!" }
+<div class="code"><pre>{ "title": "Export ready", "body": "Your report is ready to download." }
 → { "ok": true, "delivered": true }</pre></div>
-  <p>Up to 20 a day per app. Each one is also kept in the app's activity.</p>
+  <p>Up to 20 a day per app; each is also added to the app's events.</p>
 </section>
 
-<section id="me">
-  <h2>Who am I</h2>
+<section id="ref-me">
+  <h3>Me</h3>
   <div class="endpoint"><span class="m get">GET</span>/v1/me</div>
-<div class="code"><pre>{ "app": { "id": 4, "slug": "chess-arena", "name": "Chess Arena", "scopes": ["assistant", "voice", "data", "…"] },
-  "user": { "name": "Asha" },          <span class="c">// with the profile scope</span>
+<div class="code"><pre>{ "app": { "id": 4, "slug": "my-app", "name": "My App", "scopes": ["assistant", "data", "…"] },
+  "user": { "name": "Asha" },          // with the profile scope
   "assistant": { "name": "Hari" } }</pre></div>
+  <p>A good first call to check the key works.</p>
 </section>
 
 <section id="errors">
   <h2>Errors</h2>
-  <p>Every error has the same shape: <code>{ "error": { "code": "…", "message": "…" } }</code>. The message is written to be shown to a person.</p>
+  <p>Every error: <code>{ "error": { "code": "…", "message": "…" } }</code>. Messages are written for people — show them as-is when it helps.</p>
   <table>
-    <tr><th>Status</th><th>Codes</th><th>Meaning</th></tr>
-    <tr><td>400</td><td><code>message_required</code>, <code>bad_tools</code>, <code>bad_record</code>, <code>missing_results</code>…</td><td>The request needs fixing; the message says how.</td></tr>
-    <tr><td>401</td><td><code>missing_key</code>, <code>invalid_key</code></td><td>No key, or a revoked one.</td></tr>
-    <tr><td>403</td><td><code>missing_scope</code>, <code>app_paused</code></td><td>Allow the scope, or resume the app, in the Developer Console.</td></tr>
+    <tr><th>Status</th><th>Codes</th><th>What to do</th></tr>
+    <tr><td>400</td><td><code>message_required</code>, <code>bad_tools</code>, <code>bad_context</code>, <code>bad_record</code>, <code>bad_event</code>, <code>missing_results</code></td><td>Fix the request; the message says how.</td></tr>
+    <tr><td>401</td><td><code>missing_key</code>, <code>invalid_key</code>, <code>account_unavailable</code></td><td>Check the key; it may have been revoked.</td></tr>
+    <tr><td>403</td><td><code>missing_scope</code>, <code>app_paused</code></td><td>Allow the scope or resume the app in the Console.</td></tr>
     <tr><td>404</td><td><code>unknown_conversation</code>, <code>not_found</code>, <code>unknown_tool</code></td><td>Nothing by that id for this app.</td></tr>
-    <tr><td>409</td><td><code>nothing_pending</code></td><td>Tool results sent to a conversation that isn't waiting for any.</td></tr>
-    <tr><td>429</td><td><code>rate_limited</code>, <code>daily_limit</code></td><td>Slow down, or wait until tomorrow (UTC).</td></tr>
-    <tr><td>5xx</td><td><code>busy</code>, <code>voice_unavailable</code>, <code>server_error</code></td><td>Try again shortly.</td></tr>
+    <tr><td>409</td><td><code>nothing_pending</code>, <code>tool_unavailable</code></td><td>Tool results sent to a conversation that isn't waiting; or a tool this account can't use now.</td></tr>
+    <tr><td>429</td><td><code>rate_limited</code>, <code>daily_limit</code></td><td>Back off and retry later; daily limits reset at midnight UTC.</td></tr>
+    <tr><td>5xx</td><td><code>busy</code>, <code>assistant_unavailable</code>, <code>voice_unavailable</code>, <code>server_error</code></td><td>Retry after a few seconds.</td></tr>
   </table>
 </section>
 
@@ -423,69 +580,30 @@ events.onmessage = async (m) => {
     <tr><td>Apps / keys</td><td>20 apps per account, 5 live keys per app</td></tr>
     <tr><td>Records</td><td>10,000 per app, 64 KB each</td></tr>
   </table>
-  <p>Usage is on <b>your</b> account — the same as talking to the assistant in My Assistant. Each app's requests, messages and voice minutes are shown in the Developer Console, with a 30-day chart.</p>
-</section>
-
-<section id="example">
-  <h2>Full example: a game against your assistant</h2>
-  <p>A minimal Node server for any turn-based game. Swap <code>applyMove</code> for your own rules.</p>
-<div class="code"><pre>import express from "express";
-const API = "{{API}}";
-const KEY = process.env.MYA_KEY;
-const mya = (path, body) => fetch(API + path, {
-  method: body ? "POST" : "GET",
-  headers: { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" },
-  body: body && JSON.stringify(body),
-}).then((r) => r.json());
-
-const TOOLS = [{
-  name: "make_move",
-  description: "Play your move in the current game.",
-  parameters: { type: "object", properties: { move: { type: "string" } }, required: ["move"] },
-}];
-
-let game = newGame(), conversation = null;
-
-async function talk(message) {
-  let r = await mya("/assistant/messages", {
-    message, conversation_id: conversation, tools: TOOLS,
-    instructions: "You are the user's opponent. Be a good sport.",
-    context: { board: game.board, turn: game.turn },
-  });
-  while (r.status === "requires_action") {
-    const tool_results = r.tool_calls.map((c) => {
-      const res = applyMove(game, c.arguments.move);          // your game logic
-      return res.ok ? { call_id: c.id, output: { board: game.board } }
-                    : { call_id: c.id, error: res.reason };
-    });
-    r = await mya("/assistant/messages", { conversation_id: r.conversation_id, tool_results });
-  }
-  conversation = r.conversation_id;
-  if (game.over) {
-    await mya("/events", { type: "game_over", summary: game.summaryLine, data: game.result });
-    await mya("/records/games", { summary: game.summaryLine, data: game.record });
-  }
-  return r.reply;
-}
-
-const app = express().use(express.json());
-app.post("/play", async (req, res) => {
-  applyMove(game, req.body.move);
-  res.json({ reply: await talk(`I played ${req.body.move}`), board: game.board });
-});
-app.listen(3000);</pre></div>
-  <p>Later, in My Assistant: <i>"How did my last game go?"</i> → <i>"You lost in 41 moves — the queen blunder on move 28. Rematch?"</i></p>
+  <p>All usage is on the user's own account, the same as using My Assistant. Each app's requests, messages and voice minutes are shown in the <a href="{{CONSOLE}}">Developer Console</a>.</p>
 </section>
 
 <section id="security">
-  <h2>Security &amp; privacy</h2>
+  <h2>Security</h2>
   <ul>
-    <li>Only a hash of each key is stored; the key is shown once when it's made.</li>
-    <li>An app sees only what its scopes allow, and only its own records and activity.</li>
-    <li>Context and tool results from your app are treated as data, never as instructions to the assistant.</li>
-    <li>Calls, payments and messages to other people always need your yes in My Assistant — the API cannot do them.</li>
-    <li>Removing an app deletes its keys, records, activity and threads. Deleting your account deletes everything.</li>
+    <li>Keys are stored only as a hash and shown once. Revoke a key, pause or remove the app in the Console and it stops at once.</li>
+    <li>An app sees only what its scopes allow, and only its own records and events — never another app's.</li>
+    <li><code>context</code> and tool results are treated as data, never as instructions to the assistant.</li>
+    <li>Calls, payments, messages to other people, location, email and the user's other apps are never reachable through the API.</li>
+    <li>Removing an app deletes its keys, records, events and threads.</li>
   </ul>
+</section>
+
+<section id="faq">
+  <h2>FAQ</h2>
+  <h4>Is it really the same assistant?</h4>
+  <p>Yes — same personality and name, same memory, same recent conversations, same account. Messages sent through your app are added to the user's history, marked as coming from your app.</p>
+  <h4>Do I need app tools?</h4>
+  <p>No. Without them the assistant can still chat and use its own tools. Add app tools when you want it to <i>do</i> things in your app.</p>
+  <h4>Can my app read other apps' data?</h4>
+  <p>No. Each app sees only its own records and events. Only the user, in My Assistant, can ask across their apps.</p>
+  <h4>Where do I see what my app is doing?</h4>
+  <p>The <a href="{{CONSOLE}}">Developer Console</a> shows usage (30-day chart), activity, stored data, and has a playground to try messages with your key.</p>
   <footer>My Assistant API v1 · Questions or ideas? Tell your assistant "send feedback to the developer".</footer>
 </section>
 </main>

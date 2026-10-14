@@ -493,7 +493,8 @@ const CHESS_TOOLS = [{
       const r = await api("GET", "/developers");
       ok(r);
       assert.match(r.headers.get("content-type"), /text\/html/);
-      assert.ok(r.text.includes("https://api.example.test/v1/assistant/messages"));
+      assert.ok(r.text.includes("MYA_API=https://api.example.test/v1"));
+      assert.ok(!/chess|make_move/i.test(r.text), "no example-domain leftovers");
       assert.ok(!r.text.includes("{{API}}"));
       assert.match(r.headers.get("content-security-policy"), /default-src 'none'/);
     });

@@ -3,13 +3,13 @@
  *
  * The owner: "the user can access their assistant even from different
  * apps — the memory is the same, the assistant just gets extra powers
- * there". A user builds their own app (a game, a voice gadget, a tracker),
+ * there". A user builds their own app (any kind of app),
  * registers it here, and gets an API key that acts as THEM, inside limits
  * they chose (scopes). Everything below is per user and per app:
  *
  *   platform_apps           an app the user connected: name, what it is,
  *                           the words people use for it (so "how did my
- *                           chess game go?" finds it), the scopes its keys
+ *                           <app> go?" finds it), the scopes its keys
  *                           carry, and standing instructions for the
  *                           assistant inside it.
  *   platform_keys           its API keys. Only a SHA-256 of the key is
@@ -143,7 +143,7 @@ const now = () => Date.now();
 const today = () => new Date().toISOString().slice(0, 10);
 const clip = (v, n) => String(v == null ? "" : v).replace(/\s+/g, " ").trim().slice(0, n);
 
-/** "Chess Arena!" → "chess-arena". */
+/** "My App!" → "my-app". */
 function slugOf(name) {
   return String(name || "").toLowerCase().normalize("NFKD")
     .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "app";
@@ -207,7 +207,7 @@ async function createApp(userId, { name, description, icon, homepage, keywords, 
   if (!n) return { error: "name required" };
   const count = await one(`SELECT COUNT(*)::int AS n FROM platform_apps WHERE user_id=$1`, [userId]);
   if (count && count.n >= LIMITS.apps) return { error: `you can connect up to ${LIMITS.apps} apps` };
-  // A second "Chess" becomes chess-2: the slug is how the assistant and the
+  // A second "My App" becomes my-app-2: the slug is how the assistant and the
   // conversation record name the app, so it is unique per user.
   const base = slugOf(n);
   let slug = base;

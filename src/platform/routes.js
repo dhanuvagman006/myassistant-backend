@@ -146,7 +146,7 @@ router.get("/memory", need("memory:read"), handle(async (req) => {
 
 router.post("/memory", need("memory:write"), handle(async (req) => {
   const fact = typeof (req.body && req.body.fact) === "string" ? req.body.fact.trim() : "";
-  if (!fact) throw new ApiError(400, "fact_required", "fact: one sentence about the user, e.g. \"Prefers playing chess as black\"");
+  if (!fact) throw new ApiError(400, "fact_required", "fact: one sentence about the user, e.g. \"Prefers metric units\"");
   if (fact.length > 300) throw new ApiError(400, "fact_too_long", "fact is longer than 300 characters");
   const app = appOf(req);
   await require("../agents/memory").saveMemory(Number(req.user.sub), fact, 2, "semantic");
