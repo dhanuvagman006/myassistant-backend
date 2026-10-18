@@ -128,6 +128,37 @@ async function migrate(exec) {
     CREATE INDEX IF NOT EXISTS idx_memories_valid
       ON agent_memories(user_id, valid, importance DESC, id DESC);
 
+    -- ---------- MEMORY THAT LEARNS (memory/learning.js, 2026-10-18) -------
+    -- strength: 1 = as stored; rises when a fact is used or said again,
+    -- falls when it goes unused or is corrected. Below 0.35 it leaves the
+    -- prompt (still listed, still recallable). Learned habits carry
+    -- source='learned'.
+    ALTER TABLE agent_memories ADD COLUMN IF NOT EXISTS strength REAL NOT NULL DEFAULT 1;
+    ALTER TABLE agent_memories ADD COLUMN IF NOT EXISTS uses INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE agent_memories ADD COLUMN IF NOT EXISTS last_used_at BIGINT;
+    ALTER TABLE agent_memories ADD COLUMN IF NOT EXISTS evidence INTEGER NOT NULL DEFAULT 1;
+    -- Patterns seen in what they do, waiting for enough days to be kept.
+    CREATE TABLE IF NOT EXISTS memory_candidates (
+      id         BIGSERIAL PRIMARY KEY,
+      user_id    INTEGER NOT NULL,
+      key        TEXT    NOT NULL,
+      fact       TEXT    NOT NULL,
+      kind       TEXT    NOT NULL DEFAULT 'preference',
+      days       TEXT    NOT NULL DEFAULT '[]',   -- JSON array of YYYY-MM-DD
+      status     TEXT    NOT NULL DEFAULT 'pending', -- pending | promoted | rejected
+      memory_id  BIGINT,
+      created_at BIGINT  NOT NULL,
+      updated_at BIGINT  NOT NULL,
+      UNIQUE (user_id, key)
+    );
+    -- Once-a-day upkeep per user: decay, consolidation, reflection.
+    CREATE TABLE IF NOT EXISTS memory_upkeep (
+      user_id         INTEGER PRIMARY KEY,
+      day             TEXT   NOT NULL DEFAULT '',
+      decayed_at      BIGINT NOT NULL DEFAULT 0,
+      consolidated_at BIGINT NOT NULL DEFAULT 0
+    );
+
     -- ---------- EVENTS (dated things: hearings, meetings, deadlines) -----
     CREATE TABLE IF NOT EXISTS events (
       id           BIGSERIAL PRIMARY KEY,

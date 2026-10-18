@@ -71,6 +71,8 @@ async function recordTurn(uid, body) {
   if (!t) return { status: 400, json: { error: "unknown turn" } };
   // Recorded once: a retried request gets the same answer, not a second row.
   if (t.recorded) return { status: 200, json: { ok: true, ...t.recorded } };
+  // What they heard last turn — a "no, that's wrong" now is about it.
+  const prevReply = s.lastReply || "";
 
   const user = String(body.user == null ? t.text : body.user).slice(0, 4000);
   let reply = String(body.reply == null ? "" : body.reply).slice(0, 8000);
@@ -149,6 +151,14 @@ async function recordTurn(uid, body) {
   // reply is kept whole: the correction is what the app says next.
   const cut = !corrected && reply.trim() ? heardPart(reply, body.cutOffAfter) : null;
   const kept = cut || reply;
+  // MEMORY THAT LEARNS (memory/learning.js): facts the reply drew on grow
+  // stronger, ones they contradict are retired. Off the reply's path; a
+  // reply they cut off or never heard teaches nothing.
+  if (spoken && user.trim()) {
+    try {
+      require("../memory/learning").afterTurn(uid, { user, reply: cut ? "" : reply, prevReply });
+    } catch (_) {}
+  }
   if (reply.trim()) {
     recent.append(uid, "assistant", kept, { ...meta, latencyMs, tools });
     // CLOSE THE LEDGER: every action this turn took carries the answer.

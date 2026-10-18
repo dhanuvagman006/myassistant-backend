@@ -41,7 +41,8 @@ async function listMemories(userId) {
   // filter it kept coming back here — in recall_memory and in every
   // system prompt via memoryBlock below.
   return query(
-    `SELECT id, fact, importance, created_at, kind FROM agent_memories
+    `SELECT id, fact, importance, created_at, kind, strength, uses, last_used_at, source
+       FROM agent_memories
       WHERE user_id=$1 AND valid=1 ORDER BY importance DESC, id DESC LIMIT $2`,
     [userId, MAX_MEMORIES]
   );
@@ -98,10 +99,21 @@ function entitiesOf(fact) {
 }
 
 const DAY_MS = 86_400_000;
+// A fact used recently counts as recent (memory/learning.js stamps it).
 function recencyBonus(row, now) {
-  const age = now - Number(row.created_at || 0);
+  const age = now - Math.max(Number(row.created_at || 0), Number(row.last_used_at || 0));
   if (!(age >= 0)) return 0;
   return age < 7 * DAY_MS ? 1 : age < 30 * DAY_MS ? 0.5 : 0;
+}
+
+// STRENGTH (memory/learning.js, 2026-10-18): 1 as stored, up to 3 when
+// used and said again, down when unused for weeks or corrected. A row
+// from before the column existed reads as 1 and ranks exactly as before.
+const FADED = 0.35;
+function strengthOf(row) {
+  const v = row && row.strength;
+  const n = v == null || v === "" ? NaN : Number(v);
+  return Number.isFinite(n) ? n : 1;
 }
 
 /**
@@ -112,7 +124,7 @@ function recencyBonus(row, now) {
  */
 function pickMemories(rows, { words = "", limit = 15, now = Date.now() } = {}) {
   const list = Array.isArray(rows) ? rows : [];
-  const base = (r) => Number(r.importance || 0) + recencyBonus(r, now);
+  const base = (r) => Number(r.importance || 0) + recencyBonus(r, now) + (strengthOf(r) - 1);
   const byBase = list
     .map((r, i) => ({ r, i, b: base(r) }))
     .sort((x, y) => y.b - x.b || x.i - y.i);
@@ -141,14 +153,20 @@ function pickMemories(rows, { words = "", limit = 15, now = Date.now() } = {}) {
  * `opts` every fact is sent, as every other caller always had.
  */
 async function memoryBlock(userId, opts) {
-  const all = await listMemories(userId).catch(() => []);
+  // A faded fact (unused for months, or doubted) stays recallable but
+  // no longer rides in the prompt.
+  const all = (await listMemories(userId).catch(() => []))
+    .filter((r) => strengthOf(r) >= FADED);
   if (!all.length) return "";
   // GOALS AND PREFERENCES ride on every turn (a handful each): they shape
   // HOW to answer whatever is asked, so relevance-by-words must not drop
   // "keep answers short" or "saving for a house". Facts are picked by
   // relevance as before.
-  const goals = all.filter((r) => r.kind === "goal").slice(0, 8);
-  const prefs = all.filter((r) => r.kind === "preference").slice(0, 10);
+  const firm = (rows) => rows
+    .map((r, i) => ({ r, i, b: Number(r.importance || 0) + strengthOf(r) }))
+    .sort((x, y) => y.b - x.b || x.i - y.i).map((x) => x.r);
+  const goals = firm(all.filter((r) => r.kind === "goal")).slice(0, 8);
+  const prefs = firm(all.filter((r) => r.kind === "preference")).slice(0, 10);
   let facts = all.filter((r) => r.kind !== "goal" && r.kind !== "preference");
   if (opts && scoringOn()) {
     facts = pickMemories(facts, { words: opts.words || "", limit: Number(opts.limit) > 0 ? Number(opts.limit) : pickCount() });
@@ -186,6 +204,14 @@ async function saveMemory(userId, fact, importance = 2, kind = "semantic") {
     [userId, f]
   );
   if (dup) {
+    if (dup.valid) {
+      // SAID AGAIN: the same fact a second time is evidence it matters.
+      await run(
+        `UPDATE agent_memories SET strength=LEAST(3, strength + 0.3), evidence=evidence + 1,
+                last_used_at=$3 WHERE id=$1 AND user_id=$2`,
+        [dup.id, userId, Date.now()]
+      ).catch(() => {});
+    }
     if (!dup.valid) {
       await run(
         `UPDATE agent_memories SET valid=1, importance=GREATEST(importance,$3), created_at=$4, kind=$5 WHERE id=$1 AND user_id=$2`,
@@ -212,6 +238,14 @@ async function saveMemory(userId, fact, importance = 2, kind = "semantic") {
        OFFSET $2)`,
     [userId, MAX_MEMORIES]
   );
+  // Embedded off the write's path, so meaning-based recall
+  // (memory/service.search) can rank it; no provider → stays lexical.
+  if (row) {
+    require("../memory/embeddings").embedOne(f).then((vec) => vec && run(
+      `UPDATE agent_memories SET embedding=$3 WHERE id=$1 AND user_id=$2`,
+      [row.id, userId, JSON.stringify(vec)]
+    )).catch(() => {});
+  }
   return row ? row.id : null;
 }
 
@@ -231,8 +265,10 @@ const SUPERSEDE_PROMPT =
   "person or thing with a different or updated value (moved city, new job, a " +
   "changed date, a preference reversed), or a fact the new one makes untrue. Do " +
   "NOT include a fact that is only related, or that the new fact adds to without " +
-  "contradicting it. Return STRICT JSON only — an array of the numbers of the " +
-  "replaced facts, e.g. [2] — or [] when none. No prose, no markdown.";
+  "contradicting it. Separately, list the facts that say the SAME thing as the " +
+  "new one (a restatement, maybe in other words) and hold no detail the new one " +
+  "lacks. Return STRICT JSON only: {\"replaces\":[2],\"same\":[4]} — empty " +
+  "arrays when none. No prose, no markdown.";
 
 /** Remembered facts that share a word or a name with `fact`, newest first. */
 function relatedFacts(rows, fact, limit = 10) {
@@ -243,6 +279,19 @@ function relatedFacts(rows, fact, limit = 10) {
       entitiesOf(r.fact).some((e) => names.has(e)))
     .sort((a, b) => Number(b.id) - Number(a.id))
     .slice(0, limit);
+}
+
+/** The model's verdict, in the old shape ([2]) or the new ({replaces, same}). */
+function parseSupersede(reply) {
+  const v = JSON.parse(String(reply || "").replace(/```json|```/g, "").trim());
+  if (Array.isArray(v)) return { replaces: v, same: [] };
+  const arr = (x) => (Array.isArray(x) ? x : []);
+  return { replaces: arr(v && v.replaces), same: arr(v && v.same) };
+}
+
+function dedupeRows(rows) {
+  const seen = new Set();
+  return rows.filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)));
 }
 
 /**
@@ -263,13 +312,27 @@ async function supersede(userId, fact, keepId = null) {
         candidates.map((r, i) => `${i + 1}. ${r.fact}`).join("\n") }],
       { system: SUPERSEDE_PROMPT }
     );
-    const picked = JSON.parse(String(reply || "").replace(/```json|```/g, "").trim());
-    if (!Array.isArray(picked)) return [];
-    const gone = [...new Set(picked)]
+    const { replaces, same } = parseSupersede(reply);
+    const pick = (list) => [...new Set(list)]
       .map((n) => candidates[Number(n) - 1])
       .filter(Boolean);
+    const restated = keepId ? pick(same) : [];
+    const gone = dedupeRows([...pick(replaces), ...restated]);
     if (!gone.length) return [];
     const at = Date.now();
+    // SAID AGAIN IN OTHER WORDS: the new row takes over the old one's
+    // standing (strength, uses, evidence) rather than starting from zero.
+    if (restated.length) {
+      await run(
+        `UPDATE agent_memories n
+            SET strength = LEAST(3, GREATEST(n.strength, o.s) + 0.3),
+                uses = n.uses + o.u, evidence = n.evidence + o.e
+           FROM (SELECT MAX(strength) s, SUM(uses)::int u, SUM(evidence)::int e
+                   FROM agent_memories WHERE user_id=$1 AND id = ANY($2::bigint[])) o
+          WHERE n.user_id=$1 AND n.id=$3`,
+        [userId, restated.map((r) => r.id), keepId]
+      );
+    }
     await run(
       `UPDATE agent_memories SET valid=0, invalidated_at=$3, updated_at=$3
         WHERE user_id=$1 AND id = ANY($2::bigint[]) AND valid=1`,
@@ -301,6 +364,8 @@ async function deleteFactsContaining(userId, substring) {
 async function deleteAllMemories(userId) {
   if (!userId) return;
   await run(`DELETE FROM agent_memories WHERE user_id=$1`, [userId]);
+  // …and the habits noticed but not yet kept, or they would come back.
+  await run(`DELETE FROM memory_candidates WHERE user_id=$1`, [userId]).catch(() => {});
 }
 
 /* ------------------------------------------------------------------ */
@@ -325,9 +390,15 @@ const GOAL_PREF_RX =
 const KEEP_RX =
   /\b(remember|note (this|that|it|down)|save (this|that|it)|don'?t forget|keep in mind|yaad rakh)/i;
 
+// PUT RIGHT (2026-10-18): "no, I moved to Pune", "that's not my office
+// any more" — the new value is a fact to learn (supersede then retires
+// the old one), and memory/learning.js weakens what was contradicted.
+const CORRECTION_RX =
+  /\b(wrong|not (true|right|correct)|that'?s not|isn'?t (true|right|correct)|any ?more|no longer|actually|i (have |'ve )?moved|(has|have|'ve) changed|not my|galat|sahi nahi)\b|^\s*(no|nope|nahi|illa)\b[,.!]?\s+(i|my|it|that|she|he|we|its?|use|don'?t)\b/i;
+
 function looksSelfDescriptive(text) {
   const t = String(text || "");
-  return SELF_RX.test(t) || GOAL_PREF_RX.test(t) || KEEP_RX.test(t);
+  return SELF_RX.test(t) || GOAL_PREF_RX.test(t) || KEEP_RX.test(t) || CORRECTION_RX.test(t);
 }
 
 const EXTRACT_PROMPT =
@@ -406,4 +477,9 @@ module.exports = {
   relatedFacts,
   looksSelfDescriptive,
   cleanKind,
+  parseSupersede,
+  strengthOf,
+  entitiesOf,
+  CORRECTION_RX,
+  FADED,
 };

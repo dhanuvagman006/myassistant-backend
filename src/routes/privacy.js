@@ -85,6 +85,8 @@ const USER_TABLES = [
   ["connector_oauth_states", "user_id"], // a "Connect Notion" still in flight
   ["swiggy_tokens", "user_id"],
   ["agent_memories", "user_id"], // everything the assistant remembers
+  ["memory_candidates", "user_id"], // habits noticed, not yet kept (memory/learning.js)
+  ["memory_upkeep", "user_id"], // when that user's memory was last tidied
   ["bookings", "user_id"], // the booking agent's ledger
   ["clients", "user_id"], // professional mode: patient/client cards
   ["client_notes", "user_id"], // …and their dated case notes

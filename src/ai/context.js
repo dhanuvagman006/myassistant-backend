@@ -528,6 +528,8 @@ async function prepare(uid, body) {
   // Summarise one earlier day the user has no summary for yet — off the
   // reply's path, at most one model call per turn (memory/episodes.js).
   if (owner) require("../memory/episodes").ensure(uid, tz);
+  // Once a day: tidy, decay and learn habits (memory/learning.js).
+  if (owner) require("../memory/learning").ensureDaily(uid, tz);
   const lastResults = tm.timed("last", require("./lastResults").block(uid, s, turnId).catch(() => ""));
   let system;
   if (mode === "voice" || mode === "live") {
