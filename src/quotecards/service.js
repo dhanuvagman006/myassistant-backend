@@ -196,6 +196,7 @@ async function writeLine(date, used) {
       line = String(reply || "");
     }
     line = line.replace(/["“”]/g, "").replace(/!/g, ".").replace(/\s+/g, " ").trim();
+    if (line && !/[.?…]$/.test(line)) line += ".";
     const words = line.split(" ").length;
     const seen = new Set(used.map(norm));
     if (words >= 5 && words <= 24 && line.length <= 160 && !seen.has(norm(line))) return line;
