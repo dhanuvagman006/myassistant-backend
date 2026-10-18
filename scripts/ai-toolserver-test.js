@@ -760,6 +760,46 @@ const GRANTED = ["microphone", "contacts", "location", "camera", "phone", "notif
       assert.strictEqual(g.status, 200);
     });
 
+    await atest("a Live turn opened with no words keeps what they said and learns from it; background speech it ignored is not kept", async () => {
+      // The app opens a Live turn before the transcript exists (text "").
+      // A session of its own: LAST RESULTS below reads liveS's last two turns.
+      const own = (await context(A, { text: "", mode: "live", build: 167 })).json;
+      const said = "Remember that my daughter Riya studies at Christ University";
+      const before = modelCalls.filter((c) => c.extraction).length;
+      const t1 = await context(A, { text: "", mode: "live", build: 167, sessionId: own.sessionId, turnOnly: true });
+      assert.strictEqual(t1.status, 200, t1.text);
+      const logged = await capture(/^ai: turn live/, async () => {
+        const r = await turn(A, { sessionId: own.sessionId, turnId: t1.json.turnId, user: said,
+          reply: "I'll remember that.", engine: "live", mode: "live", tools: [], latency: {} });
+        assert.strictEqual(r.json.ok, true, r.text);
+      });
+      assert.doesNotMatch(logged[0], /notOwner/, "their words, not an app note");
+      assert.ok(await waitFor(async () => (await db.one(
+        `SELECT count(*)::int AS n FROM conversation_turns WHERE user_id=$1 AND role='user' AND text=$2`,
+        [A.id, said])).n === 1), "the user's line is in the conversation history");
+      assert.ok(modelCalls.filter((c) => c.extraction).length > before, "memory extraction ran on it");
+
+      // Room talk the model chose to ignore: neither kept nor learnt from.
+      const t2 = await context(A, { text: "", mode: "live", build: 167, sessionId: own.sessionId, turnOnly: true });
+      const quiet = await tool(A, { sessionId: own.sessionId, turnId: t2.json.turnId, name: "stay_silent", args: {} });
+      assert.strictEqual(quiet.json.ok, true, quiet.text);
+      const tv = "my name is Arjun and I work at the bank";
+      await turn(A, { sessionId: own.sessionId, turnId: t2.json.turnId, user: tv, reply: "",
+        engine: "live", mode: "live", tools: [], latency: {} });
+      await sleep(150);
+      assert.strictEqual((await db.one(
+        `SELECT count(*)::int AS n FROM conversation_turns WHERE user_id=$1 AND text=$2`, [A.id, tv])).n, 0);
+
+      // An app note sent as the transcript is still not theirs.
+      const t3 = await context(A, { text: "", mode: "live", build: 167, sessionId: own.sessionId, turnOnly: true });
+      await turn(A, { sessionId: own.sessionId, turnId: t3.json.turnId, user: "[SYSTEM] The call ended.",
+        reply: "The call has ended.", engine: "live", mode: "live", tools: [], latency: {} });
+      await sleep(150);
+      assert.strictEqual((await db.one(
+        `SELECT count(*)::int AS n FROM conversation_turns WHERE user_id=$1 AND role='user' AND text LIKE '[SYSTEM] The call ended%'`,
+        [A.id])).n, 0);
+    });
+
     await atest("LAST RESULTS: what the tools returned in the last two turns reaches the next prompt", async () => {
       assert.ok(await waitFor(async () => (await db.one(
         `SELECT count(*)::int AS n FROM executed_actions WHERE session_id=$1 AND tool='recall_memory'`,

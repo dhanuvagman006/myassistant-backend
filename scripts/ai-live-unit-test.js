@@ -118,6 +118,22 @@ function run(test) {
     assert.deepStrictEqual(lines, ["- the phone reported: Missed calls: 1. Ravi 10:02, 2. Amma 11:15"]);
   });
 
+  test("memory: asked to keep it is learnt from; an update is compared only with the facts it touches", () => {
+    for (const said of ["note this down: the locker code is with Amma", "save that, Riya's college is Christ",
+      "don't forget Ravi is allergic to nuts", "remember Riya's hostel is in Koramangala"]) {
+      assert.ok(memory.looksSelfDescriptive(said), said);
+    }
+    assert.ok(!memory.looksSelfDescriptive("what's the weather in Mysuru"));
+    const rows = [
+      { id: 1, fact: "User's office is in Koramangala" },
+      { id: 2, fact: "Riya studies at Christ University" },
+      { id: 3, fact: "User is vegetarian" },
+    ];
+    assert.deepStrictEqual(memory.relatedFacts(rows, "User's office moved to Whitefield").map((r) => r.id), [1]);
+    assert.deepStrictEqual(memory.relatedFacts(rows, "Riya now studies in London").map((r) => r.id), [2]);
+    assert.deepStrictEqual(memory.relatedFacts(rows, "User plays the veena"), [], "nothing related: no model call");
+  });
+
   test("memory: the facts that fit their words first, ~15 in all; none said → by importance and recency", () => {
     const now = Date.now();
     const rows = [];

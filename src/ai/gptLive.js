@@ -208,6 +208,7 @@ function liveInstructions({ assistantName, title, opening, toolNames }) {
       "Delegate to the backend when:\n" +
       "- The request needs any of those tools, the user's personal data, the current date or time, or anything current or factual you are not sure of.\n" +
       "- The user asks you to do something (call, message, remind, open, play, schedule, buy, find, remember, create).\n" +
+      "- The user asks you to remember, note or save something, or tells you a lasting detail about themselves or someone in their life, or corrects something remembered: delegate it to be saved, with every detail they gave. Never just say \"noted\".\n" +
       "- A correction changes the work already requested.\n" +
       "Do not delegate when:\n" +
       "- You can answer from the conversation or a still-current result.\n" +

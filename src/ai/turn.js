@@ -16,12 +16,17 @@
  * conversation memory (memory/recent.js, with latency, tools and build for
  * the admin panel), the ledger closed with the reply, durable facts and
  * promises learnt from what the owner said. An app note is not the owner
- * speaking: only the reply to it is kept. A turn in which the assistant
+ * speaking: only the reply to it is kept — but a Live turn opened before
+ * the words existed is theirs once their transcript arrives here. A turn in which the assistant
  * chose silence (stay_silent) says and records nothing.
  */
 const claimCheck = require("../agents/claimCheck");
 const sessionState = require("../agents/sessionState");
 const sessions = require("./sessions");
+const { APP_NOTE } = require("./voicePrompt");
+
+// What routes.js stands in for a Live turn opened before the words exist.
+const LIVE_OPENING = /^\[SYSTEM\] Live (?:turn|session starting)$/;
 
 // "nano" left this set on 2026-10-01: the on-device route was removed on 2026-09-29.
 const ENGINES = new Set(["cloud", "search", "shortcut", "live"]);
@@ -124,7 +129,16 @@ async function recordTurn(uid, body) {
     ...s.state.executed.filter((e) => e.turnId === t.id && !e.vouched).map((e) => e.tool),
     ...reported.map((r) => r.name.trim().slice(0, 60)),
   ])];
-  if (t.owner && user.trim()) {
+  // A LIVE TURN IS OPENED BEFORE THEY SPEAK (2026-10-18): the app sends no
+  // words, routes.js stands "[SYSTEM] Live turn" in, and the turn reads as
+  // an app note — so every voice turn since 2026-09-30 dropped what they
+  // said: never in the history, never learnt from ("remember this"
+  // yesterday was gone today). Their transcript arrives here instead; it
+  // is theirs unless it is an app note, someone else's words, or speech
+  // the model judged was not said to it (stay_silent).
+  const spoken = t.owner || (t.mode === "live" && LIVE_OPENING.test(t.text) &&
+    !t.untrusted && !t.silent && !APP_NOTE.test(user));
+  if (spoken && user.trim()) {
     recent.append(uid, "user", user, { ...meta, latencyMs: 0 });
     // Learn durable personal facts and the promises made out loud — the
     // same account-level memory every device sees after login.
@@ -149,7 +163,7 @@ async function recordTurn(uid, body) {
       part("tools", toolMs) + ` toolCalls=${tools.length}` + (cut ? " cutOff=yes" : "") +
       // How much of what THEY said reached us (2026-10-08): voice turns on
       // prod had never recorded a user line, and this shows where it is lost.
-      ` heard=${user.trim().length}${t.owner ? "" : " notOwner"}` +
+      ` heard=${user.trim().length}${spoken ? "" : " notOwner"}` +
       (corrected ? " corrected=yes" : ""));
   }
 

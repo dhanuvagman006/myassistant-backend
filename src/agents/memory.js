@@ -191,12 +191,13 @@ async function saveMemory(userId, fact, importance = 2, kind = "semantic") {
         `UPDATE agent_memories SET valid=1, importance=GREATEST(importance,$3), created_at=$4, kind=$5 WHERE id=$1 AND user_id=$2`,
         [dup.id, userId, importance, Date.now(), k]
       );
+      return dup.id;
     }
-    return;
+    return null;
   }
-  await run(
+  const row = await one(
     `INSERT INTO agent_memories (user_id, fact, importance, created_at, kind)
-     VALUES ($1,$2,$3,$4,$5)`,
+     VALUES ($1,$2,$3,$4,$5) RETURNING id`,
     [userId, f, importance, Date.now(), k]
   );
   // Evict beyond the cap: KEEP the top rows by importance (newest as the
@@ -211,6 +212,73 @@ async function saveMemory(userId, fact, importance = 2, kind = "semantic") {
        OFFSET $2)`,
     [userId, MAX_MEMORIES]
   );
+  return row ? row.id : null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Update: a new fact retires the one it replaces (2026-10-18)          */
+/* ------------------------------------------------------------------ */
+
+// "My office moved to Whitefield" was stored BESIDE "office is in
+// Koramangala", and the next answer could use either. Only exact
+// duplicates were caught; memory/service.remember() supersedes a few
+// attributes of a known person, nothing else. Now every new fact is
+// compared with the remembered ones it shares words or a name with, and
+// a model decides which of those it replaces. No related fact, no call.
+const SUPERSEDE_PROMPT =
+  "A personal assistant's long-term memory just learned a NEW fact. Decide which " +
+  "of the numbered EXISTING facts it replaces: the same attribute of the same " +
+  "person or thing with a different or updated value (moved city, new job, a " +
+  "changed date, a preference reversed), or a fact the new one makes untrue. Do " +
+  "NOT include a fact that is only related, or that the new fact adds to without " +
+  "contradicting it. Return STRICT JSON only — an array of the numbers of the " +
+  "replaced facts, e.g. [2] — or [] when none. No prose, no markdown.";
+
+/** Remembered facts that share a word or a name with `fact`, newest first. */
+function relatedFacts(rows, fact, limit = 10) {
+  const words = new Set(memTokens(fact));
+  const names = new Set(entitiesOf(fact));
+  return (rows || [])
+    .filter((r) => memTokens(r.fact).some((w) => words.has(w)) ||
+      entitiesOf(r.fact).some((e) => names.has(e)))
+    .sort((a, b) => Number(b.id) - Number(a.id))
+    .slice(0, limit);
+}
+
+/**
+ * Retire the facts `fact` replaces. `keepId` is the new fact's own row.
+ * Returns the facts retired. Never throws: memory is best-effort.
+ */
+async function supersede(userId, fact, keepId = null) {
+  try {
+    const f = String(fact || "").trim();
+    if (!userId || !f) return [];
+    const others = (await listMemories(userId))
+      .filter((r) => Number(r.id) !== Number(keepId) && r.fact.toLowerCase() !== f.toLowerCase());
+    const candidates = relatedFacts(others, f);
+    if (!candidates.length) return [];
+    const { reply } = await generateReply(
+      [{ role: "user", content:
+        `NEW: ${f.slice(0, 300)}\nEXISTING:\n` +
+        candidates.map((r, i) => `${i + 1}. ${r.fact}`).join("\n") }],
+      { system: SUPERSEDE_PROMPT }
+    );
+    const picked = JSON.parse(String(reply || "").replace(/```json|```/g, "").trim());
+    if (!Array.isArray(picked)) return [];
+    const gone = [...new Set(picked)]
+      .map((n) => candidates[Number(n) - 1])
+      .filter(Boolean);
+    if (!gone.length) return [];
+    const at = Date.now();
+    await run(
+      `UPDATE agent_memories SET valid=0, invalidated_at=$3, updated_at=$3
+        WHERE user_id=$1 AND id = ANY($2::bigint[]) AND valid=1`,
+      [userId, gone.map((r) => r.id), at]
+    );
+    return gone.map((r) => r.fact);
+  } catch (_) {
+    return [];
+  }
 }
 
 /**
@@ -251,9 +319,15 @@ const SELF_RX =
 const GOAL_PREF_RX =
   /\b(my (goal|target|dream|plan|aim|business|startup|company|team|clients?|diet|routine|habit)|i (want|wish|hope|plan|intend) to|i'?m (trying|planning|preparing|learning|saving|working on|building|starting|aiming)|i (usually|always|never|mostly|normally)|i (don'?t|do not) (like|want|eat|drink)|i'?d rather|from now on|(please )?(always|never) (call|message|remind|wake|tell|use|speak|reply|answer)|don'?t (call|message|remind|disturb|wake) me|(reply|answer|talk|speak) (to me )?in (hindi|kannada|tamil|telugu|malayalam|marathi|bengali|gujarati|english)|(keep|make) (it|answers?|replies) (short|brief|simple|detailed)|every (morning|day|night|evening|week))\b/i;
 
+// ASKED TO KEEP IT (2026-10-18): "note this down", "save that", "don't
+// forget", "keep in mind" — and "remember" in any form ("remember Riya's
+// college is…") — said in so many words, about anyone in their life.
+const KEEP_RX =
+  /\b(remember|note (this|that|it|down)|save (this|that|it)|don'?t forget|keep in mind|yaad rakh)/i;
+
 function looksSelfDescriptive(text) {
   const t = String(text || "");
-  return SELF_RX.test(t) || GOAL_PREF_RX.test(t);
+  return SELF_RX.test(t) || GOAL_PREF_RX.test(t) || KEEP_RX.test(t);
 }
 
 const EXTRACT_PROMPT =
@@ -268,7 +342,12 @@ const EXTRACT_PROMPT =
   "what they like (\"User prefers short answers\", \"User wants replies in " +
   "Kannada\", \"User does not want calls before 9 am\", \"User is " +
   "vegetarian\"); \"fact\" = everything else durable (name, family, city, " +
-  "work, health, important dates). importance: 3 = identity/health/major " +
+  "work, health, important dates). People in the user's life count: when they " +
+  "tell you about a family member, client, friend or colleague, store it naming " +
+  "that person (\"Riya Rao is the user's daughter\", \"Riya studies at " +
+  "Christ University\"). Anything the user explicitly asks you to " +
+  "remember, note or save is durable — store it, importance 3. " +
+  "importance: 3 = identity/health/major " +
   "goals, 2 = preferences/relationships, 1 = minor. If nothing durable, " +
   "return []. STRICT EXCLUSIONS — return [] for: anything the user is " +
   "asking you to RELAY or SEND to someone else ('tell Allen I'm…', " +
@@ -305,7 +384,8 @@ function extractAndStore(userId, userText) {
       if (!Array.isArray(facts)) return;
       for (const f of facts.slice(0, 5)) {
         const imp = [1, 2, 3].includes(f?.importance) ? f.importance : 2;
-        await saveMemory(userId, f?.fact, imp, f?.kind === "fact" ? "semantic" : f?.kind);
+        const id = await saveMemory(userId, f?.fact, imp, f?.kind === "fact" ? "semantic" : f?.kind);
+        if (id) await supersede(userId, f.fact, id);
       }
     } catch (_) {
       /* memory is best-effort by design */
@@ -322,6 +402,8 @@ module.exports = {
   deleteAllMemories,
   deleteFactsContaining,
   extractAndStore,
+  supersede,
+  relatedFacts,
   looksSelfDescriptive,
   cleanKind,
 };

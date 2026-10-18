@@ -707,12 +707,15 @@ function registerBuiltins() {
         const p = await mem.findPerson(ctx.userId, args.about);
         if (p) { subjectType = "person"; subjectId = p.id; }
       }
-      await mem.remember(ctx.userId, {
+      const row = await mem.remember(ctx.userId, {
         fact: args.fact,
         importance: args.importance || 3,
         kind: require("../agents/memory").cleanKind(args.kind),
         subjectType, subjectId,
       });
+      // An update replaces what it updates (2026-10-18) — after the reply,
+      // so the answer does not wait on it.
+      require("../agents/memory").supersede(ctx.userId, args.fact, row && row.id);
       return { ok: true, data: { saved: args.fact }, speak: "I'll remember that." };
     },
   });
