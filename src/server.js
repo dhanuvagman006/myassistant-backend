@@ -370,8 +370,15 @@ app.get("/tools/weather/forecast", appAuth, async (req, res) => {
     lat = parseFloat(req.get("X-Geo-Lat"));
     lng = parseFloat(req.get("X-Geo-Lng"));
   }
-  const city = typeof req.query.city === "string" ? req.query.city : undefined;
+  let city = typeof req.query.city === "string" ? req.query.city : undefined;
   try {
+    // A cold start asks before the phone has a fix, so the request carries
+    // no position and every launch answered 400. Their profile city
+    // stands in until the fix arrives.
+    if (!city && (!Number.isFinite(lat) || !Number.isFinite(lng))) {
+      const u = await db.one(`SELECT location FROM users WHERE id = $1`, [req.user.sub]).catch(() => null);
+      city = (u && String(u.location || "").trim()) || undefined;
+    }
     const place = async () => {
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
       const k = `${lat.toFixed(2)},${lng.toFixed(2)}`;
