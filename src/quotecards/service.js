@@ -26,7 +26,9 @@
 const fs = require("fs");
 const path = require("path");
 
-const ROOT = path.join(
+// Absolute: DATA_DIR is "./data" in production, and res.sendFile refuses
+// a relative path.
+const ROOT = path.resolve(
   process.env.DATA_DIR || path.join(__dirname, "..", "..", "data"),
   "quote-cards"
 );
@@ -72,13 +74,14 @@ const DEITIES = [
 
 /**
  * The looks. `ink` is the colour the phone sets the words in; `font`
- * 'serif' or 'sans'; `scrim` how much the phone darkens (or, for a light
+ * 'serif' or 'sans'; `place` 'lower' when the subject fills the top of
+ * the picture (the words then sit in the lower half); `scrim` how much the phone darkens (or, for a light
  * picture, lightens) the middle so the words read. Every prompt asks for
  * a calm, empty centre — that is where the words go.
  */
 const STYLES = [
   {
-    id: "divine", label: "Divine", ink: "#FFF6E0", font: "serif", scrim: "dark",
+    id: "divine", label: "Divine", ink: "#FFF6E0", font: "serif", scrim: "dark", place: "lower",
     look: (d) =>
       `${d.deity}, serene and benevolent, soft divine golden light, glowing brass diyas, ` +
       `lotus flowers, temple atmosphere, warm saffron and gold tones, devotional painting, ` +
@@ -309,6 +312,7 @@ async function today() {
     }
     cards.push({
       style: s.id, label: s.label, ink: s.ink, font: s.font, scrim: s.scrim,
+      place: s.place || "center",
       url: `/quote-cards/img/${date}/${s.id}.jpg?v=${Math.round(st.mtimeMs)}`,
       width: FORMAT.width, height: FORMAT.height,
     });
