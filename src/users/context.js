@@ -340,7 +340,38 @@ async function contextBlock(userId, { lat, lng, tz, at, appBuild = 0 } = {}) {
     const block = await require("../shortcuts/match").promptBlock(userId).catch(() => "");
     if (block) lines.push(block);
   }
+  const update = updateLine(appBuild);
+  if (update) lines.push(update);
   return lines.join("\n");
+}
+
+/**
+ * What the newest release brought, so "what's new in the update?" is
+ * answered from the published changelog (routes/appUpdate latest.json),
+ * never made up. Only for a turn from the phone (appBuild known):
+ * background and auto-responder turns carry none.
+ */
+function updateLine(appBuild) {
+  const have = Number(appBuild) || 0;
+  if (!have) return "";
+  let meta = null;
+  try {
+    meta = require("../routes/appUpdate").readMeta();
+  } catch (_) {}
+  const latest = Number(meta && meta.versionCode) || 0;
+  const notes = (Array.isArray(meta && meta.changelog) ? meta.changelog : [])
+    .map((l) => String(l).trim()).filter(Boolean);
+  if (!latest || !notes.length) return "";
+  const name = meta.versionName || String(latest);
+  const where = have >= latest
+    ? "The user is on this version."
+    : `The user is on an older build (${have}); this update is available to install — the update_app tool opens it.`;
+  return (
+    `THE LATEST APP UPDATE — version ${name} (build ${latest}). What's new: ` +
+    notes.join(" ") + ` ${where} ` +
+    "Use this only when they ask about the update, the new version or what's new; " +
+    "say only what is listed here, in their language, and do not bring it up unprompted."
+  );
 }
 
 /* ---------------- conversational onboarding (§3) ---------------- */
