@@ -24,15 +24,30 @@ async function getJson(url) {
   return r.json();
 }
 
+// INDIA FIRST (2026-10-18): the first match for "Mangalore" is a hamlet in
+// Tasmania, and "Kochi" is in Japan. An Indian match wins over a small
+// foreign place, or over a foreign city smaller than it; a major city
+// (Paris, Dubai, London) keeps its own country. Open-Meteo lists some
+// Indian cities with population 0, so size alone cannot decide.
+function pickPlace(results) {
+  const list = Array.isArray(results) ? results : [];
+  const top = list[0];
+  if (!top || top.country_code === "IN") return top || null;
+  const india = list.find((r) => r.country_code === "IN");
+  if (!india) return top;
+  const pop = (r) => Number(r.population) || 0;
+  return pop(top) < 100_000 || pop(india) > pop(top) ? india : top;
+}
+
 async function geocodeCity(name) {
   const key = `geo:${name.toLowerCase()}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.ts < 24 * 3600_000) return hit.data;
   const j = await getJson(
-    "https://geocoding-api.open-meteo.com/v1/search?count=1&name=" +
+    "https://geocoding-api.open-meteo.com/v1/search?count=10&name=" +
       encodeURIComponent(name)
   );
-  const g = j.results?.[0];
+  const g = pickPlace(j.results);
   if (!g) return null;
   const data = {
     lat: g.latitude, lng: g.longitude,
