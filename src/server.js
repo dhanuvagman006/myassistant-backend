@@ -469,6 +469,11 @@ app.use("/studio", appAuth, perUserLimit, require("./routes/studio"));
 // card drawn on the phone. Working photos stay out of /docs; only the
 // finished card (and a photo he keeps) becomes a document.
 app.use("/posters", appAuth, posterLimit, require("./routes/posters"));
+// THE DAY'S QUOTE (2026-10-18) — one line and its pictures a day, the same
+// for everyone. The pictures are public (Image.network sends no header).
+const quoteCards = require("./routes/quoteCards");
+app.use("/quote-cards/img", quoteCards.images);
+app.use("/quote-cards", appAuth, posterLimit, quoteCards.router);
 // SHORTCUTS — "office mode": one word, several things (routes/shortcuts.js).
 app.use("/shortcuts", appAuth, shortcutLimit, require("./routes/shortcuts"));
 // THE SHOPPING LIST and THE KITCHEN (2026-09-29) — one list for anything
@@ -653,6 +658,14 @@ require("./db")
       require("./proactive/scheduler").start();
     } catch (e) {
       console.error("  proactive scheduler failed to start:", e.message);
+    }
+
+    // THE DAY'S QUOTE — today's and tomorrow's line and pictures, made
+    // once for everyone (src/quotecards). Background only.
+    try {
+      require("./quotecards/service").start();
+    } catch (e) {
+      console.error("  quote cards failed to start:", e.message);
     }
 
     // The durable job queue: document indexing and user-scheduled tasks
