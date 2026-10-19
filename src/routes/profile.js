@@ -175,4 +175,45 @@ router.delete("/instructions/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- WHAT I REMEMBER (2026-10-19) ----
+// The You tab's Memory page: everything the assistant has learned about
+// the signed-in user (the same rows memoryBlock puts in every prompt),
+// and a way to remove any one. Standing rules stay on /instructions.
+router.get("/memories", async (req, res) => {
+  const uid = uidOf(req);
+  if (!uid) return res.status(401).json({ error: "sign in required" });
+  try {
+    const rows = await memory.listMemories(uid);
+    res.json({
+      memories: rows.map((r) => ({
+        id: Number(r.id),
+        fact: r.fact,
+        kind: r.kind || "semantic",
+        source: r.source || null,
+        createdAt: r.created_at,
+        // Faded: still recallable when asked, no longer in every prompt.
+        faded: memory.strengthOf(r) < memory.FADED,
+      })),
+    });
+  } catch (e) {
+    console.error("profile memories:", e.message);
+    res.status(500).json({ error: "could not load memories" });
+  }
+});
+
+// Removed outright, as the privacy policy says a deleted item is.
+router.delete("/memories/:id", async (req, res) => {
+  const uid = uidOf(req);
+  if (!uid) return res.status(401).json({ error: "sign in required" });
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "bad id" });
+  try {
+    const n = await db.run(`DELETE FROM agent_memories WHERE user_id=$1 AND id=$2`, [uid, id]);
+    res.json({ ok: true, removed: n });
+  } catch (e) {
+    console.error("profile memory delete:", e.message);
+    res.status(500).json({ error: "could not remove" });
+  }
+});
+
 module.exports = router;
