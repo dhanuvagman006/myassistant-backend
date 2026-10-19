@@ -476,6 +476,9 @@ app.use("/quote-cards/img", quoteCards.images);
 // Before the signed-in mount, which would otherwise answer it with 401.
 app.use("/quote-cards/public", posterLimit, quoteCards.publicRouter);
 app.use("/quote-cards", appAuth, posterLimit, quoteCards.router);
+// BORN TODAY (2026-10-19) — Home's birthday card: well-known Indians born
+// on this date, from Wikidata, fetched once a day for everyone.
+app.use("/birthdays", appAuth, posterLimit, require("./routes/birthdays"));
 // SHORTCUTS — "office mode": one word, several things (routes/shortcuts.js).
 app.use("/shortcuts", appAuth, shortcutLimit, require("./routes/shortcuts"));
 // THE SHOPPING LIST and THE KITCHEN (2026-09-29) — one list for anything
