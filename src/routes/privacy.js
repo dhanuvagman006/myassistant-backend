@@ -184,6 +184,8 @@ const USER_TABLES = [
   // Raw files live in files/<uid>/mailin/, which goes with files/<uid>.
   ["mail_addresses", "user_id"],
   ["mail_inbound", "user_id"],
+  // Mobile recharge: the network of each number they recharged.
+  ["recharge_numbers", "user_id"],
 
   // Legacy tables, taken out of init() on 2026-08-10 but never DROPped, so
   // a database created before that date may still hold them.

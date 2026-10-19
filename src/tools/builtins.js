@@ -2771,14 +2771,16 @@ function registerBuiltins() {
       "MOBILE RECHARGE — 'recharge my Jio', 'recharge 98xxxxxxxx', 'best Vi " +
       "plan for me', 'recharge amma's phone'. TWO STEPS. 1) Call WITHOUT " +
       "open: it returns REAL current plans (Jio; Vi for a state). Suggest ONE " +
-      "that fits (ask what matters if unsure: data per day, validity, budget) " +
+      "that fits (ask what matters if unsure: data, validity, budget) " +
       "and ask 'Shall I open it to pay?'. 2) On yes, call again with " +
       "plan_amount and open=true: the phone opens the operator's recharge page " +
       "with the number filled in (Jio: the plan too, straight to payment); " +
       "they pay there by Google Pay/UPI. YOU NEVER PAY: say it is ready to " +
       "pay, never that it is recharged. NEVER invent a plan or price — quote " +
-      "only what this returned. Airtel and BSNL plans cannot be read: say so " +
-      "and offer to open their page (open=true). Ask the operator if unknown. " +
+      "only what this returned. Airtel/BSNL plans cannot be read: say so " +
+      "and offer to open their page (open=true). NETWORK: pass operator ONLY " +
+      "if the user said it — never guess; leave it out and the tool uses the " +
+      "one remembered for that number, or tells you to ask (Jio, Airtel, Vi or BSNL?). " +
       "The number defaults to the user's own; for someone else use " +
       "lookup_person for their number. Vi needs their state or city.",
     risk: "medium",
@@ -2786,24 +2788,23 @@ function registerBuiltins() {
     inputSchema: {
       type: "object",
       properties: {
-        operator: { type: "string", enum: ["jio", "airtel", "vi", "bsnl"] },
+        operator: {
+          type: "string", enum: ["jio", "airtel", "vi", "bsnl"],
+          description: "Only when the user named the network; leave out otherwise (never guess)",
+        },
         number: { type: "string", description: "10-digit mobile number; leave out for the user's own" },
         plan_amount: { type: "number", description: "Price in rupees of the plan the user agreed to" },
         state: { type: "string", description: "Vi only: their state or city (plans differ by circle)" },
         open: { type: "boolean", description: "true only after the user said yes to opening the payment page" },
       },
-      required: ["operator"],
+      required: [],
     },
     confirmSummary: (a) =>
-      `Open the ${String(a.operator || "").toUpperCase()} recharge${a.plan_amount ? ` for ₹${a.plan_amount}` : ""}`,
+      `Open the ${String(a.operator || "mobile").toUpperCase()} recharge${a.plan_amount ? ` for ₹${a.plan_amount}` : ""}`,
     async execute(args, ctx) {
       const uid = Number(ctx?.userId || 0);
       if (!uid) return { ok: false, error: "not signed in" };
       const plans = require("../recharge/plans");
-      const op = String(args.operator || "").toLowerCase().trim();
-      const NAMES = { jio: "Jio", airtel: "Airtel", vi: "Vi", bsnl: "BSNL" };
-      if (!NAMES[op]) return { ok: false, error: "which operator — Jio, Airtel, Vi or BSNL? ask the user" };
-      const name = NAMES[op];
 
       // The number: theirs unless one was given.
       let number = String(args.number || "").replace(/\D/g, "");
@@ -2817,13 +2818,30 @@ function registerBuiltins() {
       }
       const last4 = number.slice(-4);
 
+      // The network: what they said now, else what they said before for
+      // this number, else ask — never a guess (owner, 2026-10-19).
+      const NAMES = { jio: "Jio", airtel: "Airtel", vi: "Vi", bsnl: "BSNL" };
+      const numbers = require("../recharge/numbers");
+      const known = await numbers.get(uid, number).catch(() => null);
+      let op = String(args.operator || "").toLowerCase().trim();
+      if (op === "vodafone" || op === "idea") op = "vi";
+      if (!NAMES[op]) op = known && NAMES[known.operator] ? known.operator : "";
+      if (!op) {
+        return {
+          ok: false,
+          error: `need_operator: ask the user which network the number ending ${last4} is on — Jio, Airtel, Vi or BSNL — in one short question, then call again with operator. Do not guess.`,
+        };
+      }
+      const name = NAMES[op];
+      const state = args.state || (known && known.operator === op ? known.circle : null);
+
       // The plans, where the operator publishes them.
       let list = null;
       let circle = null;
       try {
         if (op === "jio") list = await plans.jioPlans();
         if (op === "vi") {
-          circle = plans.viCircle(args.state);
+          circle = plans.viCircle(state);
           if (!circle) {
             return { ok: false, error: "Vi plans differ by state — ask which state or city the number is from, then call again with state" };
           }
@@ -2833,6 +2851,8 @@ function registerBuiltins() {
         console.error("mobile_recharge plans:", e.message);
         list = null; // the page still opens; no plans are described
       }
+      await numbers.set(uid, number, op, circle ? circle.name : null).catch((e) =>
+        console.error("mobile_recharge remember:", e.message));
       const amount = Number(args.plan_amount) > 0 ? Math.round(Number(args.plan_amount)) : 0;
       const plan = list && amount ? list.find((p) => p.price === amount) : null;
       if (list && amount && !plan) {

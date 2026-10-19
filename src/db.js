@@ -495,6 +495,8 @@ async function init() {
 
   // Bills by email: the private address and the emails it received.
   await require("./mailin/store").migrate((sql) => pool.query(sql));
+  // Mobile recharge: the network (and Vi circle) of each number they recharge.
+  await require("./recharge/numbers").migrate((sql) => pool.query(sql));
   // Self-checks from the phones (routes/diagnostics.js).
   await require("./routes/diagnostics").migrate((sql) => pool.query(sql));
   // The spend meter: what every paid call cost, per user (admin dashboard).
