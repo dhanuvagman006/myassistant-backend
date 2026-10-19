@@ -476,6 +476,9 @@ app.use("/quote-cards/img", quoteCards.images);
 // Before the signed-in mount, which would otherwise answer it with 401.
 app.use("/quote-cards/public", posterLimit, quoteCards.publicRouter);
 app.use("/quote-cards", appAuth, posterLimit, quoteCards.router);
+// NOTIFICATIONS (2026-10-19): the phone asks what to do with each new
+// notification — reply, inform, remember or nothing (src/notify/triage.js).
+app.use("/notify", appAuth, perUserLimit, require("./routes/notify"));
 // BORN TODAY (2026-10-19) — Home's birthday card: well-known Indians born
 // on this date, from Wikidata, fetched once a day for everyone.
 app.use("/birthdays", appAuth, posterLimit, require("./routes/birthdays"));
