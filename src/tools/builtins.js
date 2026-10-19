@@ -2760,6 +2760,133 @@ function registerBuiltins() {
     },
   });
 
+  // MOBILE RECHARGE (2026-10-19, owner: "recharge my Jio phone … suggest a
+  // good plan … directly take to the payment app with the less manual").
+  // Real plans only (recharge/plans.js); the phone opens the operator's own
+  // recharge page with the number (and, for Jio, the plan) filled in, and
+  // the user pays there with Google Pay / any UPI app. It never pays.
+  registry.register({
+    name: "mobile_recharge",
+    description:
+      "MOBILE RECHARGE — 'recharge my Jio', 'recharge 98xxxxxxxx', 'best Vi " +
+      "plan for me', 'recharge amma's phone'. TWO STEPS. 1) Call WITHOUT " +
+      "open: it returns REAL current plans (Jio; Vi for a state). Suggest ONE " +
+      "that fits (ask what matters if unsure: data per day, validity, budget) " +
+      "and ask 'Shall I open it to pay?'. 2) On yes, call again with " +
+      "plan_amount and open=true: the phone opens the operator's recharge page " +
+      "with the number filled in (Jio: the plan too, straight to payment); " +
+      "they pay there by Google Pay/UPI. YOU NEVER PAY: say it is ready to " +
+      "pay, never that it is recharged. NEVER invent a plan or price — quote " +
+      "only what this returned. Airtel and BSNL plans cannot be read: say so " +
+      "and offer to open their page (open=true). Ask the operator if unknown. " +
+      "The number defaults to the user's own; for someone else use " +
+      "lookup_person for their number. Vi needs their state or city.",
+    risk: "medium",
+    deviceAction: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        operator: { type: "string", enum: ["jio", "airtel", "vi", "bsnl"] },
+        number: { type: "string", description: "10-digit mobile number; leave out for the user's own" },
+        plan_amount: { type: "number", description: "Price in rupees of the plan the user agreed to" },
+        state: { type: "string", description: "Vi only: their state or city (plans differ by circle)" },
+        open: { type: "boolean", description: "true only after the user said yes to opening the payment page" },
+      },
+      required: ["operator"],
+    },
+    confirmSummary: (a) =>
+      `Open the ${String(a.operator || "").toUpperCase()} recharge${a.plan_amount ? ` for ₹${a.plan_amount}` : ""}`,
+    async execute(args, ctx) {
+      const uid = Number(ctx?.userId || 0);
+      if (!uid) return { ok: false, error: "not signed in" };
+      const plans = require("../recharge/plans");
+      const op = String(args.operator || "").toLowerCase().trim();
+      const NAMES = { jio: "Jio", airtel: "Airtel", vi: "Vi", bsnl: "BSNL" };
+      if (!NAMES[op]) return { ok: false, error: "which operator — Jio, Airtel, Vi or BSNL? ask the user" };
+      const name = NAMES[op];
+
+      // The number: theirs unless one was given.
+      let number = String(args.number || "").replace(/\D/g, "");
+      if (!number) {
+        const u = await require("../db").one(`SELECT phone_number FROM users WHERE id=$1`, [uid]).catch(() => null);
+        number = String(u?.phone_number || "").replace(/\D/g, "");
+      }
+      number = number.length > 10 ? number.slice(-10) : number;
+      if (!/^[6-9]\d{9}$/.test(number)) {
+        return { ok: false, error: "need the 10-digit mobile number to recharge — ask the user for it" };
+      }
+      const last4 = number.slice(-4);
+
+      // The plans, where the operator publishes them.
+      let list = null;
+      let circle = null;
+      try {
+        if (op === "jio") list = await plans.jioPlans();
+        if (op === "vi") {
+          circle = plans.viCircle(args.state);
+          if (!circle) {
+            return { ok: false, error: "Vi plans differ by state — ask which state or city the number is from, then call again with state" };
+          }
+          list = await plans.viPlans(circle.code);
+        }
+      } catch (e) {
+        console.error("mobile_recharge plans:", e.message);
+        list = null; // the page still opens; no plans are described
+      }
+      const amount = Number(args.plan_amount) > 0 ? Math.round(Number(args.plan_amount)) : 0;
+      const plan = list && amount ? list.find((p) => p.price === amount) : null;
+      if (list && amount && !plan) {
+        const near = list.map((p) => p.price).sort((a, b) => Math.abs(a - amount) - Math.abs(b - amount)).slice(0, 4);
+        return {
+          ok: false,
+          error: `${name} has no ₹${amount} plan right now${circle ? ` in ${circle.name}` : ""} — the nearest are ₹${near.join(", ₹")}. Tell the user and ask which one.`,
+        };
+      }
+
+      // Step 1: what to choose from.
+      if (args.open !== true) {
+        if (!list) {
+          return {
+            ok: true,
+            data: {
+              operator: name, number_ends: last4, plans_available: false,
+              hint: `${name}'s plans cannot be read from here. Do NOT describe any ${name} plan or price. ` +
+                `Offer to open ${name}'s recharge page to pick and pay; on yes call again with open=true.`,
+            },
+          };
+        }
+        return {
+          ok: true,
+          data: {
+            operator: name, number_ends: last4, circle: circle?.name || null,
+            plans: plans.shortlist(op, list).map(({ id, rank, ...p }) => p),
+            chosen: plan ? (({ id, rank, ...p }) => p)(plan) : null,
+            hint: "Suggest ONE plan from these that fits what they said, in a sentence, and ask " +
+              "'Shall I open it to pay?'. On yes, call again with plan_amount and open=true.",
+          },
+        };
+      }
+
+      // Step 2: open the pay page.
+      if (list && !plan) {
+        return { ok: false, error: "which plan? suggest one from the list first, then call with plan_amount" };
+      }
+      const url = plans.payUrl(op, { number, plan });
+      const how = {
+        jio: `Opening Jio's recharge for the number ending ${last4} with the ₹${amount} plan — pay there with Google Pay or UPI.`,
+        vi: `Opening Vi's ₹${amount} pack — enter the number ending ${last4} there, then pay with Google Pay or UPI.`,
+        bsnl: `Opening BSNL's recharge with the number ending ${last4} filled in — pick the plan there and pay.`,
+        airtel: `Opening Airtel's recharge page — enter the number ending ${last4}, pick the plan and pay there.`,
+      }[op];
+      return {
+        ok: true,
+        data: { operator: name, number_ends: last4, plan: plan ? (({ id, rank, ...p }) => p)(plan) : null, opened: url },
+        deviceAction: { type: "open_url", url },
+        speak: how,
+      };
+    },
+  });
+
   // DOCUMENT EXPIRY. Renewal reminders are filed automatically when a
   // policy, licence or passport is scanned (docs/expiry.js); this answers
   // "when does my insurance expire?" and "is anything expiring soon?".

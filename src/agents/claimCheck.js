@@ -109,6 +109,8 @@ const FAMILIES = [
       "open_video_mode", "phone_control", "start_navigation",
       // "Opening GPay with ₹500 for Ravi" — the UPI app on screen.
       "pay_by_upi",
+      // "Opening Jio's recharge with the ₹349 plan" — the operator's page.
+      "mobile_recharge",
       // The camera for a card; the recorder for a meeting.
       "scan_business_card", "record_meeting",
       // "Opening the uninstall screen for Instagram".
