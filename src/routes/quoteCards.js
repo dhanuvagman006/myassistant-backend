@@ -4,6 +4,12 @@
  *   GET /quote-cards/today              (appAuth) → { date, text, status, total, cards: [
  *                                         { style, label, ink, font, scrim, url, width, height } ] }
  *   GET /quote-cards/img/:date/:file    (public)  → image/jpeg
+ *   GET /quote-cards/public/today       (public)  → the same as /today, for the
+ *                                         WishMe app (2026-10-19), whose users
+ *                                         have no account here. It is the line
+ *                                         and the picture list everyone gets;
+ *                                         nothing personal. Picture urls stay
+ *                                         relative to this server.
  *
  * The pictures are the same for every user and carry nothing personal,
  * so they are served without auth — Image.network on the phone cannot
@@ -13,14 +19,18 @@ const express = require("express");
 const svc = require("../quotecards/service");
 
 const router = express.Router();
-router.get("/today", async (req, res) => {
+async function today(req, res) {
   try {
     res.json(await svc.today());
   } catch (e) {
     console.error("quote cards today:", e && (e.stack || e.message));
     res.status(500).json({ error: "error", message: "The quote did not load. Try again in a moment." });
   }
-});
+}
+router.get("/today", today);
+
+const publicRouter = express.Router();
+publicRouter.get("/today", today);
 
 const images = express.Router();
 images.get("/:date/:file", (req, res) => {
@@ -30,4 +40,4 @@ images.get("/:date/:file", (req, res) => {
   res.type("image/jpeg").sendFile(p);
 });
 
-module.exports = { router, images };
+module.exports = { router, images, publicRouter };
